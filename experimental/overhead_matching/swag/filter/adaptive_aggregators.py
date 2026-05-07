@@ -36,30 +36,11 @@ class ImageLandmarkPrivilegedInformationFusionConfig(
 
 
 class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Config for entropy-adaptive weighted fusion aggregator.
-
-    Set per-source sigmas via `image_sigma` and `landmark_sigma`. For
-    backward compatibility, a single `sigma` is also accepted and applied
-    to both sources (legacy behavior). At least one of (sigma) or
-    (image_sigma + landmark_sigma) must be supplied.
-    """
+    """Config for entropy-adaptive weighted fusion aggregator."""
 
     image_similarity_matrix_path: Path
     landmark_similarity_matrix_path: Path
-    sigma: float | None = None
-    image_sigma: float | None = None
-    landmark_sigma: float | None = None
-
-    def resolve_sigmas(self) -> tuple[float, float]:
-        """Return (image_sigma, landmark_sigma), filling from `sigma` if needed."""
-        img = self.image_sigma if self.image_sigma is not None else self.sigma
-        lm = self.landmark_sigma if self.landmark_sigma is not None else self.sigma
-        if img is None or lm is None:
-            raise ValueError(
-                "EntropyAdaptiveAggregatorConfig requires either `sigma` "
-                "or both `image_sigma` and `landmark_sigma` to be set."
-            )
-        return float(img), float(lm)
+    sigma: float
 
 
 class SafaPlusNormalizedLandmarkAggregatorConfig(
@@ -79,6 +60,12 @@ class SafaPlusNormalizedLandmarkAggregatorConfig(
     image_sigma: float
     landmark_sigma: float
 
+    def __post_init__(self):
+        if not (self.image_sigma > 0):
+            raise ValueError(f"image_sigma must be positive, got {self.image_sigma}")
+        if not (self.landmark_sigma > 0):
+            raise ValueError(f"landmark_sigma must be positive, got {self.landmark_sigma}")
+
 
 # Union type for polymorphic deserialization.
 AggregatorConfig = (
@@ -96,6 +83,17 @@ def _replace_nan_with_zero(tensor: torch.Tensor) -> torch.Tensor:
     """Replace NaN values with 0 (no update in log-likelihood space)."""
     tensor[torch.isnan(tensor)] = 0
     return tensor
+
+
+def _raise_if_nonfinite(tensor: torch.Tensor, pano_id: str, name: str) -> None:
+    nonfinite = ~torch.isfinite(tensor)
+    if nonfinite.any():
+        first_idx = int(torch.nonzero(nonfinite, as_tuple=False)[0].item())
+        raise RuntimeError(
+            f"SafaPlusNormalizedLandmarkAggregator: non-finite value in {name} "
+            f"for pano_id={pano_id!r} at index {first_idx} "
+            f"(value={tensor.flatten()[first_idx].item()})."
+        )
 
 
 def _load_similarity_matrix(path: Path) -> torch.Tensor:
@@ -251,10 +249,6 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
 
     Computes a per-source peak sharpness confidence score (max - mean of log-probs)
     and uses it to blend the two similarity vectors before converting to log-likelihoods.
-
-    Image and landmark similarities are normalized through `log_softmax(x / sigma)`
-    with their own per-source sigmas (`image_sigma`, `landmark_sigma`) — these
-    parameterize how peaky each source's posterior is before fusion.
     """
 
     def __init__(
@@ -262,14 +256,12 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         image_similarity_matrix: torch.Tensor,
         landmark_similarity_matrix: torch.Tensor,
         panorama_metadata: pd.DataFrame,
-        image_sigma: float,
-        landmark_sigma: float,
+        sigma: float,
         device: torch.device,
     ):
         self.image_similarity_matrix = image_similarity_matrix
         self.landmark_similarity_matrix = landmark_similarity_matrix
-        self.image_sigma = image_sigma
-        self.landmark_sigma = landmark_sigma
+        self.sigma = sigma
         self.device = device
         self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
 
@@ -296,14 +288,14 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         lm_sim = self.landmark_similarity_matrix[pano_index]
 
         # Normalize to log-probability space first (makes different scales commensurate)
-        log_p_img = torch.log_softmax(img_sim / self.image_sigma, dim=0)
+        log_p_img = torch.log_softmax(img_sim / self.sigma, dim=0)
 
         # Fall back to image-only when landmark data is missing (all -inf)
         lm_finite_mask = torch.isfinite(lm_sim)
         if not lm_finite_mask.any():
             return _replace_nan_with_zero(log_p_img).to(self.device)
 
-        log_p_lm = torch.log_softmax(lm_sim / self.landmark_sigma, dim=0)
+        log_p_lm = torch.log_softmax(lm_sim / self.sigma, dim=0)
 
         img_conf = self._compute_confidence(log_p_img)
         lm_conf = self._compute_confidence(log_p_lm)
@@ -324,13 +316,11 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
     ) -> "EntropyAdaptiveAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
-        image_sigma, landmark_sigma = config.resolve_sigmas()
         return cls(
             image_sim,
             landmark_sim,
             vigor_dataset._panorama_metadata,
-            image_sigma,
-            landmark_sigma,
+            config.sigma,
             device,
         )
 
@@ -351,12 +341,11 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
 
       log_p[j] = log_p_img[j] + log_p_lm[j]   (conditional independence)
 
-    Why divide-by-row-max for the landmark stream? Because absolute landmark
-    similarity scales differ across cities (per-pair MLE on raw residuals
-    ranges 0.44–0.62 across Chicago/Seattle/NewYork/post_hurricane_ian),
-    while the per-row ``1 − sim_t / sim_max`` distribution overlaps
-    tightly across cities (σ_MLE ranges 0.66–0.74; ~12% spread). The
-    normalization makes a single ``σ_lm`` transfer cleanly.
+    Why divide-by-row-max for the landmark stream? Absolute landmark
+    similarity scales vary across cities, but the per-row
+    ``1 − sim_t / sim_max`` distribution overlaps tightly across cities,
+    so a single ``σ_lm`` transfers cleanly. See PR #626 description for
+    the cross-city consistency check.
 
     All-zero / constant landmark rows are handled with a hard fall-through
     to image-only: those rows are uninformative and we don't want them to
@@ -390,18 +379,19 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim, self.image_sigma
         )
+        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img")
 
         # Landmark-side: per-row /max normalization, then Gaussian-on-r_norm.
         # Fall through to image-only when the landmark row is uninformative.
         lm_finite_mask = torch.isfinite(lm_sim)
         if not lm_finite_mask.any():
-            return _replace_nan_with_zero(log_p_img)
+            return log_p_img
         lm_finite = lm_sim[lm_finite_mask]
         sim_max_lm = lm_finite.max()
         sim_min_lm = lm_finite.min()
         if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
             # All-zero or constant row → landmark is uninformative.
-            return _replace_nan_with_zero(log_p_img)
+            return log_p_img
 
         norm_sim = lm_sim / sim_max_lm
         r_norm = 1.0 - norm_sim
@@ -411,11 +401,12 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
         log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
 
-        # If a single entry is non-finite (e.g., -inf landmark), pass through
-        # image-only at that entry to avoid NaN propagation downstream.
+        # Mask out non-finite landmark entries (image-only at those indices).
         log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
 
-        return _replace_nan_with_zero(log_p_img + log_p_lm)
+        log_p = log_p_img + log_p_lm
+        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm")
+        return log_p
 
     @classmethod
     def from_config(

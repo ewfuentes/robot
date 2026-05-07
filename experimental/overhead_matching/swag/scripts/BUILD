@@ -1016,34 +1016,8 @@ py_binary(
 )
 
 py_binary(
-  name="compare_simple_v1_v3_vs_v6",
-  srcs=["compare_simple_v1_v3_vs_v6.py"],
-  deps=[
-    requirement("torch"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
-  ]
-)
-
-
-py_binary(
   name="calibrate_sigma",
   srcs=["calibrate_sigma.py"],
-  deps=[
-    requirement("torch"),
-    requirement("numpy"),
-    requirement("matplotlib"),
-    requirement("scipy"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
-  ]
-)
-
-py_binary(
-  name="landmark_residual_exploration",
-  srcs=["landmark_residual_exploration.py"],
   deps=[
     requirement("torch"),
     requirement("numpy"),

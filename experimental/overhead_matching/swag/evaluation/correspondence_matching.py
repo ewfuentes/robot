@@ -454,11 +454,12 @@ def _compute_cross_features_gpu(
 @dataclass
 class RawCorrespondenceData:
     """Precomputed P(match) data for all pano landmarks × all OSM landmarks."""
-    cost_matrix: np.ndarray  # (total_pano_lm, total_osm_lm) float32
+    cost_matrix: np.ndarray  # (total_pano_lm, total_osm_lm) float32; np.memmap when streamed
     pano_id_to_lm_rows: dict[str, list[int]]  # pano_id → row indices
     pano_lm_tags: list  # tags per pano landmark row (list of key=value tuples)
     osm_lm_indices: list[int]  # col_idx → dataset landmark_idx
     osm_lm_tags: list[dict[str, str]]  # tags per OSM landmark column
+    cost_matrix_path: Path | None = None  # canonical .npy path when streamed
 
 
 def precompute_raw_cost_data(
@@ -474,11 +475,13 @@ def precompute_raw_cost_data(
 ) -> RawCorrespondenceData:
     """Precompute the flat (total_pano_lm × total_osm_lm) P(match) matrix.
 
-    When `cost_matrix_memmap_path` is provided, the cost matrix is written
-    directly to a .npy file via `np.lib.format.open_memmap` so it never lives
-    fully in RAM (needed for large cities like NewYork where the matrix is
-    ~25 GB). The returned `RawCorrespondenceData.cost_matrix` is then the
-    memmap; callers should rely on the on-disk file rather than re-saving it.
+    When `cost_matrix_memmap_path` is provided, the cost matrix is streamed
+    to a .npy file via `np.lib.format.open_memmap` so it never lives fully in
+    RAM. To avoid leaving a half-zeroed file on a mid-precompute crash, rows
+    are written to `<path>.partial` and atomically renamed to the canonical
+    path only after a successful `flush()`. The returned
+    `RawCorrespondenceData.cost_matrix` is the memmap re-opened against the
+    canonical path; `cost_matrix_path` is also populated.
     """
     num_sats = len(dataset._satellite_metadata)
 
@@ -532,15 +535,20 @@ def precompute_raw_cost_data(
     _log(f"  {len(pano_list)} panoramas with tags")
 
     total_pano_lm = sum(len(pano_tags_dicts) for _, pano_tags_dicts, _ in pano_list)
+    partial_memmap_path: Path | None = None
     if cost_matrix_memmap_path is not None:
         cost_matrix_memmap_path.parent.mkdir(parents=True, exist_ok=True)
+        partial_memmap_path = cost_matrix_memmap_path.with_suffix(
+            cost_matrix_memmap_path.suffix + ".partial"
+        )
         flat_cost = np.lib.format.open_memmap(
-            cost_matrix_memmap_path, mode="w+",
+            partial_memmap_path, mode="w+",
             dtype=np.float32, shape=(total_pano_lm, n_osm),
         )
         all_cost_rows = None
-        _log(f"  Streaming cost matrix to {cost_matrix_memmap_path} "
-             f"(shape={(total_pano_lm, n_osm)}, "
+        _log(f"  Streaming cost matrix to {partial_memmap_path} "
+             f"(final: {cost_matrix_memmap_path}, "
+             f"shape={(total_pano_lm, n_osm)}, "
              f"~{total_pano_lm * n_osm * 4 / 1e9:.1f} GB)")
     else:
         flat_cost = None
@@ -625,8 +633,14 @@ def precompute_raw_cost_data(
                 all_pano_lm_tags.append(lm["tags"])
             current_row += n_lm
 
+    cost_matrix_path: Path | None = None
     if flat_cost is not None:
         flat_cost.flush()
+        # Drop the memmap so the underlying file handle closes before rename.
+        del flat_cost
+        os.replace(partial_memmap_path, cost_matrix_memmap_path)
+        cost_matrix_path = cost_matrix_memmap_path
+        flat_cost = np.load(cost_matrix_memmap_path, mmap_mode="r")
     elif all_cost_rows:
         flat_cost = np.vstack(all_cost_rows)
     else:
@@ -640,6 +654,7 @@ def precompute_raw_cost_data(
         pano_lm_tags=all_pano_lm_tags,
         osm_lm_indices=unique_osm_lm_idxs,
         osm_lm_tags=osm_tags_list,
+        cost_matrix_path=cost_matrix_path,
     )
 
 

@@ -7,6 +7,7 @@ import pandas as pd
 
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     SafaPlusNormalizedLandmarkAggregator,
+    SafaPlusNormalizedLandmarkAggregatorConfig,
 )
 from experimental.overhead_matching.swag.filter.particle_filter import (
     wag_observation_log_likelihood_from_similarity_matrix,
@@ -44,10 +45,6 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         expected = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim[0], 0.187
         )
-        # The image-only fall-through path goes through ``_replace_nan_with_zero``,
-        # which mutates the input in-place. Re-derive the expected value the
-        # same way to avoid a stale comparison.
-        expected = torch.where(torch.isnan(expected), torch.zeros_like(expected), expected)
         self.assertTrue(torch.allclose(out_zero, expected, atol=1e-6),
                         "all-zero landmark row must equal image-only log_p")
 
@@ -63,7 +60,6 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         expected = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim[0], 0.187
         )
-        expected = torch.where(torch.isnan(expected), torch.zeros_like(expected), expected)
         self.assertTrue(torch.allclose(out, expected, atol=1e-6))
 
     def test_patch_at_row_max_gets_zero_landmark_residual(self):
@@ -78,9 +74,6 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         out = agg("p0")
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim[0], 0.187
-        )
-        log_p_img = torch.where(
-            torch.isnan(log_p_img), torch.zeros_like(log_p_img), log_p_img
         )
         expected_lm_at_max = -math.log(sigma_lm * math.sqrt(2 * math.pi))
         self.assertAlmostEqual(
@@ -97,9 +90,6 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim[0], 0.187
         )
-        log_p_img = torch.where(
-            torch.isnan(log_p_img), torch.zeros_like(log_p_img), log_p_img
-        )
         log_p_lm = out - log_p_img
 
         # Reference at idx 2 (row_max → r_norm=0):
@@ -109,6 +99,31 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
             self.assertAlmostEqual(
                 (log_p_lm[j] - ref).item(), expected_drop, places=4,
                 msg=f"residual at idx {j} should be −0.5·(r/σ)^2",
+            )
+
+    def test_raises_on_nan_image_sim(self):
+        """Non-finite image similarity must raise rather than silently zero."""
+        img_sim = torch.zeros(1, 5)
+        img_sim[0, 2] = float("nan")
+        lm_sim = torch.rand(1, 5)
+        agg = self._make(img_sim, lm_sim)
+        with self.assertRaises(RuntimeError):
+            agg("p0")
+
+    def test_config_rejects_nonpositive_sigma(self):
+        with self.assertRaises(ValueError):
+            SafaPlusNormalizedLandmarkAggregatorConfig(
+                image_similarity_matrix_path="/tmp/img.pt",
+                landmark_similarity_matrix_path="/tmp/lm.pt",
+                image_sigma=0.0,
+                landmark_sigma=0.5,
+            )
+        with self.assertRaises(ValueError):
+            SafaPlusNormalizedLandmarkAggregatorConfig(
+                image_similarity_matrix_path="/tmp/img.pt",
+                landmark_similarity_matrix_path="/tmp/lm.pt",
+                image_sigma=0.5,
+                landmark_sigma=-0.1,
             )
 
 

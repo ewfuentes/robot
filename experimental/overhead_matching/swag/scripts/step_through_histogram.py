@@ -378,14 +378,15 @@ def main():
 
     simple_mode = args.simple
     lightweight_mode = args.lightweight
-    # Try the new key first, then fall back to the legacy "noise_percent" key
-    # for compatibility with previously-saved eval directories.
-    motion_noise_frac = (
-        args.motion_noise_frac
-        if args.motion_noise_frac is not None
-        else eval_args.get("motion_noise_frac",
-                           eval_args.get("noise_percent", 0.05))
-    )
+    if args.motion_noise_frac is not None:
+        motion_noise_frac = args.motion_noise_frac
+    elif "motion_noise_frac" in eval_args:
+        motion_noise_frac = eval_args["motion_noise_frac"]
+    else:
+        raise KeyError(
+            f"args.json at {eval_path / 'args.json'} has no 'motion_noise_frac' key. "
+            f"Pass --motion-noise-frac on the CLI, or re-run the eval with the new key."
+        )
     subdivision_factor = eval_args.get("subdivision_factor", 4)
 
     print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}")

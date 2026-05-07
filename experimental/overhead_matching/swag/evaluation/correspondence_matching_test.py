@@ -139,6 +139,50 @@ class TestPrecomputeRawCostData(unittest.TestCase):
         self.assertTrue(np.all(raw.cost_matrix <= 1.0))
         self.assertTrue(np.isfinite(raw.cost_matrix).all())
 
+    def test_memmap_streaming_matches_in_ram(self):
+        """Streaming to a memmap must produce the same cost matrix as the
+        in-RAM path, leave no .partial file behind, and populate
+        cost_matrix_path on the returned RawCorrespondenceData."""
+        import tempfile
+        from pathlib import Path
+
+        raw_in_ram = cm.precompute_raw_cost_data(
+            model=self.model,
+            text_embeddings=self.text_embeddings,
+            text_input_dim=self.text_input_dim,
+            dataset=self.dataset,
+            pano_tags_from_pano_id=self.pano_tags_from_pano_id,
+            device=self.device,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memmap_path = Path(tmp) / "cost.npy"
+            partial_path = Path(tmp) / "cost.npy.partial"
+            raw_streamed = cm.precompute_raw_cost_data(
+                model=self.model,
+                text_embeddings=self.text_embeddings,
+                text_input_dim=self.text_input_dim,
+                dataset=self.dataset,
+                pano_tags_from_pano_id=self.pano_tags_from_pano_id,
+                device=self.device,
+                cost_matrix_memmap_path=memmap_path,
+            )
+
+            self.assertTrue(np.array_equal(
+                np.asarray(raw_streamed.cost_matrix),
+                raw_in_ram.cost_matrix,
+            ))
+            self.assertEqual(raw_streamed.cost_matrix_path, memmap_path)
+            self.assertTrue(memmap_path.exists())
+            self.assertFalse(partial_path.exists(),
+                             "atomic rename must remove the .partial file")
+
+            # Canonical .npy must be readable as a memmap via np.load.
+            reloaded = np.load(memmap_path, mmap_mode="r")
+            self.assertTrue(np.array_equal(reloaded, raw_in_ram.cost_matrix))
+
+        self.assertIsNone(raw_in_ram.cost_matrix_path)
+
     def test_similarity_from_raw_data_shape(self):
         raw = cm.precompute_raw_cost_data(
             model=self.model,

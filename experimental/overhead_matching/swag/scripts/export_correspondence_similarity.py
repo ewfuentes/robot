@@ -159,17 +159,19 @@ def save_raw_cost_data(
 ) -> None:
     """Write raw data as .npy (cost matrix) + .pt (metadata).
 
-    If `raw.cost_matrix` is already a memmap (stream-to-disk path), it has
-    been written in-place at the canonical location and we skip the np.save.
+    When `raw.cost_matrix_path` is set (stream-to-disk path), the cost matrix
+    bytes are already at that location and we just record the path. Otherwise
+    we save the in-RAM array next to ``output_path``.
 
     `model_path` and `text_embeddings_path` are recorded in the .pt for
     provenance — they are the inputs that produced this cost matrix.
     """
-    cost_npy_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
-    if isinstance(raw.cost_matrix, np.memmap):
+    if raw.cost_matrix_path is not None:
+        cost_npy_path = raw.cost_matrix_path
         print(f"Cost matrix already streamed to {cost_npy_path} "
               f"(shape={raw.cost_matrix.shape}); skipping np.save.")
     else:
+        cost_npy_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
         print(f"Saving cost matrix ({raw.cost_matrix.shape}) to {cost_npy_path}...")
         np.save(cost_npy_path, raw.cost_matrix)
 
@@ -260,8 +262,8 @@ def main():
                         help="Stream the cost matrix directly to a memmapped "
                              ".npy on disk during precompute, instead of "
                              "accumulating rows in RAM and vstack'ing at the "
-                             "end. Required for cities whose cost matrix "
-                             "exceeds available RAM (e.g. NewYork at ~25 GB).")
+                             "end. Use when the cost matrix would exceed "
+                             "available RAM.")
     args = parser.parse_args()
 
     dataset_path = args.dataset_path.expanduser().resolve()
