@@ -113,6 +113,31 @@ def _load_similarity_matrix(path: Path) -> torch.Tensor:
     return data
 
 
+def _assert_matrix_aligned(
+    matrix: torch.Tensor,
+    panorama_metadata: pd.DataFrame,
+    matrix_path: Path,
+) -> None:
+    """Verify a similarity matrix has one row per current panorama.
+
+    Aggregators index matrix rows positionally via the metadata's pano_id list.
+    If the dataset was trimmed after the matrix was generated, indexing silently
+    returns rows for the wrong panoramas (no IndexError when matrix has *more*
+    rows than metadata) — the filter then converges confidently to the wrong
+    cell. Catch that here with a path-aware message so the stale file is
+    identifiable at a glance.
+    """
+    n_pano = len(panorama_metadata)
+    n_rows = matrix.shape[0]
+    if n_rows != n_pano:
+        raise ValueError(
+            f"Similarity matrix at {matrix_path} has {n_rows} rows but the "
+            f"dataset's panorama_metadata has {n_pano} entries. The matrix is "
+            f"misaligned with the current panorama set (likely stale relative "
+            f"to a dataset trim). Regenerate it from the current panoramas."
+        )
+
+
 # ============ Aggregator Classes ============
 
 
@@ -172,6 +197,11 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
         device: torch.device,
     ) -> "SingleSimilarityMatrixAggregator":
         similarity_matrix = _load_similarity_matrix(config.similarity_matrix_path)
+        _assert_matrix_aligned(
+            similarity_matrix,
+            vigor_dataset._panorama_metadata,
+            config.similarity_matrix_path,
+        )
         return cls(
             similarity_matrix, vigor_dataset._panorama_metadata, config.sigma, device
         )
@@ -234,6 +264,14 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
     ) -> "ImageLandmarkPrivilegedInformationFusion":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        _assert_matrix_aligned(
+            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+        )
+        _assert_matrix_aligned(
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            config.landmark_similarity_matrix_path,
+        )
         return cls(
             image_sim,
             landmark_sim,
@@ -316,6 +354,14 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
     ) -> "EntropyAdaptiveAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        _assert_matrix_aligned(
+            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+        )
+        _assert_matrix_aligned(
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            config.landmark_similarity_matrix_path,
+        )
         return cls(
             image_sim,
             landmark_sim,
@@ -417,6 +463,14 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
     ) -> "SafaPlusNormalizedLandmarkAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        _assert_matrix_aligned(
+            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+        )
+        _assert_matrix_aligned(
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            config.landmark_similarity_matrix_path,
+        )
         return cls(
             image_similarity_matrix=image_sim,
             landmark_similarity_matrix=landmark_sim,
