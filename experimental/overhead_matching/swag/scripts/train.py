@@ -132,6 +132,7 @@ class DatasetConfig:
     landmark_correspondence_inflation_factor: float = 1.0
     require_proper_noun_match: bool = False
     pano_gemini_base_path: str | None = None
+    satellite_subdir: str = "satellite"
 
 
 @dataclass
@@ -715,7 +716,8 @@ def main(
         landmark_version=train_config.dataset_config.landmark_version,
         load_cache_debug=capture_model_data,
         panorama_landmark_radius_px=train_config.dataset_config.panorama_landmark_radius_px,
-        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor)
+        landmark_correspondence_inflation_factor=train_config.dataset_config.landmark_correspondence_inflation_factor,
+        satellite_subdir=train_config.dataset_config.satellite_subdir)
 
     dataset_paths = [dataset_base_path / p for p in train_config.dataset_config.paths]
     dataset = vigor_dataset.VigorDataset(dataset_paths, dataset_config)
@@ -757,7 +759,8 @@ def main(
                 should_load_landmarks=should_load_landmarks,
                 landmark_version=validation_dataset_config.landmark_version,
                 panorama_landmark_radius_px=validation_dataset_config.panorama_landmark_radius_px,
-                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor))
+                landmark_correspondence_inflation_factor=validation_dataset_config.landmark_correspondence_inflation_factor,
+                satellite_subdir=validation_dataset_config.satellite_subdir))
 
         # Apply proper noun filter if configured for this validation dataset
         if validation_dataset_config.require_proper_noun_match:
