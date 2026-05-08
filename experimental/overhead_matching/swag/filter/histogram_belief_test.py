@@ -298,7 +298,7 @@ class TestHistogramBelief(unittest.TestCase):
 
         # Apply motion: move north (+lat) and east (+lon)
         motion_delta = torch.tensor([0.001, 0.001])
-        belief.apply_motion(motion_delta, noise_percent=0.02)
+        belief.apply_motion(motion_delta, motion_noise_frac=0.05)
 
         mean_after = belief.get_mean_latlon()
 
@@ -307,6 +307,65 @@ class TestHistogramBelief(unittest.TestCase):
                           "Latitude should have increased")
         self.assertGreater(mean_after[1].item(), mean_before[1].item(),
                           "Longitude should have increased")
+
+    def test_apply_motion_variance_scales_linearly_with_distance(self):
+        """Wiener m/√m contract: per-step variance ∝ step distance.
+
+        For step magnitude d, blur sigma_cells ∝ √d, so variance ∝ d. A 4×
+        longer step must produce ~4× variance increase, not ~16× (which is
+        what the old `noise_percent` (linear-in-d) formula would yield).
+        """
+        # Wider grid (~9 km) so a 400m step still fits.
+        grid_spec = GridSpec.from_bounds_and_cell_size(
+            min_lat=37.70,
+            max_lat=37.78,
+            min_lon=-122.55,
+            max_lon=-122.47,
+            zoom_level=20,
+            cell_size_px=160.0,
+        )
+        mean = torch.tensor([37.74, -122.51])
+
+        # motion_noise_frac large enough that sigma_cells stays >> 0.1 (the
+        # apply_motion_blur no-op floor) for both step sizes.
+        motion_noise_frac = 5.0
+
+        def _motion_variance_in_cells(motion_lat_deg: float) -> float:
+            belief = HistogramBelief.from_gaussian(
+                grid_spec, mean, std_deg=1e-6, device=torch.device("cpu")
+            )
+            v_before = self._belief_variance_in_cells(belief)
+            belief.apply_motion(
+                torch.tensor([motion_lat_deg, 0.0]),
+                motion_noise_frac=motion_noise_frac,
+                reference_latlon=mean,
+            )
+            v_after = self._belief_variance_in_cells(belief)
+            return v_after - v_before
+
+        # 9e-4 deg ≈ 100 m; 3.6e-3 deg ≈ 400 m (4× distance).
+        var_small = _motion_variance_in_cells(9e-4)
+        var_large = _motion_variance_in_cells(3.6e-3)
+        ratio = var_large / var_small
+        # Expected ratio is 4 (Wiener); legacy linear-in-d would give 16.
+        self.assertAlmostEqual(ratio, 4.0, delta=0.5,
+                               msg=f"variance ratio {ratio:.3f} ≠ 4 — "
+                                   "Wiener m/√m contract violated")
+
+    @staticmethod
+    def _belief_variance_in_cells(belief) -> float:
+        prob = torch.exp(belief._log_belief)
+        prob = prob / prob.sum()
+        rows = torch.arange(prob.shape[0], dtype=torch.float64)
+        cols = torch.arange(prob.shape[1], dtype=torch.float64)
+        prob64 = prob.to(torch.float64)
+        row_marg = prob64.sum(dim=1)
+        col_marg = prob64.sum(dim=0)
+        mean_r = (rows * row_marg).sum()
+        mean_c = (cols * col_marg).sum()
+        var_r = ((rows - mean_r) ** 2 * row_marg).sum()
+        var_c = ((cols - mean_c) ** 2 * col_marg).sum()
+        return float(var_r + var_c)
 
     def test_clone_is_independent(self):
         """Test that cloned belief is independent of original."""

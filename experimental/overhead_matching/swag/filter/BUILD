@@ -55,6 +55,19 @@ py_library(
         requirement("torch"),
         "//common/python:serialization",
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/data:vigor_dataset",
+        ":particle_filter",
+    ],
+)
+
+py_test(
+    name = "adaptive_aggregators_test",
+    srcs = ["adaptive_aggregators_test.py"],
+    deps = [
+        requirement("torch"),
+        requirement("pandas"),
+        "//common/torch:load_torch_deps",
+        ":adaptive_aggregators",
         ":particle_filter",
     ],
 )

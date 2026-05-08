@@ -43,11 +43,36 @@ class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     sigma: float
 
 
-# Union type for polymorphic deserialization
+class SafaPlusNormalizedLandmarkAggregatorConfig(
+    msgspec.Struct, **MSGSPEC_STRUCT_OPTS
+):
+    """Config for ``SafaPlusNormalizedLandmarkAggregator``.
+
+    Image stream uses SAFA-style Gaussian-on-residuals at ``image_sigma``.
+    Landmark stream divides each row by its ``row_max`` and applies
+    Gaussian-on-residuals to ``r_norm = 1 − sim_t / row_max`` at
+    ``landmark_sigma``. All-zero / constant landmark rows fall through
+    to image-only.
+    """
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    image_sigma: float
+    landmark_sigma: float
+
+    def __post_init__(self):
+        if not (self.image_sigma > 0):
+            raise ValueError(f"image_sigma must be positive, got {self.image_sigma}")
+        if not (self.landmark_sigma > 0):
+            raise ValueError(f"landmark_sigma must be positive, got {self.landmark_sigma}")
+
+
+# Union type for polymorphic deserialization.
 AggregatorConfig = (
     SingleSimilarityMatrixAggregatorConfig
     | ImageLandmarkPrivilegedInformationFusionConfig
     | EntropyAdaptiveAggregatorConfig
+    | SafaPlusNormalizedLandmarkAggregatorConfig
 )
 
 
@@ -58,6 +83,17 @@ def _replace_nan_with_zero(tensor: torch.Tensor) -> torch.Tensor:
     """Replace NaN values with 0 (no update in log-likelihood space)."""
     tensor[torch.isnan(tensor)] = 0
     return tensor
+
+
+def _raise_if_nonfinite(tensor: torch.Tensor, pano_id: str, name: str) -> None:
+    nonfinite = ~torch.isfinite(tensor)
+    if nonfinite.any():
+        first_idx = int(torch.nonzero(nonfinite, as_tuple=False)[0].item())
+        raise RuntimeError(
+            f"SafaPlusNormalizedLandmarkAggregator: non-finite value in {name} "
+            f"for pano_id={pano_id!r} at index {first_idx} "
+            f"(value={tensor.flatten()[first_idx].item()})."
+        )
 
 
 def _load_similarity_matrix(path: Path) -> torch.Tensor:
@@ -114,6 +150,15 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
     def __call__(self, pano_id: str) -> torch.Tensor:
         pano_index = self._pano_id_index.get_loc(pano_id)
         similarity = self.similarity_matrix[pano_index]
+        if similarity.numel() == 0:
+            raise RuntimeError(
+                f"SingleSimilarityMatrixAggregator: empty similarity slice for "
+                f"pano_id={pano_id!r}. matrix shape={tuple(self.similarity_matrix.shape)}, "
+                f"pano_index={pano_index!r} ({type(pano_index).__name__}), "
+                f"slice shape={tuple(similarity.shape)}. Likely cause: duplicate "
+                f"pano_id in panorama_metadata producing a boolean mask that selects "
+                f"zero rows, or a pano_id in the path JSON not present in the dataset."
+            )
         log_ll = wag_observation_log_likelihood_from_similarity_matrix(
             similarity, self.sigma
         )
@@ -280,6 +325,108 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         )
 
 
+class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
+    """Per-patch observation likelihood by *summing* two Gaussian-on-residuals
+    log-likelihoods — image stream as in SAFA, landmark stream on a per-row
+    normalized residual.
+
+    Motivation. The EA softmax fusion implicitly normalizes mass over space
+    (sums to 1 across patches), which is incompatible with treating the
+    aggregator's output as a true per-patch ``log p(z | patch_j)`` that the
+    downstream histogram filter can multiply through its belief. This
+    aggregator is properly per-patch:
+
+      log_p_img[j] = -log(σ_img √2π) - 0.5 ((sim_max_img − img[j]) / σ_img)^2
+      log_p_lm[j]  = -log(σ_lm  √2π) - 0.5 ((1 − lm[j]/sim_max_lm) / σ_lm )^2
+
+      log_p[j] = log_p_img[j] + log_p_lm[j]   (conditional independence)
+
+    Why divide-by-row-max for the landmark stream? Absolute landmark
+    similarity scales vary across cities, but the per-row
+    ``1 − sim_t / sim_max`` distribution overlaps tightly across cities,
+    so a single ``σ_lm`` transfers cleanly. See PR #626 description for
+    the cross-city consistency check.
+
+    All-zero / constant landmark rows are handled with a hard fall-through
+    to image-only: those rows are uninformative and we don't want them to
+    contaminate the fused log-likelihood with noise from the / row_max
+    division.
+    """
+
+    def __init__(
+        self,
+        image_similarity_matrix: torch.Tensor,
+        landmark_similarity_matrix: torch.Tensor,
+        panorama_metadata: pd.DataFrame,
+        image_sigma: float,
+        landmark_sigma: float,
+        device: torch.device,
+    ):
+        self.image_similarity_matrix = image_similarity_matrix
+        self.landmark_similarity_matrix = landmark_similarity_matrix
+        self.image_sigma = float(image_sigma)
+        self.landmark_sigma = float(landmark_sigma)
+        self.device = device
+        self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
+
+    def __call__(self, pano_id: str) -> torch.Tensor:
+        pano_index = self._pano_id_index.get_loc(pano_id)
+
+        img_sim = self.image_similarity_matrix[pano_index].to(self.device)
+        lm_sim = self.landmark_similarity_matrix[pano_index].to(self.device)
+
+        # Image-side Gaussian-on-residuals (SAFA form).
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim, self.image_sigma
+        )
+        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img")
+
+        # Landmark-side: per-row /max normalization, then Gaussian-on-r_norm.
+        # Fall through to image-only when the landmark row is uninformative.
+        lm_finite_mask = torch.isfinite(lm_sim)
+        if not lm_finite_mask.any():
+            return log_p_img
+        lm_finite = lm_sim[lm_finite_mask]
+        sim_max_lm = lm_finite.max()
+        sim_min_lm = lm_finite.min()
+        if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
+            # All-zero or constant row → landmark is uninformative.
+            return log_p_img
+
+        norm_sim = lm_sim / sim_max_lm
+        r_norm = 1.0 - norm_sim
+        sigma_lm = self.landmark_sigma
+        log_norm_const = -torch.log(
+            torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
+        ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
+        log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
+
+        # Mask out non-finite landmark entries (image-only at those indices).
+        log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
+
+        log_p = log_p_img + log_p_lm
+        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm")
+        return log_p
+
+    @classmethod
+    def from_config(
+        cls,
+        config: SafaPlusNormalizedLandmarkAggregatorConfig,
+        vigor_dataset: vd.VigorDataset,
+        device: torch.device,
+    ) -> "SafaPlusNormalizedLandmarkAggregator":
+        image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
+        landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        return cls(
+            image_similarity_matrix=image_sim,
+            landmark_similarity_matrix=landmark_sim,
+            panorama_metadata=vigor_dataset._panorama_metadata,
+            image_sigma=config.image_sigma,
+            landmark_sigma=config.landmark_sigma,
+            device=device,
+        )
+
+
 def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
@@ -302,6 +449,10 @@ def aggregator_from_config(
         )
     elif isinstance(config, EntropyAdaptiveAggregatorConfig):
         return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
+    elif isinstance(config, SafaPlusNormalizedLandmarkAggregatorConfig):
+        return SafaPlusNormalizedLandmarkAggregator.from_config(
+            config, vigor_dataset, device
+        )
     else:
         raise ValueError(f"Unknown config type: {type(config)}")
 

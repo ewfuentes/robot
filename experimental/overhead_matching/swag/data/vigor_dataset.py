@@ -133,25 +133,49 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
     return d
 
 
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
+def _warn_skipped_non_image_files(loader: str, dir_path: Path, skipped: list[Path]) -> None:
+    if not skipped:
+        return
+    suffixes = sorted({p.suffix for p in skipped})
+    print(
+        f"WARNING: {loader} skipped {len(skipped)} non-image file(s) in {dir_path} "
+        f"(suffixes: {', '.join(suffixes)}); first: {skipped[0]}",
+        file=sys.stderr,
+    )
+
+
 def load_satellite_metadata(path: Path, zoom_level: int):
     out = []
+    skipped: list[Path] = []
     for p in sorted(list(path.iterdir())):
+        if p.suffix.lower() not in _IMAGE_SUFFIXES:
+            skipped.append(p)
+            continue
         _, lat, lon = p.stem.split("_")
         lat = float(lat)
         lon = float(lon)
         web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
         out.append((lat, lon, *web_mercator_px, zoom_level, p))
+    _warn_skipped_non_image_files("load_satellite_metadata", path, skipped)
     return pd.DataFrame(out, columns=["lat", "lon", "web_mercator_y", "web_mercator_x", "zoom_level", "path"])
 
 
 def load_panorama_metadata(path: Path, zoom_level: int):
     out = []
+    skipped: list[Path] = []
     for p in sorted(list(path.iterdir())):
+        if p.suffix.lower() not in _IMAGE_SUFFIXES:
+            skipped.append(p)
+            continue
         pano_id, lat, lon, _ = p.stem.split(",")
         lat = float(lat)
         lon = float(lon)
         web_mercator_px = web_mercator.latlon_to_pixel_coords(lat, lon, zoom_level)
         out.append((pano_id, lat, lon, *web_mercator_px, zoom_level, p))
+    _warn_skipped_non_image_files("load_panorama_metadata", path, skipped)
     return pd.DataFrame(out, columns=["pano_id", "lat", "lon", "web_mercator_y", "web_mercator_x", "zoom_level", "path"])
 
 

@@ -1015,3 +1015,15 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="calibrate_sigma",
+  srcs=["calibrate_sigma.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)

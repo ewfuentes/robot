@@ -1369,5 +1369,30 @@ class HardNegativeMinerTest(unittest.TestCase):
             self.assertEqual(batch_idxs[0].panorama_idx, 0)
             self.assertEqual(batch_idxs[0].satellite_idx, 1)
 
+class MetadataLoaderSuffixFilterTest(unittest.TestCase):
+    """Regression: .pt cache sidecars next to image files must not produce
+    duplicate metadata rows, and the loader must surface a warning so a
+    bad directory is legible (not silently empty)."""
+
+    def test_panorama_loader_skips_pt_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            stem = "abc123,12.5,34.5,0"
+            Image.new("RGB", (4, 4)).save(d / f"{stem}.jpg")
+            torch.save(torch.zeros(2), d / f"{stem}.pt")  # cache sidecar
+            df = vigor_dataset.load_panorama_metadata(d, zoom_level=20)
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]["pano_id"], "abc123")
+
+    def test_satellite_loader_skips_pt_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            stem = "satellite_12.5_34.5"
+            Image.new("RGB", (4, 4)).save(d / f"{stem}.png")
+            torch.save(torch.zeros(2), d / f"{stem}.pt")
+            df = vigor_dataset.load_satellite_metadata(d, zoom_level=20)
+        self.assertEqual(len(df), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

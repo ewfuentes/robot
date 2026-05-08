@@ -61,7 +61,7 @@ def load_model(path, device='cuda'):
 @dataclass
 class HistogramFilterConfig:
     """Configuration for histogram filter evaluation."""
-    noise_percent: float = 0.02  # Motion noise as fraction of motion magnitude
+    motion_noise_frac: float = 0.05  # Wiener noise intensity (m/√m) for filter blur
     subdivision_factor: int = 4  # Grid subdivision (4 = 160px cells at zoom 20)
     initial_std_deg: float = 0.0267  # ~2970m initial uncertainty
     initial_offset_std_deg: float = 0.0117  # ~1300m offset
@@ -84,7 +84,8 @@ class HistogramFilterConfig:
 @dataclass
 class HistogramPathResult:
     """Result of running histogram filter on a single path."""
-    mean_history: torch.Tensor  # (path_len + 1, 2) lat/lon estimates
+    mean_history: torch.Tensor  # (path_len + 1, 2) lat/lon — weighted-mean estimate
+    mode_history: torch.Tensor  # (path_len + 1, 2) lat/lon — argmax-cell (MAP) estimate
     variance_history: torch.Tensor  # (path_len + 1, 2) variance in degrees squared
     final_belief: HistogramBelief
     # Convergence metrics: probability mass within radius at each step
@@ -136,6 +137,7 @@ def run_histogram_filter_on_path(
         HistogramPathResult with mean/variance history and convergence metrics
     """
     mean_history = [belief.get_mean_latlon()]
+    mode_history = [belief.get_mode_latlon()]
     variance_history = [belief.get_variance_deg_sq()]
 
     # Initialize convergence tracking
@@ -163,6 +165,7 @@ def run_histogram_filter_on_path(
         belief.apply_observation(obs_log_ll, mapping)
 
         mean_history.append(belief.get_mean_latlon())
+        mode_history.append(belief.get_mode_latlon())
         variance_history.append(belief.get_variance_deg_sq())
 
         # Track convergence after observation (before motion blurs the belief)
@@ -174,12 +177,13 @@ def run_histogram_filter_on_path(
                 prob_mass_by_radius[radius].append(prob_mass)
 
         # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.noise_percent)
+        belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac)
 
     # Final observation
     obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
     belief.apply_observation(obs_log_ll, mapping)
     mean_history.append(belief.get_mean_latlon())
+    mode_history.append(belief.get_mode_latlon())
     variance_history.append(belief.get_variance_deg_sq())
 
     # Track convergence after final observation
@@ -197,29 +201,34 @@ def run_histogram_filter_on_path(
 
     return HistogramPathResult(
         mean_history=torch.stack(mean_history),
+        mode_history=torch.stack(mode_history),
         variance_history=torch.stack(variance_history),
         final_belief=belief,
         prob_mass_by_radius=prob_mass_tensors,
     )
 
 
-def get_distance_error_from_mean_history(
+def get_distance_error_from_estimate_history(
     vigor_dataset: vd.VigorDataset,
     path: list[str],
-    mean_history: torch.Tensor,
+    estimate_history: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute distance error between mean estimates and ground truth.
+    """Compute distance error between position estimates and ground truth.
+
+    Works for any per-step lat/lon estimate (e.g. weighted mean or argmax
+    cell / MAP).
 
     Args:
         vigor_dataset: Dataset with panorama positions
         path: List of panorama indices
-        mean_history: (path_len + 1, 2) lat/lon estimates
+        estimate_history: (path_len + 1, 2) lat/lon estimates
 
     Returns:
         error_meters: (path_len + 1,) distance error in meters
         variance_sq_m: (path_len + 1,) variance in meters squared (placeholder)
     """
-    true_latlon = vigor_dataset.get_panorama_positions(path).to(device=mean_history.device)
+    true_latlon = vigor_dataset.get_panorama_positions(path).to(
+        device=estimate_history.device)
 
     # mean_history has len(path) + 1 entries (initial + after each observation)
     # But we only have len(path) ground truth positions
@@ -234,15 +243,15 @@ def get_distance_error_from_mean_history(
     # But our mean_history has path_len + 1 entries because we track before first obs too
     # Let's match the particle filter: compare estimate at each position
 
-    # For simplicity, use the last N entries of mean_history to match path length
-    estimates = mean_history[-len(path):]
+    # For simplicity, use the last N entries to match path length
+    estimates = estimate_history[-len(path):]
 
     error_meters = []
     for i in range(len(path)):
         d = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlon[i], estimates[i])
         error_meters.append(d)
 
-    return torch.tensor(error_meters, device=mean_history.device)
+    return torch.tensor(error_meters, device=estimate_history.device)
 
 
 def evaluate_histogram_on_paths(
@@ -269,7 +278,8 @@ def evaluate_histogram_on_paths(
         save_intermediate_states: Whether to save belief history
         convergence_radii: List of radii in meters for convergence metrics
     """
-    all_final_error_meters = []
+    all_final_error_meters = []        # using mean estimator
+    all_final_mode_error_meters = []   # using argmax-cell (MAP / mode) estimator
     # Track convergence costs per radius
     convergence_costs_by_radius: dict[int, list[float]] = {}
     if convergence_radii:
@@ -360,25 +370,30 @@ def evaluate_histogram_on_paths(
             distance_traveled_m = es.compute_distance_traveled(vigor_dataset, path)
 
             # Compute error
-            error_meters = get_distance_error_from_mean_history(
+            error_meters = get_distance_error_from_estimate_history(
                 vigor_dataset, path, result.mean_history)
+            mode_error_meters = get_distance_error_from_estimate_history(
+                vigor_dataset, path, result.mode_history)
 
             # Variance in meters squared (convert from degrees)
             var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (web_mercator.METERS_PER_DEG_LAT ** 2)
 
             all_final_error_meters.append(error_meters[-1].item())
+            all_final_mode_error_meters.append(mode_error_meters[-1].item())
 
             # Save results
             save_path = output_path / f"{i:07d}"
             save_path.mkdir(parents=True, exist_ok=True)
 
             torch.save(error_meters, save_path / "error.pt")
+            torch.save(mode_error_meters, save_path / "mode_error.pt")
             torch.save(var_sq_m, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
 
             if save_intermediate_states:
                 torch.save(result.mean_history.cpu(), save_path / "mean_history.pt")
+                torch.save(result.mode_history.cpu(), save_path / "mode_history.pt")
                 torch.save(result.variance_history.cpu(), save_path / "variance_history.pt")
 
             # Save convergence metrics
@@ -399,8 +414,12 @@ def evaluate_histogram_on_paths(
 
         # Summary statistics
         average_final_error = sum(all_final_error_meters) / len(all_final_error_meters)
+        average_final_mode_error = (
+            sum(all_final_mode_error_meters) / len(all_final_mode_error_meters)
+        )
         summary_stats = {
-            "average_final_error": average_final_error,
+            "average_final_error": average_final_error,            # mean estimator
+            "average_final_mode_error": average_final_mode_error,  # MAP / argmax-cell estimator
             "filter_type": "histogram",
             "grid_rows": grid_spec.num_rows,
             "grid_cols": grid_spec.num_cols,
@@ -419,7 +438,8 @@ def evaluate_histogram_on_paths(
         with open(output_path / "summary_statistics.json", "w") as f:
             f.write(json.dumps(summary_stats, indent=2))
 
-        print(f"Average final error meters: {average_final_error:.2f}")
+        print(f"Average final error meters: {average_final_error:.2f} "
+              f"(mean estimator)  vs  {average_final_mode_error:.2f} (MAP estimator)")
         if convergence_radii:
             for radius in convergence_radii:
                 mean_cost = summary_stats[f"mean_convergence_cost_{radius}m"]
@@ -540,8 +560,12 @@ if __name__ == "__main__":
                         default=0.0005, help="Panorama neighbor radius deg")
     parser.add_argument("--panorama-landmark-radius-px", type=int,
                         default=640, help="Panorama landmark radius in pixels")
-    parser.add_argument("--noise-percent", type=float, default=0.02,
-                        help="Motion noise as fraction of motion magnitude")
+    parser.add_argument("--motion-noise-frac", type=float, default=0.05,
+                        help="Wiener noise intensity (m/√m) for the filter's "
+                             "process-model blur. Per step, blur std = "
+                             "motion_noise_frac × √step_distance_m. Same "
+                             "units as --odometry-noise-frac so a calibrated "
+                             "filter sets them equal.")
     parser.add_argument("--subdivision-factor", type=int, default=4,
                         help="Grid subdivision factor (4 = 160px cells)")
     parser.add_argument("--convergence-radii", type=str, default="25,50,100",
@@ -615,7 +639,7 @@ if __name__ == "__main__":
         print(f"Resolution-normalized dataset: source_px={source_px} (footprint {source_px}px, image 640px)")
 
     config = HistogramFilterConfig(
-        noise_percent=args.noise_percent,
+        motion_noise_frac=args.motion_noise_frac,
         subdivision_factor=args.subdivision_factor,
         initial_std_deg=degrees_from_meters(2970.0),
         initial_offset_std_deg=degrees_from_meters(1300.0),
@@ -625,7 +649,7 @@ if __name__ == "__main__":
     )
 
     histogram_config_dict = {
-        "noise_percent": config.noise_percent,
+        "motion_noise_frac": config.motion_noise_frac,
         "subdivision_factor": config.subdivision_factor,
         "initial_std_deg": config.initial_std_deg,
         "initial_offset_std_deg": config.initial_offset_std_deg,
