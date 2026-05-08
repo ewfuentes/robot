@@ -116,25 +116,35 @@ def _load_similarity_matrix(path: Path) -> torch.Tensor:
 def _assert_matrix_aligned(
     matrix: torch.Tensor,
     panorama_metadata: pd.DataFrame,
+    satellite_metadata: pd.DataFrame,
     matrix_path: Path,
 ) -> None:
-    """Verify a similarity matrix has one row per current panorama.
+    """Verify a similarity matrix's shape matches the current dataset.
 
-    Aggregators index matrix rows positionally via the metadata's pano_id list.
-    If the dataset was trimmed after the matrix was generated, indexing silently
-    returns rows for the wrong panoramas (no IndexError when matrix has *more*
-    rows than metadata) — the filter then converges confidently to the wrong
-    cell. Catch that here with a path-aware message so the stale file is
-    identifiable at a glance.
+    Rows are indexed positionally via the panorama_metadata pano_id list and
+    columns via the satellite_metadata satellite-patch index (e.g. through
+    ``positive_satellite_idxs`` and the cell-to-patch mapping). If either
+    dimension was trimmed after the matrix was generated, indexing silently
+    returns valid-looking values for the wrong query — the filter still
+    converges, but to the wrong cell. Bigger-than-current always silently
+    succeeds (no IndexError), so we have to compare lengths explicitly.
     """
     n_pano = len(panorama_metadata)
-    n_rows = matrix.shape[0]
+    n_sat = len(satellite_metadata)
+    n_rows, n_cols = matrix.shape[0], matrix.shape[1]
     if n_rows != n_pano:
         raise ValueError(
             f"Similarity matrix at {matrix_path} has {n_rows} rows but the "
             f"dataset's panorama_metadata has {n_pano} entries. The matrix is "
             f"misaligned with the current panorama set (likely stale relative "
             f"to a dataset trim). Regenerate it from the current panoramas."
+        )
+    if n_cols != n_sat:
+        raise ValueError(
+            f"Similarity matrix at {matrix_path} has {n_cols} columns but the "
+            f"dataset's satellite_metadata has {n_sat} entries. The matrix is "
+            f"misaligned with the current satellite set (likely stale relative "
+            f"to a satellite trim). Regenerate it from the current satellites."
         )
 
 
@@ -200,6 +210,7 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
         _assert_matrix_aligned(
             similarity_matrix,
             vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
             config.similarity_matrix_path,
         )
         return cls(
@@ -265,11 +276,15 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
         _assert_matrix_aligned(
-            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+            image_sim,
+            vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
+            config.image_similarity_matrix_path,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
         )
         return cls(
@@ -355,11 +370,15 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
         _assert_matrix_aligned(
-            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+            image_sim,
+            vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
+            config.image_similarity_matrix_path,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
         )
         return cls(
@@ -464,11 +483,15 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
         _assert_matrix_aligned(
-            image_sim, vigor_dataset._panorama_metadata, config.image_similarity_matrix_path
+            image_sim,
+            vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
+            config.image_similarity_matrix_path,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
         )
         return cls(
