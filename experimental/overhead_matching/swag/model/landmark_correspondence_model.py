@@ -40,12 +40,21 @@ NUM_CROSS_FEATURES = 4
 class TagBundleEncoderConfig:
     key_dim: int = 32
     text_input_dim: int = 768
-    text_proj_dim: int = 128
+    # When None, the raw text embedding flows into the per-tag MLP unprojected
+    # (per-tag MLP input = key_dim + text_input_dim). When a positive int, a
+    # Linear(text_input_dim, text_proj_dim) compresses the text embedding first
+    # — useful when downstream dim is small (e.g. simple_v1_v5 used 128).
+    text_proj_dim: int | None = 128
     per_tag_dim: int = 64
 
     @property
     def repr_dim(self) -> int:
         return 2 * self.per_tag_dim
+
+    @property
+    def per_tag_mlp_input_dim(self) -> int:
+        return self.key_dim + (self.text_proj_dim if self.text_proj_dim is not None
+                               else self.text_input_dim)
 
 
 @dataclass
@@ -69,11 +78,21 @@ class TagBundleEncoder(nn.Module):
         self.config = config
         self.repr_dim = config.repr_dim
         self.key_embedding = nn.Embedding(NUM_TAG_KEYS, config.key_dim)
-        self.text_projection = nn.Linear(config.text_input_dim, config.text_proj_dim)
+        if config.text_proj_dim is not None:
+            self.text_projection = nn.Linear(config.text_input_dim, config.text_proj_dim)
+        else:
+            self.text_projection = None
+        # LayerNorm after each Linear so the per-tag representation has a
+        # controlled scale before the mean/max pooling. Without this the encoder
+        # output magnitude depended entirely on weight init and could drift
+        # across training. (BatchNorm wouldn't work here because per-tag tensors
+        # are pre-pool, with variable counts per landmark.)
         self.per_tag_mlp = nn.Sequential(
-            nn.Linear(config.key_dim + config.text_proj_dim, config.per_tag_dim),
+            nn.Linear(config.per_tag_mlp_input_dim, config.per_tag_dim),
+            nn.LayerNorm(config.per_tag_dim),
             nn.ReLU(),
             nn.Linear(config.per_tag_dim, config.per_tag_dim),
+            nn.LayerNorm(config.per_tag_dim),
         )
 
     def forward(
@@ -84,7 +103,10 @@ class TagBundleEncoder(nn.Module):
     ) -> torch.Tensor:
         """Returns: (B, repr_dim) tensor."""
         key_emb = self.key_embedding(key_indices)       # (B, T, key_dim)
-        txt_emb = self.text_projection(text_embeddings)  # (B, T, text_proj_dim)
+        if self.text_projection is not None:
+            txt_emb = self.text_projection(text_embeddings)  # (B, T, text_proj_dim)
+        else:
+            txt_emb = text_embeddings  # raw text embedding, no projection
 
         tag_repr = self.per_tag_mlp(
             torch.cat([key_emb, txt_emb], dim=-1)

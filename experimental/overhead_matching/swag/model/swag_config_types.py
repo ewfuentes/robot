@@ -83,6 +83,62 @@ class PanoramaLocationTypeExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS)
     auxiliary_info_key: str
 
 
+class SafaExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    model_path: str
+    freeze: bool = True
+
+
+class RandomTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Stand-in extractor used during Stage 1 distillation.
+
+    Emits `num_tokens` Gaussian-noise tokens of dim `raw_dim` per forward call,
+    resampled fresh every call. Same projection + per-extractor token-marker
+    treatment as any real extractor, so the aggregator sees Stage 2's input
+    shape during pretraining and learns to attend to SAFA while ignoring noise.
+    """
+    num_tokens: int
+    raw_dim: int
+
+
+class TagBundleEncoderConfigStruct(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """msgspec mirror of `landmark_correspondence_model.TagBundleEncoderConfig`.
+
+    Kept as its own type here so the YAML config decode path doesn't depend on
+    the dataclass-based config in `landmark_correspondence_model`.
+
+    `text_proj_dim=None` (yaml: `text_proj_dim: null`) skips the text projection
+    layer entirely; the per-tag MLP consumes the raw text embedding directly.
+    Use this when the downstream `output_dim` is large and you want the encoder
+    to fill that space without a wasteful Linear(small → large) upprojection.
+    """
+    key_dim: int = 32
+    text_input_dim: int = 768
+    text_proj_dim: int | None = 128
+    per_tag_dim: int = 64
+
+
+class OSMTagBundleExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Stage 2 sat-side OSM landmark extractor that uses the simple_v1_v5 encoder.
+
+    Each landmark's `pruned_props` are encoded as (key_idx, text_emb_of_value)
+    pairs into a single per-landmark vector via a jointly-trained `TagBundleEncoder`.
+    """
+    landmark_type: LandmarkType
+    encoder: TagBundleEncoderConfigStruct
+    # Absolute path to the tag-value text embeddings pickle (e.g.
+    # /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings_panov2_tuned_v5_all.pkl).
+    tag_text_embedding_path: str
+
+
+class PanoramaTagBundleExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Stage 2 pano-side panov2 landmark extractor that uses the simple_v1_v5 encoder."""
+    encoder: TagBundleEncoderConfigStruct
+    tag_text_embedding_path: str
+    # Absolute path to the panov2_tuned_prompt root directory (containing
+    # per-city subdirs with embeddings/embeddings.pkl v2.0 pickles).
+    panov2_root: str
+
+
 class SyntheticLandmarkExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     log_grid_spacing: int
     grid_bounds_px: int
@@ -110,17 +166,57 @@ class TransformerAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     num_attention_heads: int
     hidden_dim: int
     dropout_frac: float
+    # Pre-norm if True (modern default — stabler for deeper stacks and mixed-loss
+    # training); post-norm if False (PyTorch's TransformerEncoderLayer default).
+    norm_first: bool = False
+
+
+class MlpAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Masked-mean-pool the input tokens, then run an MLP.
+
+    Designed for the SAFA-residual setup: the aggregator output is added on top
+    of a frozen SAFA base via the residual path, so the MLP only needs to learn
+    a small correction signal rather than reconstruct the full embedding. Has
+    no attention, no CLS token interaction — every valid (non-padding) input
+    token contributes equally to the pooled vector.
+    """
+    hidden_dim: int
+    num_hidden_layers: int = 1
+    dropout_frac: float = 0.0
+
+
+class MlpConcatAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Treat the primary token (SAFA) separately from landmark tokens.
+
+    Concatenates [SAFA_token, mean_pool(landmarks), max_pool(landmarks)] and
+    runs an MLP. Matches the correspondence classifier's pooling pattern —
+    mean+max gives the MLP richer signal than mean alone.
+
+    Assumes a fixed slot layout in the aggregator input sequence:
+        slot 0..num_class_tokens-1            : CLS tokens (ignored)
+        slot num_class_tokens                 : primary token (e.g. SAFA)
+        slot num_class_tokens+1 onwards       : landmark tokens
+    This depends on YAML extractor ordering (primary extractor must be first
+    in extractor_config_by_name).
+    """
+    hidden_dim: int
+    num_hidden_layers: int = 1
+    dropout_frac: float = 0.0
+    num_class_tokens: int = 1
 
 
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig, None]
 SemanticTokenExtractorConfig = Union[
     SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
 PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig, NullPositionEmbeddingConfig]
-AggregationConfig = Union[TransformerAggregatorConfig]
+AggregationConfig = Union[
+    TransformerAggregatorConfig, MlpAggregatorConfig, MlpConcatAggregatorConfig]
 
 ExtractorConfig = Union[
     DinoFeatureMapExtractorConfig,
     AlphaEarthExtractorConfig,
+    SafaExtractorConfig,
+    RandomTokenExtractorConfig,
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,
@@ -128,6 +224,8 @@ ExtractorConfig = Union[
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMTagBundleExtractorConfig,
+    PanoramaTagBundleExtractorConfig,
     SyntheticLandmarkExtractorConfig,
     AbsolutePositionExtractorConfig,
 ]

@@ -183,6 +183,69 @@ py_binary(
   ]
 )
 
+py_binary(
+  name="eval_checkpoint_mrr",
+  srcs=["eval_checkpoint_mrr.py"],
+  deps=[
+    ":distances",
+    requirement("torch"),
+    requirement("msgspec"),
+    "//common/python:serialization",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
+  name="dump_tb_scalars",
+  srcs=["dump_tb_scalars.py"],
+  deps=[
+    requirement("tensorboard"),
+  ]
+)
+
+py_binary(
+  name="safa_baseline_mrr",
+  srcs=["safa_baseline_mrr.py"],
+  deps=[
+    ":distances",
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
+  name="train_safa_distill",
+  srcs=["train_safa_distill.py"],
+  visibility=["//common/python:__subpackages__", "//common/tools/lambda_cloud:__subpackages__"],
+  deps=[
+    ":train",
+    ":distances",
+    requirement("torch"),
+    requirement("tensorboard"),
+    requirement("tqdm"),
+    requirement("IPython"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    "//common/python:serialization",
+    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:satellite_embedding_database",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
 py_package(
   name="train_package",
   deps = [

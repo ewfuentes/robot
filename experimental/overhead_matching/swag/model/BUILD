@@ -53,6 +53,70 @@ py_test(
 )
 
 py_library(
+  name = "safa_extractor",
+  srcs = ["safa_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    requirement("msgspec"),
+    requirement("pyyaml"),
+    ":patch_embedding",
+    ":swag_model_input_output",
+    ":swag_config_types",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_library(
+  name = "random_token_extractor",
+  srcs = ["random_token_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    ":swag_config_types",
+    ":swag_model_input_output",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_library(
+  name = "tag_bundle_extractor",
+  srcs = ["tag_bundle_extractor.py"],
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("torch"),
+    ":additional_panorama_extractors",
+    ":landmark_correspondence_model",
+    ":semantic_landmark_extractor",
+    ":swag_config_types",
+    ":swag_model_input_output",
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_test(
+  name = "tag_bundle_extractor_test",
+  srcs = ["tag_bundle_extractor_test.py"],
+  deps = [
+    requirement("torch"),
+    requirement("shapely"),
+    "//common/torch:load_torch_deps",
+    ":swag_config_types",
+    ":swag_model_input_output",
+    ":tag_bundle_extractor",
+  ]
+)
+
+py_library(
   name = "swag_patch_embedding",
   srcs = ["swag_patch_embedding.py"],
   visibility = [
@@ -64,6 +128,9 @@ py_library(
     requirement("torchvision"),
     requirement("msgspec"),
     ":alphaearth_extractor",
+    ":safa_extractor",
+    ":random_token_extractor",
+    ":tag_bundle_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
     ":additional_panorama_extractors",

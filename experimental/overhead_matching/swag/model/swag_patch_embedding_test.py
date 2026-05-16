@@ -734,5 +734,72 @@ class SwagPatchEmbeddingTest(unittest.TestCase):
                        "Non-NaN tokens should be unit normalized")
 
 
+    def test_random_token_extractor_and_attention_diagnostics(self):
+        """Random extractor produces fresh tokens per call; attention diagnostic returns per-layer weights."""
+        BATCH_DIM = 2
+        NUM_IMAGE_ROWS = 28
+        NUM_IMAGE_COLS = 28
+        NUM_EMBEDDINGS = 1
+        K = 5  # number of random tokens per side
+        config = spe.SwagPatchEmbeddingConfig(
+            extractor_config_by_name={
+                "noise_extractor": spe.RandomTokenExtractorConfig(
+                    num_tokens=K, raw_dim=16),
+                "embedding_extractor": spe.SemanticEmbeddingMatrixConfig(
+                    vocabulary=["a", "b", "c"], embedding_dim=8),
+            },
+            position_embedding_config=spe.NullPositionEmbeddingConfig(),
+            aggregation_config=spe.TransformerAggregatorConfig(
+                num_transformer_layers=2,
+                num_attention_heads=2,
+                hidden_dim=32,
+                dropout_frac=0.0),
+            patch_dims=(NUM_IMAGE_ROWS, NUM_IMAGE_COLS),
+            output_dim=16,
+            num_embeddings=NUM_EMBEDDINGS)
+
+        model = spe.SwagPatchEmbedding(config)
+        input_image = torch.zeros((BATCH_DIM, 3, NUM_IMAGE_ROWS, NUM_IMAGE_COLS))
+        metadata = [
+            {"web_mercator_y": 0.0, "web_mercator_x": 0.0, "landmarks": [
+                {"web_mercator_y": 1.0, "web_mercator_x": 1.0, "landmark_type": "a"}]},
+            {"web_mercator_y": 0.0, "web_mercator_x": 0.0, "landmarks": [
+                {"web_mercator_y": 2.0, "web_mercator_x": 2.0, "landmark_type": "b"},
+                {"web_mercator_y": 3.0, "web_mercator_x": 3.0, "landmark_type": "c"}]},
+        ]
+        model_input = spe.ModelInput(image=input_image, metadata=metadata)
+
+        # Random extractor produces different outputs each call
+        torch.manual_seed(0)
+        _, outputs_a = model(model_input)
+        _, outputs_b = model(model_input)
+        feat_a = outputs_a["noise_extractor"].features
+        feat_b = outputs_b["noise_extractor"].features
+        self.assertEqual(feat_a.shape, (BATCH_DIM, K, 16))
+        self.assertFalse(torch.allclose(feat_a, feat_b),
+                         "RandomTokenExtractor should resample features on every forward")
+
+        # Attention diagnostics path
+        result, _, diagnostics = model(model_input, return_attention_weights=True)
+        self.assertEqual(result.shape, (BATCH_DIM, NUM_EMBEDDINGS, config.output_dim))
+        self.assertEqual(len(diagnostics["attention_weights"]),
+                         config.aggregation_config.num_transformer_layers)
+        # attention shape: (B, num_heads, num_queries, num_keys)
+        # num_queries = num_keys = NUM_EMBEDDINGS (CLS) + K (noise) + variable embedding tokens
+        for attn in diagnostics["attention_weights"]:
+            self.assertEqual(attn.shape[0], BATCH_DIM)
+            self.assertEqual(attn.shape[1], config.aggregation_config.num_attention_heads)
+            self.assertEqual(attn.shape[2], attn.shape[3])
+            # Attention rows sum to ~1 over keys (softmax)
+            row_sums = attn.sum(dim=-1)
+            self.assertTrue(torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-4))
+
+        # input_token_names labels each non-CLS slot with its source extractor
+        self.assertEqual(diagnostics["num_class_tokens"], NUM_EMBEDDINGS)
+        names = diagnostics["input_token_names"]
+        self.assertEqual(names[:K], ["noise_extractor"] * K)
+        self.assertTrue(all(n == "embedding_extractor" for n in names[K:]))
+
+
 if __name__ == "__main__":
     unittest.main()

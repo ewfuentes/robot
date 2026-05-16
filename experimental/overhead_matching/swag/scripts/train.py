@@ -149,6 +149,14 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
+    # When set, copy panorama + satellite weights from
+    # `init_model_from/best_{panorama,satellite}/model_weights.pt` into the
+    # newly-constructed models with strict=False before training. Used to
+    # warm-start Stage 2 (landmark-augmented) training from Stage 1's distillation
+    # checkpoint. Missing keys are expected (new landmark extractors); unexpected
+    # keys raise to surface config drift.
+    init_model_from: Path | None = None
+    init_model_checkpoint: str = "best"
 
 @torch.no_grad
 def compute_validation_metrics(
@@ -178,6 +186,51 @@ def compute_validation_metrics(
     return out
 
 
+def _warm_start_from_stage1(
+    panorama_model,
+    satellite_model,
+    stage1_dir: Path,
+    checkpoint_name: str = "best",
+):
+    """Copy Stage 1 weights into freshly-built Stage 2 models with strict=False.
+
+    Missing keys (new Stage 2 parameters such as landmark extractors) are
+    expected. Unexpected keys (Stage 1 had a parameter Stage 2 doesn't) signal
+    a config drift and raise so the user catches it before training.
+    """
+    pano_path = stage1_dir / f"{checkpoint_name}_panorama" / "model_weights.pt"
+    sat_path = stage1_dir / f"{checkpoint_name}_satellite" / "model_weights.pt"
+    for path, name in [(pano_path, "panorama"), (sat_path, "satellite")]:
+        if not path.exists():
+            raise FileNotFoundError(f"init_model_from is set but {name} weights not at {path}")
+
+    pano_state = torch.load(pano_path, weights_only=True)
+    sat_state = torch.load(sat_path, weights_only=True)
+    pano_state = {k.removeprefix("_orig_mod."): v for k, v in pano_state.items()}
+    sat_state = {k.removeprefix("_orig_mod."): v for k, v in sat_state.items()}
+
+    pano_load = panorama_model.load_state_dict(pano_state, strict=False)
+    sat_load = satellite_model.load_state_dict(sat_state, strict=False)
+    print(f"[init_model_from] panorama: {len(pano_load.missing_keys)} missing, "
+          f"{len(pano_load.unexpected_keys)} unexpected")
+    print(f"[init_model_from] satellite: {len(sat_load.missing_keys)} missing, "
+          f"{len(sat_load.unexpected_keys)} unexpected")
+    if pano_load.missing_keys:
+        print(f"[init_model_from]   pano missing (will stay at random init): "
+              f"{pano_load.missing_keys}")
+    if sat_load.missing_keys:
+        print(f"[init_model_from]   sat missing (will stay at random init): "
+              f"{sat_load.missing_keys}")
+    if pano_load.unexpected_keys:
+        print(f"[init_model_from]   pano unexpected (ignored — likely an extractor that "
+              f"existed in Stage 1 but was replaced in Stage 2): "
+              f"{pano_load.unexpected_keys}")
+    if sat_load.unexpected_keys:
+        print(f"[init_model_from]   sat unexpected (ignored — likely an extractor that "
+              f"existed in Stage 1 but was replaced in Stage 2): "
+              f"{sat_load.unexpected_keys}")
+
+
 def setup_models_for_training(panorama_model, satellite_model, distance_model):
     """Move models to GPU and set to training mode."""
     panorama_model = panorama_model.cuda()
@@ -197,6 +250,7 @@ def save_checkpoint(
     distance_model,
     dataset,
     remove_existing: bool = False,
+    training_state: dict | None = None,
 ):
     """Save a checkpoint with the given name prefix."""
     import shutil
@@ -205,11 +259,14 @@ def save_checkpoint(
     panorama_model_path = output_dir / f"{checkpoint_name}_panorama"
     satellite_model_path = output_dir / f"{checkpoint_name}_satellite"
     distance_model_path = output_dir / f"{checkpoint_name}_distance"
+    training_state_path = output_dir / f"{checkpoint_name}_training_state.pt"
 
     if remove_existing:
         for path in [panorama_model_path, satellite_model_path, distance_model_path]:
             if path.exists():
                 shutil.rmtree(path)
+        if training_state_path.exists():
+            training_state_path.unlink()
 
     save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
     batch = next(iter(save_dataloader))
@@ -221,6 +278,9 @@ def save_checkpoint(
         sat_emb, _ = satellite_model(sat_model_input)
         pano_emb, _ = panorama_model(pano_model_input)
         save_model(distance_model, distance_model_path, (sat_emb, pano_emb))
+
+    if training_state is not None:
+        torch.save(training_state, training_state_path)
 
 
 def create_training_components(dataset,
@@ -305,7 +365,8 @@ def train(config: TrainConfig,
           quiet,
           capture_model_data: bool = False,
           num_batches_to_capture: int = 10,
-          generator: torch.Generator | None = None):
+          generator: torch.Generator | None = None,
+          resume_state: dict | None = None):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -325,6 +386,8 @@ def train(config: TrainConfig,
     )
 
     distance_model = create_distance_from_config(config.distance_model_config)
+    if resume_state is not None and 'distance_model_weights' in resume_state:
+        distance_model.load_state_dict(resume_state.pop('distance_model_weights'))
     loss_functions = create_losses_from_loss_config_list(config.loss_configs)
 
     # Validate that skip_aggregation is only used with transformer_encoder distance
@@ -405,6 +468,18 @@ def train(config: TrainConfig,
 
     grad_scaler = torch.amp.GradScaler()
 
+    # Restore training state from checkpoint if resuming
+    start_epoch = 0
+    if resume_state is not None:
+        start_epoch = resume_state['epoch'] + 1
+        if resume_state.get('optimizer') is not None:
+            opt.load_state_dict(resume_state['optimizer'])
+            lr_scheduler.load_state_dict(resume_state['lr_scheduler'])
+            grad_scaler.load_state_dict(resume_state['grad_scaler'])
+        else:
+            debug_log("WARNING: No optimizer/scheduler/scaler state in checkpoint — starting them fresh")
+        debug_log(f"Resumed from checkpoint at epoch {resume_state['epoch']}, starting at epoch {start_epoch}")
+
     torch.set_printoptions(linewidth=200)
 
     pairing_type = PairingType.PAIRS
@@ -432,7 +507,19 @@ def train(config: TrainConfig,
         print(f"No non-training validation datasets found. Using loss for best model selection.")
 
     total_batches = 0
-    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
+
+    # Restore tracking state from resume checkpoint
+    if resume_state is not None:
+        best_metric = resume_state['best_metric']
+        best_epoch = resume_state['best_epoch']
+        total_batches = resume_state['total_batches']
+        debug_log(f"Restored best_metric={best_metric}, best_epoch={best_epoch}, total_batches={total_batches}")
+        if start_epoch >= opt_config.num_epochs:
+            raise RuntimeError(
+                f"Resume checkpoint is at epoch {start_epoch - 1} but num_epochs={opt_config.num_epochs}. "
+                f"Increase num_epochs in the config to continue training.")
+
+    for epoch_idx in tqdm.tqdm(range(start_epoch, opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
 
         # Update epoch for dropout schedulers
@@ -605,6 +692,15 @@ def train(config: TrainConfig,
                 distance_model=distance_model,
                 dataset=dataset,
                 remove_existing=True,
+                training_state={
+                    'epoch': epoch_idx,
+                    'optimizer': opt.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'grad_scaler': grad_scaler.state_dict(),
+                    'best_metric': best_metric,
+                    'best_epoch': best_epoch,
+                    'total_batches': total_batches,
+                },
             )
 
         # Periodic checkpoint every 50 epochs
@@ -617,6 +713,16 @@ def train(config: TrainConfig,
                 satellite_model=satellite_model,
                 distance_model=distance_model,
                 dataset=dataset,
+                remove_existing=True,
+                training_state={
+                    'epoch': epoch_idx,
+                    'optimizer': opt.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'grad_scaler': grad_scaler.state_dict(),
+                    'best_metric': best_metric,
+                    'best_epoch': best_epoch,
+                    'total_batches': total_batches,
+                },
             )
 
     # Always save the last model
@@ -628,6 +734,16 @@ def train(config: TrainConfig,
         satellite_model=satellite_model,
         distance_model=distance_model,
         dataset=dataset,
+        remove_existing=True,
+        training_state={
+            'epoch': epoch_idx,
+            'optimizer': opt.state_dict(),
+            'lr_scheduler': lr_scheduler.state_dict(),
+            'grad_scaler': grad_scaler.state_dict(),
+            'best_metric': best_metric,
+            'best_epoch': best_epoch,
+            'total_batches': total_batches,
+        },
     )
 
 
@@ -647,6 +763,9 @@ def main(
         capture_model_data: bool = False,
         num_batches_to_capture: int = 10,
         seed: int | None = None,
+        resume: Path | None = None,
+        resume_checkpoint: str = "last",
+        resume_epoch: int | None = None,
 ):
 
     with open(train_config_path, 'r') as file_in:
@@ -672,6 +791,17 @@ def main(
         panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
     else:
         raise TypeError("Unsupported panorama model config type")
+
+    # Optional warm-start: copy weights from a Stage 1 (distill) checkpoint into the
+    # freshly-built model. New parameters added in Stage 2 (e.g., landmark
+    # extractors and their projections / token markers / TagBundleEncoders)
+    # remain at random init. Skipped automatically when --resume is set, since
+    # resume restores its own weights.
+    if train_config.init_model_from is not None and resume is None:
+        _warm_start_from_stage1(
+            panorama_model, satellite_model,
+            Path(train_config.init_model_from),
+            checkpoint_name=train_config.init_model_checkpoint)
 
     # Derive data requirements from both models
     sat_requirements = derive_data_requirements_from_model(
@@ -770,9 +900,12 @@ def main(
 
         validation_datasets[validation_dataset_paths[0].name] = val_dataset
 
-    # Add datetime prefix to output directory
-    timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
-    output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
+    # When resuming, reuse the existing output directory; otherwise create a new timestamped one
+    if resume is not None:
+        output_dir = resume
+    else:
+        timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+        output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
     tensorboard_output = train_config.tensorboard_output
     tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir
 
@@ -813,6 +946,49 @@ def main(
         if not quiet:
             print(f"Updated initial learning rate to {optimal_lr:.2e}")
 
+    # Load checkpoint weights and training state if resuming
+    resume_state = None
+    if resume is not None:
+        checkpoint_name = resume_checkpoint
+
+        pano_weights = resume / f"{checkpoint_name}_panorama" / "model_weights.pt"
+        sat_weights = resume / f"{checkpoint_name}_satellite" / "model_weights.pt"
+        dist_weights = resume / f"{checkpoint_name}_distance" / "model_weights.pt"
+        state_path = resume / f"{checkpoint_name}_training_state.pt"
+
+        if not pano_weights.exists():
+            raise FileNotFoundError(f"Panorama weights not found: {pano_weights}")
+        if not sat_weights.exists():
+            raise FileNotFoundError(f"Satellite weights not found: {sat_weights}")
+
+        print(f"Resuming from {resume} checkpoint '{checkpoint_name}'")
+        panorama_model.load_state_dict(torch.load(pano_weights, weights_only=True))
+        satellite_model.load_state_dict(torch.load(sat_weights, weights_only=True))
+
+        if state_path.exists():
+            resume_state = torch.load(state_path, weights_only=True)
+            if dist_weights.exists():
+                resume_state['distance_model_weights'] = torch.load(dist_weights, weights_only=True)
+            print(f"  Resuming from epoch {resume_state['epoch']}, "
+                  f"best_metric={resume_state['best_metric']}, "
+                  f"total_batches={resume_state['total_batches']}")
+        else:
+            if resume_epoch is None:
+                raise FileNotFoundError(
+                    f"Training state not found: {state_path}. "
+                    f"Use --resume_epoch to specify the epoch to resume from.")
+            print(f"  No training_state.pt found. Using --resume_epoch={resume_epoch}. "
+                  f"Starting optimizer fresh.")
+            resume_state = {
+                'epoch': resume_epoch - 1,
+                'optimizer': None,
+                'lr_scheduler': None,
+                'grad_scaler': None,
+                'best_metric': None,
+                'best_epoch': -1,
+                'total_batches': 0,
+            }
+
     if not no_ipdb:
         import ipdb
         ctx = ipdb.launch_ipdb_on_exception()
@@ -829,7 +1005,8 @@ def main(
             quiet=quiet,
             capture_model_data=capture_model_data,
             num_batches_to_capture=num_batches_to_capture,
-            generator=generator)
+            generator=generator,
+            resume_state=resume_state)
 
 
 if __name__ == "__main__":
@@ -847,7 +1024,18 @@ if __name__ == "__main__":
                         help="Number of batches to capture (default: 10)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible training. If seed set in CLI and train_config, throws")
+    parser.add_argument("--resume", type=Path, default=None,
+                        help="Path to a training output directory to resume from")
+    parser.add_argument("--resume_checkpoint", type=str, default="last",
+                        help="Which checkpoint to load: 'best', 'last', or an epoch number (e.g. '50' loads 0050_*)")
+    parser.add_argument("--resume_epoch", type=int, default=None,
+                        help="Override the epoch to resume from (use when no training_state.pt exists)")
     args = parser.parse_args()
+
+    # Normalize epoch number to zero-padded format (e.g. "50" -> "0050")
+    resume_checkpoint = args.resume_checkpoint
+    if resume_checkpoint not in ("best", "last") and resume_checkpoint.isdigit():
+        resume_checkpoint = f"{int(resume_checkpoint):04d}"
 
     main(
         Path(args.dataset_base),
@@ -857,4 +1045,7 @@ if __name__ == "__main__":
         quiet=args.quiet,
         capture_model_data=args.capture_model_data,
         num_batches_to_capture=args.num_batches_to_capture,
-        seed=args.seed)
+        seed=args.seed,
+        resume=args.resume,
+        resume_checkpoint=resume_checkpoint,
+        resume_epoch=args.resume_epoch)
