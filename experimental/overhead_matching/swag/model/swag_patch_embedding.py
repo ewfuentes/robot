@@ -53,8 +53,6 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
 
     AggregationConfig,
     TransformerAggregatorConfig,
-    MlpAggregatorConfig,
-    MlpConcatAggregatorConfig,
 
     ExtractorConfig,
     ExtractorDataRequirement,
@@ -138,8 +136,6 @@ def create_position_embedding(config: PositionEmbeddingConfig):
 def create_aggregator_model(output_dim: int, config: AggregationConfig):
     match config:
         case TransformerAggregatorConfig(): return TransformerAggregator(output_dim, config)
-        case MlpAggregatorConfig(): return MlpAggregator(output_dim, config)
-        case MlpConcatAggregatorConfig(): return MlpConcatAggregator(output_dim, config)
 
 
 class DinoFeatureExtractor(torch.nn.Module):
@@ -454,109 +450,6 @@ class TransformerAggregator(torch.nn.Module):
             x = self._encoder.norm(x)
         return x, per_layer_attn
 
-
-class MlpAggregator(torch.nn.Module):
-    """Masked-mean-pool over input tokens followed by an MLP.
-
-    Output shape matches the transformer's so SwagPatchEmbedding's downstream
-    slicing (``output[:, :num_class_tokens, :]``) still works: the pooled MLP
-    output is broadcast across the token dimension, so the first num_class_tokens
-    slots all carry the same aggregated vector.
-
-    Designed for the SAFA-residual setup — the MLP only needs to produce a small
-    correction added on top of the frozen SAFA base, not the full embedding.
-    """
-
-    def __init__(self, output_dim: int, config: MlpAggregatorConfig):
-        super().__init__()
-        layers: list[torch.nn.Module] = []
-        in_dim = output_dim
-        for _ in range(max(1, config.num_hidden_layers)):
-            layers += [
-                torch.nn.Linear(in_dim, config.hidden_dim),
-                torch.nn.LayerNorm(config.hidden_dim),
-                torch.nn.GELU(),
-                torch.nn.Dropout(config.dropout_frac),
-            ]
-            in_dim = config.hidden_dim
-        layers.append(torch.nn.Linear(in_dim, output_dim))
-        self._mlp = torch.nn.Sequential(*layers)
-        init_xavier(self._mlp)
-
-    def forward(self, tokens: torch.Tensor, token_mask: torch.Tensor,
-                return_attention_weights: bool = False):
-        if return_attention_weights:
-            raise RuntimeError("MlpAggregator does not produce attention weights")
-        valid = (~token_mask).unsqueeze(-1).to(tokens.dtype)  # (B, N, 1)
-        masked_sum = (tokens * valid).sum(dim=1)              # (B, D)
-        count = valid.sum(dim=1).clamp(min=1.0)               # (B, 1)
-        pooled = masked_sum / count                            # (B, D)
-        mlp_out = self._mlp(pooled)                            # (B, D)
-        return mlp_out.unsqueeze(1).expand(-1, tokens.shape[1], -1)
-
-
-class MlpConcatAggregator(torch.nn.Module):
-    """Concat [primary_token, mean_pool(landmarks), max_pool(landmarks)] -> MLP.
-
-    Mirrors the TagBundleEncoder's mean+max pooling pattern. Assumes the slot
-    layout documented in MlpConcatAggregatorConfig — CLS at [:num_class], the
-    primary (SAFA) token at slot num_class, landmarks at num_class+1 onwards.
-    """
-
-    def __init__(self, output_dim: int, config: MlpConcatAggregatorConfig):
-        super().__init__()
-        self._num_class_tokens = config.num_class_tokens
-        in_dim = 3 * output_dim  # [primary, mean_landmarks, max_landmarks]
-        layers: list[torch.nn.Module] = []
-        for _ in range(max(1, config.num_hidden_layers)):
-            layers += [
-                torch.nn.Linear(in_dim, config.hidden_dim),
-                torch.nn.LayerNorm(config.hidden_dim),
-                torch.nn.GELU(),
-                torch.nn.Dropout(config.dropout_frac),
-            ]
-            in_dim = config.hidden_dim
-        layers.append(torch.nn.Linear(in_dim, output_dim))
-        self._mlp = torch.nn.Sequential(*layers)
-        init_xavier(self._mlp)
-
-    def forward(self, tokens: torch.Tensor, token_mask: torch.Tensor,
-                return_attention_weights: bool = False):
-        if return_attention_weights:
-            raise RuntimeError("MlpConcatAggregator does not produce attention weights")
-        B, N, D = tokens.shape
-        primary_idx = self._num_class_tokens  # first slot after CLS = SAFA
-        if N <= primary_idx:
-            raise RuntimeError(
-                f"MlpConcatAggregator needs at least {primary_idx + 1} input slots "
-                f"(num_class_tokens={self._num_class_tokens} + primary token), "
-                f"got {N}. Check that primary extractor produces tokens.")
-        primary = tokens[:, primary_idx, :]  # (B, D)
-
-        # Landmarks are everything after primary, masked by token_mask
-        if N <= primary_idx + 1:
-            # No landmark tokens — pool from primary alone (degenerate but stable)
-            mean_lm = torch.zeros_like(primary)
-            max_lm = torch.zeros_like(primary)
-        else:
-            lm_tokens = tokens[:, primary_idx + 1:, :]               # (B, L, D)
-            lm_mask_invalid = token_mask[:, primary_idx + 1:]         # (B, L)
-            lm_valid = (~lm_mask_invalid).to(tokens.dtype).unsqueeze(-1)
-            # Mean: zero out invalid then divide by valid count
-            lm_sum = (lm_tokens * lm_valid).sum(dim=1)
-            lm_count = lm_valid.sum(dim=1).clamp(min=1.0)
-            mean_lm = lm_sum / lm_count
-            # Max: set invalid to -inf so they don't contribute
-            neg_inf = torch.finfo(lm_tokens.dtype).min
-            lm_masked = lm_tokens.masked_fill(lm_mask_invalid.unsqueeze(-1), neg_inf)
-            max_lm = lm_masked.max(dim=1).values
-            # If no valid landmarks at all in a row, max stays -inf — zero it.
-            has_any = (~lm_mask_invalid).any(dim=1, keepdim=True)
-            max_lm = torch.where(has_any, max_lm, torch.zeros_like(max_lm))
-
-        concat = torch.cat([primary, mean_lm, max_lm], dim=-1)  # (B, 3D)
-        mlp_out = self._mlp(concat)                              # (B, D)
-        return mlp_out.unsqueeze(1).expand(-1, N, -1)
 
 
 def _encoder_layer_forward_with_attention(

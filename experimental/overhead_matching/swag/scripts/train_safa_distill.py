@@ -52,11 +52,6 @@ from experimental.overhead_matching.swag.scripts.distances import (
     create_distance_from_config,
 )
 from experimental.overhead_matching.swag.scripts.pairing import create_pairs
-from experimental.overhead_matching.swag.scripts.losses import (
-    PairwiseContrastiveLossConfig,
-    compute_pairwise_loss,
-    LossInputs,
-)
 from experimental.overhead_matching.swag.scripts.train import (
     DatasetConfig,
     LearningRateSchedule,
@@ -106,21 +101,6 @@ class DistillationLossConfig:
     # might help with.
     cross_view_contrastive_weight: float = 0.0
     cross_view_contrastive_temperature: float = 0.07
-    # Which cross-view loss to use. "info_nce" is the original multi-positive
-    # InfoNCE on the (B, B) similarity matrix. "pairwise_contrastive" is the
-    # WAG-native softplus margin loss (see losses.compute_pairwise_loss),
-    # operating on the same (B, B) cosine similarity but treating pos /
-    # semipos / neg pairs with separate weights and target-sim thresholds.
-    cross_view_loss_kind: str = "info_nce"
-    # Pairwise contrastive hyperparameters (only used when
-    # cross_view_loss_kind == "pairwise_contrastive"). Defaults match the
-    # WAG-style values in safa_landmarks_config.yaml.
-    pairwise_positive_weight: float = 5.0
-    pairwise_avg_positive_similarity: float = 0.0
-    pairwise_semipositive_weight: float = 6.0
-    pairwise_avg_semipositive_similarity: float = 0.3
-    pairwise_negative_weight: float = 20.0
-    pairwise_avg_negative_similarity: float = 0.7
 
 
 ModelConfig = Union[
@@ -294,39 +274,6 @@ def _cross_view_info_nce(
     loss_p2s = _multi_pos_loss(log_probs_p2s, pos_mask)
     loss_s2p = _multi_pos_loss(log_probs_s2p, pos_mask.T)
     return 0.5 * (loss_p2s + loss_s2p)
-
-
-def _cross_view_pairwise_contrastive(
-    pano: torch.Tensor, sat: torch.Tensor, pairs, distill_config,
-) -> torch.Tensor:
-    """WAG-native pairwise contrastive loss applied across the (pano, sat) batch.
-
-    Builds the (B_pano, B_sat) cosine similarity matrix and reuses
-    losses.compute_pairwise_loss, which applies a softplus margin per pair
-    class (positive / semipositive / negative) with class-specific weights
-    and target similarity thresholds.
-
-    Shapes: pano and sat are both (B, 1, D), unit-normalized along D.
-    """
-    p = pano.squeeze(1)  # (B, D)
-    s = sat.squeeze(1)  # (B, D)
-    similarity = p @ s.T  # (B_pano, B_sat); values in [-1, 1] since unit-norm
-    pairwise_cfg = PairwiseContrastiveLossConfig(
-        positive_weight=distill_config.pairwise_positive_weight,
-        avg_positive_similarity=distill_config.pairwise_avg_positive_similarity,
-        semipositive_weight=distill_config.pairwise_semipositive_weight,
-        avg_semipositive_similarity=distill_config.pairwise_avg_semipositive_similarity,
-        negative_weight=distill_config.pairwise_negative_weight,
-        avg_negative_similarity=distill_config.pairwise_avg_negative_similarity,
-    )
-    loss_inputs = LossInputs(
-        similarity_matrix=similarity,
-        sat_embeddings_unnormalized=s,
-        pano_embeddings_unnormalized=p,
-        pairing_data=pairs,
-    )
-    loss, _aux = compute_pairwise_loss(loss_inputs, pairwise_cfg)
-    return loss
 
 
 def _info_nce_distillation_loss(
@@ -652,19 +599,10 @@ def train_distill(
 
                 contrastive_loss = torch.tensor(0.0, device=pano_emb.device)
                 if distill_config.cross_view_contrastive_weight > 0.0:
-                    if distill_config.cross_view_loss_kind == "info_nce":
-                        contrastive_loss = _cross_view_info_nce(
-                            pano_emb, sat_emb,
-                            temperature=distill_config.cross_view_contrastive_temperature,
-                            pairs=pairs)
-                    elif distill_config.cross_view_loss_kind == "pairwise_contrastive":
-                        contrastive_loss = _cross_view_pairwise_contrastive(
-                            pano_emb, sat_emb, pairs=pairs,
-                            distill_config=distill_config)
-                    else:
-                        raise ValueError(
-                            f"Unknown cross_view_loss_kind: "
-                            f"{distill_config.cross_view_loss_kind!r}")
+                    contrastive_loss = _cross_view_info_nce(
+                        pano_emb, sat_emb,
+                        temperature=distill_config.cross_view_contrastive_temperature,
+                        pairs=pairs)
                 loss = (
                     distill_config.weight_pano * loss_pano
                     + distill_config.weight_sat * loss_sat

@@ -171,46 +171,11 @@ class TransformerAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     norm_first: bool = False
 
 
-class MlpAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Masked-mean-pool the input tokens, then run an MLP.
-
-    Designed for the SAFA-residual setup: the aggregator output is added on top
-    of a frozen SAFA base via the residual path, so the MLP only needs to learn
-    a small correction signal rather than reconstruct the full embedding. Has
-    no attention, no CLS token interaction — every valid (non-padding) input
-    token contributes equally to the pooled vector.
-    """
-    hidden_dim: int
-    num_hidden_layers: int = 1
-    dropout_frac: float = 0.0
-
-
-class MlpConcatAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Treat the primary token (SAFA) separately from landmark tokens.
-
-    Concatenates [SAFA_token, mean_pool(landmarks), max_pool(landmarks)] and
-    runs an MLP. Matches the correspondence classifier's pooling pattern —
-    mean+max gives the MLP richer signal than mean alone.
-
-    Assumes a fixed slot layout in the aggregator input sequence:
-        slot 0..num_class_tokens-1            : CLS tokens (ignored)
-        slot num_class_tokens                 : primary token (e.g. SAFA)
-        slot num_class_tokens+1 onwards       : landmark tokens
-    This depends on YAML extractor ordering (primary extractor must be first
-    in extractor_config_by_name).
-    """
-    hidden_dim: int
-    num_hidden_layers: int = 1
-    dropout_frac: float = 0.0
-    num_class_tokens: int = 1
-
-
 FeatureMapExtractorConfig = Union[DinoFeatureMapExtractorConfig, None]
 SemanticTokenExtractorConfig = Union[
     SemanticNullExtractorConfig, SemanticEmbeddingMatrixConfig, SemanticSegmentExtractorConfig]
 PositionEmbeddingConfig = Union[PlanarPositionEmbeddingConfig, SphericalPositionEmbeddingConfig, NullPositionEmbeddingConfig]
-AggregationConfig = Union[
-    TransformerAggregatorConfig, MlpAggregatorConfig, MlpConcatAggregatorConfig]
+AggregationConfig = Union[TransformerAggregatorConfig]
 
 ExtractorConfig = Union[
     DinoFeatureMapExtractorConfig,
