@@ -295,11 +295,10 @@ def _get_mean_ci(values: np.ndarray | None) -> tuple[float, float] | None:
 def _fmt_val(mean: float, ci: float, bold: bool) -> str:
     """Format a value as mean±ci for LaTeX, optionally bold.
 
-    Mean rounded to whole meters (paper uses m-scale values, fractions of a
-    meter aren't meaningful at this scale). CI to 2 decimals so very tight
-    CIs don't collapse to the misleading-looking ``\\pm 0``.
+    Both mean and CI to 2 decimals so very tight CIs don't collapse to the
+    misleading-looking ``\\pm 0`` and the mean's precision matches.
     """
-    s = f"{mean:.0f}$\\pm${ci:.2f}"
+    s = f"{mean:.2f}$\\pm${ci:.2f}"
     return f"\\textbf{{{s}}}" if bold else s
 
 
