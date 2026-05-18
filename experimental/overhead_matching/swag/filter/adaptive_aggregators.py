@@ -53,12 +53,21 @@ class SafaPlusNormalizedLandmarkAggregatorConfig(
     Gaussian-on-residuals to ``r_norm = 1 − sim_t / row_max`` at
     ``landmark_sigma``. All-zero / constant landmark rows fall through
     to image-only.
+
+    When ``landmark_use_raw_residual`` is True, the landmark stream uses
+    the same SAFA-form raw residual ``row_max − sim_t`` as the image
+    stream. Use this when the second matrix is a similarity matrix on
+    the same scale as the image stream (e.g. an OSM-tile-baseline SAFA
+    matrix), where the per-row /max normalization is unnecessary.
+    Note ``landmark_sigma`` then lives on the raw-cosine scale rather
+    than the [0,1] normalized scale.
     """
 
     image_similarity_matrix_path: Path
     landmark_similarity_matrix_path: Path
     image_sigma: float
     landmark_sigma: float
+    landmark_use_raw_residual: bool = False
 
     def __post_init__(self):
         if not (self.image_sigma > 0):
@@ -426,11 +435,13 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         image_sigma: float,
         landmark_sigma: float,
         device: torch.device,
+        landmark_use_raw_residual: bool = False,
     ):
         self.image_similarity_matrix = image_similarity_matrix
         self.landmark_similarity_matrix = landmark_similarity_matrix
         self.image_sigma = float(image_sigma)
         self.landmark_sigma = float(landmark_sigma)
+        self.landmark_use_raw_residual = bool(landmark_use_raw_residual)
         self.device = device
         self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
 
@@ -458,13 +469,22 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
             # All-zero or constant row → landmark is uninformative.
             return log_p_img
 
-        norm_sim = lm_sim / sim_max_lm
-        r_norm = 1.0 - norm_sim
-        sigma_lm = self.landmark_sigma
-        log_norm_const = -torch.log(
-            torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
-        ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
-        log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
+        if self.landmark_use_raw_residual:
+            # Same SAFA-form residual as the image stream. NaNs can poison
+            # `.max()` inside the helper, so substitute the finite minimum at
+            # those positions; they're zeroed out by the mask below.
+            lm_sim_safe = torch.where(lm_finite_mask, lm_sim, sim_min_lm)
+            log_p_lm = wag_observation_log_likelihood_from_similarity_matrix(
+                lm_sim_safe, self.landmark_sigma
+            )
+        else:
+            norm_sim = lm_sim / sim_max_lm
+            r_norm = 1.0 - norm_sim
+            sigma_lm = self.landmark_sigma
+            log_norm_const = -torch.log(
+                torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
+            ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
+            log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
 
         # Mask out non-finite landmark entries (image-only at those indices).
         log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
@@ -500,6 +520,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
             panorama_metadata=vigor_dataset._panorama_metadata,
             image_sigma=config.image_sigma,
             landmark_sigma=config.landmark_sigma,
+            landmark_use_raw_residual=config.landmark_use_raw_residual,
             device=device,
         )
 

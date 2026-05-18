@@ -23,7 +23,8 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
     SAFA Gaussian-on-residuals (image) + Gaussian-on-r_norm (landmark),
     with image-only fall-through on all-zero / constant landmark rows."""
 
-    def _make(self, img_sim, lm_sim, image_sigma=0.187, landmark_sigma=0.72):
+    def _make(self, img_sim, lm_sim, image_sigma=0.187, landmark_sigma=0.72,
+              landmark_use_raw_residual=False):
         meta = _make_metadata(img_sim.shape[0])
         return SafaPlusNormalizedLandmarkAggregator(
             image_similarity_matrix=img_sim,
@@ -31,6 +32,7 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
             panorama_metadata=meta,
             image_sigma=image_sigma,
             landmark_sigma=landmark_sigma,
+            landmark_use_raw_residual=landmark_use_raw_residual,
             device=torch.device("cpu"),
         )
 
@@ -100,6 +102,44 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
                 (log_p_lm[j] - ref).item(), expected_drop, places=4,
                 msg=f"residual at idx {j} should be −0.5·(r/σ)^2",
             )
+
+    def test_raw_residual_mode_equals_sum_of_safa_streams(self):
+        """With landmark_use_raw_residual=True both streams use the SAFA
+        helper, so the output must equal the elementwise sum of two
+        wag_observation_log_likelihood_from_similarity_matrix calls."""
+        torch.manual_seed(0)
+        img_sim = torch.randn(1, 12) * 0.3 + 0.4
+        lm_sim = torch.randn(1, 12) * 0.3 + 0.4
+        sigma_img, sigma_lm = 0.2, 0.25
+        agg = self._make(img_sim, lm_sim, image_sigma=sigma_img,
+                         landmark_sigma=sigma_lm,
+                         landmark_use_raw_residual=True)
+        out = agg("p0")
+
+        expected = (
+            wag_observation_log_likelihood_from_similarity_matrix(img_sim[0], sigma_img)
+            + wag_observation_log_likelihood_from_similarity_matrix(lm_sim[0], sigma_lm)
+        )
+        self.assertTrue(torch.allclose(out, expected, atol=1e-6))
+
+    def test_raw_residual_mode_zeroes_nan_landmark_entries(self):
+        """NaN landmark entries must contribute 0 to the fused log-likelihood
+        (image-only at those indices) without poisoning the helper's .max()."""
+        img_sim = torch.zeros(1, 5)
+        lm_sim = torch.tensor([[0.1, float("nan"), 0.7, 0.3, float("nan")]])
+        sigma_img, sigma_lm = 0.187, 0.2
+        agg = self._make(img_sim, lm_sim, image_sigma=sigma_img,
+                         landmark_sigma=sigma_lm,
+                         landmark_use_raw_residual=True)
+        out = agg("p0")
+
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim[0], sigma_img
+        )
+        # At NaN positions: out should equal image-only.
+        self.assertTrue(torch.allclose(out[1], log_p_img[1], atol=1e-6))
+        self.assertTrue(torch.allclose(out[4], log_p_img[4], atol=1e-6))
+        self.assertTrue(torch.isfinite(out).all())
 
     def test_raises_on_nan_image_sim(self):
         """Non-finite image similarity must raise rather than silently zero."""
