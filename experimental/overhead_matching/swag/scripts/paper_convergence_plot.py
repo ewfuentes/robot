@@ -296,10 +296,10 @@ def _fmt_val(mean: float, ci: float, bold: bool) -> str:
     """Format a value as mean±ci for LaTeX, optionally bold.
 
     Mean rounded to whole meters (paper uses m-scale values, fractions of a
-    meter aren't meaningful at this scale). CI to 1 decimal so very tight
-    CIs don't render as the misleading-looking ``\\pm 0``.
+    meter aren't meaningful at this scale). CI to 2 decimals so very tight
+    CIs don't collapse to the misleading-looking ``\\pm 0``.
     """
-    s = f"{mean:.0f}$\\pm${ci:.1f}"
+    s = f"{mean:.0f}$\\pm${ci:.2f}"
     return f"\\textbf{{{s}}}" if bold else s
 
 
@@ -317,10 +317,10 @@ def print_summary_table(
     assert n_methods >= 2, "Table expects at least 2 methods"
 
     # Metrics: (label, radius or None for final error). All are "lower is
-    # better" so each label gets a $\downarrow$ marker.
+    # better" so each label gets a $\downarrow$ marker. Values are in meters.
     metrics = [
-        ("CC$_{100}$ $\\downarrow$", 100),
-        ("Final Error $\\downarrow$", None),
+        ("CC$_{100}$ (m) $\\downarrow$", 100),
+        ("Final Error (m) $\\downarrow$", None),
     ]
 
     n_metrics = len(metrics)
