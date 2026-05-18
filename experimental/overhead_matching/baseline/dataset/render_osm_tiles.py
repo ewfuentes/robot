@@ -3,6 +3,7 @@ each existing satellite tile so vigor_dataset.py can load them by toggling
 its `satellite_subdir` config field.
 """
 import argparse
+import json
 import logging
 import os
 import sys
@@ -27,22 +28,40 @@ class RenderJob:
     output_path: Path
 
 
+def read_source_px(city_dir: Path) -> int | None:
+    """Return source_px from <city_dir>/satellite_bbox.json if present.
+
+    Resolution-normalized VIGOR splits (e.g. Norway, MiamiBeach) capture each
+    tile at `source_px` zoom-20 pixels of ground, then resize to 640. The
+    bbox the on-disk image actually covers spans `source_px` zoom-20 pixels,
+    not 640.
+    """
+    bbox_path = city_dir / "satellite_bbox.json"
+    if not bbox_path.exists():
+        return None
+    with open(bbox_path) as f:
+        meta = json.load(f)
+    return meta.get("source_px")
+
+
 def discover_jobs(
     city_dir: Path,
     output_subdir: str = "satellite_osm",
     zoom: int = 20,
-    tile_px: int = 640,
+    bbox_px: int = 640,
+    sat_subdir: str = "satellite",
+    sat_suffixes: tuple[str, ...] = (".png", ".jpg", ".jpeg"),
     force: bool = False,
 ) -> list[RenderJob]:
-    sat_dir = city_dir / "satellite"
+    sat_dir = city_dir / sat_subdir
     out_dir = city_dir / output_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     jobs: list[RenderJob] = []
     for p in sorted(sat_dir.iterdir()):
-        if p.suffix != ".png":
+        if p.suffix.lower() not in sat_suffixes:
             continue
-        out = out_dir / p.name
+        out = out_dir / (p.stem + ".png")
         if out.exists() and not force:
             continue
         try:
@@ -50,7 +69,7 @@ def discover_jobs(
         except ValueError:
             logger.warning("skipping %s: bad filename", p.name)
             continue
-        bbox = tile_geometry.center_zoom_to_bbox(lat, lon, zoom=zoom, tile_px=tile_px)
+        bbox = tile_geometry.center_zoom_to_bbox(lat, lon, zoom=zoom, tile_px=bbox_px)
         jobs.append(RenderJob(sat_filename=p.name, bbox=bbox, output_path=out))
     return jobs
 
@@ -79,16 +98,31 @@ def render_city(
     mbtiles_path: Path,
     output_subdir: str = "satellite_osm",
     zoom: int = 20,
-    tile_px: int = 640,
+    render_px: int = 640,
+    bbox_px: int | None = None,
     limit: int | None = None,
     force: bool = False,
 ) -> None:
     city_dir = vigor_root / city
+
+    # Resolution-normalized splits (e.g. Norway: source_px=934) capture a
+    # wider ground footprint and resize to 640. The OSM bbox must match that
+    # ground footprint, not the 640px on-disk size; the output PNG stays at
+    # render_px so vigor_dataset.py sees the same image dims as satellite/.
+    if bbox_px is None:
+        source_px = read_source_px(city_dir)
+        bbox_px = source_px if source_px is not None else render_px
+        if source_px is not None and source_px != render_px:
+            logger.info(
+                "%s: using source_px=%d for bbox (on-disk render stays %dpx)",
+                city, source_px, render_px,
+            )
+
     jobs = discover_jobs(
         city_dir,
         output_subdir=output_subdir,
         zoom=zoom,
-        tile_px=tile_px,
+        bbox_px=bbox_px,
         force=force,
     )
     logger.info("discovered %d unrendered tiles for %s", len(jobs), city)
@@ -100,7 +134,7 @@ def render_city(
 
     logger.info("rendering %d tiles -> %s", len(jobs), city_dir / output_subdir)
     style_str = style_template.render_style(mbtiles_path)
-    render_jobs(style_str, jobs, width=tile_px, height=tile_px)
+    render_jobs(style_str, jobs, width=render_px, height=render_px)
 
 
 def main() -> int:
@@ -112,7 +146,11 @@ def main() -> int:
     p.add_argument("--mbtiles-dir", type=Path, default=Path("/data/overhead_matching/baseline/mbtiles"))
     p.add_argument("--output-subdir", default="satellite_osm")
     p.add_argument("--zoom", type=int, default=20)
-    p.add_argument("--tile-px", type=int, default=640)
+    p.add_argument("--render-px", type=int, default=640,
+                   help="output PNG dimensions; should match satellite tile on-disk size")
+    p.add_argument("--bbox-px", type=int, default=None,
+                   help="zoom-20 pixel footprint of the bbox (overrides "
+                        "satellite_bbox.json:source_px; defaults to render-px when neither is set)")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--force", action="store_true",
                    help="re-render even if output PNG already exists")
@@ -134,7 +172,8 @@ def main() -> int:
         mbtiles_path=mbtiles,
         output_subdir=args.output_subdir,
         zoom=args.zoom,
-        tile_px=args.tile_px,
+        render_px=args.render_px,
+        bbox_px=args.bbox_px,
         limit=args.limit,
         force=args.force,
     )
