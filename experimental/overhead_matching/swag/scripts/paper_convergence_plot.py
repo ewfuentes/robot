@@ -18,7 +18,7 @@ ENVIRONMENTS = [
     "nightdrive",
     "Middletown",
     "Norway",
-    "post_hurricane_ian",
+    "post_hurricane_ian_sw",
     "Framingham",
 ]
 
@@ -28,6 +28,7 @@ DISPLAY_NAMES = {
     "Middletown": "Middletown",
     "Norway": "Norway",
     "post_hurricane_ian": "Fort Myers",
+    "post_hurricane_ian_sw": "Fort Myers",
     "SanFrancisco_mapillary": "San Francisco",
     "Seattle": "Seattle",
     "NewYork": "New York",
@@ -249,7 +250,7 @@ def plot_convergence_curves(
         if xlim_m is not None:
             ax.set_xlim(0, xlim_m)
         ax.set_xlabel("Distance traveled (m)", fontsize=12)
-        ax.set_ylabel("P(mass within r)" if col == 0 else "", fontsize=12)
+        ax.set_ylabel("Probability mass within radius" if col == 0 else "", fontsize=12)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.xaxis.set_major_locator(ticker.MultipleLocator(1000))
@@ -292,8 +293,13 @@ def _get_mean_ci(values: np.ndarray | None) -> tuple[float, float] | None:
 
 
 def _fmt_val(mean: float, ci: float, bold: bool) -> str:
-    """Format a value as mean±ci for LaTeX, optionally bold."""
-    s = f"{mean:.0f}$\\pm${ci:.0f}"
+    """Format a value as mean±ci for LaTeX, optionally bold.
+
+    Mean rounded to whole meters (paper uses m-scale values, fractions of a
+    meter aren't meaningful at this scale). CI to 1 decimal so very tight
+    CIs don't render as the misleading-looking ``\\pm 0``.
+    """
+    s = f"{mean:.0f}$\\pm${ci:.1f}"
     return f"\\textbf{{{s}}}" if bold else s
 
 
@@ -310,8 +316,12 @@ def print_summary_table(
     n_methods = len(method_names)
     assert n_methods >= 2, "Table expects at least 2 methods"
 
-    # Metrics: (label, radius or None for final error)
-    metrics = [(f"CC$_{{100}}$", 100), ("Error", None)]
+    # Metrics: (label, radius or None for final error). All are "lower is
+    # better" so each label gets a $\downarrow$ marker.
+    metrics = [
+        ("CC$_{100}$ $\\downarrow$", 100),
+        ("Final Error $\\downarrow$", None),
+    ]
 
     n_metrics = len(metrics)
     col_spec = "l" + ("r" * n_methods) * n_metrics
@@ -336,7 +346,7 @@ def print_summary_table(
         cmidrules += f"\\cmidrule(lr){{{col_start}-{col_end}}} "
 
     lines = []
-    lines.append("\\begin{table}[t]")
+    lines.append("\\begin{table*}[t]")
     lines.append("\\centering")
     lines.append("\\caption{Convergence cost (m) and final localization error (m) across environments. "
                   "Values shown as mean $\\pm$ 95\\% CI. \\textbf{Bold} indicates the best method.}")
@@ -374,7 +384,7 @@ def print_summary_table(
 
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
-    lines.append("\\end{table}")
+    lines.append("\\end{table*}")
 
     print("\n".join(lines))
 
@@ -443,6 +453,25 @@ def main():
         help="Display label for the SAFA/WAG baseline method in legends and tables",
     )
     parser.add_argument(
+        "--early_dir",
+        type=str,
+        default=None,
+        help="Base directory for an additional 'early fusion' method (per-city "
+             "subdirs; may cover a subset of envs). Skipped if not set.",
+    )
+    parser.add_argument(
+        "--early_method",
+        type=str,
+        default="early_fusion_attempt_v1",
+        help="Subdirectory name for the early-fusion method within each city",
+    )
+    parser.add_argument(
+        "--early_label",
+        type=str,
+        default="Early Fusion",
+        help="Display label for the early-fusion method in legends and tables",
+    )
+    parser.add_argument(
         "--curve_radii",
         type=int,
         nargs="+",
@@ -463,6 +492,7 @@ def main():
     baseline_base = Path(args.baseline_dir)
     ours_base = Path(args.ours_dir)
     osm_base = Path(args.osm_dir) if args.osm_dir else None
+    early_base = Path(args.early_dir) if args.early_dir else None
     seattle_base = Path(args.seattle_results_dir) if args.seattle_results_dir else None
 
     def base_for(env: str, default_base: Path) -> Path:
@@ -476,6 +506,7 @@ def main():
             for env in ENVIRONMENTS
         },
         "osm": {},
+        "early": {},
         "ours": {
             env: base_for(env, ours_base) / env / args.ours_method
             for env in ENVIRONMENTS
@@ -486,12 +517,25 @@ def main():
             candidate = osm_base / env / args.osm_method
             if candidate.exists():
                 method_dirs["osm"][env] = candidate
+    if early_base is not None:
+        for env in ENVIRONMENTS:
+            candidate = early_base / env / args.early_method
+            if candidate.exists():
+                method_dirs["early"][env] = candidate
 
-    method_names = ["safa", "osm", "ours"]
-    method_colors = {"safa": "#888888", "osm": "#FF9800", "ours": "#2196F3"}
+    method_names = ["safa", "osm", "early", "ours"]
+    if early_base is None:
+        method_names = [m for m in method_names if m != "early"]
+    method_colors = {
+        "safa": "#888888",
+        "osm": "#FF9800",
+        "early": "#4CAF50",
+        "ours": "#2196F3",
+    }
     method_labels = {
         "safa": args.baseline_label,
         "osm": args.osm_label,
+        "early": args.early_label,
         "ours": "Ours",
     }
 

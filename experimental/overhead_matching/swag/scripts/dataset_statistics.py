@@ -26,6 +26,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 # Map dataset names -> pano landmark embedding directory names
 PANO_LANDMARK_DIR_MAP = {
     "Chicago": "Chicago",
+    "NewYork": "NewYork",
     "Seattle": "Seattle",
     "Boston": "boston_snowy",
     "nightdrive": "nightdrive",
@@ -36,6 +37,7 @@ PANO_LANDMARK_DIR_MAP = {
     "mapillary/Norway": "Norway",
     "mapillary/SanFrancisco_mapillary": "SanFrancisco_mapillary",
     "mapillary/post_hurricane_ian": "post_hurricane_ian",
+    "mapillary/post_hurricane_ian_sw": "post_hurricane_ian_sw",
 }
 
 
