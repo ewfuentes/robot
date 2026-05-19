@@ -94,12 +94,14 @@ def _replace_nan_with_zero(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
-def _raise_if_nonfinite(tensor: torch.Tensor, pano_id: str, name: str) -> None:
+def _raise_if_nonfinite(
+    tensor: torch.Tensor, pano_id: str, name: str, cls_name: str
+) -> None:
     nonfinite = ~torch.isfinite(tensor)
     if nonfinite.any():
         first_idx = int(torch.nonzero(nonfinite, as_tuple=False)[0].item())
         raise RuntimeError(
-            f"SafaPlusNormalizedLandmarkAggregator: non-finite value in {name} "
+            f"{cls_name}: non-finite value in {name} "
             f"for pano_id={pano_id!r} at index {first_idx} "
             f"(value={tensor.flatten()[first_idx].item()})."
         )
@@ -206,7 +208,8 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
         log_ll = wag_observation_log_likelihood_from_similarity_matrix(
             similarity, self.sigma
         )
-        return _replace_nan_with_zero(log_ll).to(self.device)
+        _raise_if_nonfinite(log_ll, pano_id, "log_ll", cls_name=type(self).__name__)
+        return log_ll.to(self.device)
 
     @classmethod
     def from_config(
@@ -455,7 +458,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim, self.image_sigma
         )
-        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img")
+        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img", cls_name=type(self).__name__)
 
         # Landmark-side: per-row /max normalization, then Gaussian-on-r_norm.
         # Fall through to image-only when the landmark row is uninformative.
@@ -490,7 +493,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
 
         log_p = log_p_img + log_p_lm
-        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm")
+        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm", cls_name=type(self).__name__)
         return log_p
 
     @classmethod

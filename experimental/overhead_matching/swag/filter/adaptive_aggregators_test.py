@@ -8,6 +8,7 @@ import pandas as pd
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     SafaPlusNormalizedLandmarkAggregator,
     SafaPlusNormalizedLandmarkAggregatorConfig,
+    SingleSimilarityMatrixAggregator,
 )
 from experimental.overhead_matching.swag.filter.particle_filter import (
     wag_observation_log_likelihood_from_similarity_matrix,
@@ -16,6 +17,50 @@ from experimental.overhead_matching.swag.filter.particle_filter import (
 
 def _make_metadata(n: int = 4) -> pd.DataFrame:
     return pd.DataFrame({"pano_id": [f"p{i}" for i in range(n)]})
+
+
+class TestSingleSimilarityMatrixAggregator(unittest.TestCase):
+    """Contract: passes the similarity row through the SAFA helper and
+    raises on any non-finite output (NaN, ±inf) rather than silently
+    zeroing it. The aggregator's inputs are expected to be dense
+    similarity matrices; NaN inputs indicate a bug or stale matrix and
+    should not be swallowed."""
+
+    def _make(self, sim, sigma=0.187):
+        return SingleSimilarityMatrixAggregator(
+            similarity_matrix=sim,
+            panorama_metadata=_make_metadata(sim.shape[0]),
+            sigma=sigma,
+            device=torch.device("cpu"),
+        )
+
+    def test_finite_input_matches_safa_helper(self):
+        torch.manual_seed(0)
+        sim = torch.randn(2, 8) * 0.3 + 0.4
+        sigma = 0.2
+        agg = self._make(sim, sigma=sigma)
+        out = agg("p1")
+        expected = wag_observation_log_likelihood_from_similarity_matrix(
+            sim[1], sigma
+        )
+        self.assertTrue(torch.allclose(out, expected, atol=1e-6))
+
+    def test_raises_on_nan_input(self):
+        """NaN in the similarity row poisons the helper's .max() and yields
+        an all-NaN log-likelihood; that must raise rather than be silently
+        zeroed."""
+        sim = torch.zeros(1, 5)
+        sim[0, 2] = float("nan")
+        agg = self._make(sim)
+        with self.assertRaises(RuntimeError):
+            agg("p0")
+
+    def test_raises_on_inf_input(self):
+        sim = torch.zeros(1, 5)
+        sim[0, 2] = float("inf")
+        agg = self._make(sim)
+        with self.assertRaises(RuntimeError):
+            agg("p0")
 
 
 class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
