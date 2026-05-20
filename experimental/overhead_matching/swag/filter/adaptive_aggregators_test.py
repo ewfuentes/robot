@@ -167,15 +167,34 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(out, expected, atol=1e-6))
 
-    def test_raw_residual_mode_zeroes_nan_landmark_entries(self):
-        """NaN landmark entries must contribute 0 to the fused log-likelihood
-        (image-only at those indices) without poisoning the helper's .max()."""
+    def test_raw_residual_mode_raises_on_nan_landmark(self):
+        """In raw-residual mode the landmark matrix is expected dense
+        (same scale as the image stream). NaN/inf entries indicate a bug
+        and must raise rather than silently fall back to image-only."""
         img_sim = torch.zeros(1, 5)
         lm_sim = torch.tensor([[0.1, float("nan"), 0.7, 0.3, float("nan")]])
-        sigma_img, sigma_lm = 0.187, 0.2
+        agg = self._make(img_sim, lm_sim, landmark_use_raw_residual=True)
+        with self.assertRaises(RuntimeError):
+            agg("p0")
+
+    def test_raw_residual_mode_raises_on_inf_landmark(self):
+        img_sim = torch.zeros(1, 5)
+        lm_sim = torch.tensor([[0.1, 0.3, float("inf"), 0.5, 0.2]])
+        agg = self._make(img_sim, lm_sim, landmark_use_raw_residual=True)
+        with self.assertRaises(RuntimeError):
+            agg("p0")
+
+    def test_normalized_residual_mode_falls_back_to_image_only_on_nan(self):
+        """Asymmetric contract: with landmark_use_raw_residual=False the
+        normalized branch keeps #626's "NaN = no landmark info, image-only
+        fallback" semantics."""
+        torch.manual_seed(0)
+        img_sim = torch.randn(1, 6) * 0.3 + 0.4
+        lm_sim = torch.tensor([[0.1, float("nan"), 0.7, 0.3, float("nan"), 0.5]])
+        sigma_img, sigma_lm = 0.187, 0.72
         agg = self._make(img_sim, lm_sim, image_sigma=sigma_img,
                          landmark_sigma=sigma_lm,
-                         landmark_use_raw_residual=True)
+                         landmark_use_raw_residual=False)
         out = agg("p0")
 
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
