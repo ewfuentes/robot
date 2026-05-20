@@ -63,14 +63,20 @@ def _enumerate_path_dirs(eval_dir: Path) -> list[Path]:
 
 
 def load_per_path_convergence_costs(summary_path: Path) -> dict:
-    """Load per-path convergence costs from summary_statistics.json."""
+    """Load per-path convergence costs from summary_statistics.json.
+
+    Raises if any radius in ``RADII`` is missing — refuses to silently drop a
+    column from the table.
+    """
     with open(summary_path) as f:
         stats = json.load(f)
-    return {
-        r: np.array(stats[f"convergence_cost_{r}m"])
-        for r in RADII
-        if f"convergence_cost_{r}m" in stats
-    }
+    result = {}
+    for r in RADII:
+        key = f"convergence_cost_{r}m"
+        if key not in stats:
+            raise KeyError(f"{summary_path} is missing {key!r}")
+        result[r] = np.array(stats[key])
+    return result
 
 
 def load_per_path_final_errors(eval_dir: Path) -> np.ndarray:
@@ -152,10 +158,7 @@ def load_method_data(method_dirs: dict[str, dict[str, Path]]):
         final_errors[method] = {}
         for env, path in env_paths.items():
             summary = path / "summary_statistics.json"
-            if summary.exists():
-                convergence_costs[method][env] = load_per_path_convergence_costs(
-                    summary
-                )
+            convergence_costs[method][env] = load_per_path_convergence_costs(summary)
             final_errors[method][env] = load_per_path_final_errors(path)
 
     return convergence_costs, final_errors
@@ -207,9 +210,9 @@ def plot_convergence_curves(
         for radius in radii:
             ls = radius_linestyles[radius]
             for method in method_names:
-                eval_dir = method_dirs[method].get(env)
-                if eval_dir is None or not eval_dir.exists():
+                if env not in method_dirs[method]:
                     continue
+                eval_dir = method_dirs[method][env]
 
                 prob_masses = load_per_path_convergence_curves(
                     eval_dir, radius, distance_grid
@@ -286,12 +289,6 @@ def plot_convergence_curves(
 # -- Table --
 
 
-def _get_mean_ci(values: np.ndarray | None) -> tuple[float, float] | None:
-    if values is None or len(values) == 0:
-        return None
-    return compute_stats(values)
-
-
 def _fmt_val(mean: float, ci: float, bold: bool) -> str:
     """Format a value as mean±ci for LaTeX, optionally bold.
 
@@ -361,9 +358,15 @@ def print_summary_table(
             vals = []
             for m in method_names:
                 if radius is not None:
-                    v = _get_mean_ci(convergence_costs[m].get(env, {}).get(radius))
+                    if env in convergence_costs[m]:
+                        v = compute_stats(convergence_costs[m][env][radius])
+                    else:
+                        v = None
                 else:
-                    v = _get_mean_ci(final_errors[m].get(env))
+                    if env in final_errors[m]:
+                        v = compute_stats(final_errors[m][env])
+                    else:
+                        v = None
                 vals.append(v)
 
             non_none = [(i, v) for i, v in enumerate(vals) if v is not None]
@@ -482,6 +485,13 @@ def main():
         default=3000,
         help="X-axis limit in meters for convergence curves (Fig B). 0 for no limit.",
     )
+    parser.add_argument(
+        "--allow_partial_method_coverage",
+        action="store_true",
+        help="Allow optional methods (OSM, Early Fusion) to cover only a subset "
+             "of ENVIRONMENTS. By default every requested method must have data "
+             "for every env or loading throws.",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output_dir)
@@ -510,16 +520,19 @@ def main():
             for env in ENVIRONMENTS
         },
     }
-    if osm_base is not None:
+    def register_optional(base: Path | None, method_subdir: str) -> dict[str, Path]:
+        if base is None:
+            return {}
+        result = {}
         for env in ENVIRONMENTS:
-            candidate = osm_base / env / args.osm_method
-            if candidate.exists():
-                method_dirs["osm"][env] = candidate
-    if early_base is not None:
-        for env in ENVIRONMENTS:
-            candidate = early_base / env / args.early_method
-            if candidate.exists():
-                method_dirs["early"][env] = candidate
+            candidate = base / env / method_subdir
+            if args.allow_partial_method_coverage and not candidate.exists():
+                continue
+            result[env] = candidate
+        return result
+
+    method_dirs["osm"] = register_optional(osm_base, args.osm_method)
+    method_dirs["early"] = register_optional(early_base, args.early_method)
 
     method_names = ["safa", "osm", "early", "ours"]
     if early_base is None:
