@@ -6,7 +6,6 @@ import torch
 from shapely.geometry import Point
 
 from experimental.overhead_matching.swag.model.swag_config_types import (
-    LandmarkType,
     OSMTagBundleExtractorConfig,
     PanoramaTagBundleExtractorConfig,
     TagBundleEncoderConfigStruct,
@@ -27,7 +26,6 @@ def _make_encoder_cfg() -> TagBundleEncoderConfigStruct:
 class OSMTagBundleExtractorTest(unittest.TestCase):
     def test_forward_produces_per_landmark_tokens(self):
         cfg = OSMTagBundleExtractorConfig(
-            landmark_type=LandmarkType.POINT,
             encoder=_make_encoder_cfg(),
             tag_text_embedding_path="/tmp/ignored.pkl",
         )

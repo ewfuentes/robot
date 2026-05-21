@@ -88,32 +88,15 @@ class SafaExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     freeze: bool = True
 
 
-class RandomTokenExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Stand-in extractor used during Stage 1 distillation.
-
-    Emits `num_tokens` Gaussian-noise tokens of dim `raw_dim` per forward call,
-    resampled fresh every call. Same projection + per-extractor token-marker
-    treatment as any real extractor, so the aggregator sees Stage 2's input
-    shape during pretraining and learns to attend to SAFA while ignoring noise.
-    """
-    num_tokens: int
-    raw_dim: int
-
-
 class TagBundleEncoderConfigStruct(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     """msgspec mirror of `landmark_correspondence_model.TagBundleEncoderConfig`.
 
     Kept as its own type here so the YAML config decode path doesn't depend on
     the dataclass-based config in `landmark_correspondence_model`.
-
-    `text_proj_dim=None` (yaml: `text_proj_dim: null`) skips the text projection
-    layer entirely; the per-tag MLP consumes the raw text embedding directly.
-    Use this when the downstream `output_dim` is large and you want the encoder
-    to fill that space without a wasteful Linear(small → large) upprojection.
     """
     key_dim: int = 32
     text_input_dim: int = 768
-    text_proj_dim: int | None = 128
+    text_proj_dim: int = 128
     per_tag_dim: int = 64
 
 
@@ -122,8 +105,10 @@ class OSMTagBundleExtractorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
     Each landmark's `pruned_props` are encoded as (key_idx, text_emb_of_value)
     pairs into a single per-landmark vector via a jointly-trained `TagBundleEncoder`.
+    All four supported geom types (point, linestring, polygon, multipolygon) are
+    processed; a learned per-geom-type marker is added to each landmark's
+    representation so the downstream aggregator can distinguish them.
     """
-    landmark_type: LandmarkType
     encoder: TagBundleEncoderConfigStruct
     # Absolute path to the tag-value text embeddings pickle (e.g.
     # /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings_panov2_tuned_v5_all.pkl).
@@ -181,7 +166,6 @@ ExtractorConfig = Union[
     DinoFeatureMapExtractorConfig,
     AlphaEarthExtractorConfig,
     SafaExtractorConfig,
-    RandomTokenExtractorConfig,
     SemanticNullExtractorConfig,
     SemanticEmbeddingMatrixConfig,
     SemanticSegmentExtractorConfig,

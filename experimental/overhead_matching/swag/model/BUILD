@@ -61,27 +61,11 @@ py_library(
   ],
   deps = [
     requirement("torch"),
-    requirement("msgspec"),
-    requirement("pyyaml"),
     ":patch_embedding",
     ":swag_model_input_output",
     ":swag_config_types",
     "//common/torch:load_torch_deps",
-  ]
-)
-
-py_library(
-  name = "random_token_extractor",
-  srcs = ["random_token_extractor.py"],
-  visibility = [
-    "//experimental/overhead_matching/swag:__subpackages__",
-    "//common/python:__subpackages__",
-  ],
-  deps = [
-    requirement("torch"),
-    ":swag_config_types",
-    ":swag_model_input_output",
-    "//common/torch:load_torch_deps",
+    "//common/torch:load_and_save_models",
   ]
 )
 
@@ -129,7 +113,6 @@ py_library(
     requirement("msgspec"),
     ":alphaearth_extractor",
     ":safa_extractor",
-    ":random_token_extractor",
     ":tag_bundle_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",

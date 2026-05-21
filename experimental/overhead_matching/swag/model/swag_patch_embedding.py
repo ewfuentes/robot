@@ -19,7 +19,6 @@ from experimental.overhead_matching.swag.model.additional_panorama_extractors im
     PanoramaLocationTypeExtractor,
 )
 from experimental.overhead_matching.swag.model.safa_extractor import SafaExtractor
-from experimental.overhead_matching.swag.model.random_token_extractor import RandomTokenExtractor
 from experimental.overhead_matching.swag.model.tag_bundle_extractor import (
     OSMTagBundleExtractor, PanoramaTagBundleExtractor,
 )
@@ -43,7 +42,6 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaTagBundleExtractorConfig,
     AbsolutePositionExtractorConfig,
     SafaExtractorConfig,
-    RandomTokenExtractorConfig,
     SyntheticLandmarkExtractorConfig,
 
     PositionEmbeddingConfig,
@@ -79,23 +77,6 @@ class SwagPatchEmbeddingConfig(msgspec.Struct, tag=True, tag_field="kind"):
     skip_aggregation: bool = False
     normalize_input_tokens: bool = True
 
-    # When set, the model output is computed as
-    #   normalize(extractor_features[name] + residual_alpha * normalize(transformer_CLS))
-    # The named extractor's raw output (e.g. SAFA's 2048-d unit-norm token) is
-    # added as a base; the transformer produces a learned residual whose
-    # direction is L2-normalized and whose magnitude is controlled by
-    # `residual_alpha`. Output is then renormalized. With small alpha, the
-    # model starts close to pure passthrough — MRR at init equals the named
-    # extractor's intrinsic MRR.
-    #
-    # alpha is a learnable scalar Parameter when `residual_alpha_trainable=True`
-    # (default), initialized to `init_residual_alpha`. When False, alpha is a
-    # plain non-learnable scalar; the trainer (e.g. train_safa_distill) can
-    # then ramp it on a per-epoch schedule via `set_residual_alpha(value)`.
-    safa_residual_extractor_name: str | None = None
-    init_residual_alpha: float = 0.1
-    residual_alpha_trainable: bool = True
-
     # These are here for backwards compatibility
     feature_map_extractor_config: FeatureMapExtractorConfig | None = None
     semantic_token_extractor_config: SemanticTokenExtractorConfig | None = None
@@ -118,7 +99,6 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
         case SafaExtractorConfig(): return SafaExtractor(config)
-        case RandomTokenExtractorConfig(): return RandomTokenExtractor(config)
         case OSMTagBundleExtractorConfig(): return OSMTagBundleExtractor(config)
         case PanoramaTagBundleExtractorConfig(): return PanoramaTagBundleExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
@@ -431,52 +411,10 @@ class TransformerAggregator(torch.nn.Module):
         # see warning at https://docs.pytorch.org/docs/stable/generated/torch.nn.TransformerEncoder.html
         init_xavier(self._encoder)
 
-    def forward(self, tokens, token_mask, return_attention_weights: bool = False):
+    def forward(self, tokens, token_mask):
         float_token_mask = make_float_mask_from_bool_mask(token_mask)
-        if not return_attention_weights:
-            return self._encoder(
-                tokens, src_key_padding_mask=float_token_mask, is_causal=False)
-
-        # Diagnostic path: replicate TransformerEncoder.forward layer-by-layer so
-        # we can call self_attn with need_weights=True. nn.TransformerEncoder's
-        # fast path hardcodes need_weights=False.
-        x = tokens
-        per_layer_attn = []
-        for layer in self._encoder.layers:
-            x, attn = _encoder_layer_forward_with_attention(
-                layer, x, src_key_padding_mask=float_token_mask)
-            per_layer_attn.append(attn)
-        if self._encoder.norm is not None:
-            x = self._encoder.norm(x)
-        return x, per_layer_attn
-
-
-
-def _encoder_layer_forward_with_attention(
-        layer: torch.nn.TransformerEncoderLayer,
-        x: torch.Tensor,
-        src_key_padding_mask: torch.Tensor):
-    """Mirror of TransformerEncoderLayer.forward that exposes self-attention weights.
-
-    Supports both norm_first and norm_last (default). Returns (output, attn_weights)
-    where attn_weights has shape (B, num_heads, num_queries, num_keys).
-    """
-    sa_in = layer.norm1(x) if layer.norm_first else x
-    sa_out, attn_weights = layer.self_attn(
-        sa_in, sa_in, sa_in,
-        key_padding_mask=src_key_padding_mask,
-        need_weights=True,
-        average_attn_weights=False,
-        is_causal=False)
-    sa_out = layer.dropout1(sa_out)
-
-    if layer.norm_first:
-        x = x + sa_out
-        x = x + layer._ff_block(layer.norm2(x))
-    else:
-        x = layer.norm1(x + sa_out)
-        x = layer.norm2(x + layer._ff_block(x))
-    return x, attn_weights
+        return self._encoder(
+            tokens, src_key_padding_mask=float_token_mask, is_causal=False)
 
 
 class SwagPatchEmbedding(torch.nn.Module):
@@ -510,18 +448,6 @@ class SwagPatchEmbedding(torch.nn.Module):
         else:
             self._cls_token = None
             self._aggregator_model = None
-
-        # Residual scalar for the SAFA-residual output mode (see config field).
-        if config.safa_residual_extractor_name is not None:
-            initial = torch.tensor([float(config.init_residual_alpha)])
-            if config.residual_alpha_trainable:
-                self._residual_alpha = torch.nn.Parameter(initial)
-            else:
-                # Non-trainable but a registered buffer so it moves with .to(device)
-                # and is included in state_dict.
-                self.register_buffer("_residual_alpha", initial)
-        else:
-            self._residual_alpha = None
 
         # Store cacheable extractor info
         self._cacheable_extractor_info = {}
@@ -565,17 +491,31 @@ class SwagPatchEmbedding(torch.nn.Module):
                     model_config=config.semantic_token_extractor_config,
                     patch_dims=config.patch_dims)
 
-    def set_residual_alpha(self, value: float):
-        """Set the residual alpha scalar. Only valid when residual_alpha_trainable=False."""
-        if self._residual_alpha is None:
-            raise RuntimeError("safa_residual_extractor_name not set; no residual_alpha to update.")
-        if isinstance(self._residual_alpha, torch.nn.Parameter):
-            raise RuntimeError(
-                "residual_alpha_trainable=True; alpha is a learnable Parameter and "
-                "must not be set externally. Set residual_alpha_trainable=False "
-                "in the config to use a scheduled alpha.")
+    def identity_init_extractor_projection(self, name: str) -> None:
+        """Initialize a named extractor's input projection to a zero-padded identity.
+
+        Pairs with a frozen-teacher distillation loss: after this call,
+        `projection_by_name[name] @ extractor_features == extractor_features`
+        (truncated/zero-padded to match `output_dim`), and the token marker is
+        zero. This avoids the "random projection bottleneck" plateau seen when
+        the model has to learn a small identity-like projection from scratch.
+        No-op if the extractor has no projection or marker registered.
+        """
+        if name not in self._projection_by_name:
+            print(f"[identity_init] no projection found for {name!r}; skipping")
+            return
+        proj = self._projection_by_name[name]
+        marker = self._token_marker_by_name[name]
+        out_dim, in_dim = proj.weight.shape
         with torch.no_grad():
-            self._residual_alpha.fill_(float(value))
+            proj.weight.zero_()
+            n = min(out_dim, in_dim)
+            proj.weight[:n, :n].copy_(torch.eye(n))
+            if proj.bias is not None:
+                proj.bias.zero_()
+            marker.zero_()
+        print(f"[identity_init] {name}: weight={out_dim}x{in_dim} -> identity[{n}], "
+              f"bias=0, marker=0")
 
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
@@ -639,34 +579,8 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         return input_tokens, input_mask, extractor_outputs_by_name
 
-    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None,
-                *, return_attention_weights: bool = False):
-        """Forward pass through the model.
-
-        Args:
-            model_input: Input containing image and metadata
-            return_attention_weights: If True, also return per-layer self-attention
-                weights from the aggregator transformer. Has noticeable overhead
-                because it bypasses the TransformerEncoder fast path. Only valid
-                when skip_aggregation=False.
-
-        Returns:
-            When return_attention_weights=False (default):
-                (embeddings, extractor_outputs_by_name)
-            When return_attention_weights=True:
-                (embeddings, extractor_outputs_by_name, diagnostics) where diagnostics
-                is a dict containing:
-                    - "attention_weights": list of (B, num_heads, num_queries, num_keys)
-                      tensors, one per transformer layer.
-                    - "input_token_names": list of names corresponding to the
-                      non-CLS positions in the transformer's input sequence,
-                      so callers can index attention by extractor.
-                    - "num_class_tokens": int, the number of leading CLS slots.
-        """
+    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None):
         if self._config.skip_aggregation:
-            if return_attention_weights:
-                raise RuntimeError(
-                    "return_attention_weights is not valid with skip_aggregation=True")
             # Skip aggregation mode: return all input tokens without class tokens
             input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
                 model_input, landmark_dropout_scheduler, include_class_tokens=False)
@@ -679,63 +593,15 @@ class SwagPatchEmbedding(torch.nn.Module):
         input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
             model_input, landmark_dropout_scheduler, include_class_tokens=True)
 
-        if return_attention_weights:
-            output_tokens, attn_weights_per_layer = self._aggregator_model(
-                input_tokens, input_mask, return_attention_weights=True)
-        else:
-            output_tokens = self._aggregator_model(input_tokens, input_mask)
+        output_tokens = self._aggregator_model(input_tokens, input_mask)
 
         model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
-
-        # SAFA-residual mode: add the named extractor's features as a base, with
-        # the transformer's CLS output (L2-normalized) acting as a (small, learned)
-        # residual. Normalizing the residual *direction* before scaling means
-        # `alpha` controls magnitude in absolute terms — alpha=0.05 means the
-        # residual contributes a length-0.05 unit-direction vector on top of a
-        # length-1 SAFA base. Without this normalize, transformer-output magnitude
-        # at init can be arbitrary (often >>1), which makes the "small alpha
-        # keeps us near SAFA" assumption false.
-        if self._residual_alpha is not None:
-            base_name = self._config.safa_residual_extractor_name
-            base_features = extractor_outputs_by_name[base_name].features
-            if base_features.shape != model_output.shape:
-                raise RuntimeError(
-                    f"safa_residual: base features {tuple(base_features.shape)} "
-                    f"don't match transformer output {tuple(model_output.shape)} — "
-                    f"the residual extractor must output the same shape as the aggregator.")
-            residual_direction = F.normalize(model_output, dim=2)
-            model_output = base_features + self._residual_alpha * residual_direction
 
         # output is batch x num_class_tokens x feature_dim
         if self._normalize_embeddings:
             model_output = F.normalize(model_output, dim=2)
 
-        if return_attention_weights:
-            input_token_names = self._build_input_token_name_list(extractor_outputs_by_name)
-            diagnostics = {
-                "attention_weights": attn_weights_per_layer,
-                "input_token_names": input_token_names,
-                "num_class_tokens": self._cls_token.shape[1],
-            }
-            return model_output, extractor_outputs_by_name, diagnostics
-
         return model_output, extractor_outputs_by_name
-
-    def _build_input_token_name_list(self, extractor_outputs_by_name) -> list[str]:
-        """Names for each non-CLS slot in the aggregator's input sequence.
-
-        Built by iterating extractors in the same order as `_get_input_tokens`
-        (skipping any whose token tensor is empty) and repeating the extractor
-        name once per token in its features tensor. Used to map attention indices
-        back to their originating extractor for diagnostic logging.
-        """
-        names: list[str] = []
-        for k, v in extractor_outputs_by_name.items():
-            num_tokens = v.features.shape[1]
-            if num_tokens == 0:
-                continue
-            names.extend([k] * num_tokens)
-        return names
 
     def cache_info(self) -> dict[str, CacheableExtractorInfo]:
         """Returns information about cacheable extractors

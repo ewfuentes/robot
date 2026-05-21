@@ -26,7 +26,7 @@ from experimental.overhead_matching.swag.scripts.logging_utils import (
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 from typing import Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pandas as pd
 import tqdm
 import msgspec
@@ -149,14 +149,12 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
-    # When set, copy panorama + satellite weights from
-    # `init_model_from/best_{panorama,satellite}/model_weights.pt` into the
-    # newly-constructed models with strict=False before training. Used to
-    # warm-start Stage 2 (landmark-augmented) training from Stage 1's distillation
-    # checkpoint. Missing keys are expected (new landmark extractors); unexpected
-    # keys raise to surface config drift.
-    init_model_from: Path | None = None
-    init_model_checkpoint: str = "best"
+    # Names of extractors whose input projections should be identity-initialized
+    # (zero-padded identity weight, zero bias, zero token marker) at training
+    # start. Used to keep the model close to "passthrough of the named extractor"
+    # at init when distilling against that extractor's frozen output. Has no
+    # effect when resuming from a checkpoint.
+    identity_init_extractors: list[str] = field(default_factory=list)
 
 @torch.no_grad
 def compute_validation_metrics(
@@ -184,51 +182,6 @@ def compute_validation_metrics(
         out |= validation_metrics_from_similarity(name, similarity, panorama_metadata=dataset._panorama_metadata)
 
     return out
-
-
-def _warm_start_from_stage1(
-    panorama_model,
-    satellite_model,
-    stage1_dir: Path,
-    checkpoint_name: str = "best",
-):
-    """Copy Stage 1 weights into freshly-built Stage 2 models with strict=False.
-
-    Missing keys (new Stage 2 parameters such as landmark extractors) are
-    expected. Unexpected keys (Stage 1 had a parameter Stage 2 doesn't) signal
-    a config drift and raise so the user catches it before training.
-    """
-    pano_path = stage1_dir / f"{checkpoint_name}_panorama" / "model_weights.pt"
-    sat_path = stage1_dir / f"{checkpoint_name}_satellite" / "model_weights.pt"
-    for path, name in [(pano_path, "panorama"), (sat_path, "satellite")]:
-        if not path.exists():
-            raise FileNotFoundError(f"init_model_from is set but {name} weights not at {path}")
-
-    pano_state = torch.load(pano_path, weights_only=True)
-    sat_state = torch.load(sat_path, weights_only=True)
-    pano_state = {k.removeprefix("_orig_mod."): v for k, v in pano_state.items()}
-    sat_state = {k.removeprefix("_orig_mod."): v for k, v in sat_state.items()}
-
-    pano_load = panorama_model.load_state_dict(pano_state, strict=False)
-    sat_load = satellite_model.load_state_dict(sat_state, strict=False)
-    print(f"[init_model_from] panorama: {len(pano_load.missing_keys)} missing, "
-          f"{len(pano_load.unexpected_keys)} unexpected")
-    print(f"[init_model_from] satellite: {len(sat_load.missing_keys)} missing, "
-          f"{len(sat_load.unexpected_keys)} unexpected")
-    if pano_load.missing_keys:
-        print(f"[init_model_from]   pano missing (will stay at random init): "
-              f"{pano_load.missing_keys}")
-    if sat_load.missing_keys:
-        print(f"[init_model_from]   sat missing (will stay at random init): "
-              f"{sat_load.missing_keys}")
-    if pano_load.unexpected_keys:
-        print(f"[init_model_from]   pano unexpected (ignored — likely an extractor that "
-              f"existed in Stage 1 but was replaced in Stage 2): "
-              f"{pano_load.unexpected_keys}")
-    if sat_load.unexpected_keys:
-        print(f"[init_model_from]   sat unexpected (ignored — likely an extractor that "
-              f"existed in Stage 1 but was replaced in Stage 2): "
-              f"{sat_load.unexpected_keys}")
 
 
 def setup_models_for_training(panorama_model, satellite_model, distance_model):
@@ -350,6 +303,8 @@ def compute_forward_pass_and_loss(batch,
             similarity=similarity,
             pairing_data=pairing_data,
             loss_functions=loss_functions,
+            sat_extractor_outputs=sat_debug,
+            pano_extractor_outputs=pano_debug,
         )
 
     return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
@@ -414,6 +369,15 @@ def train(config: TrainConfig,
                     f"{model_name}_model_config has skip_aggregation=True, which is incompatible with "
                     f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
                     f"to disable hard negative mining.")
+
+    # Identity-init named extractor projections before training. Skipped when
+    # resuming, since the resumed weights are already tuned.
+    if config.identity_init_extractors and resume_state is None:
+        for name in config.identity_init_extractors:
+            if hasattr(panorama_model, "identity_init_extractor_projection"):
+                panorama_model.identity_init_extractor_projection(name)
+            if hasattr(satellite_model, "identity_init_extractor_projection"):
+                satellite_model.identity_init_extractor_projection(name)
 
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
@@ -791,17 +755,6 @@ def main(
         panorama_model = swag_patch_embedding.SwagPatchEmbedding(train_config.pano_model_config)
     else:
         raise TypeError("Unsupported panorama model config type")
-
-    # Optional warm-start: copy weights from a Stage 1 (distill) checkpoint into the
-    # freshly-built model. New parameters added in Stage 2 (e.g., landmark
-    # extractors and their projections / token markers / TagBundleEncoders)
-    # remain at random init. Skipped automatically when --resume is set, since
-    # resume restores its own weights.
-    if train_config.init_model_from is not None and resume is None:
-        _warm_start_from_stage1(
-            panorama_model, satellite_model,
-            Path(train_config.init_model_from),
-            checkpoint_name=train_config.init_model_checkpoint)
 
     # Derive data requirements from both models
     sat_requirements = derive_data_requirements_from_model(

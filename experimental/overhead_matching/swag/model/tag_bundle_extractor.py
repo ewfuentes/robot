@@ -11,9 +11,9 @@ Two extractors:
     encodes the same way, and emits per-landmark tokens with the same yaw-based
     position encoding used by `PanoramaSemanticLandmarkExtractor`.
 
-Both extractors instantiate their own `TagBundleEncoder`; weight-sharing between
-sat and pano is intentionally NOT done in v1 (sat sees OSM-style tags, pano sees
-vision-extracted tags — different distributions).
+Both extractors instantiate their own `TagBundleEncoder`; weights are not shared
+between sat and pano (sat sees OSM-style tags, pano sees vision-extracted tags —
+different distributions).
 """
 
 from pathlib import Path
@@ -41,7 +41,7 @@ from experimental.overhead_matching.swag.model.swag_model_input_output import (
 
 
 def _load_text_embeddings(path: Path) -> dict[str, torch.Tensor]:
-    """Load tag-value → 768d text embeddings pickle, returning float32 tensors."""
+    """Load tag-value text embeddings pickle, returning float32 tensors."""
     import pickle
     with open(path, "rb") as f:
         data = pickle.load(f)
@@ -136,6 +136,9 @@ def _stack_landmark_tag_tensors(
     L = len(per_landmark)
     key_t = torch.zeros(L, t_max, dtype=torch.long)
     text_t = torch.zeros(L, t_max, text_input_dim, dtype=torch.float32)
+    # `mask_t` uses True=real-tag (the convention TagBundleEncoder consumes).
+    # This is the OPPOSITE of the ExtractorOutput.mask convention used elsewhere
+    # in the model, where True=padding/masked-out-of-attention.
     mask_t = torch.zeros(L, t_max, dtype=torch.bool)
     for i, (key_indices, text_embs) in enumerate(per_landmark):
         for j, (ki, te) in enumerate(zip(key_indices, text_embs)):
@@ -145,13 +148,23 @@ def _stack_landmark_tag_tensors(
     return key_t.to(device), text_t.to(device), mask_t.to(device)
 
 
+_GEOM_TYPE_TO_IDX = {
+    "point": 0,
+    "linestring": 1,
+    "polygon": 2,
+    "multipolygon": 3,
+}
+
+
 class OSMTagBundleExtractor(torch.nn.Module):
     """Satellite-side OSM tag-bundle extractor.
 
     For each landmark in `model_input.metadata[i]["landmarks"]`, encodes its
     `pruned_props` (key=value pairs) into a single vector via `TagBundleEncoder`.
-    Position encoding matches `SemanticLandmarkExtractor` for landmarks of the
-    configured `landmark_type` (point / linestring / polygon / multipolygon).
+    All four supported geom types (point, linestring, polygon, multipolygon) are
+    processed; a learned per-geom-type marker is added to each landmark's
+    representation so the downstream aggregator can distinguish them. Position
+    encoding matches `SemanticLandmarkExtractor` via `compute_landmark_sat_positions`.
     """
 
     def __init__(self, config: OSMTagBundleExtractorConfig):
@@ -159,6 +172,8 @@ class OSMTagBundleExtractor(torch.nn.Module):
         self.config = config
         self._embedding_path = Path(config.tag_text_embedding_path).expanduser()
         self._encoder = _encoder_from_config(config.encoder)
+        self._geom_type_marker = torch.nn.Embedding(
+            len(_GEOM_TYPE_TO_IDX), self._encoder.repr_dim)
         self._text_embeddings: dict[str, torch.Tensor] | None = None
         self._files_loaded = False
 
@@ -172,11 +187,10 @@ class OSMTagBundleExtractor(torch.nn.Module):
 
         device = model_input.image.device
         text_input_dim = self.config.encoder.text_input_dim
-        landmark_type = self.config.landmark_type.lower()
 
         landmark_keep_masks = [
             torch.tensor(
-                [lm["geometry"].geom_type.lower() == landmark_type
+                [lm["geometry"].geom_type.lower() in _GEOM_TYPE_TO_IDX
                  for lm in batch_item["landmarks"]],
                 dtype=torch.bool)
             for batch_item in model_input.metadata
@@ -203,18 +217,23 @@ class OSMTagBundleExtractor(torch.nn.Module):
             positions[i, : sat_positions.shape[0]] = sat_positions.to(device)
 
             per_landmark: list[tuple[list[int], list[torch.Tensor]]] = []
+            geom_type_indices: list[int] = []
             for keep_flag, landmark in zip(keep.tolist(), batch_item["landmarks"]):
                 if not keep_flag:
                     continue
                 props = landmark.get("pruned_props", {})
                 per_landmark.append(_bundle_to_tensors(
                     props, self._text_embeddings, text_input_dim))
+                geom_type_indices.append(
+                    _GEOM_TYPE_TO_IDX[landmark["geometry"].geom_type.lower()])
 
             key_t, text_t, tag_mask_t = _stack_landmark_tag_tensors(
                 per_landmark, text_input_dim, device)
             if key_t.shape[0] == 0:
                 continue
             landmark_reprs = self._encoder(key_t, text_t, tag_mask_t)  # (L, repr_dim)
+            geom_type_idx_t = torch.tensor(geom_type_indices, dtype=torch.long, device=device)
+            landmark_reprs = landmark_reprs + self._geom_type_marker(geom_type_idx_t)
             num_kept = landmark_reprs.shape[0]
             features[i, :num_kept] = landmark_reprs
             mask[i, :num_kept] = False
@@ -269,6 +288,8 @@ class PanoramaTagBundleExtractor(torch.nn.Module):
             raise FileNotFoundError(f"No city directories in {panov2_root}")
 
         self._panorama_landmarks = {}
+        duplicate_count = 0
+        first_duplicate: str | None = None
         for city_dir in city_dirs:
             pickle_path = city_dir / "embeddings" / "embeddings.pkl"
             data = load_v2_pickle(pickle_path)
@@ -276,8 +297,16 @@ class PanoramaTagBundleExtractor(torch.nn.Module):
                 raise FileNotFoundError(f"v2.0 pickle not found at {pickle_path}")
             for pano_key, pano_data in data.get("panoramas", {}).items():
                 pano_id = pano_key.split(",")[0]
+                if pano_id in self._panorama_landmarks:
+                    duplicate_count += 1
+                    if first_duplicate is None:
+                        first_duplicate = pano_id
                 landmarks = pano_data.get("landmarks", [])
                 self._panorama_landmarks[pano_id] = landmarks
+        if duplicate_count:
+            print(f"[PanoramaTagBundleExtractor] WARNING: {duplicate_count} duplicate "
+                  f"pano_id(s) seen across cities under {panov2_root} "
+                  f"(first: {first_duplicate!r}); last-seen entry is kept.")
         self._files_loaded = True
 
     def forward(self, model_input: ModelInput) -> ExtractorOutput:
