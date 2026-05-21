@@ -3,7 +3,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
-from experimental.overhead_matching.swag.scripts.pairing import PairingDataType, PositiveAnchorSets, Pairs, collapse_anchors_to_torch
+from experimental.overhead_matching.swag.scripts.pairing import PairingDataType, Pairs
 from typing import Any, Union, Callable
 from dataclasses import dataclass, field
 import msgspec
@@ -39,29 +39,26 @@ class BatchUniformityLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
 
 class InfoNCELossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    max_num_negative_pairs: int  # if 0, uses all negative pairs
-    negative_scale: float = 1.0
-    scale_negative_by_num_items: bool = False
-    use_pano_as_anchor: bool = False
+    """Symmetric multi-positive InfoNCE on the precomputed similarity matrix.
+
+    Reads `loss_inputs.similarity_matrix` (N_pano x N_sat, produced by
+    `distance_model`) and divides it by `temperature` to get logits. The loss
+    is the textbook temperature-scaled log_softmax cross-entropy, averaged over
+    the two directions (pano-anchor and sat-anchor) and over rows with at least
+    one positive.
+
+    Throws if any semipositive pair is present — the caller must collapse
+    semipositives into positives (or drop them) before invoking this loss.
+    Requires `Pairs` pairing data.
+
+    Final loss = `weight_scale` * 0.5 * (loss_pano_to_sat + loss_sat_to_pano).
+    """
+    weight_scale: float = 1.0
+    temperature: float = 0.07
 
 
 class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     weight_scale: float
-
-
-class CrossViewInfoNCELossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    """Symmetric cross-view InfoNCE between sat and pano student embeddings.
-
-    Multi-positive: any (pano_i, sat_j) listed in `pairs.positive_pairs` is a
-    positive for both directions. Semipositives are masked out of the softmax
-    denominator (treated as "neither positive nor negative"), matching the
-    behavior of train_safa_distill's `_cross_view_info_nce`.
-
-    Final loss = `weight_scale` * 0.5 * (loss_pano_to_sat + loss_sat_to_pano).
-    Requires `Pairs` pairing data.
-    """
-    weight_scale: float = 1.0
-    temperature: float = 0.07
 
 
 class DistillationLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -85,7 +82,6 @@ LossConfig = Union[
     SphericalEmbeddingConstraintLossConfig,
     BatchUniformityLossConfig,
     DistillationLossConfig,
-    CrossViewInfoNCELossConfig,
 ]
 
 
@@ -182,82 +178,32 @@ def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss
 
 def compute_info_nce_loss(
     loss_inputs: LossInputs,
-    info_nce_config: InfoNCELossConfig
+    config: InfoNCELossConfig,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    assert isinstance(loss_inputs.pairing_data,
-                      PositiveAnchorSets), "InfoNCELoss requires PositiveAnchorSets pairing data"
-    device = loss_inputs.similarity_matrix.device
-    similarity_matrix = loss_inputs.similarity_matrix  # N_pano x N_sat
-    if not info_nce_config.use_pano_as_anchor:
-        # N_anchor x N_non_anchor
-        similarity_matrix = torch.transpose(similarity_matrix, 0, 1)
+    """Symmetric multi-positive InfoNCE on the cross-view similarity matrix.
 
-    anchor_set = loss_inputs.pairing_data
-
-    anchor_indices, pos_semipos_indices = collapse_anchors_to_torch(anchor_set)
-    anchor_indices, pos_semipos_indices = anchor_indices.to(device), pos_semipos_indices.to(device)
-
-    positive_term = similarity_matrix[anchor_indices, pos_semipos_indices]  # num_loss_terms
-
-    # -inf will come out to log(0 + ...) in logsumexp, so it is a noop assuming at least one term, which pos guarentees
-    negative_sim_matrix = torch.clone(similarity_matrix)
-    negative_sim_matrix[anchor_indices, pos_semipos_indices] = -torch.inf
-
-    negative_term = negative_sim_matrix[anchor_indices]  # num loss terms x N non anchor
-    if info_nce_config.max_num_negative_pairs != 0:
-        # num loss terms x max_num_negative_pairs
-        negative_term = negative_term.topk(info_nce_config.max_num_negative_pairs, dim=1).values
-
-    neg_scale = info_nce_config.negative_scale / (torch.count_nonzero(torch.isfinite(
-        negative_term), dim=1) if info_nce_config.scale_negative_by_num_items else torch.tensor([1]))
-    log_neg_scale = torch.log(neg_scale).to(device).unsqueeze(1)
-    loss = info_nce_config.negative_scale * torch.logsumexp(torch.cat([positive_term.unsqueeze(
-        1), log_neg_scale + negative_term], dim=1), dim=-1) - positive_term
-
-    with torch.no_grad():
-        aux = dict(
-            num_batch_items=loss.shape[0],
-            pos_sim=positive_term,
-            neg_sim=negative_term[torch.isfinite(negative_term)],
-        )
-
-    return loss.mean(), aux
-
-
-def compute_cross_view_info_nce_loss(
-    loss_inputs: LossInputs,
-    config: CrossViewInfoNCELossConfig,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Symmetric multi-positive InfoNCE with semipositives masked from the denominator.
-
-    Ported from train_safa_distill.py:_cross_view_info_nce. Operates directly on
-    student embeddings (post-normalization) rather than on a precomputed
-    similarity matrix, so it sees the cross-view (sat, pano) similarity used by
-    the original.
+    Throws if `pairs.semipositive_pairs` is non-empty — the caller is expected
+    to either collapse semipositives into positives (e.g. the NEAREST-sampling
+    merge in train.py) or drop them.
     """
     assert isinstance(loss_inputs.pairing_data, Pairs), \
-        "CrossViewInfoNCELoss requires Pairs pairing data"
+        "InfoNCELoss requires Pairs pairing data"
     pairs = loss_inputs.pairing_data
-    p = F.normalize(loss_inputs.pano_embeddings_unnormalized, dim=-1).squeeze(1)  # (B, D)
-    s = F.normalize(loss_inputs.sat_embeddings_unnormalized, dim=-1).squeeze(1)   # (B, D)
-    B = p.shape[0]
+    if pairs.semipositive_pairs:
+        raise ValueError(
+            f"InfoNCELoss received {len(pairs.semipositive_pairs)} semipositive "
+            f"pair(s); collapse them into positives upstream or drop them.")
 
-    logits_p2s = (p @ s.T) / config.temperature  # (B, B)
+    logits_p2s = loss_inputs.similarity_matrix / config.temperature  # N_pano x N_sat
     logits_s2p = logits_p2s.T
+    N_pano, N_sat = logits_p2s.shape
 
-    pos_mask = torch.zeros(B, B, dtype=torch.bool, device=p.device)
-    semipos_mask = torch.zeros(B, B, dtype=torch.bool, device=p.device)
+    pos_mask = torch.zeros(N_pano, N_sat, dtype=torch.bool, device=logits_p2s.device)
     for pi, si in pairs.positive_pairs:
         pos_mask[pi, si] = True
-    for pi, si in pairs.semipositive_pairs:
-        semipos_mask[pi, si] = True
 
-    NEG_INF = torch.finfo(logits_p2s.dtype).min
-    logits_p2s_m = logits_p2s.masked_fill(semipos_mask, NEG_INF)
-    logits_s2p_m = logits_s2p.masked_fill(semipos_mask.T, NEG_INF)
-
-    log_probs_p2s = F.log_softmax(logits_p2s_m, dim=1)
-    log_probs_s2p = F.log_softmax(logits_s2p_m, dim=1)
+    log_probs_p2s = F.log_softmax(logits_p2s, dim=1)
+    log_probs_s2p = F.log_softmax(logits_s2p, dim=1)
 
     def _multi_pos_loss(log_probs, mask):
         per_row_pos = mask.float()
@@ -267,14 +213,14 @@ def compute_cross_view_info_nce_loss(
         valid = n_pos_per_row > 0
         if valid.any():
             return per_row[valid].mean()
-        return torch.tensor(0.0, device=p.device)
+        return torch.tensor(0.0, device=log_probs.device)
 
     loss_p2s = _multi_pos_loss(log_probs_p2s, pos_mask)
     loss_s2p = _multi_pos_loss(log_probs_s2p, pos_mask.T)
     symmetric = 0.5 * (loss_p2s + loss_s2p)
     return config.weight_scale * symmetric, {
-        "cross_view_loss_p2s": loss_p2s,
-        "cross_view_loss_s2p": loss_s2p,
+        "info_nce_loss_p2s": loss_p2s,
+        "info_nce_loss_s2p": loss_s2p,
     }
 
 
@@ -341,9 +287,6 @@ def create_losses_from_loss_config_list(
             loss_functions.append(lambda x, config=loss_config: compute_batch_uniformity_loss(x, config))
         elif isinstance(loss_config, DistillationLossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_distillation_loss(x, config))
-        elif isinstance(loss_config, CrossViewInfoNCELossConfig):
-            loss_functions.append(
-                lambda x, config=loss_config: compute_cross_view_info_nce_loss(x, config))
         else:
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
     return loss_functions

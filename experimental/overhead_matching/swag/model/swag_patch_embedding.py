@@ -580,6 +580,29 @@ class SwagPatchEmbedding(torch.nn.Module):
         return input_tokens, input_mask, extractor_outputs_by_name
 
     def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None):
+        """Forward pass through the model.
+
+        Args:
+            model_input: Input containing image and metadata.
+            landmark_dropout_scheduler: Optional dropout scheduler applied to
+                landmark tokens before the aggregator.
+
+        Returns:
+            Tuple of (embeddings, extractor_outputs_by_name).
+
+            When `skip_aggregation=False` (default), `embeddings` are the
+            aggregated class-token outputs of shape (B, num_class_tokens, D_emb),
+            optionally L2-normalized per `normalize_embeddings`.
+
+            When `skip_aggregation=True`, `embeddings` are the raw input tokens
+            (no CLS, no aggregation) with padded slots replaced by NaN so callers
+            can mask them out.
+
+            `extractor_outputs_by_name` is a dict mapping extractor name to its
+            `ExtractorOutput` (features, positions, mask). Losses like
+            `DistillationLossConfig` read a frozen teacher token directly from
+            this dict.
+        """
         if self._config.skip_aggregation:
             # Skip aggregation mode: return all input tokens without class tokens
             input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(

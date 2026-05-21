@@ -10,7 +10,7 @@ from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
 from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
 from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
-from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
+from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pairs, PairingDataType
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
 from experimental.overhead_matching.swag.model import (
@@ -320,8 +320,7 @@ def train(config: TrainConfig,
           quiet,
           capture_model_data: bool = False,
           num_batches_to_capture: int = 10,
-          generator: torch.Generator | None = None,
-          resume_state: dict | None = None):
+          generator: torch.Generator | None = None):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     # save config:
@@ -341,8 +340,6 @@ def train(config: TrainConfig,
     )
 
     distance_model = create_distance_from_config(config.distance_model_config)
-    if resume_state is not None and 'distance_model_weights' in resume_state:
-        distance_model.load_state_dict(resume_state.pop('distance_model_weights'))
     loss_functions = create_losses_from_loss_config_list(config.loss_configs)
 
     # Validate that skip_aggregation is only used with transformer_encoder distance
@@ -370,9 +367,8 @@ def train(config: TrainConfig,
                     f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
                     f"to disable hard negative mining.")
 
-    # Identity-init named extractor projections before training. Skipped when
-    # resuming, since the resumed weights are already tuned.
-    if config.identity_init_extractors and resume_state is None:
+    # Identity-init named extractor projections before training.
+    if config.identity_init_extractors:
         for name in config.identity_init_extractors:
             if hasattr(panorama_model, "identity_init_extractor_projection"):
                 panorama_model.identity_init_extractor_projection(name)
@@ -432,25 +428,9 @@ def train(config: TrainConfig,
 
     grad_scaler = torch.amp.GradScaler()
 
-    # Restore training state from checkpoint if resuming
     start_epoch = 0
-    if resume_state is not None:
-        start_epoch = resume_state['epoch'] + 1
-        if resume_state.get('optimizer') is not None:
-            opt.load_state_dict(resume_state['optimizer'])
-            lr_scheduler.load_state_dict(resume_state['lr_scheduler'])
-            grad_scaler.load_state_dict(resume_state['grad_scaler'])
-        else:
-            debug_log("WARNING: No optimizer/scheduler/scaler state in checkpoint — starting them fresh")
-        debug_log(f"Resumed from checkpoint at epoch {resume_state['epoch']}, starting at epoch {start_epoch}")
 
     torch.set_printoptions(linewidth=200)
-
-    pairing_type = PairingType.PAIRS
-
-    for loss_config in config.loss_configs:
-        if isinstance(loss_config, InfoNCELossConfig):
-            pairing_type = PairingType.ANCHOR_SETS
 
     # Track best model based on validation MRR (higher is better)
     # If no non-training validation datasets, fall back to loss (lower is better)
@@ -472,17 +452,6 @@ def train(config: TrainConfig,
 
     total_batches = 0
 
-    # Restore tracking state from resume checkpoint
-    if resume_state is not None:
-        best_metric = resume_state['best_metric']
-        best_epoch = resume_state['best_epoch']
-        total_batches = resume_state['total_batches']
-        debug_log(f"Restored best_metric={best_metric}, best_epoch={best_epoch}, total_batches={total_batches}")
-        if start_epoch >= opt_config.num_epochs:
-            raise RuntimeError(
-                f"Resume checkpoint is at epoch {start_epoch - 1} but num_epochs={opt_config.num_epochs}. "
-                f"Increase num_epochs in the config to continue training.")
-
     for epoch_idx in tqdm.tqdm(range(start_epoch, opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
 
@@ -492,24 +461,16 @@ def train(config: TrainConfig,
         if sat_dropout_scheduler is not None:
             sat_dropout_scheduler.set_epoch(epoch_idx)
         for batch_idx, batch in enumerate(dataloader):
-            match pairing_type:
-                case PairingType.PAIRS:
-                    pairing_data = create_pairs(
-                        batch.panorama_metadata,
-                        batch.satellite_metadata
-                    )
+            pairing_data = create_pairs(
+                batch.panorama_metadata,
+                batch.satellite_metadata
+            )
 
-                    if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
-                        pairing_data = Pairs(
-                            positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
-                            semipositive_pairs=[],
-                            negative_pairs=pairing_data.negative_pairs)
-                case PairingType.ANCHOR_SETS:
-                    pairing_data = create_anchors(
-                        batch.panorama_metadata,
-                        batch.satellite_metadata,
-                        use_pano_as_anchor=False
-                    )
+            if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                pairing_data = Pairs(
+                    positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
+                    semipositive_pairs=[],
+                    negative_pairs=pairing_data.negative_pairs)
                 case _:
                     raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
             opt.zero_grad()
@@ -727,9 +688,6 @@ def main(
         capture_model_data: bool = False,
         num_batches_to_capture: int = 10,
         seed: int | None = None,
-        resume: Path | None = None,
-        resume_checkpoint: str = "last",
-        resume_epoch: int | None = None,
 ):
 
     with open(train_config_path, 'r') as file_in:
@@ -853,12 +811,8 @@ def main(
 
         validation_datasets[validation_dataset_paths[0].name] = val_dataset
 
-    # When resuming, reuse the existing output directory; otherwise create a new timestamped one
-    if resume is not None:
-        output_dir = resume
-    else:
-        timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
-        output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
+    timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+    output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
     tensorboard_output = train_config.tensorboard_output
     tensorboard_output = tensorboard_output if tensorboard_output is not None else output_dir
 
@@ -873,10 +827,6 @@ def main(
 
         distance_model = create_distance_from_config(train_config.distance_model_config)
         loss_functions = create_losses_from_loss_config_list(train_config.loss_configs)
-        pairing_type = PairingType.PAIRS
-        for loss_config in train_config.loss_configs:
-            if isinstance(loss_config, InfoNCELossConfig):
-                pairing_type = PairingType.ANCHOR_SETS
         optimal_lr = run_lr_sweep(
             lr_sweep_config=train_config.opt_config.lr_sweep_config,
             dataset=dataset,
@@ -889,7 +839,6 @@ def main(
             create_training_components_fn=create_training_components,
             setup_models_for_training_fn=setup_models_for_training,
             loss_functions=loss_functions,
-            pairing_type=pairing_type,
             quiet=quiet,
             generator=generator
         )
@@ -898,49 +847,6 @@ def main(
         train_config.opt_config.lr_schedule.initial_lr = optimal_lr
         if not quiet:
             print(f"Updated initial learning rate to {optimal_lr:.2e}")
-
-    # Load checkpoint weights and training state if resuming
-    resume_state = None
-    if resume is not None:
-        checkpoint_name = resume_checkpoint
-
-        pano_weights = resume / f"{checkpoint_name}_panorama" / "model_weights.pt"
-        sat_weights = resume / f"{checkpoint_name}_satellite" / "model_weights.pt"
-        dist_weights = resume / f"{checkpoint_name}_distance" / "model_weights.pt"
-        state_path = resume / f"{checkpoint_name}_training_state.pt"
-
-        if not pano_weights.exists():
-            raise FileNotFoundError(f"Panorama weights not found: {pano_weights}")
-        if not sat_weights.exists():
-            raise FileNotFoundError(f"Satellite weights not found: {sat_weights}")
-
-        print(f"Resuming from {resume} checkpoint '{checkpoint_name}'")
-        panorama_model.load_state_dict(torch.load(pano_weights, weights_only=True))
-        satellite_model.load_state_dict(torch.load(sat_weights, weights_only=True))
-
-        if state_path.exists():
-            resume_state = torch.load(state_path, weights_only=True)
-            if dist_weights.exists():
-                resume_state['distance_model_weights'] = torch.load(dist_weights, weights_only=True)
-            print(f"  Resuming from epoch {resume_state['epoch']}, "
-                  f"best_metric={resume_state['best_metric']}, "
-                  f"total_batches={resume_state['total_batches']}")
-        else:
-            if resume_epoch is None:
-                raise FileNotFoundError(
-                    f"Training state not found: {state_path}. "
-                    f"Use --resume_epoch to specify the epoch to resume from.")
-            print(f"  No training_state.pt found. Using --resume_epoch={resume_epoch}. "
-                  f"Starting optimizer fresh.")
-            resume_state = {
-                'epoch': resume_epoch - 1,
-                'optimizer': None,
-                'lr_scheduler': None,
-                'grad_scaler': None,
-                'best_metric': None,
-                'best_epoch': -1,
-                'total_batches': 0,
-            }
 
     if not no_ipdb:
         import ipdb
@@ -958,8 +864,7 @@ def main(
             quiet=quiet,
             capture_model_data=capture_model_data,
             num_batches_to_capture=num_batches_to_capture,
-            generator=generator,
-            resume_state=resume_state)
+            generator=generator)
 
 
 if __name__ == "__main__":
@@ -977,18 +882,7 @@ if __name__ == "__main__":
                         help="Number of batches to capture (default: 10)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible training. If seed set in CLI and train_config, throws")
-    parser.add_argument("--resume", type=Path, default=None,
-                        help="Path to a training output directory to resume from")
-    parser.add_argument("--resume_checkpoint", type=str, default="last",
-                        help="Which checkpoint to load: 'best', 'last', or an epoch number (e.g. '50' loads 0050_*)")
-    parser.add_argument("--resume_epoch", type=int, default=None,
-                        help="Override the epoch to resume from (use when no training_state.pt exists)")
     args = parser.parse_args()
-
-    # Normalize epoch number to zero-padded format (e.g. "50" -> "0050")
-    resume_checkpoint = args.resume_checkpoint
-    if resume_checkpoint not in ("best", "last") and resume_checkpoint.isdigit():
-        resume_checkpoint = f"{int(resume_checkpoint):04d}"
 
     main(
         Path(args.dataset_base),
@@ -998,7 +892,4 @@ if __name__ == "__main__":
         quiet=args.quiet,
         capture_model_data=args.capture_model_data,
         num_batches_to_capture=args.num_batches_to_capture,
-        seed=args.seed,
-        resume=args.resume,
-        resume_checkpoint=resume_checkpoint,
-        resume_epoch=args.resume_epoch)
+        seed=args.seed)
