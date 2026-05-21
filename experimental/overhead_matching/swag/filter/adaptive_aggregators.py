@@ -53,12 +53,31 @@ class SafaPlusNormalizedLandmarkAggregatorConfig(
     Gaussian-on-residuals to ``r_norm = 1 − sim_t / row_max`` at
     ``landmark_sigma``. All-zero / constant landmark rows fall through
     to image-only.
+
+    When ``landmark_use_raw_residual`` is True, the landmark stream uses
+    the same SAFA-form raw residual ``row_max − sim_t`` as the image
+    stream. Use this when the second matrix is a similarity matrix on
+    the same scale as the image stream (e.g. an OSM-tile-baseline SAFA
+    matrix), where the per-row /max normalization is unnecessary.
+    Note ``landmark_sigma`` then lives on the raw-cosine scale rather
+    than the [0,1] normalized scale.
+
+    The two modes also differ in their NaN contract on the landmark
+    matrix:
+
+    * Normalized-residual (default): NaN entries are legitimate "no
+      landmark info for this cell" signals; the aggregator falls back
+      to image-only at those positions.
+    * Raw-residual: ``landmark_similarity_matrix`` is expected dense.
+      Any NaN/inf entry indicates a bug (stale matrix, broken export,
+      etc.) and raises eagerly.
     """
 
     image_similarity_matrix_path: Path
     landmark_similarity_matrix_path: Path
     image_sigma: float
     landmark_sigma: float
+    landmark_use_raw_residual: bool = False
 
     def __post_init__(self):
         if not (self.image_sigma > 0):
@@ -85,12 +104,14 @@ def _replace_nan_with_zero(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
-def _raise_if_nonfinite(tensor: torch.Tensor, pano_id: str, name: str) -> None:
+def _raise_if_nonfinite(
+    tensor: torch.Tensor, pano_id: str, name: str, cls_name: str
+) -> None:
     nonfinite = ~torch.isfinite(tensor)
     if nonfinite.any():
         first_idx = int(torch.nonzero(nonfinite, as_tuple=False)[0].item())
         raise RuntimeError(
-            f"SafaPlusNormalizedLandmarkAggregator: non-finite value in {name} "
+            f"{cls_name}: non-finite value in {name} "
             f"for pano_id={pano_id!r} at index {first_idx} "
             f"(value={tensor.flatten()[first_idx].item()})."
         )
@@ -197,7 +218,8 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
         log_ll = wag_observation_log_likelihood_from_similarity_matrix(
             similarity, self.sigma
         )
-        return _replace_nan_with_zero(log_ll).to(self.device)
+        _raise_if_nonfinite(log_ll, pano_id, "log_ll", cls_name=type(self).__name__)
+        return log_ll.to(self.device)
 
     @classmethod
     def from_config(
@@ -426,11 +448,13 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         image_sigma: float,
         landmark_sigma: float,
         device: torch.device,
+        landmark_use_raw_residual: bool = False,
     ):
         self.image_similarity_matrix = image_similarity_matrix
         self.landmark_similarity_matrix = landmark_similarity_matrix
         self.image_sigma = float(image_sigma)
         self.landmark_sigma = float(landmark_sigma)
+        self.landmark_use_raw_residual = bool(landmark_use_raw_residual)
         self.device = device
         self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
 
@@ -444,33 +468,52 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
             img_sim, self.image_sigma
         )
-        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img")
+        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img", cls_name=type(self).__name__)
 
-        # Landmark-side: per-row /max normalization, then Gaussian-on-r_norm.
-        # Fall through to image-only when the landmark row is uninformative.
-        lm_finite_mask = torch.isfinite(lm_sim)
-        if not lm_finite_mask.any():
-            return log_p_img
-        lm_finite = lm_sim[lm_finite_mask]
-        sim_max_lm = lm_finite.max()
-        sim_min_lm = lm_finite.min()
-        if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
-            # All-zero or constant row → landmark is uninformative.
-            return log_p_img
-
-        norm_sim = lm_sim / sim_max_lm
-        r_norm = 1.0 - norm_sim
-        sigma_lm = self.landmark_sigma
-        log_norm_const = -torch.log(
-            torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
-        ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
-        log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
-
-        # Mask out non-finite landmark entries (image-only at those indices).
-        log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
+        # Landmark stream — branch on residual form. The two branches have
+        # *different* NaN contracts:
+        #
+        #   * raw-residual: lm_sim is expected dense (a second SAFA-form
+        #     matrix on the same scale as the image stream, e.g. an OSM-tile
+        #     baseline). NaN/inf indicates a bug — stale matrix, broken
+        #     export, etc. — and is raised eagerly.
+        #
+        #   * normalized-residual (#626): lm_sim is sparse-with-holes; NaN
+        #     means "no landmark info for this cell" and we fall back to
+        #     image-only at those positions.
+        if self.landmark_use_raw_residual:
+            _raise_if_nonfinite(lm_sim, pano_id, "lm_sim", cls_name=type(self).__name__)
+            sim_max_lm = lm_sim.max()
+            sim_min_lm = lm_sim.min()
+            if sim_max_lm == sim_min_lm:
+                # Constant row → uniform log_p_lm (no spatial information).
+                # Skip the landmark contribution entirely.
+                return log_p_img
+            log_p_lm = wag_observation_log_likelihood_from_similarity_matrix(
+                lm_sim, self.landmark_sigma
+            )
+        else:
+            lm_finite_mask = torch.isfinite(lm_sim)
+            if not lm_finite_mask.any():
+                return log_p_img
+            lm_finite = lm_sim[lm_finite_mask]
+            sim_max_lm = lm_finite.max()
+            sim_min_lm = lm_finite.min()
+            if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
+                # All-zero or constant row → landmark is uninformative.
+                return log_p_img
+            norm_sim = lm_sim / sim_max_lm
+            r_norm = 1.0 - norm_sim
+            sigma_lm = self.landmark_sigma
+            log_norm_const = -torch.log(
+                torch.sqrt(torch.tensor(2 * torch.pi, device=lm_sim.device))
+            ) - torch.log(torch.tensor(sigma_lm, device=lm_sim.device))
+            log_p_lm = log_norm_const - 0.5 * torch.square(r_norm / sigma_lm)
+            # Mask non-finite landmark entries → image-only at those positions.
+            log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
 
         log_p = log_p_img + log_p_lm
-        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm")
+        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm", cls_name=type(self).__name__)
         return log_p
 
     @classmethod
@@ -500,6 +543,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
             panorama_metadata=vigor_dataset._panorama_metadata,
             image_sigma=config.image_sigma,
             landmark_sigma=config.landmark_sigma,
+            landmark_use_raw_residual=config.landmark_use_raw_residual,
             device=device,
         )
 

@@ -27,8 +27,9 @@ def planetiler_jar_path() -> Path:
 def compute_vigor_bbox(satellite_dir: Path, buffer_km: float = 1.0) -> tile_geometry.TileBBox:
     lats: list[float] = []
     lons: list[float] = []
+    sat_suffixes = {".png", ".jpg", ".jpeg"}
     for p in satellite_dir.iterdir():
-        if p.suffix != ".png":
+        if p.suffix.lower() not in sat_suffixes:
             continue
         try:
             lat, lon = tile_geometry.satellite_filename_to_center(p.name)
@@ -37,7 +38,7 @@ def compute_vigor_bbox(satellite_dir: Path, buffer_km: float = 1.0) -> tile_geom
         lats.append(lat)
         lons.append(lon)
     if not lats:
-        raise RuntimeError(f"no satellite_*.png files found under {satellite_dir}")
+        raise RuntimeError(f"no satellite_*.{{png,jpg}} files found under {satellite_dir}")
     deg_per_km_lat = 1.0 / 110.574
     # Conservative cosine using the southernmost latitude (largest deg/km).
     import math
@@ -102,7 +103,9 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--city", required=True, choices=city_pbf_map.cities())
     p.add_argument("--vigor-root", type=Path, default=Path("/data/overhead_matching/datasets/VIGOR"))
-    p.add_argument("--dumps-dir", type=Path, default=DEFAULT_DUMPS_DIR)
+    p.add_argument("--dumps-dir", type=Path, action="append", dest="dumps_dirs",
+                   help="osm.pbf search dir; repeat for multiple search paths "
+                        f"(default: {DEFAULT_DUMPS_DIR})")
     p.add_argument("--output-dir", type=Path, default=Path("/data/overhead_matching/baseline/mbtiles"))
     p.add_argument("--download-dir", type=Path,
                    default=Path("/data/overhead_matching/baseline/planetiler_sources"),
@@ -116,9 +119,10 @@ def main() -> int:
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
 
-    pbf = city_pbf_map.resolve_pbf(args.city, args.dumps_dir)
+    dumps_dirs = args.dumps_dirs or [DEFAULT_DUMPS_DIR]
+    pbf = city_pbf_map.resolve_pbf(args.city, dumps_dirs)
     if not pbf.exists():
-        logger.error("PBF not found: %s", pbf)
+        logger.error("PBF not found: %s (searched %s)", pbf, [str(d) for d in dumps_dirs])
         return 1
 
     output = args.output_dir / f"{city_pbf_map.region_label(args.city)}.mbtiles"

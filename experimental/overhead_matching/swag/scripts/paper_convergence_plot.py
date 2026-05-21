@@ -12,14 +12,14 @@ from pathlib import Path
 
 
 ENVIRONMENTS = [
-    "Seattle",
+    "NewYork",
+    "SanFrancisco_mapillary",
     "Boston",
-    "Framingham",
+    "nightdrive",
     "Middletown",
     "Norway",
-    "post_hurricane_ian",
-    "SanFrancisco_mapillary",
-    "nightdrive",
+    "post_hurricane_ian_sw",
+    "Framingham",
 ]
 
 DISPLAY_NAMES = {
@@ -28,8 +28,10 @@ DISPLAY_NAMES = {
     "Middletown": "Middletown",
     "Norway": "Norway",
     "post_hurricane_ian": "Fort Myers",
+    "post_hurricane_ian_sw": "Fort Myers",
     "SanFrancisco_mapillary": "San Francisco",
     "Seattle": "Seattle",
+    "NewYork": "New York",
     "nightdrive": "Boston Night",
 }
 
@@ -61,14 +63,20 @@ def _enumerate_path_dirs(eval_dir: Path) -> list[Path]:
 
 
 def load_per_path_convergence_costs(summary_path: Path) -> dict:
-    """Load per-path convergence costs from summary_statistics.json."""
+    """Load per-path convergence costs from summary_statistics.json.
+
+    Raises if any radius in ``RADII`` is missing — refuses to silently drop a
+    column from the table.
+    """
     with open(summary_path) as f:
         stats = json.load(f)
-    return {
-        r: np.array(stats[f"convergence_cost_{r}m"])
-        for r in RADII
-        if f"convergence_cost_{r}m" in stats
-    }
+    result = {}
+    for r in RADII:
+        key = f"convergence_cost_{r}m"
+        if key not in stats:
+            raise KeyError(f"{summary_path} is missing {key!r}")
+        result[r] = np.array(stats[key])
+    return result
 
 
 def load_per_path_final_errors(eval_dir: Path) -> np.ndarray:
@@ -81,23 +89,21 @@ def load_per_path_final_errors(eval_dir: Path) -> np.ndarray:
 
 
 def load_per_path_convergence_curves(
-    eval_dir: Path, radius: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Load per-path convergence curves (prob mass vs distance traveled).
+    eval_dir: Path, radius: int, distance_grid: np.ndarray
+) -> np.ndarray:
+    """Load per-path prob-mass curves and interpolate onto a common distance grid.
 
-    Returns:
-        distances:   (n_paths, path_len + 1) — cumulative distance at each step,
-                     with a prepended 0 for the initial state.
-        prob_masses: (n_paths, path_len + 1) — prob mass within ``radius`` at
-                     each step (initial + post each update).
+    Each path has its own number of steps and total traveled distance; we
+    interpolate ``prob_mass`` over ``distance`` onto ``distance_grid`` so paths
+    of different lengths can be averaged at matching distances. Grid points
+    beyond a path's final distance are filled with NaN, so callers should use
+    nan-aware reductions and track how many paths contributed at each grid
+    point.
 
-    Raises if path directories are not densely 0-indexed, if any path lacks
-    the requested radius in ``prob_mass_by_radius.pt``, or if paths have
-    different lengths.
+    Returns: (n_paths, len(distance_grid)) prob-mass array.
     """
     path_dirs = _enumerate_path_dirs(eval_dir)
 
-    distances = []
     prob_masses = []
     for path_dir in path_dirs:
         dist = torch.load(path_dir / "distance_traveled_m.pt", map_location="cpu")
@@ -109,25 +115,17 @@ def load_per_path_convergence_curves(
             )
         pm = pmr[radius].numpy()
         d = dist.numpy()
-        # prob_mass has length path_len + 1 (initial + after each step),
-        # distance has length path_len; prepend 0 for the initial state.
         d_with_init = np.concatenate([[0.0], d])
         if len(pm) != len(d_with_init):
             raise ValueError(
                 f"{path_dir}: prob_mass length {len(pm)} does not match "
                 f"distance length {len(d_with_init)} (= path_len + 1)"
             )
-        distances.append(d_with_init)
-        prob_masses.append(pm)
+        grid_pm = np.interp(distance_grid, d_with_init, pm)
+        grid_pm = np.where(distance_grid > d_with_init[-1], np.nan, grid_pm)
+        prob_masses.append(grid_pm)
 
-    expected_len = len(distances[0])
-    for i, (d, pm) in enumerate(zip(distances, prob_masses)):
-        if len(d) != expected_len:
-            raise ValueError(
-                f"{path_dirs[i]}: path length {len(d)} differs from path 0 "
-                f"length {expected_len}; this script requires fixed-length paths"
-            )
-    return np.asarray(distances), np.asarray(prob_masses)
+    return np.asarray(prob_masses)
 
 
 def compute_stats(values: np.ndarray) -> tuple[float, float]:
@@ -160,10 +158,7 @@ def load_method_data(method_dirs: dict[str, dict[str, Path]]):
         final_errors[method] = {}
         for env, path in env_paths.items():
             summary = path / "summary_statistics.json"
-            if summary.exists():
-                convergence_costs[method][env] = load_per_path_convergence_costs(
-                    summary
-                )
+            convergence_costs[method][env] = load_per_path_convergence_costs(summary)
             final_errors[method][env] = load_per_path_final_errors(path)
 
     return convergence_costs, final_errors
@@ -180,22 +175,28 @@ def plot_convergence_curves(
     xlim_m: float | None = 3000,
     method_colors: dict[str, str] | None = None,
     method_labels: dict[str, str] | None = None,
+    grid_resolution_m: float = 25.0,
+    min_paths_for_ci: int = 10,
 ):
     """Plot convergence curves (prob mass vs distance) per environment.
 
-    All paths under each (env, method) must have the same length; the
-    shaded band is a 95% CI for the mean (1.96 · SEM across paths)."""
+    Path lengths can vary across paths and methods; each path's prob-mass
+    curve is interpolated onto a common distance grid (resolution
+    ``grid_resolution_m``). Means / CIs use nan-aware reductions, and grid
+    points where fewer than ``min_paths_for_ci`` paths contributed are
+    truncated from the plot."""
     if method_colors is None:
-        method_colors = {
-            method_names[0]: "#888888",
-            method_names[1]: "#2196F3",
-        }
+        default_palette = ["#888888", "#FF9800", "#2196F3", "#4CAF50", "#9C27B0"]
+        method_colors = {m: default_palette[i % len(default_palette)] for i, m in enumerate(method_names)}
     if method_labels is None:
         method_labels = {m: m for m in method_names}
 
     # Line styles cycle for radii
     all_linestyles = ["-", "--", ":", "-."]
     radius_linestyles = {r: all_linestyles[i % len(all_linestyles)] for i, r in enumerate(radii)}
+
+    grid_max = xlim_m if xlim_m is not None else 5000.0
+    distance_grid = np.arange(0.0, grid_max + grid_resolution_m, grid_resolution_m)
 
     n_envs = len(ENVIRONMENTS)
     n_cols = 4
@@ -209,32 +210,40 @@ def plot_convergence_curves(
         for radius in radii:
             ls = radius_linestyles[radius]
             for method in method_names:
-                eval_dir = method_dirs[method].get(env)
-                if eval_dir is None or not eval_dir.exists():
+                if env not in method_dirs[method]:
                     continue
+                eval_dir = method_dirs[method][env]
 
-                distances, prob_masses = load_per_path_convergence_curves(
-                    eval_dir, radius
+                prob_masses = load_per_path_convergence_curves(
+                    eval_dir, radius, distance_grid
                 )
-                n_paths = len(prob_masses)
-                mean_distance = distances.mean(axis=0)
-                mean_pm = prob_masses.mean(axis=0)
-                pm_std = prob_masses.std(axis=0, ddof=1)
-                ci95 = 1.96 * pm_std / np.sqrt(n_paths)
+                n_valid = np.sum(~np.isnan(prob_masses), axis=0)
+                keep = n_valid >= min_paths_for_ci
+                if not np.any(keep):
+                    continue
+                with np.errstate(invalid="ignore"):
+                    mean_pm = np.nanmean(prob_masses, axis=0)
+                    pm_std = np.nanstd(prob_masses, axis=0, ddof=1)
+                ci95 = 1.96 * pm_std / np.sqrt(np.maximum(n_valid, 1))
+
+                x = distance_grid[keep]
+                y = mean_pm[keep]
+                lo = (mean_pm - ci95)[keep]
+                hi = (mean_pm + ci95)[keep]
 
                 label = f"{method_labels[method]} (r={radius}m)"
                 ax.plot(
-                    mean_distance,
-                    mean_pm,
+                    x,
+                    y,
                     label=label,
                     color=method_colors[method],
                     linestyle=ls,
                     linewidth=1.5,
                 )
                 ax.fill_between(
-                    mean_distance,
-                    mean_pm - ci95,
-                    mean_pm + ci95,
+                    x,
+                    lo,
+                    hi,
                     alpha=0.15,
                     color=method_colors[method],
                 )
@@ -244,7 +253,7 @@ def plot_convergence_curves(
         if xlim_m is not None:
             ax.set_xlim(0, xlim_m)
         ax.set_xlabel("Distance traveled (m)", fontsize=12)
-        ax.set_ylabel("P(mass within r)" if col == 0 else "", fontsize=12)
+        ax.set_ylabel("Probability mass within radius" if col == 0 else "", fontsize=12)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.xaxis.set_major_locator(ticker.MultipleLocator(1000))
@@ -280,15 +289,12 @@ def plot_convergence_curves(
 # -- Table --
 
 
-def _get_mean_ci(values: np.ndarray | None) -> tuple[float, float] | None:
-    if values is None or len(values) == 0:
-        return None
-    return compute_stats(values)
-
-
 def _fmt_val(mean: float, ci: float, bold: bool) -> str:
-    """Format a value as mean±ci for LaTeX, optionally bold."""
-    s = f"{mean:.0f}$\\pm${ci:.0f}"
+    """Format a value as mean±ci for LaTeX, optionally bold.
+
+    Both mean and CI to 1 decimal place.
+    """
+    s = f"{mean:.1f}$\\pm${ci:.1f}"
     return f"\\textbf{{{s}}}" if bold else s
 
 
@@ -298,43 +304,47 @@ def print_summary_table(
     method_names: list[str],
     method_labels: dict[str, str] | None = None,
 ):
-    """Print a paired-comparison LaTeX table. Lower is better; best is bolded."""
+    """Print a multi-method LaTeX table. Lower is better; best is bolded per row."""
     if method_labels is None:
         method_labels = {m: m for m in method_names}
 
-    assert len(method_names) == 2, "Paired table expects exactly 2 methods"
-    m_a, m_b = method_names
+    n_methods = len(method_names)
+    assert n_methods >= 2, "Table expects at least 2 methods"
 
-    # Metrics: (label, radius or None for final error)
-    metrics = [(f"CC$_{{100}}$", 100), ("Error", None)]
+    # Metrics: (label, radius or None for final error). All are "lower is
+    # better" so each label gets a $\downarrow$ marker. Values are in meters.
+    metrics = [
+        ("CC$_{100}$ (m) $\\downarrow$", 100),
+        ("Final Error (m) $\\downarrow$", None),
+    ]
 
     n_metrics = len(metrics)
-    col_spec = "l" + "rr" * n_metrics
-    # Header row 1: metric names spanning 2 columns each
+    col_spec = "l" + ("r" * n_methods) * n_metrics
+    # Header row 1: metric names spanning n_methods columns each
     header1_parts = []
     for label, _ in metrics:
-        header1_parts.append(f"\\multicolumn{{2}}{{c}}{{{label}}}")
+        header1_parts.append(f"\\multicolumn{{{n_methods}}}{{c}}{{{label}}}")
     header1 = " & ".join([""] + header1_parts) + " \\\\"
 
     # Header row 2: method names under each metric
     header2_parts = []
     for _ in metrics:
-        header2_parts.append(method_labels[m_a])
-        header2_parts.append(method_labels[m_b])
+        for m in method_names:
+            header2_parts.append(method_labels[m])
     header2 = " & ".join([""] + header2_parts) + " \\\\"
 
     # cmidrules for grouping
     cmidrules = ""
     for i in range(n_metrics):
-        col_start = 2 + i * 2
-        col_end = col_start + 1
+        col_start = 2 + i * n_methods
+        col_end = col_start + n_methods - 1
         cmidrules += f"\\cmidrule(lr){{{col_start}-{col_end}}} "
 
     lines = []
-    lines.append("\\begin{table}[t]")
+    lines.append("\\begin{table*}[t]")
     lines.append("\\centering")
     lines.append("\\caption{Convergence cost (m) and final localization error (m) across environments. "
-                  "Values shown as mean $\\pm$ 95\\% CI. \\textbf{Bold} indicates the better method.}")
+                  "Values shown as mean $\\pm$ 95\\% CI. \\textbf{Bold} indicates the best method.}")
     lines.append(f"\\begin{{tabular}}{{{col_spec}}}")
     lines.append("\\toprule")
     lines.append(header1)
@@ -345,32 +355,37 @@ def print_summary_table(
     for env in ENVIRONMENTS:
         row_parts = [DISPLAY_NAMES[env]]
         for _, radius in metrics:
-            if radius is not None:
-                val_a = _get_mean_ci(convergence_costs[m_a].get(env, {}).get(radius))
-                val_b = _get_mean_ci(convergence_costs[m_b].get(env, {}).get(radius))
-            else:
-                val_a = _get_mean_ci(final_errors[m_a].get(env))
-                val_b = _get_mean_ci(final_errors[m_b].get(env))
+            vals = []
+            for m in method_names:
+                if radius is not None:
+                    if env in convergence_costs[m]:
+                        v = compute_stats(convergence_costs[m][env][radius])
+                    else:
+                        v = None
+                else:
+                    if env in final_errors[m]:
+                        v = compute_stats(final_errors[m][env])
+                    else:
+                        v = None
+                vals.append(v)
 
-            if val_a is None:
-                row_parts.append("--")
-            elif val_b is None:
-                row_parts.append(_fmt_val(*val_a, bold=False))
+            non_none = [(i, v) for i, v in enumerate(vals) if v is not None]
+            if non_none:
+                best_idx = min(non_none, key=lambda x: x[1][0])[0]
             else:
-                row_parts.append(_fmt_val(*val_a, bold=val_a[0] <= val_b[0]))
+                best_idx = -1
 
-            if val_b is None:
-                row_parts.append("--")
-            elif val_a is None:
-                row_parts.append(_fmt_val(*val_b, bold=False))
-            else:
-                row_parts.append(_fmt_val(*val_b, bold=val_b[0] <= val_a[0]))
+            for i, v in enumerate(vals):
+                if v is None:
+                    row_parts.append("--")
+                else:
+                    row_parts.append(_fmt_val(*v, bold=(i == best_idx)))
 
         lines.append(" & ".join(row_parts) + " \\\\")
 
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
-    lines.append("\\end{table}")
+    lines.append("\\end{table*}")
 
     print("\n".join(lines))
 
@@ -386,14 +401,20 @@ def main():
     parser.add_argument(
         "--baseline_dir",
         type=str,
-        default="/data/overhead_matching/evaluation/results/260310_all_non_vigor_datasets",
+        default="/data/overhead_matching/evaluation/results/260428_v6_safa_only_noise014",
         help="Base directory for SAFA baseline results",
     )
     parser.add_argument(
         "--ours_dir",
         type=str,
-        default="/data/overhead_matching/evaluation/results/260330_panov2_tuned_prompt",
+        default="/data/overhead_matching/evaluation/results/260501_v6_safa_plus_norm_lm",
         help="Base directory for our method results",
+    )
+    parser.add_argument(
+        "--osm_dir",
+        type=str,
+        default="/data/overhead_matching/evaluation/results/260504_160045_osm_baseline",
+        help="Base directory for OSM baseline results (may cover only a subset of envs)",
     )
     parser.add_argument(
         "--seattle_results_dir",
@@ -405,14 +426,51 @@ def main():
     parser.add_argument(
         "--baseline_method",
         type=str,
-        default="image_only",
+        default="safa_only",
         help="Subdirectory name for baseline method within each city",
     )
     parser.add_argument(
         "--ours_method",
         type=str,
-        default="ea_safa_corr",
+        default="safa_plus_norm_lm",
         help="Subdirectory name for our method within each city",
+    )
+    parser.add_argument(
+        "--osm_method",
+        type=str,
+        default="dinov3_osm",
+        help="Subdirectory name for OSM baseline method within each city",
+    )
+    parser.add_argument(
+        "--osm_label",
+        type=str,
+        default="DINOv3+OSM",
+        help="Display label for the OSM-baseline method in legends and tables",
+    )
+    parser.add_argument(
+        "--baseline_label",
+        type=str,
+        default="WAG",
+        help="Display label for the SAFA/WAG baseline method in legends and tables",
+    )
+    parser.add_argument(
+        "--early_dir",
+        type=str,
+        default=None,
+        help="Base directory for an additional 'early fusion' method (per-city "
+             "subdirs; may cover a subset of envs). Skipped if not set.",
+    )
+    parser.add_argument(
+        "--early_method",
+        type=str,
+        default="early_fusion_attempt_v1",
+        help="Subdirectory name for the early-fusion method within each city",
+    )
+    parser.add_argument(
+        "--early_label",
+        type=str,
+        default="Early Fusion",
+        help="Display label for the early-fusion method in legends and tables",
     )
     parser.add_argument(
         "--curve_radii",
@@ -427,6 +485,13 @@ def main():
         default=3000,
         help="X-axis limit in meters for convergence curves (Fig B). 0 for no limit.",
     )
+    parser.add_argument(
+        "--allow_partial_method_coverage",
+        action="store_true",
+        help="Allow optional methods (OSM, Early Fusion) to cover only a subset "
+             "of ENVIRONMENTS. By default every requested method must have data "
+             "for every env or loading throws.",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output_dir)
@@ -434,6 +499,8 @@ def main():
 
     baseline_base = Path(args.baseline_dir)
     ours_base = Path(args.ours_dir)
+    osm_base = Path(args.osm_dir) if args.osm_dir else None
+    early_base = Path(args.early_dir) if args.early_dir else None
     seattle_base = Path(args.seattle_results_dir) if args.seattle_results_dir else None
 
     def base_for(env: str, default_base: Path) -> Path:
@@ -446,14 +513,42 @@ def main():
             env: base_for(env, baseline_base) / env / args.baseline_method
             for env in ENVIRONMENTS
         },
+        "osm": {},
+        "early": {},
         "ours": {
             env: base_for(env, ours_base) / env / args.ours_method
             for env in ENVIRONMENTS
         },
     }
+    def register_optional(base: Path | None, method_subdir: str) -> dict[str, Path]:
+        if base is None:
+            return {}
+        result = {}
+        for env in ENVIRONMENTS:
+            candidate = base / env / method_subdir
+            if args.allow_partial_method_coverage and not candidate.exists():
+                continue
+            result[env] = candidate
+        return result
 
-    method_colors = {"safa": "#888888", "ours": "#2196F3"}
-    method_labels = {"safa": "SAFA", "ours": "Ours"}
+    method_dirs["osm"] = register_optional(osm_base, args.osm_method)
+    method_dirs["early"] = register_optional(early_base, args.early_method)
+
+    method_names = ["safa", "osm", "early", "ours"]
+    if early_base is None:
+        method_names = [m for m in method_names if m != "early"]
+    method_colors = {
+        "safa": "#888888",
+        "osm": "#FF9800",
+        "early": "#4CAF50",
+        "ours": "#2196F3",
+    }
+    method_labels = {
+        "safa": args.baseline_label,
+        "osm": args.osm_label,
+        "early": args.early_label,
+        "ours": "Ours",
+    }
 
     # Load data
     print("Loading convergence costs and final errors...")
@@ -464,7 +559,7 @@ def main():
     xlim = args.xlim_m if args.xlim_m > 0 else None
     plot_convergence_curves(
         method_dirs,
-        ["safa", "ours"],
+        method_names,
         output_path,
         radii=args.curve_radii,
         xlim_m=xlim,
@@ -477,7 +572,7 @@ def main():
     print_summary_table(
         convergence_costs,
         final_errors,
-        ["safa", "ours"],
+        method_names,
         method_labels=method_labels,
     )
 
