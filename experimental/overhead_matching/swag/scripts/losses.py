@@ -3,7 +3,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
-from experimental.overhead_matching.swag.scripts.pairing import PairingDataType, Pairs
+from experimental.overhead_matching.swag.scripts.pairing import Pairs
 from typing import Any, Union, Callable
 from dataclasses import dataclass, field
 import msgspec
@@ -14,7 +14,7 @@ class LossInputs:
     similarity_matrix: torch.Tensor
     sat_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
     pano_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
-    pairing_data: PairingDataType
+    pairing_data: Pairs
     # Per-side extractor outputs (the second return value from a SwagPatchEmbedding
     # forward). Populated by `compute_loss` when the caller passes them; required
     # for losses that read a frozen teacher token like `DistillationLossConfig`.
@@ -295,7 +295,7 @@ def create_losses_from_loss_config_list(
 def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
                  pano_embeddings: torch.Tensor,  # N_pano x n_emb_pano x D_emb
                  similarity: torch.Tensor,  # N_pano x N_sat
-                 pairing_data: PairingDataType,
+                 pairing_data: Pairs,
                  loss_functions: list[LossFunctionType],
                  sat_extractor_outputs: dict[str, Any] | None = None,
                  pano_extractor_outputs: dict[str, Any] | None = None,

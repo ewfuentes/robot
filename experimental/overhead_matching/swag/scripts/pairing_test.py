@@ -1,6 +1,5 @@
 import unittest
-from experimental.overhead_matching.swag.scripts.pairing import (
-    create_pairs, create_anchors, PositiveAnchorSets, Pairs)
+from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pairs
 
 
 class PairingFunctionsTest(unittest.TestCase):
@@ -66,106 +65,6 @@ class PairingFunctionsTest(unittest.TestCase):
         self.assertEqual(pairs.positive_pairs, [])
         self.assertEqual(pairs.semipositive_pairs, [])
         self.assertEqual(pairs.negative_pairs, [])
-
-    def test_create_anchors_pano_as_anchor_basic(self):
-        panorama_metadata = [
-            {
-                'positive_satellite_idxs': [10, 11],
-                'semipositive_satellite_idxs': [12],
-            },
-            {
-                'positive_satellite_idxs': [11],
-                'semipositive_satellite_idxs': [],
-            },
-        ]
-        satellite_metadata = [
-            {'index': 10},
-            {'index': 11},
-            {'index': 12},
-            {'index': 13},
-        ]
-
-        anchors = create_anchors(panorama_metadata, satellite_metadata, use_pano_as_anchor=True)
-
-        self.assertIsInstance(anchors, PositiveAnchorSets)
-        self.assertEqual(anchors.anchor, [0, 1])
-        self.assertEqual(anchors.positive, [{0, 1}, {1}])
-        self.assertEqual(anchors.semipositive, [{2}, set()])
-
-    def test_create_anchors_sat_as_anchor_basic(self):
-        panorama_metadata = [
-            {'index': 20},
-            {'index': 21},
-            {'index': 22},
-        ]
-        satellite_metadata = [
-            {
-                'positive_panorama_idxs': [20, 21],
-                'semipositive_panorama_idxs': [22],
-            },
-            {
-                'positive_panorama_idxs': [21],
-                'semipositive_panorama_idxs': [],
-            },
-        ]
-
-        anchors = create_anchors(panorama_metadata, satellite_metadata, use_pano_as_anchor=False)
-
-        self.assertEqual(anchors.anchor, [0, 1])
-        self.assertEqual(anchors.positive, [{0, 1}, {1}])
-        self.assertEqual(anchors.semipositive, [{2}, set()])
-
-    def test_create_anchors_no_matches_in_batch(self):
-        panorama_metadata = [
-            {
-                'positive_satellite_idxs': [100, 101],
-                'semipositive_satellite_idxs': [102],
-            },
-        ]
-        satellite_metadata = [
-            {'index': 10},
-            {'index': 11},
-        ]
-
-        anchors = create_anchors(panorama_metadata, satellite_metadata, use_pano_as_anchor=True)
-
-        self.assertEqual(anchors.anchor, [0])
-        self.assertEqual(anchors.positive, [set()])
-        self.assertEqual(anchors.semipositive, [set()])
-
-    def test_create_anchors_partial_matches(self):
-        panorama_metadata = [
-            {
-                'positive_satellite_idxs': [10, 100],
-                'semipositive_satellite_idxs': [11, 101],
-            },
-        ]
-        satellite_metadata = [
-            {'index': 10},
-            {'index': 11},
-            {'index': 12},
-        ]
-
-        anchors = create_anchors(panorama_metadata, satellite_metadata, use_pano_as_anchor=True)
-
-        self.assertEqual(anchors.anchor, [0])
-        self.assertEqual(anchors.positive, [{0}])
-        self.assertEqual(anchors.semipositive, [{1}])
-
-    def test_create_anchors_duplicate_indices_handled(self):
-        panorama_metadata = [
-            {
-                'positive_satellite_idxs': [10],
-                'semipositive_satellite_idxs': [],
-            },
-        ]
-        satellite_metadata = [
-            {'index': 10},
-            {'index': 10},
-        ]
-
-        with self.assertRaises(AssertionError):
-            create_anchors(panorama_metadata, satellite_metadata, use_pano_as_anchor=True)
 
 
 if __name__ == "__main__":

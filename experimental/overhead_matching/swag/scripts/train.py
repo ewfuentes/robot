@@ -8,9 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
-from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
+from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list
 from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
-from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pairs, PairingDataType
+from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pairs
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
 from experimental.overhead_matching.swag.model import (
@@ -152,8 +152,7 @@ class TrainConfig:
     # Names of extractors whose input projections should be identity-initialized
     # (zero-padded identity weight, zero bias, zero token marker) at training
     # start. Used to keep the model close to "passthrough of the named extractor"
-    # at init when distilling against that extractor's frozen output. Has no
-    # effect when resuming from a checkpoint.
+    # at init when distilling against that extractor's frozen output.
     identity_init_extractors: list[str] = field(default_factory=list)
 
 @torch.no_grad
@@ -203,7 +202,6 @@ def save_checkpoint(
     distance_model,
     dataset,
     remove_existing: bool = False,
-    training_state: dict | None = None,
 ):
     """Save a checkpoint with the given name prefix."""
     import shutil
@@ -212,14 +210,11 @@ def save_checkpoint(
     panorama_model_path = output_dir / f"{checkpoint_name}_panorama"
     satellite_model_path = output_dir / f"{checkpoint_name}_satellite"
     distance_model_path = output_dir / f"{checkpoint_name}_distance"
-    training_state_path = output_dir / f"{checkpoint_name}_training_state.pt"
 
     if remove_existing:
         for path in [panorama_model_path, satellite_model_path, distance_model_path]:
             if path.exists():
                 shutil.rmtree(path)
-        if training_state_path.exists():
-            training_state_path.unlink()
 
     save_dataloader = vigor_dataset.get_dataloader(dataset, batch_size=16)
     batch = next(iter(save_dataloader))
@@ -231,9 +226,6 @@ def save_checkpoint(
         sat_emb, _ = satellite_model(sat_model_input)
         pano_emb, _ = panorama_model(pano_model_input)
         save_model(distance_model, distance_model_path, (sat_emb, pano_emb))
-
-    if training_state is not None:
-        torch.save(training_state, training_state_path)
 
 
 def create_training_components(dataset,
@@ -278,7 +270,7 @@ def compute_forward_pass_and_loss(batch,
                                   panorama_model,
                                   satellite_model,
                                   distance_model,
-                                  pairing_data: PairingDataType,
+                                  pairing_data: Pairs,
                                   loss_functions: list[LossFunctionType],
                                   pano_dropout_scheduler=None,
                                   sat_dropout_scheduler=None,
@@ -428,8 +420,6 @@ def train(config: TrainConfig,
 
     grad_scaler = torch.amp.GradScaler()
 
-    start_epoch = 0
-
     torch.set_printoptions(linewidth=200)
 
     # Track best model based on validation MRR (higher is better)
@@ -452,7 +442,7 @@ def train(config: TrainConfig,
 
     total_batches = 0
 
-    for epoch_idx in tqdm.tqdm(range(start_epoch, opt_config.num_epochs),  desc="Epoch", disable=quiet):
+    for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
 
         # Update epoch for dropout schedulers
@@ -471,8 +461,6 @@ def train(config: TrainConfig,
                     positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
                     semipositive_pairs=[],
                     negative_pairs=pairing_data.negative_pairs)
-                case _:
-                    raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
@@ -617,15 +605,6 @@ def train(config: TrainConfig,
                 distance_model=distance_model,
                 dataset=dataset,
                 remove_existing=True,
-                training_state={
-                    'epoch': epoch_idx,
-                    'optimizer': opt.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'grad_scaler': grad_scaler.state_dict(),
-                    'best_metric': best_metric,
-                    'best_epoch': best_epoch,
-                    'total_batches': total_batches,
-                },
             )
 
         # Periodic checkpoint every 50 epochs
@@ -639,15 +618,6 @@ def train(config: TrainConfig,
                 distance_model=distance_model,
                 dataset=dataset,
                 remove_existing=True,
-                training_state={
-                    'epoch': epoch_idx,
-                    'optimizer': opt.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'grad_scaler': grad_scaler.state_dict(),
-                    'best_metric': best_metric,
-                    'best_epoch': best_epoch,
-                    'total_batches': total_batches,
-                },
             )
 
     # Always save the last model
@@ -660,15 +630,6 @@ def train(config: TrainConfig,
         distance_model=distance_model,
         dataset=dataset,
         remove_existing=True,
-        training_state={
-            'epoch': epoch_idx,
-            'optimizer': opt.state_dict(),
-            'lr_scheduler': lr_scheduler.state_dict(),
-            'grad_scaler': grad_scaler.state_dict(),
-            'best_metric': best_metric,
-            'best_epoch': best_epoch,
-            'total_batches': total_batches,
-        },
     )
 
 
