@@ -8,9 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
 from common.python.serialization import flatten_dict, msgspec_enc_hook, msgspec_dec_hook
-from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list, InfoNCELossConfig
+from experimental.overhead_matching.swag.scripts.losses import LossConfig, compute_loss, LossFunctionType, create_losses_from_loss_config_list
 from experimental.overhead_matching.swag.scripts.distances import DistanceConfig, LearnedDistanceFunctionConfig, create_distance_from_config
-from experimental.overhead_matching.swag.scripts.pairing import PairingType, create_pairs, create_anchors, Pairs, PairingDataType
+from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pairs
 from experimental.overhead_matching.swag.data import (
     vigor_dataset, satellite_embedding_database as sed, vigor_filters)
 from experimental.overhead_matching.swag.model import (
@@ -26,7 +26,7 @@ from experimental.overhead_matching.swag.scripts.logging_utils import (
 from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 from typing import Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pandas as pd
 import tqdm
 import msgspec
@@ -149,6 +149,11 @@ class TrainConfig:
     pano_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     sat_landmark_dropout_schedules: list[LandmarkDropoutScheduleConfig] = None
     seed: int | None = None
+    # Names of extractors whose input projections should be identity-initialized
+    # (zero-padded identity weight, zero bias, zero token marker) at training
+    # start. Used to keep the model close to "passthrough of the named extractor"
+    # at init when distilling against that extractor's frozen output.
+    identity_init_extractors: list[str] = field(default_factory=list)
 
 @torch.no_grad
 def compute_validation_metrics(
@@ -265,7 +270,7 @@ def compute_forward_pass_and_loss(batch,
                                   panorama_model,
                                   satellite_model,
                                   distance_model,
-                                  pairing_data: PairingDataType,
+                                  pairing_data: Pairs,
                                   loss_functions: list[LossFunctionType],
                                   pano_dropout_scheduler=None,
                                   sat_dropout_scheduler=None,
@@ -290,6 +295,8 @@ def compute_forward_pass_and_loss(batch,
             similarity=similarity,
             pairing_data=pairing_data,
             loss_functions=loss_functions,
+            sat_extractor_outputs=sat_debug,
+            pano_extractor_outputs=pano_debug,
         )
 
     return loss_dict, panorama_embeddings, sat_embeddings, {'sat': sat_debug, 'pano': pano_debug}
@@ -352,6 +359,14 @@ def train(config: TrainConfig,
                     f"hard negative mining. Set enable_hard_negative_sampling_after_epoch_idx >= num_epochs "
                     f"to disable hard negative mining.")
 
+    # Identity-init named extractor projections before training.
+    if config.identity_init_extractors:
+        for name in config.identity_init_extractors:
+            if hasattr(panorama_model, "identity_init_extractor_projection"):
+                panorama_model.identity_init_extractor_projection(name)
+            if hasattr(satellite_model, "identity_init_extractor_projection"):
+                satellite_model.identity_init_extractor_projection(name)
+
     # Setup models using extracted function
     panorama_model, satellite_model, distance_model = setup_models_for_training(
         panorama_model, satellite_model, distance_model)
@@ -407,12 +422,6 @@ def train(config: TrainConfig,
 
     torch.set_printoptions(linewidth=200)
 
-    pairing_type = PairingType.PAIRS
-
-    for loss_config in config.loss_configs:
-        if isinstance(loss_config, InfoNCELossConfig):
-            pairing_type = PairingType.ANCHOR_SETS
-
     # Track best model based on validation MRR (higher is better)
     # If no non-training validation datasets, fall back to loss (lower is better)
     best_metric = None
@@ -432,6 +441,7 @@ def train(config: TrainConfig,
         print(f"No non-training validation datasets found. Using loss for best model selection.")
 
     total_batches = 0
+
     for epoch_idx in tqdm.tqdm(range(opt_config.num_epochs),  desc="Epoch", disable=quiet):
         debug_log(f"Starting epoch {epoch_idx}")
 
@@ -441,26 +451,16 @@ def train(config: TrainConfig,
         if sat_dropout_scheduler is not None:
             sat_dropout_scheduler.set_epoch(epoch_idx)
         for batch_idx, batch in enumerate(dataloader):
-            match pairing_type:
-                case PairingType.PAIRS:
-                    pairing_data = create_pairs(
-                        batch.panorama_metadata,
-                        batch.satellite_metadata
-                    )
+            pairing_data = create_pairs(
+                batch.panorama_metadata,
+                batch.satellite_metadata
+            )
 
-                    if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
-                        pairing_data = Pairs(
-                            positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
-                            semipositive_pairs=[],
-                            negative_pairs=pairing_data.negative_pairs)
-                case PairingType.ANCHOR_SETS:
-                    pairing_data = create_anchors(
-                        batch.panorama_metadata,
-                        batch.satellite_metadata,
-                        use_pano_as_anchor=False
-                    )
-                case _:
-                    raise RuntimeError(f"Pairing type not recongnized, {pairing_type}")
+            if opt_config.random_sample_type == vigor_dataset.HardNegativeMiner.RandomSampleType.NEAREST:
+                pairing_data = Pairs(
+                    positive_pairs=pairing_data.positive_pairs + pairing_data.semipositive_pairs,
+                    semipositive_pairs=[],
+                    negative_pairs=pairing_data.negative_pairs)
             opt.zero_grad()
 
             # Use extracted function for forward pass and loss
@@ -617,6 +617,7 @@ def train(config: TrainConfig,
                 satellite_model=satellite_model,
                 distance_model=distance_model,
                 dataset=dataset,
+                remove_existing=True,
             )
 
     # Always save the last model
@@ -628,6 +629,7 @@ def train(config: TrainConfig,
         satellite_model=satellite_model,
         distance_model=distance_model,
         dataset=dataset,
+        remove_existing=True,
     )
 
 
@@ -770,7 +772,6 @@ def main(
 
         validation_datasets[validation_dataset_paths[0].name] = val_dataset
 
-    # Add datetime prefix to output directory
     timestamp = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
     output_dir = output_base_path / f"{timestamp}_{train_config.output_dir}"
     tensorboard_output = train_config.tensorboard_output
@@ -787,10 +788,6 @@ def main(
 
         distance_model = create_distance_from_config(train_config.distance_model_config)
         loss_functions = create_losses_from_loss_config_list(train_config.loss_configs)
-        pairing_type = PairingType.PAIRS
-        for loss_config in train_config.loss_configs:
-            if isinstance(loss_config, InfoNCELossConfig):
-                pairing_type = PairingType.ANCHOR_SETS
         optimal_lr = run_lr_sweep(
             lr_sweep_config=train_config.opt_config.lr_sweep_config,
             dataset=dataset,
@@ -803,7 +800,6 @@ def main(
             create_training_components_fn=create_training_components,
             setup_models_for_training_fn=setup_models_for_training,
             loss_functions=loss_functions,
-            pairing_type=pairing_type,
             quiet=quiet,
             generator=generator
         )

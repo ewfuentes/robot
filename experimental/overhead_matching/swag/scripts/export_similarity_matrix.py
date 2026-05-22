@@ -9,6 +9,12 @@ import common.torch.load_and_save_models as lsm
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
 from experimental.overhead_matching.swag.model import patch_embedding, swag_patch_embedding
+from experimental.overhead_matching.swag.model.swag_model_input_output import (
+    derive_data_requirements_from_model,
+)
+from experimental.overhead_matching.swag.model.swag_config_types import (
+    ExtractorDataRequirement,
+)
 import msgspec
 import json
 
@@ -120,6 +126,13 @@ def main():
     parser.add_argument("--satellite_subdir", type=str, default="satellite",
                         help="Subdirectory of dataset_path holding satellite tiles "
                              "(e.g. 'satellite' or 'satellite_osm'). Must match what the model was trained on.")
+    parser.add_argument("--panorama_landmark_radius_px", type=float, default=640.0,
+                        help="Match training config; only relevant if model uses landmark cache.")
+    parser.add_argument("--landmark_correspondence_inflation_factor", type=float, default=1.0,
+                        help="Match training config; only relevant if model uses landmark cache.")
+    parser.add_argument("--disable_safa_cache", action="store_true",
+                        help="Force live SAFA computation (load images, ignore tensor cache). "
+                             "Needed for cities that weren't pre-cached during training.")
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
@@ -127,17 +140,54 @@ def main():
         model_path, device=args.device, checkpoint=args.checkpoint,
         fallback_to_config=args.fallback_to_config)
 
+    # Determine effective use_cached_extractors. With --disable_safa_cache,
+    # treat everything as uncached so SAFA runs live on images.
+    if args.disable_safa_cache:
+        sat_cached = []
+        pano_cached = []
+        sat_cache_info = {}
+        pano_cache_info = {}
+    else:
+        sat_cached = getattr(sat_model._config, "use_cached_extractors", [])
+        pano_cached = getattr(pano_model._config, "use_cached_extractors", [])
+        sat_cache_info = sat_model.cache_info()
+        pano_cache_info = pano_model.cache_info()
+
+    sat_req = derive_data_requirements_from_model(
+        sat_model, use_cached_extractors=sat_cached)
+    pano_req = derive_data_requirements_from_model(
+        pano_model, use_cached_extractors=pano_cached)
+    all_req = sat_req | pano_req
+    should_load_images = ExtractorDataRequirement.IMAGES in all_req
+    should_load_landmarks = ExtractorDataRequirement.LANDMARKS in all_req
+
+    dataset_keys = [Path(args.dataset_path).name]
     dataset_config = vd.VigorDatasetConfig(
-        satellite_tensor_cache_info=None,
-        panorama_tensor_cache_info=None,
-        should_load_images=True,
-        should_load_landmarks=False,
+        satellite_tensor_cache_info=vd.TensorCacheInfo(
+            dataset_keys=dataset_keys,
+            model_type="satellite",
+            landmark_version=args.landmark_version,
+            panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=args.landmark_correspondence_inflation_factor,
+            extractor_info=sat_cache_info,
+        ),
+        panorama_tensor_cache_info=vd.TensorCacheInfo(
+            dataset_keys=dataset_keys,
+            model_type="panorama",
+            landmark_version=args.landmark_version,
+            panorama_landmark_radius_px=args.panorama_landmark_radius_px,
+            landmark_correspondence_inflation_factor=args.landmark_correspondence_inflation_factor,
+            extractor_info=pano_cache_info,
+        ),
+        should_load_images=should_load_images,
+        should_load_landmarks=should_load_landmarks,
         landmark_version=args.landmark_version,
         factor=args.factor,
         satellite_patch_size=sat_model.patch_dims,
         panorama_size=pano_model.patch_dims,
         satellite_subdir=args.satellite_subdir,
     )
+    print(f"Data requirements: images={should_load_images}, landmarks={should_load_landmarks}")
     print(f"Loading dataset from {args.dataset_path}")
     dataset = vd.VigorDataset(config=dataset_config, dataset_path=args.dataset_path)
     num_satellites = len(dataset._satellite_metadata)

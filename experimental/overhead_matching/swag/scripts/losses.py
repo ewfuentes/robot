@@ -3,9 +3,9 @@ import warnings
 import torch
 import torch.nn.functional as F
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
-from experimental.overhead_matching.swag.scripts.pairing import PairingDataType, PositiveAnchorSets, Pairs, collapse_anchors_to_torch
-from typing import Union, Callable
-from dataclasses import dataclass
+from experimental.overhead_matching.swag.scripts.pairing import Pairs
+from typing import Any, Union, Callable
+from dataclasses import dataclass, field
 import msgspec
 
 
@@ -14,7 +14,12 @@ class LossInputs:
     similarity_matrix: torch.Tensor
     sat_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
     pano_embeddings_unnormalized: torch.Tensor  # NOT NORMALIZED
-    pairing_data: PairingDataType
+    pairing_data: Pairs
+    # Per-side extractor outputs (the second return value from a SwagPatchEmbedding
+    # forward). Populated by `compute_loss` when the caller passes them; required
+    # for losses that read a frozen teacher token like `DistillationLossConfig`.
+    sat_extractor_outputs: dict[str, Any] = field(default_factory=dict)
+    pano_extractor_outputs: dict[str, Any] = field(default_factory=dict)
 
 
 class PairwiseContrastiveLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -34,21 +39,49 @@ class BatchUniformityLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
 
 class InfoNCELossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
-    max_num_negative_pairs: int  # if 0, uses all negative pairs
-    negative_scale: float = 1.0
-    scale_negative_by_num_items: bool = False
-    use_pano_as_anchor: bool = False
+    """Symmetric multi-positive InfoNCE on the precomputed similarity matrix.
+
+    Reads `loss_inputs.similarity_matrix` (N_pano x N_sat, produced by
+    `distance_model`) and divides it by `temperature` to get logits. The loss
+    is the textbook temperature-scaled log_softmax cross-entropy, averaged over
+    the two directions (pano-anchor and sat-anchor) and over rows with at least
+    one positive.
+
+    Throws if any semipositive pair is present — the caller must collapse
+    semipositives into positives (or drop them) before invoking this loss.
+    Requires `Pairs` pairing data.
+
+    Final loss = `weight_scale` * 0.5 * (loss_pano_to_sat + loss_sat_to_pano).
+    """
+    weight_scale: float = 1.0
+    temperature: float = 0.07
 
 
 class SphericalEmbeddingConstraintLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     weight_scale: float
 
 
+class DistillationLossConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Cosine distillation loss against a frozen teacher token.
+
+    The teacher is `{sat,pano}_extractor_outputs[extractor_name].features`, expected
+    to be the per-image embedding emitted by a frozen extractor (e.g. SAFA). The
+    student is the model output embedding. Both are L2-normalized along the
+    feature dim before computing 1 - cosine similarity. Per-side weights apply
+    on top of the shared `weight_scale` factor.
+    """
+    extractor_name: str
+    weight_scale: float = 1.0
+    weight_sat: float = 1.0
+    weight_pano: float = 1.0
+
+
 LossConfig = Union[
     PairwiseContrastiveLossConfig,
     InfoNCELossConfig,
     SphericalEmbeddingConstraintLossConfig,
-    BatchUniformityLossConfig
+    BatchUniformityLossConfig,
+    DistillationLossConfig,
 ]
 
 
@@ -145,46 +178,80 @@ def compute_batch_uniformity_loss(loss_inputs: LossInputs, batch_uniformity_loss
 
 def compute_info_nce_loss(
     loss_inputs: LossInputs,
-    info_nce_config: InfoNCELossConfig
+    config: InfoNCELossConfig,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    assert isinstance(loss_inputs.pairing_data,
-                      PositiveAnchorSets), "InfoNCELoss requires PositiveAnchorSets pairing data"
-    device = loss_inputs.similarity_matrix.device
-    similarity_matrix = loss_inputs.similarity_matrix  # N_pano x N_sat
-    if not info_nce_config.use_pano_as_anchor:
-        # N_anchor x N_non_anchor
-        similarity_matrix = torch.transpose(similarity_matrix, 0, 1)
+    """Symmetric multi-positive InfoNCE on the cross-view similarity matrix.
 
-    anchor_set = loss_inputs.pairing_data
+    Throws if `pairs.semipositive_pairs` is non-empty — the caller is expected
+    to either collapse semipositives into positives (e.g. the NEAREST-sampling
+    merge in train.py) or drop them.
+    """
+    assert isinstance(loss_inputs.pairing_data, Pairs), \
+        "InfoNCELoss requires Pairs pairing data"
+    pairs = loss_inputs.pairing_data
+    if pairs.semipositive_pairs:
+        raise ValueError(
+            f"InfoNCELoss received {len(pairs.semipositive_pairs)} semipositive "
+            f"pair(s); collapse them into positives upstream or drop them.")
 
-    anchor_indices, pos_semipos_indices = collapse_anchors_to_torch(anchor_set)
-    anchor_indices, pos_semipos_indices = anchor_indices.to(device), pos_semipos_indices.to(device)
+    logits_p2s = loss_inputs.similarity_matrix / config.temperature  # N_pano x N_sat
+    logits_s2p = logits_p2s.T
+    N_pano, N_sat = logits_p2s.shape
 
-    positive_term = similarity_matrix[anchor_indices, pos_semipos_indices]  # num_loss_terms
+    pos_mask = torch.zeros(N_pano, N_sat, dtype=torch.bool, device=logits_p2s.device)
+    for pi, si in pairs.positive_pairs:
+        pos_mask[pi, si] = True
 
-    # -inf will come out to log(0 + ...) in logsumexp, so it is a noop assuming at least one term, which pos guarentees
-    negative_sim_matrix = torch.clone(similarity_matrix)
-    negative_sim_matrix[anchor_indices, pos_semipos_indices] = -torch.inf
+    log_probs_p2s = F.log_softmax(logits_p2s, dim=1)
+    log_probs_s2p = F.log_softmax(logits_s2p, dim=1)
 
-    negative_term = negative_sim_matrix[anchor_indices]  # num loss terms x N non anchor
-    if info_nce_config.max_num_negative_pairs != 0:
-        # num loss terms x max_num_negative_pairs
-        negative_term = negative_term.topk(info_nce_config.max_num_negative_pairs, dim=1).values
+    def _multi_pos_loss(log_probs, mask):
+        per_row_pos = mask.float()
+        n_pos_per_row = per_row_pos.sum(dim=1)
+        n_pos_per_row_safe = n_pos_per_row.clamp(min=1)
+        per_row = -(per_row_pos * log_probs).sum(dim=1) / n_pos_per_row_safe
+        valid = n_pos_per_row > 0
+        if valid.any():
+            return per_row[valid].mean()
+        return torch.tensor(0.0, device=log_probs.device)
 
-    neg_scale = info_nce_config.negative_scale / (torch.count_nonzero(torch.isfinite(
-        negative_term), dim=1) if info_nce_config.scale_negative_by_num_items else torch.tensor([1]))
-    log_neg_scale = torch.log(neg_scale).to(device).unsqueeze(1)
-    loss = info_nce_config.negative_scale * torch.logsumexp(torch.cat([positive_term.unsqueeze(
-        1), log_neg_scale + negative_term], dim=1), dim=-1) - positive_term
+    loss_p2s = _multi_pos_loss(log_probs_p2s, pos_mask)
+    loss_s2p = _multi_pos_loss(log_probs_s2p, pos_mask.T)
+    symmetric = 0.5 * (loss_p2s + loss_s2p)
+    return config.weight_scale * symmetric, {
+        "info_nce_loss_p2s": loss_p2s,
+        "info_nce_loss_s2p": loss_s2p,
+    }
 
-    with torch.no_grad():
-        aux = dict(
-            num_batch_items=loss.shape[0],
-            pos_sim=positive_term,
-            neg_sim=negative_term[torch.isfinite(negative_term)],
-        )
 
-    return loss.mean(), aux
+def compute_distillation_loss(
+    loss_inputs: LossInputs,
+    distill_config: DistillationLossConfig,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """1 - cos(student, teacher) per side, averaged. Teacher comes from a frozen extractor."""
+    extractor_name = distill_config.extractor_name
+    if extractor_name not in loss_inputs.sat_extractor_outputs:
+        raise KeyError(
+            f"DistillationLoss: extractor {extractor_name!r} missing from sat_extractor_outputs")
+    if extractor_name not in loss_inputs.pano_extractor_outputs:
+        raise KeyError(
+            f"DistillationLoss: extractor {extractor_name!r} missing from pano_extractor_outputs")
+
+    teacher_sat = loss_inputs.sat_extractor_outputs[extractor_name].features.detach()
+    teacher_pano = loss_inputs.pano_extractor_outputs[extractor_name].features.detach()
+    teacher_sat = F.normalize(teacher_sat, dim=-1)
+    teacher_pano = F.normalize(teacher_pano, dim=-1)
+    student_sat = F.normalize(loss_inputs.sat_embeddings_unnormalized, dim=-1)
+    student_pano = F.normalize(loss_inputs.pano_embeddings_unnormalized, dim=-1)
+
+    loss_sat = (1.0 - F.cosine_similarity(student_sat, teacher_sat, dim=-1)).mean()
+    loss_pano = (1.0 - F.cosine_similarity(student_pano, teacher_pano, dim=-1)).mean()
+    loss = distill_config.weight_scale * (
+        distill_config.weight_sat * loss_sat + distill_config.weight_pano * loss_pano)
+    return loss, {
+        "distill_loss_sat": loss_sat,
+        "distill_loss_pano": loss_pano,
+    }
 
 
 def compute_spherical_embedding_constraint_loss(
@@ -218,6 +285,8 @@ def create_losses_from_loss_config_list(
                 lambda x, config=loss_config: compute_spherical_embedding_constraint_loss(x, config))
         elif isinstance(loss_config, BatchUniformityLossConfig):
             loss_functions.append(lambda x, config=loss_config: compute_batch_uniformity_loss(x, config))
+        elif isinstance(loss_config, DistillationLossConfig):
+            loss_functions.append(lambda x, config=loss_config: compute_distillation_loss(x, config))
         else:
             raise ValueError(f"Unknown loss config type: {type(loss_config)}")
     return loss_functions
@@ -226,8 +295,10 @@ def create_losses_from_loss_config_list(
 def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
                  pano_embeddings: torch.Tensor,  # N_pano x n_emb_pano x D_emb
                  similarity: torch.Tensor,  # N_pano x N_sat
-                 pairing_data: PairingDataType,
+                 pairing_data: Pairs,
                  loss_functions: list[LossFunctionType],
+                 sat_extractor_outputs: dict[str, Any] | None = None,
+                 pano_extractor_outputs: dict[str, Any] | None = None,
                  ) -> dict[str, torch.Tensor | int | float]:
     loss = 0.0
 
@@ -235,7 +306,9 @@ def compute_loss(sat_embeddings: torch.Tensor,  # N_sat x n_emb_sat x D_emb
         similarity_matrix=similarity,
         sat_embeddings_unnormalized=sat_embeddings,
         pano_embeddings_unnormalized=pano_embeddings,
-        pairing_data=pairing_data
+        pairing_data=pairing_data,
+        sat_extractor_outputs=sat_extractor_outputs or {},
+        pano_extractor_outputs=pano_extractor_outputs or {},
     )
     aux_info = {}
     for loss_fn in loss_functions:

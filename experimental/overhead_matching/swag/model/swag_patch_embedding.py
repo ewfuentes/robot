@@ -18,6 +18,10 @@ from experimental.overhead_matching.swag.model.additional_panorama_extractors im
     PanoramaProperNounExtractor,
     PanoramaLocationTypeExtractor,
 )
+from experimental.overhead_matching.swag.model.safa_extractor import SafaExtractor
+from experimental.overhead_matching.swag.model.tag_bundle_extractor import (
+    OSMTagBundleExtractor, PanoramaTagBundleExtractor,
+)
 from torch.nn.init import xavier_uniform_
 from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
 from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
@@ -34,7 +38,10 @@ from experimental.overhead_matching.swag.model.swag_config_types import (
     PanoramaSemanticLandmarkExtractorConfig,
     PanoramaProperNounExtractorConfig,
     PanoramaLocationTypeExtractorConfig,
+    OSMTagBundleExtractorConfig,
+    PanoramaTagBundleExtractorConfig,
     AbsolutePositionExtractorConfig,
+    SafaExtractorConfig,
     SyntheticLandmarkExtractorConfig,
 
     PositionEmbeddingConfig,
@@ -91,6 +98,9 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
         case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
         case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
+        case SafaExtractorConfig(): return SafaExtractor(config)
+        case OSMTagBundleExtractorConfig(): return OSMTagBundleExtractor(config)
+        case PanoramaTagBundleExtractorConfig(): return PanoramaTagBundleExtractor(config)
         case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
@@ -391,7 +401,8 @@ class TransformerAggregator(torch.nn.Module):
                 nhead=config.num_attention_heads,
                 dim_feedforward=config.hidden_dim,
                 dropout=config.dropout_frac,
-                batch_first=True)
+                batch_first=True,
+                norm_first=config.norm_first)
 
         self._encoder = torch.nn.TransformerEncoder(
                 transformer_layer,
@@ -402,7 +413,8 @@ class TransformerAggregator(torch.nn.Module):
 
     def forward(self, tokens, token_mask):
         float_token_mask = make_float_mask_from_bool_mask(token_mask)
-        return self._encoder(tokens, src_key_padding_mask=float_token_mask, is_causal=False)
+        return self._encoder(
+            tokens, src_key_padding_mask=float_token_mask, is_causal=False)
 
 
 class SwagPatchEmbedding(torch.nn.Module):
@@ -479,6 +491,32 @@ class SwagPatchEmbedding(torch.nn.Module):
                     model_config=config.semantic_token_extractor_config,
                     patch_dims=config.patch_dims)
 
+    def identity_init_extractor_projection(self, name: str) -> None:
+        """Initialize a named extractor's input projection to a zero-padded identity.
+
+        Pairs with a frozen-teacher distillation loss: after this call,
+        `projection_by_name[name] @ extractor_features == extractor_features`
+        (truncated/zero-padded to match `output_dim`), and the token marker is
+        zero. This avoids the "random projection bottleneck" plateau seen when
+        the model has to learn a small identity-like projection from scratch.
+        No-op if the extractor has no projection or marker registered.
+        """
+        if name not in self._projection_by_name:
+            print(f"[identity_init] no projection found for {name!r}; skipping")
+            return
+        proj = self._projection_by_name[name]
+        marker = self._token_marker_by_name[name]
+        out_dim, in_dim = proj.weight.shape
+        with torch.no_grad():
+            proj.weight.zero_()
+            n = min(out_dim, in_dim)
+            proj.weight[:n, :n].copy_(torch.eye(n))
+            if proj.bias is not None:
+                proj.bias.zero_()
+            marker.zero_()
+        print(f"[identity_init] {name}: weight={out_dim}x{in_dim} -> identity[{n}], "
+              f"bias=0, marker=0")
+
     def model_input_from_batch(self, batch_item):
         if self._patch_dims[0] != self._patch_dims[1]:
             return ModelInput(
@@ -541,17 +579,29 @@ class SwagPatchEmbedding(torch.nn.Module):
 
         return input_tokens, input_mask, extractor_outputs_by_name
 
-    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None) -> tuple[torch.Tensor, dict[str, ExtractorOutput]]:
+    def forward(self, model_input: ModelInput, landmark_dropout_scheduler=None):
         """Forward pass through the model.
 
         Args:
-            model_input: Input containing image and metadata
+            model_input: Input containing image and metadata.
+            landmark_dropout_scheduler: Optional dropout scheduler applied to
+                landmark tokens before the aggregator.
 
         Returns:
-            Tuple of (embeddings, extractor_outputs_by_name) where:
-                - embeddings: Tensor of shape (batch, num_embeddings, output_dim) when skip_aggregation=False,
-                             or (batch, num_tokens, output_dim) when skip_aggregation=True
-                - debug dict: currently extractor_outputs_by_name: Dict mapping extractor names to their ExtractorOutput objects
+            Tuple of (embeddings, extractor_outputs_by_name).
+
+            When `skip_aggregation=False` (default), `embeddings` are the
+            aggregated class-token outputs of shape (B, num_class_tokens, D_emb),
+            optionally L2-normalized per `normalize_embeddings`.
+
+            When `skip_aggregation=True`, `embeddings` are the raw input tokens
+            (no CLS, no aggregation) with padded slots replaced by NaN so callers
+            can mask them out.
+
+            `extractor_outputs_by_name` is a dict mapping extractor name to its
+            `ExtractorOutput` (features, positions, mask). Losses like
+            `DistillationLossConfig` read a frozen teacher token directly from
+            this dict.
         """
         if self._config.skip_aggregation:
             # Skip aggregation mode: return all input tokens without class tokens
@@ -561,18 +611,20 @@ class SwagPatchEmbedding(torch.nn.Module):
                 input_tokens = F.normalize(input_tokens, dim=-1)
             input_tokens[input_mask] = float('nan')
             return input_tokens, extractor_outputs_by_name
-        else:
-            # Normal mode: add class tokens, run aggregation, return class tokens
-            input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
-                model_input, landmark_dropout_scheduler, include_class_tokens=True)
-            output_tokens = self._aggregator_model(input_tokens, input_mask)
-            model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
 
-            # output is batch x num_class_tokens x feature_dim
-            if self._normalize_embeddings:
-                model_output = F.normalize(model_output, dim=2)
+        # Normal mode: add class tokens, run aggregation, return class tokens
+        input_tokens, input_mask, extractor_outputs_by_name = self._get_input_tokens(
+            model_input, landmark_dropout_scheduler, include_class_tokens=True)
 
-            return model_output, extractor_outputs_by_name
+        output_tokens = self._aggregator_model(input_tokens, input_mask)
+
+        model_output = output_tokens[:, :self._cls_token.shape[1], :]  # B, num_class_tokens, D_emb
+
+        # output is batch x num_class_tokens x feature_dim
+        if self._normalize_embeddings:
+            model_output = F.normalize(model_output, dim=2)
+
+        return model_output, extractor_outputs_by_name
 
     def cache_info(self) -> dict[str, CacheableExtractorInfo]:
         """Returns information about cacheable extractors

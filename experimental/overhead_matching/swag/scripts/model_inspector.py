@@ -91,7 +91,7 @@ class ModelInspector:
             sat_input: ModelInput for satellite model
             pano_extractor_outputs: Dict of extractor name -> ExtractorOutput for panorama
             sat_extractor_outputs: Dict of extractor name -> ExtractorOutput for satellite
-            pairing_data: Pairing data (Pairs or PositiveAnchorSets) with batch-local indices
+            pairing_data: Pairs with batch-local indices
             batch_idx: Current batch index within the epoch
             epoch_idx: Current epoch index
             total_batches: Total batches processed across all epochs

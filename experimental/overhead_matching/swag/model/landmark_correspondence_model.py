@@ -47,6 +47,10 @@ class TagBundleEncoderConfig:
     def repr_dim(self) -> int:
         return 2 * self.per_tag_dim
 
+    @property
+    def per_tag_mlp_input_dim(self) -> int:
+        return self.key_dim + self.text_proj_dim
+
 
 @dataclass
 class CorrespondenceClassifierConfig:
@@ -71,7 +75,7 @@ class TagBundleEncoder(nn.Module):
         self.key_embedding = nn.Embedding(NUM_TAG_KEYS, config.key_dim)
         self.text_projection = nn.Linear(config.text_input_dim, config.text_proj_dim)
         self.per_tag_mlp = nn.Sequential(
-            nn.Linear(config.key_dim + config.text_proj_dim, config.per_tag_dim),
+            nn.Linear(config.per_tag_mlp_input_dim, config.per_tag_dim),
             nn.ReLU(),
             nn.Linear(config.per_tag_dim, config.per_tag_dim),
         )

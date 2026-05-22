@@ -16,7 +16,6 @@ from experimental.overhead_matching.swag.scripts.losses import (
 )
 from experimental.overhead_matching.swag.scripts.pairing import (
     Pairs,
-    PositiveAnchorSets,
 )
 
 
@@ -100,27 +99,40 @@ class LossesTest(unittest.TestCase):
 
     def test_compute_info_nce_loss_basic(self):
         torch.manual_seed(42)
-        # use_pano_as_anchor=False (default): similarity is N_pano x N_sat,
-        # transposed inside to N_sat x N_pano. Anchors are satellite indices,
-        # positives are panorama indices.
-        anchor_sets = PositiveAnchorSets(
-            anchor=[0, 1],
-            positive=[{0}, {1}],
-            semipositive=[set(), set()],
+        pairs = Pairs(
+            positive_pairs=[(0, 0), (1, 1)],
+            semipositive_pairs=[],
+            negative_pairs=[(0, 1), (1, 0)],
         )
         similarity = torch.randn(2, 2)  # N_pano x N_sat
-        config = InfoNCELossConfig(max_num_negative_pairs=0)
+        config = InfoNCELossConfig(weight_scale=1.0, temperature=0.1)
         loss_inputs = LossInputs(
             similarity_matrix=similarity,
             sat_embeddings_unnormalized=torch.randn(2, 1, 64),
             pano_embeddings_unnormalized=torch.randn(2, 1, 64),
-            pairing_data=anchor_sets,
+            pairing_data=pairs,
         )
         loss, aux = compute_info_nce_loss(loss_inputs, config)
         self.assertTrue(torch.isfinite(loss).item(), "Loss should be finite")
-        self.assertIn("num_batch_items", aux)
-        self.assertIn("pos_sim", aux)
-        self.assertIn("neg_sim", aux)
+        self.assertIn("info_nce_loss_p2s", aux)
+        self.assertIn("info_nce_loss_s2p", aux)
+
+    def test_compute_info_nce_loss_throws_on_semipositives(self):
+        pairs = Pairs(
+            positive_pairs=[(0, 0)],
+            semipositive_pairs=[(0, 1)],
+            negative_pairs=[(1, 0)],
+        )
+        similarity = torch.randn(2, 2)
+        config = InfoNCELossConfig(weight_scale=1.0, temperature=0.1)
+        loss_inputs = LossInputs(
+            similarity_matrix=similarity,
+            sat_embeddings_unnormalized=torch.randn(2, 1, 64),
+            pano_embeddings_unnormalized=torch.randn(2, 1, 64),
+            pairing_data=pairs,
+        )
+        with self.assertRaisesRegex(ValueError, "semipositive"):
+            compute_info_nce_loss(loss_inputs, config)
 
     def test_compute_batch_uniformity_loss(self):
         torch.manual_seed(42)
@@ -190,7 +202,7 @@ class LossesTest(unittest.TestCase):
                 semipositive_weight=0.5, avg_semipositive_similarity=0.3,
                 negative_weight=1.0, avg_negative_similarity=-0.5,
             ),
-            InfoNCELossConfig(max_num_negative_pairs=0),
+            InfoNCELossConfig(weight_scale=1.0, temperature=0.1),
             SphericalEmbeddingConstraintLossConfig(weight_scale=0.1),
             BatchUniformityLossConfig(batch_uniformity_weight=1.0, batch_uniformity_hinge_location=0.5),
         ]
