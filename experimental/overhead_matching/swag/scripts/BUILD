@@ -893,6 +893,28 @@ py_binary(
   ]
 )
 
+py_library(
+  name="correspondence_scaling_common",
+  srcs=["correspondence_scaling_common.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    ":landmark_pairing_cli_lib",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+  ]
+)
+
+py_binary(
+  name="benchmark_correspondence_scaling_ollama",
+  srcs=["benchmark_correspondence_scaling_ollama.py"],
+  deps=[
+    requirement("ollama"),
+    ":correspondence_scaling_common",
+    "//common/ollama:pyollama",
+  ]
+)
+
 py_binary(
   name="convert_gemini_landmark_pairing_responses_to_viewer_json",
   srcs=["convert_gemini_landmark_pairing_responses_to_viewer_json.py"],
