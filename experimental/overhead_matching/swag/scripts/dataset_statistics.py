@@ -42,6 +42,46 @@ PANO_LANDMARK_DIR_MAP = {
 
 
 @dataclass
+class LatexPaperRow:
+    """Editorial metadata for one row of the paper's dataset-statistics table.
+
+    Most fields here are not derivable from on-disk data: the editorial
+    `conditions` blurb, whether the city is part of VIGOR (gets a `(VIGOR)`
+    suffix), whether it was collected by our camera rig (gets a `\\textdagger`
+    superscript). `pano_date_override` / `osm_date_override` let a row supply
+    a fixed YY-MM (or other) string when the script can't recover it from
+    data — e.g. VIGOR cities whose satellite capture_date isn't stored
+    (paper just says "2019"), or Boston Snowy / Boston Night whose landmark
+    files lack a date suffix.
+    """
+    display_name: str
+    conditions: str
+    is_vigor: bool = False
+    is_rig: bool = False
+    pano_date_override: str | None = None
+    osm_date_override: str | None = None
+
+
+# Per-dataset LaTeX paper-row metadata. Anything not listed here is emitted
+# with an empty `conditions` cell (so you can fill it in by hand). Order in
+# this dict is the order rows are printed.
+LATEX_PAPER_ROWS: dict[str, LatexPaperRow] = {
+    "Chicago":                          LatexPaperRow("Chicago",       "Metro area",       is_vigor=True, pano_date_override="2019"),
+    "Seattle":                          LatexPaperRow("Seattle",       "Metro area",       is_vigor=True, pano_date_override="2019"),
+    "NewYork":                          LatexPaperRow("New York",      "Metro area",       is_vigor=True, pano_date_override="2019"),
+    "Boston":                           LatexPaperRow("Boston Snowy",  "Actively snowing", is_rig=True,
+                                                     pano_date_override="26-01", osm_date_override="26-01"),
+    "nightdrive":                       LatexPaperRow("Boston Night",  "Recorded at night", is_rig=True,
+                                                     pano_date_override="26-02", osm_date_override="26-01"),
+    "mapillary/Framingham":             LatexPaperRow("Framingham",    "Suburban"),
+    "mapillary/Middletown":             LatexPaperRow("Middletown",    "Rainy, suburban"),
+    "mapillary/Norway":                 LatexPaperRow("Norway",        "Rural"),
+    "mapillary/SanFrancisco_mapillary": LatexPaperRow("San Francisco", "Metro area"),
+    "mapillary/post_hurricane_ian_sw":  LatexPaperRow("Fort Myers",    "Post-disaster"),
+}
+
+
+@dataclass
 class DatasetConfig:
     name: str
     path: Path
@@ -427,30 +467,154 @@ def print_stats(all_stats: list[DatasetStats]):
     print_transposed_table("EXTENDED DATASETS (* = ground-normalized satellite patches)", extended)
 
 
+def _latex_int(n: int) -> str:
+    """`12345` -> `12{,}345`. LaTeX-safe thousands separator (the `{,}` keeps
+    the comma from getting an extra side-bearing in math mode)."""
+    s = f"{n:,}"
+    return s.replace(",", "{,}")
+
+
+def _yymm(date_str: str | None) -> str:
+    """`YYYY-MM` or `YYYY-MM-DD` -> `YY-MM`; None / unparseable -> `--`."""
+    if not date_str:
+        return "--"
+    parts = date_str.split("-")
+    if len(parts) < 2:
+        return "--"
+    year = parts[0]
+    month = parts[1]
+    if len(year) != 4 or len(month) != 2:
+        return "--"
+    return f"{year[2:]}-{month}"
+
+
+def _city_label(meta: LatexPaperRow | None, raw_name: str) -> str:
+    if meta is None:
+        return raw_name
+    label = meta.display_name
+    if meta.is_vigor:
+        label += " (VIGOR)"
+    if meta.is_rig:
+        label += "\\textsuperscript{\\textdagger}"
+    return label
+
+
+def print_latex_paper_table(all_stats: list[DatasetStats]):
+    """Emit the dataset-statistics table in the paper's LaTeX format.
+
+    Stats not derivable from data (conditions, VIGOR / rig markers, the
+    "2019" pano date for VIGOR cities) come from `LATEX_PAPER_ROWS`. Cities
+    not in that dict are still emitted but with an empty `Conditions` cell
+    so the row is obvious-to-edit. Row order follows `LATEX_PAPER_ROWS`,
+    then any unrecognized datasets at the bottom.
+    """
+    stats_by_name = {s.name: s for s in all_stats}
+
+    ordered: list[tuple[DatasetStats, LatexPaperRow | None]] = []
+    for name, meta in LATEX_PAPER_ROWS.items():
+        if name in stats_by_name:
+            ordered.append((stats_by_name[name], meta))
+    seen = set(LATEX_PAPER_ROWS)
+    for s in all_stats:
+        if s.name not in seen:
+            ordered.append((s, None))
+
+    rows: list[list[str]] = []
+    for s, meta in ordered:
+        city = _city_label(meta, s.name)
+        conditions = meta.conditions if meta is not None else ""
+        panos_sat = f"{_latex_int(s.num_panoramas)} / {_latex_int(s.num_satellites)}"
+        sat_cov = f"{s.geographic_extent_km2:.1f}"
+        traj = f"{s.trajectory_km:.1f}" if s.trajectory_km is not None else "--"
+        if s.pano_landmarks is not None:
+            pano_lm = _latex_int(s.pano_landmarks.total_landmarks)
+        else:
+            pano_lm = "--"
+        osm_lm = _latex_int(s.num_landmarks_pruned)
+        landmarks = f"{pano_lm} / {osm_lm}"
+        if meta is not None and meta.pano_date_override is not None:
+            pano_date = meta.pano_date_override
+        else:
+            pano_date = _yymm(s.capture_date)
+        if meta is not None and meta.osm_date_override is not None:
+            osm_date = meta.osm_date_override
+        else:
+            osm_date = _yymm(s.osm_date)
+        dates = f"{pano_date} / {osm_date}"
+        rows.append([city, conditions, panos_sat, sat_cov, traj, landmarks, dates])
+
+    # Align columns visually in the emitted .tex source.
+    header_labels = [
+        "City",
+        "Conditions",
+        "\\#Panos / Sat.\\ Patches",
+        "\\makecell{Sat.\\ Cov.\\\\(km$^2$)}",
+        "Traj.\\ (km)",
+        "\\makecell{Landmarks\\\\(Pano / OSM)}",
+        "\\makecell{Dates (YY-MM) \\\\(Pano / OSM)}",
+    ]
+    n_cols = len(header_labels)
+    widths = [max(len(r[i]) for r in [header_labels, *rows]) for i in range(n_cols)]
+
+    def fmt_row(cells: list[str]) -> str:
+        padded = [c.ljust(widths[i]) for i, c in enumerate(cells)]
+        return " & ".join(padded) + " \\\\"
+
+    lines: list[str] = []
+    lines.append("\\begin{table*}[t]")
+    lines.append("  \\centering")
+    lines.append("  \\caption{Dataset statistics. Satellite imagery sourced from Google "
+                 "(February 2026) for all cities except the VIGOR cities and Fort Myers, "
+                 "which uses ESRI imagery from June 2022. \\textsuperscript{\\textdagger} "
+                 "indicates data collected by our camera rig.}")
+    lines.append("  \\label{tab:dataset-stats}")
+    lines.append("  \\small")
+    lines.append("  \\begin{tabular}{llrrrrc}")
+    lines.append("  \\toprule")
+    lines.append("  " + fmt_row(header_labels))
+    lines.append("  \\midrule")
+    for r in rows:
+        lines.append("  " + fmt_row(r))
+    lines.append("  \\bottomrule")
+    lines.append("  \\end{tabular}")
+    lines.append("\\end{table*}")
+
+    print("\n".join(lines))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gather statistics for VIGOR datasets")
     parser.add_argument("--dataset_base", type=str, required=True,
                         help="Base path to VIGOR datasets")
     parser.add_argument("--pano_embed_base", type=str, default=None,
                         help="Base path to panorama landmark embeddings")
+    parser.add_argument("--latex", action="store_true",
+                        help="Emit the paper-format LaTeX table (table* environment) "
+                             "and skip the ASCII summaries. Per-city conditions / VIGOR / "
+                             "rig markers come from LATEX_PAPER_ROWS.")
     args = parser.parse_args()
 
     base = Path(args.dataset_base)
     pano_embed_base = Path(args.pano_embed_base) if args.pano_embed_base else None
     configs = discover_datasets(base)
 
-    print(f"Discovered {len(configs)} datasets:")
-    for c in configs:
-        print(f"  {c.name}: {c.path}")
-    print()
+    if not args.latex:
+        print(f"Discovered {len(configs)} datasets:")
+        for c in configs:
+            print(f"  {c.name}: {c.path}")
+        print()
 
     all_stats = []
     for config in configs:
-        print(f"Processing {config.name}...", flush=True)
+        if not args.latex:
+            print(f"Processing {config.name}...", flush=True)
         stats = compute_stats(config, pano_embed_base)
         all_stats.append(stats)
 
-    print_stats(all_stats)
+    if args.latex:
+        print_latex_paper_table(all_stats)
+    else:
+        print_stats(all_stats)
 
 
 if __name__ == "__main__":
