@@ -8,6 +8,8 @@ import pandas as pd
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     SafaPlusNormalizedLandmarkAggregator,
     SafaPlusNormalizedLandmarkAggregatorConfig,
+    SafaPlusPiecewiseLandmarkAggregator,
+    SafaPlusPiecewiseLandmarkAggregatorConfig,
     SingleSimilarityMatrixAggregator,
 )
 from experimental.overhead_matching.swag.filter.particle_filter import (
@@ -228,6 +230,91 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
                 landmark_similarity_matrix_path="/tmp/lm.pt",
                 image_sigma=0.5,
                 landmark_sigma=-0.1,
+            )
+
+
+class TestSafaPlusPiecewiseLandmarkAggregator(unittest.TestCase):
+    """Landmark stream maps r_norm = 1 - sim/row_max through a frozen
+    piecewise-constant log-LR lookup (uniform bins) times lr_scale; image-only
+    fall-through on missing / constant rows. r==0 lands in the first bin,
+    r==1 in the last bin."""
+
+    # 4 uniform bins over [0,1]: [0,.25),[.25,.5),[.5,.75),[.75,1]
+    EDGES = [0.0, 0.25, 0.5, 0.75, 1.0]
+    VALUES = [4.0, 2.0, 0.0, -1.0]
+
+    def _make(self, img_sim, lm_sim, image_sigma=0.187, lr_scale=1.0):
+        meta = _make_metadata(img_sim.shape[0])
+        return SafaPlusPiecewiseLandmarkAggregator(
+            image_similarity_matrix=img_sim,
+            landmark_similarity_matrix=lm_sim,
+            panorama_metadata=meta,
+            image_sigma=image_sigma,
+            landmark_log_lr_edges=self.EDGES,
+            landmark_log_lr_values=self.VALUES,
+            landmark_lr_scale=lr_scale,
+            device=torch.device("cpu"),
+        )
+
+    def test_bin_mapping_including_endpoints(self):
+        # row_max = 1.0 at idx 0. r_norm = 1 - sim.
+        #   idx0 sim=1.0 -> r=0.0  -> bin 0 (4.0)   [argmax-hit, first bin]
+        #   idx1 sim=0.0 -> r=1.0  -> bin 3 (-1.0)  [miss, last bin]
+        #   idx2 sim=0.9 -> r=0.1  -> bin 0 (4.0)
+        #   idx3 sim=0.4 -> r=0.6  -> bin 2 (0.0)
+        #   idx4 sim=0.2 -> r=0.8  -> bin 3 (-1.0)
+        img_sim = torch.zeros(1, 5)
+        lm_sim = torch.tensor([[1.0, 0.0, 0.9, 0.4, 0.2]])
+        agg = self._make(img_sim, lm_sim)
+        out = agg("p0")
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim[0], 0.187
+        )
+        log_p_lm = out - log_p_img
+        expected = torch.tensor([4.0, -1.0, 4.0, 0.0, -1.0])
+        self.assertTrue(torch.allclose(log_p_lm, expected, atol=1e-5),
+                        f"got {log_p_lm.tolist()}")
+
+    def test_lr_scale_multiplies_landmark_stream(self):
+        img_sim = torch.zeros(1, 5)
+        lm_sim = torch.tensor([[1.0, 0.0, 0.9, 0.4, 0.2]])
+        out1 = self._make(img_sim, lm_sim, lr_scale=1.0)("p0")
+        out2 = self._make(img_sim, lm_sim, lr_scale=2.0)("p0")
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim[0], 0.187
+        )
+        self.assertTrue(torch.allclose(
+            (out2 - log_p_img), 2.0 * (out1 - log_p_img), atol=1e-5))
+
+    def test_all_zero_row_falls_through_to_image_only(self):
+        img_sim = torch.randn(2, 20) * 0.3 + 0.4
+        lm_sim = torch.zeros(2, 20)
+        lm_sim[1] = torch.rand(20)
+        agg = self._make(img_sim, lm_sim)
+        expected = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim[0], 0.187
+        )
+        self.assertTrue(torch.allclose(agg("p0"), expected, atol=1e-6))
+
+    def test_nan_landmark_entry_is_image_only_at_that_position(self):
+        img_sim = torch.randn(1, 5) * 0.3 + 0.4
+        lm_sim = torch.tensor([[1.0, float("nan"), 0.9, 0.4, 0.2]])
+        agg = self._make(img_sim, lm_sim)
+        out = agg("p0")
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim[0], 0.187
+        )
+        self.assertTrue(torch.allclose(out[1], log_p_img[1], atol=1e-6))
+        self.assertTrue(torch.isfinite(out).all())
+
+    def test_config_validates_edges_length(self):
+        with self.assertRaises(ValueError):
+            SafaPlusPiecewiseLandmarkAggregatorConfig(
+                image_similarity_matrix_path="/tmp/img.pt",
+                landmark_similarity_matrix_path="/tmp/lm.pt",
+                image_sigma=0.187,
+                landmark_log_lr_edges=[0.0, 0.5, 1.0],     # 2 bins
+                landmark_log_lr_values=[1.0, 0.0, -1.0],   # 3 values: mismatch
             )
 
 

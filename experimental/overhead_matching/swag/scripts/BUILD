@@ -1026,3 +1026,85 @@ py_binary(
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
   ]
 )
+
+py_binary(
+  name="sigma_paper_figure",
+  srcs=["sigma_paper_figure.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":calibrate_sigma",
+  ]
+)
+
+py_binary(
+  name="residual_likelihood_analysis",
+  srcs=["residual_likelihood_analysis.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":calibrate_sigma",
+  ]
+)
+
+py_binary(
+  name="calibrate_landmark_zoi",
+  srcs=["calibrate_landmark_zoi.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":calibrate_sigma",
+  ]
+)
+
+py_binary(
+  name="calibrate_landmark_piecewise",
+  srcs=["calibrate_landmark_piecewise.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_binary(
+  name="plot_piecewise_calibration",
+  srcs=["plot_piecewise_calibration.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":calibrate_landmark_piecewise",
+  ]
+)
+
+py_binary(
+  name="inspect_landmark_misses",
+  srcs=["inspect_landmark_misses.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    requirement("Pillow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+

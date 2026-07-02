@@ -86,12 +86,65 @@ class SafaPlusNormalizedLandmarkAggregatorConfig(
             raise ValueError(f"landmark_sigma must be positive, got {self.landmark_sigma}")
 
 
+class SafaPlusPiecewiseLandmarkAggregatorConfig(
+    msgspec.Struct, **MSGSPEC_STRUCT_OPTS
+):
+    """Config for ``SafaPlusPiecewiseLandmarkAggregator`` (prototype).
+
+    Same image stream as ``SafaPlusNormalizedLandmarkAggregator`` (SAFA
+    Gaussian-on-residuals at ``image_sigma``). The landmark stream replaces the
+    single half-normal Gaussian on the normalized residual
+    ``r = 1 - sim / row_max`` with a calibrated, piecewise-constant
+    *log-likelihood-ratio* lookup over ``r in [0, 1]``:
+
+      ``log_p_lm[j] = landmark_lr_scale * g(r_j)``
+
+    where ``g`` is the per-bin value ``log p(r|true) - log p(r|negative)``
+    estimated from a calibration matrix. This is the principled per-patch
+    factor for the histogram filter under conditional independence of patches
+    given the true location; ``0`` means "uninformative", so the natural
+    fall-through for missing / constant landmark rows is ``log_p_lm == 0``
+    (image-only) — consistent with the lookup baseline.
+
+    The lookup uses uniformly-wide bins (the discrete ``r == 0`` argmax-hit and
+    ``r == 1`` miss events simply land in the first / last bin — both
+    populations have their atoms at the same location, so the bin ratio
+    recovers them without special-casing). It is matrix-agnostic: a bimodal
+    Hungarian residual and a unimodal dense residual are both fit by the same
+    table.
+
+    ``landmark_lr_scale`` is an optional temperature multiplier; ``1.0`` is the
+    calibrated value. Calibration is produced by
+    ``calibrate_landmark_piecewise.py`` and frozen across cities (calibrated
+    once on a reference city), matching the single-``sigma_lm`` methodology of
+    the Gaussian variant.
+    """
+
+    image_similarity_matrix_path: Path
+    landmark_similarity_matrix_path: Path
+    image_sigma: float
+    landmark_log_lr_edges: list[float]
+    landmark_log_lr_values: list[float]
+    landmark_lr_scale: float = 1.0
+
+    def __post_init__(self):
+        if not (self.image_sigma > 0):
+            raise ValueError(f"image_sigma must be positive, got {self.image_sigma}")
+        if len(self.landmark_log_lr_edges) != len(self.landmark_log_lr_values) + 1:
+            raise ValueError(
+                "landmark_log_lr_edges must have one more entry than "
+                f"landmark_log_lr_values (got {len(self.landmark_log_lr_edges)} "
+                f"edges vs {len(self.landmark_log_lr_values)} bins)"
+            )
+
+
 # Union type for polymorphic deserialization.
 AggregatorConfig = (
     SingleSimilarityMatrixAggregatorConfig
     | ImageLandmarkPrivilegedInformationFusionConfig
     | EntropyAdaptiveAggregatorConfig
     | SafaPlusNormalizedLandmarkAggregatorConfig
+    | SafaPlusPiecewiseLandmarkAggregatorConfig
 )
 
 
@@ -548,6 +601,132 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         )
 
 
+class SafaPlusPiecewiseLandmarkAggregator(ObservationLogLikelihoodAggregator):
+    """SAFA image stream + piecewise likelihood-ratio landmark stream.
+
+    Prototype variant of ``SafaPlusNormalizedLandmarkAggregator``. The image
+    stream is identical. The landmark stream maps the per-row normalized
+    residual ``r = 1 - sim / row_max`` through a frozen, calibrated
+    piecewise-constant log-likelihood-ratio lookup instead of a half-normal
+    Gaussian:
+
+      ``log_p_lm[j] = landmark_lr_scale * values[bin(r_j)]``
+
+    where ``values`` are per-bin ``log p(r|true)/p(r|neg)``. ``0`` is
+    uninformative; missing / constant / all-zero landmark rows fall through to
+    image-only (``log_p_lm == 0``), matching the lookup baseline. The discrete
+    ``r == 0`` (argmax hit) and ``r == 1`` (miss) events land in the first /
+    last bin with no special-casing.
+
+    See ``SafaPlusPiecewiseLandmarkAggregatorConfig`` for the motivation (the
+    Hungarian landmark residual is strongly bimodal — a half-normal is the
+    wrong family and discards the highly-discriminative argmax-hit event while
+    over-penalizing the common miss event).
+    """
+
+    def __init__(
+        self,
+        image_similarity_matrix: torch.Tensor,
+        landmark_similarity_matrix: torch.Tensor,
+        panorama_metadata: pd.DataFrame,
+        image_sigma: float,
+        landmark_log_lr_edges: list[float],
+        landmark_log_lr_values: list[float],
+        device: torch.device,
+        landmark_lr_scale: float = 1.0,
+    ):
+        self.image_similarity_matrix = image_similarity_matrix
+        self.landmark_similarity_matrix = landmark_similarity_matrix
+        self.image_sigma = float(image_sigma)
+        self.landmark_lr_scale = float(landmark_lr_scale)
+        self.device = device
+        # Lookup tensors live on the compute device.
+        self._edges = torch.tensor(
+            landmark_log_lr_edges, dtype=torch.float32, device=device
+        )
+        self._values = torch.tensor(
+            landmark_log_lr_values, dtype=torch.float32, device=device
+        )
+        self._pano_id_index = pd.Index(panorama_metadata["pano_id"])
+
+    def _landmark_log_lr(self, r_norm: torch.Tensor) -> torch.Tensor:
+        """Map normalized residuals to landmark log-LR via the frozen lookup.
+
+        ``r_norm`` may contain non-finite entries (no landmark info); callers
+        mask those to 0 afterwards. ``right=True`` so a value equal to an edge
+        maps to the bin on its left; r==0 -> bin 0, r==1 -> last bin.
+        """
+        n_bins = self._values.numel()
+        idx = torch.bucketize(r_norm, self._edges, right=True) - 1
+        idx = idx.clamp(0, n_bins - 1)
+        return self._values[idx] * self.landmark_lr_scale
+
+    def __call__(self, pano_id: str) -> torch.Tensor:
+        pano_index = self._pano_id_index.get_loc(pano_id)
+
+        img_sim = self.image_similarity_matrix[pano_index].to(self.device)
+        lm_sim = self.landmark_similarity_matrix[pano_index].to(self.device)
+
+        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+            img_sim, self.image_sigma
+        )
+        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img", cls_name=type(self).__name__)
+
+        # Landmark stream. NaN means "no landmark info for this cell" (same
+        # sparse-with-holes contract as the normalized-residual variant): fall
+        # back to image-only at those positions, and image-only for whole rows
+        # that are all-zero / constant / NaN.
+        lm_finite_mask = torch.isfinite(lm_sim)
+        if not lm_finite_mask.any():
+            return log_p_img
+        lm_finite = lm_sim[lm_finite_mask]
+        sim_max_lm = lm_finite.max()
+        sim_min_lm = lm_finite.min()
+        if (sim_max_lm <= 0) or (sim_max_lm == sim_min_lm):
+            return log_p_img
+
+        r_norm = 1.0 - lm_sim / sim_max_lm
+        log_p_lm = self._landmark_log_lr(r_norm)
+        # Image-only (log_p_lm == 0) where the landmark entry is non-finite.
+        log_p_lm = torch.where(lm_finite_mask, log_p_lm, torch.zeros_like(log_p_lm))
+
+        log_p = log_p_img + log_p_lm
+        _raise_if_nonfinite(log_p, pano_id, "log_p_img + log_p_lm", cls_name=type(self).__name__)
+        return log_p
+
+    @classmethod
+    def from_config(
+        cls,
+        config: SafaPlusPiecewiseLandmarkAggregatorConfig,
+        vigor_dataset: vd.VigorDataset,
+        device: torch.device,
+    ) -> "SafaPlusPiecewiseLandmarkAggregator":
+        image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
+        landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
+        _assert_matrix_aligned(
+            image_sim,
+            vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
+            config.image_similarity_matrix_path,
+        )
+        _assert_matrix_aligned(
+            landmark_sim,
+            vigor_dataset._panorama_metadata,
+            vigor_dataset._satellite_metadata,
+            config.landmark_similarity_matrix_path,
+        )
+        return cls(
+            image_similarity_matrix=image_sim,
+            landmark_similarity_matrix=landmark_sim,
+            panorama_metadata=vigor_dataset._panorama_metadata,
+            image_sigma=config.image_sigma,
+            landmark_log_lr_edges=config.landmark_log_lr_edges,
+            landmark_log_lr_values=config.landmark_log_lr_values,
+            landmark_lr_scale=config.landmark_lr_scale,
+            device=device,
+        )
+
+
 def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
@@ -572,6 +751,10 @@ def aggregator_from_config(
         return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
     elif isinstance(config, SafaPlusNormalizedLandmarkAggregatorConfig):
         return SafaPlusNormalizedLandmarkAggregator.from_config(
+            config, vigor_dataset, device
+        )
+    elif isinstance(config, SafaPlusPiecewiseLandmarkAggregatorConfig):
+        return SafaPlusPiecewiseLandmarkAggregator.from_config(
             config, vigor_dataset, device
         )
     else:
