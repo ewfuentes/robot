@@ -1026,3 +1026,17 @@ py_binary(
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
   ]
 )
+
+py_binary(
+  name="sigma_paper_figure",
+  srcs=["sigma_paper_figure.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":calibrate_sigma",
+  ]
+)

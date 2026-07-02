@@ -340,20 +340,13 @@ def print_summary_table(
         col_end = col_start + n_methods - 1
         cmidrules += f"\\cmidrule(lr){{{col_start}-{col_end}}} "
 
-    lines = []
-    lines.append("\\begin{table*}[t]")
-    lines.append("\\centering")
-    lines.append("\\caption{Convergence cost (m) and final localization error (m) across environments. "
-                  "Values shown as mean $\\pm$ 95\\% CI. \\textbf{Bold} indicates the best method.}")
-    lines.append(f"\\begin{{tabular}}{{{col_spec}}}")
-    lines.append("\\toprule")
-    lines.append(header1)
-    lines.append(cmidrules)
-    lines.append(header2)
-    lines.append("\\midrule")
-
+    # Build all data rows first so we can pad each column to the widest cell,
+    # matching the paper's hand-formatted alignment style. Padding is purely
+    # cosmetic (LaTeX ignores it in rendering) but makes the .tex source diff
+    # cleanly against reviewer edits.
+    row_cells: list[list[str]] = []
     for env in ENVIRONMENTS:
-        row_parts = [DISPLAY_NAMES[env]]
+        cells = [DISPLAY_NAMES[env]]
         for _, radius in metrics:
             vals = []
             for m in method_names:
@@ -370,21 +363,38 @@ def print_summary_table(
                 vals.append(v)
 
             non_none = [(i, v) for i, v in enumerate(vals) if v is not None]
-            if non_none:
-                best_idx = min(non_none, key=lambda x: x[1][0])[0]
-            else:
-                best_idx = -1
+            best_idx = min(non_none, key=lambda x: x[1][0])[0] if non_none else -1
 
             for i, v in enumerate(vals):
                 if v is None:
-                    row_parts.append("--")
+                    cells.append("--")
                 else:
-                    row_parts.append(_fmt_val(*v, bold=(i == best_idx)))
+                    cells.append(_fmt_val(*v, bold=(i == best_idx)))
+        row_cells.append(cells)
 
-        lines.append(" & ".join(row_parts) + " \\\\")
+    n_cells = len(row_cells[0])
+    col_widths = [max(len(row[i]) for row in row_cells) for i in range(n_cells)]
 
-    lines.append("\\bottomrule")
-    lines.append("\\end{tabular}")
+    def _pad_data_row(cells: list[str]) -> str:
+        padded = [cells[i].ljust(col_widths[i]) for i in range(n_cells)]
+        return " & ".join(padded) + " \\\\"
+
+    lines = []
+    lines.append("\\begin{table*}[t]")
+    lines.append("  \\centering")
+    lines.append("  \\caption{Convergence cost (m) and final localization error (m) across environments. "
+                  "Values shown as mean $\\pm$ 95\\% CI using standard error of the mean. "
+                  "\\textbf{Bold} indicates the best method.}")
+    lines.append(f"  \\begin{{tabular}}{{{col_spec}}}")
+    lines.append("  \\toprule")
+    lines.append("  " + header1)
+    lines.append("  " + cmidrules.rstrip())
+    lines.append("  " + header2)
+    lines.append("  \\midrule")
+    for row in row_cells:
+        lines.append("  " + _pad_data_row(row))
+    lines.append("  \\bottomrule")
+    lines.append("  \\end{tabular}")
     lines.append("\\end{table*}")
 
     print("\n".join(lines))
