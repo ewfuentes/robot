@@ -634,7 +634,10 @@ py_binary(
 py_binary(
   name="evaluate_histogram_on_paths",
   srcs=["evaluate_histogram_on_paths.py"],
-  visibility=["//common/python:__subpackages__"],
+  visibility=[
+    "//common/python:__subpackages__",
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
   deps=[
     requirement("torch"),
     requirement("tqdm"),
@@ -1024,28 +1027,5 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
-  ]
-)
-
-py_binary(
-  name="measure_pipeline_latency",
-  srcs=["measure_pipeline_latency.py"],
-  deps=[
-    requirement("torch"),
-    requirement("numpy"),
-    requirement("ollama"),
-    requirement("sentence-transformers"),
-    requirement("google-genai"),
-    "//common/torch:load_torch_deps",
-    "//common/gps:web_mercator",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
-    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
-    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
-    "//experimental/overhead_matching/swag/filter:histogram_belief",
-    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
-    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
-    ":evaluate_histogram_on_paths",
-    ":ollama_osm_extraction_lib",
   ]
 )
