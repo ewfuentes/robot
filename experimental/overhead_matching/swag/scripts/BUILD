@@ -994,6 +994,17 @@ py_binary(
 )
 
 py_binary(
+  name="paper_video_plots",
+  srcs=["paper_video_plots.py"],
+  deps=[
+    ":paper_convergence_plot",
+    requirement("numpy"),
+    requirement("matplotlib"),
+    "//common/torch:load_torch_deps",
+  ]
+)
+
+py_binary(
   name = "trim_dataset_start",
   srcs = ["trim_dataset_start.py"],
 )

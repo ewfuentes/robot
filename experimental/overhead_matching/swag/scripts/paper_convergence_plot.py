@@ -11,22 +11,32 @@ import argparse
 from pathlib import Path
 
 
+# Order is shared by the convergence-curve panels (2x5 grid) and the summary
+# table: original order with Seattle (sigma calibration) excluded;
+# the two Framingham variants adjacent (leaf-off
+# MassGIS vs leaf-on Google via --env_dir_override), Dutch environments last.
+# Seattle (sigma calibration) is excluded.
 ENVIRONMENTS = [
     "NewYork",
     "SanFrancisco_mapillary",
     "Boston",
     "nightdrive",
     "Middletown",
-    "Norway",
-    "post_hurricane_ian_sw",
     "Framingham",
+    "Framingham_w_leaves",
+    "post_hurricane_ian_sw",
+    "netherlands_norr",
+    "netherlands_veluwe",
 ]
+PLOT_ENVIRONMENTS = ENVIRONMENTS
 
 DISPLAY_NAMES = {
     "Boston": "Boston Snowy",
     "Framingham": "Framingham",
+    "Framingham_w_leaves": "Framingham Mixed-Sat",
     "Middletown": "Middletown",
-    "Norway": "Norway",
+    "netherlands_norr": "Noordoostpolder",
+    "netherlands_veluwe": "Veluwe",
     "post_hurricane_ian": "Fort Myers",
     "post_hurricane_ian_sw": "Fort Myers",
     "SanFrancisco_mapillary": "San Francisco",
@@ -177,14 +187,28 @@ def plot_convergence_curves(
     method_labels: dict[str, str] | None = None,
     grid_resolution_m: float = 25.0,
     min_paths_for_ci: int = 10,
+    min_frac_for_ci: float = 1.0,
+    env_xlim_overrides: dict[str, float] | None = None,
 ):
     """Plot convergence curves (prob mass vs distance) per environment.
 
     Path lengths can vary across paths and methods; each path's prob-mass
     curve is interpolated onto a common distance grid (resolution
     ``grid_resolution_m``). Means / CIs use nan-aware reductions, and grid
-    points where fewer than ``min_paths_for_ci`` paths contributed are
-    truncated from the plot."""
+    points where fewer than ``min_paths_for_ci`` paths *or* fewer than a
+    fraction ``min_frac_for_ci`` of this env's paths contributed are truncated
+    from the plot. ``min_frac_for_ci=1.0`` (the default) requires all paths,
+    which drops the final-bin endpoint spike that appears when a few paths
+    terminate just short of the axis limit and the mean is taken over only the
+    longest, non-representative survivors.
+
+    ``env_xlim_overrides`` maps an environment to a per-panel x-axis limit
+    (meters), overriding ``xlim_m`` for that panel only. Its interpolation
+    grid is extended to match, so environments whose eval paths run longer
+    than the shared limit (e.g. the New York 5km path set vs. the 3km paths
+    used elsewhere) plot their full extent instead of being clipped."""
+    if env_xlim_overrides is None:
+        env_xlim_overrides = {}
     if method_colors is None:
         default_palette = ["#888888", "#FF9800", "#2196F3", "#4CAF50", "#9C27B0"]
         method_colors = {m: default_palette[i % len(default_palette)] for i, m in enumerate(method_names)}
@@ -195,17 +219,21 @@ def plot_convergence_curves(
     all_linestyles = ["-", "--", ":", "-."]
     radius_linestyles = {r: all_linestyles[i % len(all_linestyles)] for i, r in enumerate(radii)}
 
-    grid_max = xlim_m if xlim_m is not None else 5000.0
-    distance_grid = np.arange(0.0, grid_max + grid_resolution_m, grid_resolution_m)
-
-    n_envs = len(ENVIRONMENTS)
-    n_cols = 4
+    n_envs = len(PLOT_ENVIRONMENTS)
+    # Two-row layout (10 panels -> 2x5); ~4in per panel either way.
+    n_cols = (n_envs + 1) // 2
     n_rows = (n_envs + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows), squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), squeeze=False)
 
-    for idx, env in enumerate(ENVIRONMENTS):
+    for idx, env in enumerate(PLOT_ENVIRONMENTS):
         row, col = divmod(idx, n_cols)
         ax = axes[row][col]
+
+        # Per-panel x-limit (and matching interpolation grid) so an env whose
+        # eval paths are longer than the shared xlim_m isn't clipped.
+        env_xlim = env_xlim_overrides.get(env, xlim_m)
+        grid_max = env_xlim if env_xlim is not None else 5000.0
+        distance_grid = np.arange(0.0, grid_max + grid_resolution_m, grid_resolution_m)
 
         for radius in radii:
             ls = radius_linestyles[radius]
@@ -218,7 +246,14 @@ def plot_convergence_curves(
                     eval_dir, radius, distance_grid
                 )
                 n_valid = np.sum(~np.isnan(prob_masses), axis=0)
-                keep = n_valid >= min_paths_for_ci
+                # Require both an absolute floor and a fraction of this env's
+                # paths to still be present, so the final grid bin isn't drawn
+                # from only the longest (non-representative) survivors.
+                min_needed = max(
+                    min_paths_for_ci,
+                    int(np.ceil(min_frac_for_ci * prob_masses.shape[0])),
+                )
+                keep = n_valid >= min_needed
                 if not np.any(keep):
                     continue
                 with np.errstate(invalid="ignore"):
@@ -250,8 +285,8 @@ def plot_convergence_curves(
 
         ax.set_title(DISPLAY_NAMES[env], fontsize=14)
         ax.set_ylim(-0.05, 1.05)
-        if xlim_m is not None:
-            ax.set_xlim(0, xlim_m)
+        if env_xlim is not None:
+            ax.set_xlim(0, env_xlim)
         ax.set_xlabel("Distance traveled (m)", fontsize=12)
         ax.set_ylabel("Probability mass within radius" if col == 0 else "", fontsize=12)
         ax.spines["top"].set_visible(False)
@@ -303,6 +338,7 @@ def print_summary_table(
     final_errors: dict,
     method_names: list[str],
     method_labels: dict[str, str] | None = None,
+    output_path: Path | None = None,
 ):
     """Print a multi-method LaTeX table. Lower is better; best is bolded per row."""
     if method_labels is None:
@@ -383,8 +419,10 @@ def print_summary_table(
     lines.append("\\begin{table*}[t]")
     lines.append("  \\centering")
     lines.append("  \\caption{Convergence cost (m) and final localization error (m) across environments. "
-                  "Values shown as mean $\\pm$ 95\\% CI using standard error of the mean. "
+                  "Values shown as mean $\\pm$ 1.96 $\\cdot$ SEM "
+                  "(normal-approximation 95\\% CI for the mean). "
                   "\\textbf{Bold} indicates the best method.}")
+    lines.append("  \\label{table:convergence-and-final-error}")
     lines.append(f"  \\begin{{tabular}}{{{col_spec}}}")
     lines.append("  \\toprule")
     lines.append("  " + header1)
@@ -397,7 +435,12 @@ def print_summary_table(
     lines.append("  \\end{tabular}")
     lines.append("\\end{table*}")
 
-    print("\n".join(lines))
+    table_str = "\n".join(lines)
+    print(table_str)
+    if output_path is not None:
+        tex_path = output_path / "results_table.tex"
+        tex_path.write_text(table_str + "\n")
+        print(f"\nSaved summary table to {tex_path}")
 
 
 def main():
@@ -452,9 +495,20 @@ def main():
         help="Subdirectory name for OSM baseline method within each city",
     )
     parser.add_argument(
+        "--env_dir_override",
+        action="append",
+        default=[],
+        metavar="ENV:METHOD=PATH",
+        help="Override the eval dir for one (environment, method) cell, e.g. "
+             "Framingham:safa=/data/.../260522_full_rerun_no_hinge/wag_only_no_hinge/"
+             "Framingham/wag_only_no_hinge. METHOD is one of safa|osm|early|ours. "
+             "Repeatable. Lets the table/curves source specific cities from other "
+             "results roots.",
+    )
+    parser.add_argument(
         "--osm_label",
         type=str,
-        default="DINOv3+OSM",
+        default="WAG+OSM",
         help="Display label for the OSM-baseline method in legends and tables",
     )
     parser.add_argument(
@@ -462,6 +516,12 @@ def main():
         type=str,
         default="WAG",
         help="Display label for the SAFA/WAG baseline method in legends and tables",
+    )
+    parser.add_argument(
+        "--ours_label",
+        type=str,
+        default="LOCI",
+        help="Display label for our method in legends and tables",
     )
     parser.add_argument(
         "--early_dir",
@@ -479,7 +539,7 @@ def main():
     parser.add_argument(
         "--early_label",
         type=str,
-        default="Early Fusion",
+        default="LOCI-EF",
         help="Display label for the early-fusion method in legends and tables",
     )
     parser.add_argument(
@@ -496,6 +556,26 @@ def main():
         help="X-axis limit in meters for convergence curves (Fig B). 0 for no limit.",
     )
     parser.add_argument(
+        "--env_xlim",
+        action="append",
+        default=[],
+        metavar="ENV=METERS",
+        help="Per-panel x-axis limit override for one environment, e.g. "
+             "NewYork=5000. Overrides --xlim_m for that panel only and extends "
+             "its interpolation grid to match (for envs whose eval paths run "
+             "longer than the shared limit). Repeatable.",
+    )
+    parser.add_argument(
+        "--min_frac_for_ci",
+        type=float,
+        default=1.0,
+        help="Fraction (0-1) of an environment's paths that must still be "
+             "present at a grid point for it to be plotted (in addition to the "
+             "absolute min of 10). Default 1.0 requires all paths, trimming the "
+             "final-bin endpoint spike caused by a few paths terminating just "
+             "short of the axis limit. Axis limits are unaffected.",
+    )
+    parser.add_argument(
         "--allow_partial_method_coverage",
         action="store_true",
         help="Allow optional methods (OSM, Early Fusion) to cover only a subset "
@@ -503,6 +583,18 @@ def main():
              "for every env or loading throws.",
     )
     args = parser.parse_args()
+
+    env_xlim_overrides: dict[str, float] = {}
+    for spec in args.env_xlim:
+        try:
+            env, meters = spec.split("=", 1)
+            env_xlim_overrides[env] = float(meters)
+        except ValueError:
+            raise SystemExit(f"bad --env_xlim {spec!r}; expected ENV=METERS")
+        if env not in PLOT_ENVIRONMENTS:
+            raise SystemExit(
+                f"--env_xlim env {env!r} not in PLOT_ENVIRONMENTS {PLOT_ENVIRONMENTS}"
+            )
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -521,20 +613,20 @@ def main():
     method_dirs = {
         "safa": {
             env: base_for(env, baseline_base) / env / args.baseline_method
-            for env in ENVIRONMENTS
+            for env in PLOT_ENVIRONMENTS
         },
         "osm": {},
         "early": {},
         "ours": {
             env: base_for(env, ours_base) / env / args.ours_method
-            for env in ENVIRONMENTS
+            for env in PLOT_ENVIRONMENTS
         },
     }
     def register_optional(base: Path | None, method_subdir: str) -> dict[str, Path]:
         if base is None:
             return {}
         result = {}
-        for env in ENVIRONMENTS:
+        for env in PLOT_ENVIRONMENTS:
             candidate = base / env / method_subdir
             if args.allow_partial_method_coverage and not candidate.exists():
                 continue
@@ -543,6 +635,20 @@ def main():
 
     method_dirs["osm"] = register_optional(osm_base, args.osm_method)
     method_dirs["early"] = register_optional(early_base, args.early_method)
+
+    for spec in args.env_dir_override:
+        try:
+            env_part, path_part = spec.split("=", 1)
+            env, method = env_part.split(":", 1)
+        except ValueError:
+            raise SystemExit(f"bad --env_dir_override {spec!r}; expected ENV:METHOD=PATH")
+        if method not in method_dirs:
+            raise SystemExit(f"--env_dir_override method {method!r} not in {sorted(method_dirs)}")
+        override = Path(path_part)
+        if not (override / "summary_statistics.json").exists():
+            raise SystemExit(f"--env_dir_override target has no summary_statistics.json: {override}")
+        method_dirs[method][env] = override
+        print(f"  env override: {env}/{method} -> {override}")
 
     method_names = ["safa", "osm", "early", "ours"]
     if early_base is None:
@@ -557,7 +663,7 @@ def main():
         "safa": args.baseline_label,
         "osm": args.osm_label,
         "early": args.early_label,
-        "ours": "Ours",
+        "ours": args.ours_label,
     }
 
     # Load data
@@ -575,6 +681,8 @@ def main():
         xlim_m=xlim,
         method_colors=method_colors,
         method_labels=method_labels,
+        min_frac_for_ci=args.min_frac_for_ci,
+        env_xlim_overrides=env_xlim_overrides,
     )
 
     # Table
@@ -584,6 +692,7 @@ def main():
         final_errors,
         method_names,
         method_labels=method_labels,
+        output_path=output_path,
     )
 
 
