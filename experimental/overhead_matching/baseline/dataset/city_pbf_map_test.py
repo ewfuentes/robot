@@ -11,10 +11,10 @@ class CityPbfMapTest(unittest.TestCase):
             set(city_pbf_map.cities()),
             {
                 # VIGOR original
-                "Boston", "Chicago", "NewYork", "Seattle", "SanFrancisco",
+                "Boston", "Chicago", "NewYork", "Seattle",
                 # VIGOR mapillary
-                "Framingham", "Middletown", "Gap", "SanFrancisco_mapillary",
-                "MiamiBeach", "post_hurricane_ian", "post_hurricane_ian_sw",
+                "Framingham", "Middletown", "SanFrancisco_mapillary",
+                "post_hurricane_ian_sw",
                 "netherlands_norr", "netherlands_veluwe",
             },
         )

@@ -31,13 +31,10 @@ PANO_LANDMARK_DIR_MAP = {
     "Boston": "boston_snowy",
     "nightdrive": "nightdrive",
     "Framingham": "Framingham",
-    "Gap": "Gap",
-    "MiamiBeach": "MiamiBeach",
     "Middletown": "Middletown",
     "netherlands_norr": "netherlands_norr",
     "netherlands_veluwe": "netherlands_veluwe",
     "SanFrancisco_mapillary": "SanFrancisco_mapillary",
-    "post_hurricane_ian": "post_hurricane_ian",
     "post_hurricane_ian_sw": "post_hurricane_ian_sw",
 }
 
@@ -145,10 +142,16 @@ def parse_osm_date(landmark_version: str) -> str | None:
         return f"20{digits[:2]}-{digits[2:4]}-{digits[4:6]}"
 
 
+# On-disk city dirs that are not part of the benchmark roster (unused splits
+# or, for SanFrancisco, a VIGOR split that only donates imagery to
+# SanFrancisco_mapillary).
+SKIP_CITIES = {"SanFrancisco", "Gap", "MiamiBeach", "post_hurricane_ian"}
+
+
 def discover_datasets(base: Path) -> list[DatasetConfig]:
     configs = []
 
-    for city in ["Chicago", "NewYork", "SanFrancisco", "Seattle"]:
+    for city in ["Chicago", "NewYork", "Seattle"]:
         p = base / city
         if p.is_dir() and (p / "panorama").is_dir():
             configs.append(DatasetConfig(city, p, "landmarks/v4_202001.feather"))
@@ -169,6 +172,7 @@ def discover_datasets(base: Path) -> list[DatasetConfig]:
         for loc_dir in sorted(scan.iterdir()):
             if (not loc_dir.is_dir() or loc_dir.name in already
                     or loc_dir.name in ("mapillary", "trash")
+                    or loc_dir.name in SKIP_CITIES
                     or not (loc_dir / "panorama").is_dir()):
                 continue
             landmarks_dir = loc_dir / "landmarks"
@@ -366,7 +370,7 @@ def compute_stats(config: DatasetConfig, pano_embed_base: Path | None) -> Datase
     )
 
 
-CORE_VIGOR_CITIES = {"Chicago", "NewYork", "SanFrancisco", "Seattle"}
+CORE_VIGOR_CITIES = {"Chicago", "NewYork", "Seattle"}
 
 
 def format_value(val) -> str:
@@ -514,8 +518,7 @@ def print_latex_paper_table(all_stats: list[DatasetStats]):
     Stats not derivable from data (conditions, VIGOR / rig markers, the
     "2019" pano date for VIGOR cities) come from `LATEX_PAPER_ROWS`, which
     also defines row membership and order: discovered datasets without an
-    entry (e.g. the VIGOR SanFrancisco split that only donates imagery to
-    SanFrancisco_mapillary) are skipped with a notice.
+    entry are skipped with a notice.
     """
     stats_by_name = {s.name: s for s in all_stats}
 

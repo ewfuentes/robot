@@ -90,14 +90,12 @@ bazel run //experimental/overhead_matching/swag/scripts:precompute_value_embeddi
         /data/overhead_matching/datasets/VIGOR/Chicago \
         /data/overhead_matching/datasets/VIGOR/NewYork \
         /data/overhead_matching/datasets/VIGOR/nightdrive \
-        /data/overhead_matching/datasets/VIGOR/SanFrancisco \
         /data/overhead_matching/datasets/VIGOR/Seattle \
         /data/overhead_matching/datasets/VIGOR/Framingham \
-        /data/overhead_matching/datasets/VIGOR/Gap \
-        /data/overhead_matching/datasets/VIGOR/MiamiBeach \
         /data/overhead_matching/datasets/VIGOR/Middletown \
         /data/overhead_matching/datasets/VIGOR/netherlands_norr \
-        /data/overhead_matching/datasets/VIGOR/post_hurricane_ian \
+        /data/overhead_matching/datasets/VIGOR/netherlands_veluwe \
+        /data/overhead_matching/datasets/VIGOR/post_hurricane_ian_sw \
         /data/overhead_matching/datasets/VIGOR/SanFrancisco_mapillary \
     --pano_v2_base /data/overhead_matching/datasets/semantic_landmark_embeddings/mapillary \
     --base_embeddings /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings.pkl \
@@ -190,7 +188,7 @@ bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_si
 - Mapillary cities: `--pano_v2_base .../semantic_landmark_embeddings/mapillary`
 - Boston/nightdrive: also pass `.../semantic_landmark_embeddings` (contains `boston_snowy/` and `nightdrive/` subdirs)
 
-**Timing:** MiamiBeach ~1 min, netherlands_norr ~10 min, Boston ~15 min (scales with n_pano × n_osm_landmarks).
+**Timing:** netherlands_norr ~10 min, Boston ~15 min (scales with n_pano × n_osm_landmarks).
 
 ## Stage 4: Build Similarity Matrices
 
@@ -220,11 +218,10 @@ BINARY=bazel-bin/experimental/overhead_matching/swag/scripts/export_corresponden
 
 for CITY_PATH in \
     /data/overhead_matching/datasets/VIGOR/Framingham \
-    /data/overhead_matching/datasets/VIGOR/Gap \
-    /data/overhead_matching/datasets/VIGOR/MiamiBeach \
     /data/overhead_matching/datasets/VIGOR/Middletown \
     /data/overhead_matching/datasets/VIGOR/netherlands_norr \
-    /data/overhead_matching/datasets/VIGOR/post_hurricane_ian \
+    /data/overhead_matching/datasets/VIGOR/netherlands_veluwe \
+    /data/overhead_matching/datasets/VIGOR/post_hurricane_ian_sw \
     /data/overhead_matching/datasets/VIGOR/SanFrancisco_mapillary \
     /data/overhead_matching/datasets/VIGOR/Boston \
     /data/overhead_matching/datasets/VIGOR/nightdrive; do
@@ -315,7 +312,7 @@ Explore satellite scores interactively with map visualization:
 ```bash
 bazel run //experimental/overhead_matching/swag/analysis:correspondence_explorer -- \
     --precomputed_data /data/.../correspondence_scores/v5_all_cities_raw.pt \
-    --dataset_path /data/.../VIGOR/MiamiBeach \
+    --dataset_path /data/.../VIGOR/Middletown \
     --port 5003
 ```
 
@@ -344,12 +341,10 @@ bazel run //common/python:marimo_server -- edit \
 | City | Dataset path | Landmark version | Pano_v2 base |
 |------|-------------|-----------------|--------------|
 | Framingham | `VIGOR/Framingham` | `Framingham_v1_260101` | mapillary |
-| Gap | `VIGOR/Gap` | `Gap_v1_250101` | mapillary |
-| MiamiBeach | `VIGOR/MiamiBeach` | `MiamiBeach_v1_150101` | mapillary |
 | Middletown | `VIGOR/Middletown` | `Middletown_v1_250101` | mapillary |
 | netherlands_norr | `VIGOR/netherlands_norr` | `netherlands_norr_v1_250101` | mapillary |
 | netherlands_veluwe | `VIGOR/netherlands_veluwe` | `netherlands_veluwe_v1_250101` | mapillary |
-| post_hurricane_ian | `VIGOR/post_hurricane_ian` | `post_hurricane_ian_v1_220101` | mapillary |
+| post_hurricane_ian_sw | `VIGOR/post_hurricane_ian_sw` | `post_hurricane_ian_sw_v1_220101` | mapillary |
 | SanFrancisco_mapillary | `VIGOR/SanFrancisco_mapillary` | `SanFrancisco_mapillary_v1_220101` | mapillary |
 | Boston | `VIGOR/Boston` | `boston` | mapillary + semantic_landmark_embeddings |
 | nightdrive | `VIGOR/nightdrive` | `boston` | mapillary + semantic_landmark_embeddings |

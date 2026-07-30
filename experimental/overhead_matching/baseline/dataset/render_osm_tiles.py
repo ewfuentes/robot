@@ -31,7 +31,7 @@ class RenderJob:
 def read_source_px(city_dir: Path) -> int | None:
     """Return source_px from <city_dir>/satellite_bbox.json if present.
 
-    Resolution-normalized VIGOR splits (e.g. netherlands_norr, MiamiBeach) capture each
+    Resolution-normalized VIGOR splits (e.g. netherlands_norr) capture each
     tile at `source_px` zoom-20 pixels of ground, then resize to 640. The
     bbox the on-disk image actually covers spans `source_px` zoom-20 pixels,
     not 640.
