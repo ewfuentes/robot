@@ -5,10 +5,10 @@ the whole-stockpile landmark-correspondence task, then extrapolates the calls an
 wall-clock to match a whole city (Chicago by default).
 
 Usage:
-    bazel run //experimental/overhead_matching/swag/scripts:benchmark_correspondence_scaling_ollama -- \
+    bazel run //experimental/overhead_matching/swag/scripts/timing:benchmark_correspondence_scaling_ollama -- \
         --output_dir /tmp/corr_scaling/gemma3_27b \
         --candidate_fills 100,1000,5000,10000,20000 \
-        --pano_batch 10 --thinking both
+        --pano_batches 10 --thinking both
 
 The Gemma 3 family is not a native reasoning model, so "thinking on" is best-effort:
 we try ollama's think=True and fall back to a chain-of-thought system instruction

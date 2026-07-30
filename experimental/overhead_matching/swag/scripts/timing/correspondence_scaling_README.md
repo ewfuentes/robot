@@ -26,7 +26,8 @@ extrapolates to per-landmark / per-panorama / full-city cost.
 1. Install ollama (https://ollama.com) and ensure the `ollama` binary is on PATH. The
    `gemma3:27b` weights (~17 GB) are pulled automatically on first run.
 2. The VIGOR dataset and pano_v2 embeddings must be present under
-   `/data/overhead_matching/datasets/` (see `data/README.md`).
+   `/data/overhead_matching/datasets/` (layout documented in the loci release
+   repo's `data_release/README.md` and `docs/dataset_creation.md`).
 
 ## Run
 
@@ -50,7 +51,7 @@ bazel run //experimental/overhead_matching/swag/scripts/timing:benchmark_corresp
 
 ## Reference results
 
-The sweep results behind the paper figures are stored at
+The sweep results behind the paper's reported timings are stored at
 `/data/overhead_matching/evaluation/timing/`:
 - `gemma3_27b_thinking_off_per_panorama.jsonl` — ~5.4 min / panorama
 - `gemma3_27b_thinking_on_cot_per_panorama.jsonl` — ~7.6 min / panorama

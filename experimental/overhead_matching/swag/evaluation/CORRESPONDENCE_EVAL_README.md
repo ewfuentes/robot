@@ -33,6 +33,8 @@ Create Gemini-labeled landmark correspondence pairs for training the classifier.
 # Generate Gemini batch JSONL for a city
 bazel run //experimental/overhead_matching/swag/scripts:landmark_pairing_cli -- \
     --all --city Chicago --with_negatives \
+    --pano_v2_base /data/overhead_matching/datasets/semantic_landmark_embeddings/panov2_tuned_prompt \
+    --landmark_version v4_202001 \
     --generate_batch /tmp/chicago_correspondence_batch.jsonl \
     --thinking_level LOW
 ```
@@ -147,7 +149,7 @@ bazel run //experimental/overhead_matching/swag/scripts:train_landmark_correspon
     --config /tmp/correspondence_train.yaml
 ```
 
-**Output:** `best_model.pt` (~700KB, 173K parameters), trains in ~5 minutes on GPU.
+**Output:** `best_model.pt` (~700KB, 173K parameters), trains in ~90 s on an RTX 5090.
 
 **Evaluate per-city classification:**
 ```bash
@@ -169,7 +171,6 @@ PANO_V2_EXTRA=/data/overhead_matching/datasets/semantic_landmark_embeddings
 
 # Example: one city
 bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \
-    --save_raw \
     --model_path $MODEL \
     --text_embeddings_path $TEXT_EMB \
     --dataset_path /data/overhead_matching/datasets/VIGOR/netherlands_norr \
@@ -200,6 +201,7 @@ bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_si
     --from_raw /data/overhead_matching/datasets/VIGOR/netherlands_norr/correspondence_scores/v5_all_cities_raw.pt \
     --dataset_path /data/overhead_matching/datasets/VIGOR/netherlands_norr \
     --output_path /data/overhead_matching/datasets/VIGOR/netherlands_norr/similarity_matrices/correspondence_v5_hungarian_0.8.pt \
+    --compute_similarity \
     --method hungarian \
     --aggregation sum \
     --prob_threshold 0.8 \
@@ -232,6 +234,7 @@ for CITY_PATH in \
 
     echo "=== $CITY_NAME ==="
     $BINARY --from_raw "$RAW" --dataset_path "$CITY_PATH" --output_path "$OUT" \
+        --compute_similarity \
         --method hungarian --aggregation sum --prob_threshold 0.8 --uniqueness_weighted
 done
 ```
@@ -322,7 +325,7 @@ Compare aggregation methods, analyze per-panorama and per-landmark behavior:
 
 ```bash
 bazel run //common/python:marimo_server -- edit \
-    /home/ekf/code/robot-tag-matcher-9000/experimental/overhead_matching/swag/analysis/correspondence_fusion_explorer.py
+    experimental/overhead_matching/swag/analysis/correspondence_fusion_explorer.py
 ```
 
 ## File Locations

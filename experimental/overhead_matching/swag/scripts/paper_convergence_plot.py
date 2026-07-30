@@ -37,7 +37,6 @@ DISPLAY_NAMES = {
     "Middletown": "Middletown",
     "netherlands_norr": "Noordoostpolder",
     "netherlands_veluwe": "Veluwe",
-    "post_hurricane_ian": "Fort Myers",
     "post_hurricane_ian_sw": "Fort Myers",
     "SanFrancisco_mapillary": "San Francisco",
     "Seattle": "Seattle",
