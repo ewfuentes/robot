@@ -111,20 +111,34 @@ py_library(
     requirement("torch"),
     requirement("torchvision"),
     requirement("msgspec"),
-    ":alphaearth_extractor",
     ":safa_extractor",
     ":tag_bundle_extractor",
     ":semantic_landmark_extractor",
     ":panorama_semantic_landmark_extractor",
     ":additional_panorama_extractors",
-    ":synthetic_landmark_extractor",
-    ":semantic_segment_extractor",
-    ":absolute_position_extractor",
     ":swag_config_types",
     ":swag_model_input_output",
     ":landmark_scheduler",
     "//common/torch:load_torch_deps",
   ]
+)
+
+# Extractors the factory in swag_patch_embedding.py imports lazily. Binaries
+# that instantiate these config kinds (AlphaEarth, SemanticSegment,
+# SyntheticLandmark, AbsolutePosition) must add this target (or the
+# individual libs) to their deps; the paper-release closure omits them.
+py_library(
+  name = "extractor_extras",
+  visibility = [
+    "//experimental/overhead_matching/swag:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    ":alphaearth_extractor",
+    ":semantic_segment_extractor",
+    ":synthetic_landmark_extractor",
+    ":absolute_position_extractor",
+  ],
 )
 
 py_test(

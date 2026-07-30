@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 from experimental.overhead_matching.swag.model.swag_model_input_output import (
     ModelInput, SemanticTokenExtractorOutput, FeatureMapExtractorOutput, ExtractorOutput)
-from experimental.overhead_matching.swag.model.semantic_segment_extractor import SemanticSegmentExtractor
-from experimental.overhead_matching.swag.model.alphaearth_extractor import AlphaEarthExtractor
 from experimental.overhead_matching.swag.model.semantic_landmark_extractor import SemanticLandmarkExtractor
 from experimental.overhead_matching.swag.model.panorama_semantic_landmark_extractor import (
     PanoramaSemanticLandmarkExtractor,
@@ -23,8 +21,6 @@ from experimental.overhead_matching.swag.model.tag_bundle_extractor import (
     OSMTagBundleExtractor, PanoramaTagBundleExtractor,
 )
 from torch.nn.init import xavier_uniform_
-from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import SyntheticLandmarkExtractor
-from experimental.overhead_matching.swag.model.absolute_position_extractor import AbsolutePositionExtractor
 from experimental.overhead_matching.swag.model.swag_config_types import (
     FeatureMapExtractorConfig,
     DinoFeatureMapExtractorConfig,
@@ -95,13 +91,29 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaProperNounExtractorConfig(): return PanoramaProperNounExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaLocationTypeExtractorConfig(): return PanoramaLocationTypeExtractor(config, auxiliary_info[config.auxiliary_info_key])
-        case SemanticSegmentExtractorConfig(): return SemanticSegmentExtractor(config)
-        case SyntheticLandmarkExtractorConfig(): return SyntheticLandmarkExtractor(config)
-        case AbsolutePositionExtractorConfig(): return AbsolutePositionExtractor(config)
+        # The four extractors below are imported lazily so the paper-release
+        # code closure (which never instantiates them) does not carry their
+        # modules; consumers that use these config kinds must depend on
+        # :extractor_extras (or the individual extractor libs).
+        case SemanticSegmentExtractorConfig():
+            from experimental.overhead_matching.swag.model.semantic_segment_extractor import (
+                SemanticSegmentExtractor)
+            return SemanticSegmentExtractor(config)
+        case SyntheticLandmarkExtractorConfig():
+            from experimental.overhead_matching.swag.model.synthetic_landmark_extractor import (
+                SyntheticLandmarkExtractor)
+            return SyntheticLandmarkExtractor(config)
+        case AbsolutePositionExtractorConfig():
+            from experimental.overhead_matching.swag.model.absolute_position_extractor import (
+                AbsolutePositionExtractor)
+            return AbsolutePositionExtractor(config)
         case SafaExtractorConfig(): return SafaExtractor(config)
         case OSMTagBundleExtractorConfig(): return OSMTagBundleExtractor(config)
         case PanoramaTagBundleExtractorConfig(): return PanoramaTagBundleExtractor(config)
-        case AlphaEarthExtractorConfig(): return AlphaEarthExtractor(
+        case AlphaEarthExtractorConfig():
+            from experimental.overhead_matching.swag.model.alphaearth_extractor import (
+                AlphaEarthExtractor)
+            return AlphaEarthExtractor(
                 config, auxiliary_info[config.auxiliary_info_key])
     raise NotImplementedError(f"Unhandled Config Type: {config}")
 
