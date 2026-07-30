@@ -262,6 +262,15 @@ HTML_TEMPLATE = '''
                 document.getElementById('pano-search').style.borderColor = '#ccc';
             } else {
                 document.getElementById('pano-search').style.borderColor = '#c00';
+                fetch(`/api/pano_lookup/${query}`).then(r => r.json()).then(info => {
+                    if (!info.in_dataset) {
+                        alert(`Pano ${query}: not in this dataset`);
+                    } else if (info.n_landmarks === 0) {
+                        alert(`Pano ${query}: in the dataset but has 0 Gemini landmarks — ` +
+                              `no correspondence rows exist, so the landmark stream is ` +
+                              `uniform at this step (observation likelihood = image stream only).`);
+                    }
+                });
             }
         }
 
@@ -771,6 +780,18 @@ def get_panoramas():
             'n_landmarks': n_lm,
         })
     return jsonify(result)
+
+
+@app.route('/api/pano_lookup/<pano_id>')
+def pano_lookup(pano_id):
+    """Explain why a searched pano is or isn't browsable (for cross-tool hops
+    from step_through_histogram, which lists every pano incl. landmark-less)."""
+    return jsonify({
+        'in_dataset': pano_id in PANO_ID_TO_VIGOR_IDX,
+        'n_landmarks': len(RAW_DATA.pano_id_to_lm_rows.get(pano_id, [])),
+        'in_explorer': pano_id in PANO_ID_TO_VIGOR_IDX
+                       and bool(RAW_DATA.pano_id_to_lm_rows.get(pano_id)),
+    })
 
 
 @app.route('/api/panorama/<pano_id>')

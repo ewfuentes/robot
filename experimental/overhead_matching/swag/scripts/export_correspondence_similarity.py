@@ -195,7 +195,15 @@ def load_raw_cost_data(raw_path: Path) -> cm.RawCorrespondenceData:
     if "cost_matrix" in data:
         cost_matrix = data["cost_matrix"]
     else:
-        cost_npy = data["cost_matrix_path"]
+        # The recorded path is absolute and goes stale if the dataset moves;
+        # fall back to the .npy saved next to the .pt (the write-side layout).
+        cost_npy = Path(data["cost_matrix_path"])
+        if not cost_npy.exists():
+            sibling = raw_path.parent / (raw_path.stem + "_cost_matrix.npy")
+            if sibling.exists():
+                print(f"  Recorded cost-matrix path is stale ({cost_npy}); "
+                      f"using sibling {sibling}")
+                cost_npy = sibling
         print(f"  Memory-mapping cost matrix from {cost_npy}")
         cost_matrix = np.load(cost_npy, mmap_mode="r")
     return cm.RawCorrespondenceData(
