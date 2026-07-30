@@ -14,18 +14,16 @@ CITY_TO_PBF: dict[str, CityPbf] = {
     "Chicago":      CityPbf("illinois-200101.osm.pbf",      "illinois"),
     "NewYork":      CityPbf("new-york-200101.osm.pbf",      "new_york"),
     "Seattle":      CityPbf("washington-200101.osm.pbf",    "washington"),
-    "SanFrancisco": CityPbf("california-200101.osm.pbf",    "california"),
-    # VIGOR mapillary cities (under <vigor-root>/mapillary/<City>/). Distinct
+    # VIGOR mapillary cities (flat layout, <vigor-root>/<City>/). Distinct
     # mbtiles stems per city since several share a state-level PBF but cover
     # disjoint bboxes.
     "Framingham":             CityPbf("massachusetts-260101.osm.pbf", "massachusetts_260101_Framingham"),
     "Middletown":             CityPbf("connecticut-250101.osm.pbf",   "connecticut_250101_Middletown"),
-    "Gap":                    CityPbf("france-250101.osm.pbf",        "france_250101_Gap"),
     "SanFrancisco_mapillary": CityPbf("norcal-220101.osm.pbf",        "norcal_220101_SanFrancisco_mapillary"),
-    "MiamiBeach":             CityPbf("florida-220101.osm.pbf",       "florida_220101_MiamiBeach"),
-    "post_hurricane_ian":     CityPbf("florida-220101.osm.pbf",       "florida_220101_post_hurricane_ian"),
     "post_hurricane_ian_sw":  CityPbf("florida-220101.osm.pbf",       "florida_220101_post_hurricane_ian_sw"),
-    "Norway":                 CityPbf("norway-251201.osm.pbf",        "norway_251201_Norway"),
+    # Benchmark-v2 rural cities (flat layout, <vigor-root>/<City>/; replaced the retired Norway split).
+    "netherlands_norr":       CityPbf("netherlands-250101.osm.pbf",   "netherlands_250101_netherlands_norr"),
+    "netherlands_veluwe":     CityPbf("netherlands-250101.osm.pbf",   "netherlands_250101_netherlands_veluwe"),
 }
 
 

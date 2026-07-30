@@ -31,7 +31,7 @@ class RenderJob:
 def read_source_px(city_dir: Path) -> int | None:
     """Return source_px from <city_dir>/satellite_bbox.json if present.
 
-    Resolution-normalized VIGOR splits (e.g. Norway, MiamiBeach) capture each
+    Resolution-normalized VIGOR splits (e.g. netherlands_norr) capture each
     tile at `source_px` zoom-20 pixels of ground, then resize to 640. The
     bbox the on-disk image actually covers spans `source_px` zoom-20 pixels,
     not 640.
@@ -105,7 +105,7 @@ def render_city(
 ) -> None:
     city_dir = vigor_root / city
 
-    # Resolution-normalized splits (e.g. Norway: source_px=934) capture a
+    # Resolution-normalized splits (e.g. netherlands_norr: source_px=790) capture a
     # wider ground footprint and resize to 640. The OSM bbox must match that
     # ground footprint, not the 640px on-disk size; the output PNG stays at
     # render_px so vigor_dataset.py sees the same image dims as satellite/.
