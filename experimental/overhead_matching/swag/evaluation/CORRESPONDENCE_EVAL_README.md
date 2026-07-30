@@ -92,13 +92,13 @@ bazel run //experimental/overhead_matching/swag/scripts:precompute_value_embeddi
         /data/overhead_matching/datasets/VIGOR/nightdrive \
         /data/overhead_matching/datasets/VIGOR/SanFrancisco \
         /data/overhead_matching/datasets/VIGOR/Seattle \
-        /data/overhead_matching/datasets/VIGOR/mapillary/Framingham \
-        /data/overhead_matching/datasets/VIGOR/mapillary/Gap \
-        /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \
-        /data/overhead_matching/datasets/VIGOR/mapillary/Middletown \
-        /data/overhead_matching/datasets/VIGOR/mapillary/Norway \
-        /data/overhead_matching/datasets/VIGOR/mapillary/post_hurricane_ian \
-        /data/overhead_matching/datasets/VIGOR/mapillary/SanFrancisco_mapillary \
+        /data/overhead_matching/datasets/VIGOR/Framingham \
+        /data/overhead_matching/datasets/VIGOR/Gap \
+        /data/overhead_matching/datasets/VIGOR/MiamiBeach \
+        /data/overhead_matching/datasets/VIGOR/Middletown \
+        /data/overhead_matching/datasets/VIGOR/netherlands_norr \
+        /data/overhead_matching/datasets/VIGOR/post_hurricane_ian \
+        /data/overhead_matching/datasets/VIGOR/SanFrancisco_mapillary \
     --pano_v2_base /data/overhead_matching/datasets/semantic_landmark_embeddings/mapillary \
     --base_embeddings /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings.pkl \
     --output /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings_all_cities.pkl
@@ -174,9 +174,9 @@ bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_si
     --save_raw \
     --model_path $MODEL \
     --text_embeddings_path $TEXT_EMB \
-    --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/Norway \
+    --dataset_path /data/overhead_matching/datasets/VIGOR/netherlands_norr \
     --pano_v2_base $PANO_V2_MAPILLARY $PANO_V2_EXTRA \
-    --output_path /data/overhead_matching/datasets/VIGOR/mapillary/Norway/correspondence_scores/v5_all_cities_raw.pt
+    --output_path /data/overhead_matching/datasets/VIGOR/netherlands_norr/correspondence_scores/v5_all_cities_raw.pt
 ```
 
 **Output:** `v5_all_cities_raw.pt` per city, containing:
@@ -190,7 +190,7 @@ bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_si
 - Mapillary cities: `--pano_v2_base .../semantic_landmark_embeddings/mapillary`
 - Boston/nightdrive: also pass `.../semantic_landmark_embeddings` (contains `boston_snowy/` and `nightdrive/` subdirs)
 
-**Timing:** MiamiBeach ~1 min, Norway ~10 min, Boston ~15 min (scales with n_pano × n_osm_landmarks).
+**Timing:** MiamiBeach ~1 min, netherlands_norr ~10 min, Boston ~15 min (scales with n_pano × n_osm_landmarks).
 
 ## Stage 4: Build Similarity Matrices
 
@@ -199,9 +199,9 @@ Convert raw P(match) scores into `(num_panos, num_sats)` similarity matrices usi
 ```bash
 # Example: Hungarian matching, sum aggregation, 0.8 threshold, uniqueness-weighted
 bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \
-    --from_raw /data/overhead_matching/datasets/VIGOR/mapillary/Norway/correspondence_scores/v5_all_cities_raw.pt \
-    --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/Norway \
-    --output_path /data/overhead_matching/datasets/VIGOR/mapillary/Norway/similarity_matrices/correspondence_v5_hungarian_0.8.pt \
+    --from_raw /data/overhead_matching/datasets/VIGOR/netherlands_norr/correspondence_scores/v5_all_cities_raw.pt \
+    --dataset_path /data/overhead_matching/datasets/VIGOR/netherlands_norr \
+    --output_path /data/overhead_matching/datasets/VIGOR/netherlands_norr/similarity_matrices/correspondence_v5_hungarian_0.8.pt \
     --method hungarian \
     --aggregation sum \
     --prob_threshold 0.8 \
@@ -219,13 +219,13 @@ bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_si
 BINARY=bazel-bin/experimental/overhead_matching/swag/scripts/export_correspondence_similarity
 
 for CITY_PATH in \
-    /data/overhead_matching/datasets/VIGOR/mapillary/Framingham \
-    /data/overhead_matching/datasets/VIGOR/mapillary/Gap \
-    /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \
-    /data/overhead_matching/datasets/VIGOR/mapillary/Middletown \
-    /data/overhead_matching/datasets/VIGOR/mapillary/Norway \
-    /data/overhead_matching/datasets/VIGOR/mapillary/post_hurricane_ian \
-    /data/overhead_matching/datasets/VIGOR/mapillary/SanFrancisco_mapillary \
+    /data/overhead_matching/datasets/VIGOR/Framingham \
+    /data/overhead_matching/datasets/VIGOR/Gap \
+    /data/overhead_matching/datasets/VIGOR/MiamiBeach \
+    /data/overhead_matching/datasets/VIGOR/Middletown \
+    /data/overhead_matching/datasets/VIGOR/netherlands_norr \
+    /data/overhead_matching/datasets/VIGOR/post_hurricane_ian \
+    /data/overhead_matching/datasets/VIGOR/SanFrancisco_mapillary \
     /data/overhead_matching/datasets/VIGOR/Boston \
     /data/overhead_matching/datasets/VIGOR/nightdrive; do
 
@@ -272,10 +272,10 @@ sigma: 0.25
 ```bash
 bazel run //experimental/overhead_matching/swag/scripts:evaluate_histogram_on_paths -- \
     --aggregator-config /tmp/config.yaml \
-    --paths-path /data/overhead_matching/evaluation/paths/mappilary/Norway.json \
-    --output-path /data/overhead_matching/evaluation/results/260325_correspondence_fusion/Norway/ea_safa_corr \
-    --dataset-path /data/overhead_matching/datasets/VIGOR/mapillary/Norway \
-    --landmark-version Norway_v1_251201 \
+    --paths-path /data/overhead_matching/evaluation/paths/mappilary_equal_length/3k/netherlands_norr.json \
+    --output-path /data/overhead_matching/evaluation/results/260325_correspondence_fusion/netherlands_norr/ea_safa_corr \
+    --dataset-path /data/overhead_matching/datasets/VIGOR/netherlands_norr \
+    --landmark-version netherlands_norr_v1_250101 \
     --convergence-radii "25,50,100" \
     --seed 42
 ```
@@ -315,7 +315,7 @@ Explore satellite scores interactively with map visualization:
 ```bash
 bazel run //experimental/overhead_matching/swag/analysis:correspondence_explorer -- \
     --precomputed_data /data/.../correspondence_scores/v5_all_cities_raw.pt \
-    --dataset_path /data/.../VIGOR/mapillary/MiamiBeach \
+    --dataset_path /data/.../VIGOR/MiamiBeach \
     --port 5003
 ```
 
@@ -343,12 +343,13 @@ bazel run //common/python:marimo_server -- edit \
 
 | City | Dataset path | Landmark version | Pano_v2 base |
 |------|-------------|-----------------|--------------|
-| Framingham | `VIGOR/mapillary/Framingham` | `Framingham_v1_260101` | mapillary |
-| Gap | `VIGOR/mapillary/Gap` | `Gap_v1_250101` | mapillary |
-| MiamiBeach | `VIGOR/mapillary/MiamiBeach` | `MiamiBeach_v1_150101` | mapillary |
-| Middletown | `VIGOR/mapillary/Middletown` | `Middletown_v1_250101` | mapillary |
-| Norway | `VIGOR/mapillary/Norway` | `Norway_v1_251201` | mapillary |
-| post_hurricane_ian | `VIGOR/mapillary/post_hurricane_ian` | `post_hurricane_ian_v1_220101` | mapillary |
-| SanFrancisco_mapillary | `VIGOR/mapillary/SanFrancisco_mapillary` | `SanFrancisco_mapillary_v1_220101` | mapillary |
+| Framingham | `VIGOR/Framingham` | `Framingham_v1_260101` | mapillary |
+| Gap | `VIGOR/Gap` | `Gap_v1_250101` | mapillary |
+| MiamiBeach | `VIGOR/MiamiBeach` | `MiamiBeach_v1_150101` | mapillary |
+| Middletown | `VIGOR/Middletown` | `Middletown_v1_250101` | mapillary |
+| netherlands_norr | `VIGOR/netherlands_norr` | `netherlands_norr_v1_250101` | mapillary |
+| netherlands_veluwe | `VIGOR/netherlands_veluwe` | `netherlands_veluwe_v1_250101` | mapillary |
+| post_hurricane_ian | `VIGOR/post_hurricane_ian` | `post_hurricane_ian_v1_220101` | mapillary |
+| SanFrancisco_mapillary | `VIGOR/SanFrancisco_mapillary` | `SanFrancisco_mapillary_v1_220101` | mapillary |
 | Boston | `VIGOR/Boston` | `boston` | mapillary + semantic_landmark_embeddings |
 | nightdrive | `VIGOR/nightdrive` | `boston` | mapillary + semantic_landmark_embeddings |

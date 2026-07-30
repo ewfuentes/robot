@@ -358,7 +358,7 @@ def main():
                         help="Disable new features (pano/patch images, likelihood coloring)")
     parser.add_argument("--lightweight", action="store_true",
                         help="Don't store full belief history in RAM. Recomputes belief on demand per step. "
-                             "Use for large grids (e.g., Norway) that would otherwise OOM.")
+                             "Use for large grids (e.g., netherlands_veluwe) that would otherwise OOM.")
     parser.add_argument("--downsample-heatmap", type=int, default=None,
                         help="Max rows/cols for belief heatmap. If not set, no heatmap downsampling.")
     parser.add_argument("--downsample-scatter", type=int, default=None,

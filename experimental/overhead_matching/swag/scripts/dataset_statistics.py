@@ -30,14 +30,15 @@ PANO_LANDMARK_DIR_MAP = {
     "Seattle": "Seattle",
     "Boston": "boston_snowy",
     "nightdrive": "nightdrive",
-    "mapillary/Framingham": "Framingham",
-    "mapillary/Gap": "Gap",
-    "mapillary/MiamiBeach": "MiamiBeach",
-    "mapillary/Middletown": "Middletown",
-    "mapillary/Norway": "Norway",
-    "mapillary/SanFrancisco_mapillary": "SanFrancisco_mapillary",
-    "mapillary/post_hurricane_ian": "post_hurricane_ian",
-    "mapillary/post_hurricane_ian_sw": "post_hurricane_ian_sw",
+    "Framingham": "Framingham",
+    "Gap": "Gap",
+    "MiamiBeach": "MiamiBeach",
+    "Middletown": "Middletown",
+    "netherlands_norr": "netherlands_norr",
+    "netherlands_veluwe": "netherlands_veluwe",
+    "SanFrancisco_mapillary": "SanFrancisco_mapillary",
+    "post_hurricane_ian": "post_hurricane_ian",
+    "post_hurricane_ian_sw": "post_hurricane_ian_sw",
 }
 
 
@@ -65,19 +66,23 @@ class LatexPaperRow:
 # Per-dataset LaTeX paper-row metadata. Anything not listed here is emitted
 # with an empty `conditions` cell (so you can fill it in by hand). Order in
 # this dict is the order rows are printed.
+# Row order matches the results table / convergence figure (Chicago, the
+# training city, leads; then Seattle and the evaluation environments with
+# the Dutch pair last).
 LATEX_PAPER_ROWS: dict[str, LatexPaperRow] = {
     "Chicago":                          LatexPaperRow("Chicago",       "Metro area",       is_vigor=True, pano_date_override="2019"),
     "Seattle":                          LatexPaperRow("Seattle",       "Metro area",       is_vigor=True, pano_date_override="2019"),
     "NewYork":                          LatexPaperRow("New York",      "Metro area",       is_vigor=True, pano_date_override="2019"),
+    "SanFrancisco_mapillary": LatexPaperRow("San Francisco", "Metro area"),
     "Boston":                           LatexPaperRow("Boston Snowy",  "Actively snowing", is_rig=True,
                                                      pano_date_override="26-01", osm_date_override="26-01"),
     "nightdrive":                       LatexPaperRow("Boston Night",  "Recorded at night", is_rig=True,
                                                      pano_date_override="26-02", osm_date_override="26-01"),
-    "mapillary/Framingham":             LatexPaperRow("Framingham",    "Suburban"),
-    "mapillary/Middletown":             LatexPaperRow("Middletown",    "Rainy, suburban"),
-    "mapillary/Norway":                 LatexPaperRow("Norway",        "Rural"),
-    "mapillary/SanFrancisco_mapillary": LatexPaperRow("San Francisco", "Metro area"),
-    "mapillary/post_hurricane_ian_sw":  LatexPaperRow("Fort Myers",    "Post-disaster"),
+    "Middletown":             LatexPaperRow("Middletown",    "Rainy, suburban"),
+    "Framingham":             LatexPaperRow("Framingham",    "Suburban"),
+    "post_hurricane_ian_sw":  LatexPaperRow("Fort Myers",    "Post-disaster"),
+    "netherlands_norr":       LatexPaperRow("Noordoostpolder", "Foggy, farmland, small towns"),
+    "netherlands_veluwe":     LatexPaperRow("Veluwe",        "Highway, forest, fields"),
 }
 
 
@@ -122,7 +127,7 @@ def parse_osm_date(landmark_version: str) -> str | None:
     """Extract OSM snapshot date from landmark filename.
 
     Examples: v4_202001 -> 2020-01, boston -> None,
-    Framingham_v1_260101 -> 2026-01-01, Norway_v1_251201 -> 2025-12-01
+    Framingham_v1_260101 -> 2026-01-01, netherlands_norr_v1_250101 -> 2025-01-01
     """
     # Match YYMMDD or YYYYMM at end of version string
     m = re.search(r'(\d{6})$', landmark_version)
@@ -154,10 +159,17 @@ def discover_datasets(base: Path) -> list[DatasetConfig]:
     if (base / "nightdrive" / "panorama").is_dir():
         configs.append(DatasetConfig("nightdrive", base / "nightdrive", "landmarks/boston.feather"))
 
-    mapillary_dir = base / "mapillary"
-    if mapillary_dir.is_dir():
-        for loc_dir in sorted(mapillary_dir.iterdir()):
-            if not loc_dir.is_dir() or not (loc_dir / "panorama").is_dir():
+    # Mapillary-style cities: flat at the dataset root (current layout), with
+    # base/mapillary/ kept as a fallback for pre-flatten checkouts.
+    already = {c.name for c in configs}
+    scan_dirs = [base]
+    if (base / "mapillary").is_dir():
+        scan_dirs.append(base / "mapillary")
+    for scan in scan_dirs:
+        for loc_dir in sorted(scan.iterdir()):
+            if (not loc_dir.is_dir() or loc_dir.name in already
+                    or loc_dir.name in ("mapillary", "trash")
+                    or not (loc_dir / "panorama").is_dir()):
                 continue
             landmarks_dir = loc_dir / "landmarks"
             if not landmarks_dir.is_dir():
@@ -166,7 +178,8 @@ def discover_datasets(base: Path) -> list[DatasetConfig]:
             if not feather_files:
                 continue
             landmark_file = f"landmarks/{feather_files[0].name}"
-            configs.append(DatasetConfig(f"mapillary/{loc_dir.name}", loc_dir, landmark_file))
+            configs.append(DatasetConfig(f"{loc_dir.name}", loc_dir, landmark_file))
+            already.add(loc_dir.name)
 
     return configs
 
@@ -396,11 +409,7 @@ def print_transposed_table(title: str, stats_list: list[DatasetStats]):
         }
         rows.append(vals)
 
-    # Use short display names for columns
-    short_names = []
-    for s in stats_list:
-        name = s.name.replace("mapillary/", "")
-        short_names.append(name)
+    short_names = [s.name for s in stats_list]
 
     metric_keys = list(rows[0].keys())
 
@@ -503,10 +512,10 @@ def print_latex_paper_table(all_stats: list[DatasetStats]):
     """Emit the dataset-statistics table in the paper's LaTeX format.
 
     Stats not derivable from data (conditions, VIGOR / rig markers, the
-    "2019" pano date for VIGOR cities) come from `LATEX_PAPER_ROWS`. Cities
-    not in that dict are still emitted but with an empty `Conditions` cell
-    so the row is obvious-to-edit. Row order follows `LATEX_PAPER_ROWS`,
-    then any unrecognized datasets at the bottom.
+    "2019" pano date for VIGOR cities) come from `LATEX_PAPER_ROWS`, which
+    also defines row membership and order: discovered datasets without an
+    entry (e.g. the VIGOR SanFrancisco split that only donates imagery to
+    SanFrancisco_mapillary) are skipped with a notice.
     """
     stats_by_name = {s.name: s for s in all_stats}
 
@@ -514,10 +523,9 @@ def print_latex_paper_table(all_stats: list[DatasetStats]):
     for name, meta in LATEX_PAPER_ROWS.items():
         if name in stats_by_name:
             ordered.append((stats_by_name[name], meta))
-    seen = set(LATEX_PAPER_ROWS)
     for s in all_stats:
-        if s.name not in seen:
-            ordered.append((s, None))
+        if s.name not in LATEX_PAPER_ROWS:
+            print(f"% skipping {s.name}: no LATEX_PAPER_ROWS entry (not a paper-table city)")
 
     rows: list[list[str]] = []
     for s, meta in ordered:
@@ -563,9 +571,7 @@ def print_latex_paper_table(all_stats: list[DatasetStats]):
     lines: list[str] = []
     lines.append("\\begin{table*}[t]")
     lines.append("  \\centering")
-    lines.append("  \\caption{Dataset statistics. Satellite imagery sourced from Google "
-                 "(February 2026) for all cities except the VIGOR cities and Fort Myers, "
-                 "which uses ESRI imagery from June 2022. \\textsuperscript{\\textdagger} "
+    lines.append("  \\caption{Dataset statistics. \\textsuperscript{\\textdagger} "
                  "indicates data collected by our camera rig.}")
     lines.append("  \\label{tab:dataset-stats}")
     lines.append("  \\small")
