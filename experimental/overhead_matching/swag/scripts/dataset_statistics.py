@@ -142,10 +142,19 @@ def parse_osm_date(landmark_version: str) -> str | None:
         return f"20{digits[:2]}-{digits[2:4]}-{digits[4:6]}"
 
 
-# On-disk city dirs that are not part of the benchmark roster (unused splits
-# or, for SanFrancisco, a VIGOR split that only donates imagery to
-# SanFrancisco_mapillary).
-SKIP_CITIES = {"SanFrancisco", "Gap", "MiamiBeach", "post_hurricane_ian"}
+# The benchmark roster's Mapillary-sourced cities. Discovery is
+# inclusion-based: dataset dirs on disk that are not part of the release
+# roster (side experiments, or imagery-donor splits like SanFrancisco, which
+# only donates satellite imagery to SanFrancisco_mapillary) are never
+# picked up.
+MAPILLARY_CITIES = [
+    "Framingham",
+    "Middletown",
+    "netherlands_norr",
+    "netherlands_veluwe",
+    "post_hurricane_ian_sw",
+    "SanFrancisco_mapillary",
+]
 
 
 def discover_datasets(base: Path) -> list[DatasetConfig]:
@@ -162,28 +171,22 @@ def discover_datasets(base: Path) -> list[DatasetConfig]:
     if (base / "nightdrive" / "panorama").is_dir():
         configs.append(DatasetConfig("nightdrive", base / "nightdrive", "landmarks/boston.feather"))
 
-    # Mapillary-style cities: flat at the dataset root (current layout), with
-    # base/mapillary/ kept as a fallback for pre-flatten checkouts.
-    already = {c.name for c in configs}
-    scan_dirs = [base]
-    if (base / "mapillary").is_dir():
-        scan_dirs.append(base / "mapillary")
-    for scan in scan_dirs:
-        for loc_dir in sorted(scan.iterdir()):
-            if (not loc_dir.is_dir() or loc_dir.name in already
-                    or loc_dir.name in ("mapillary", "trash")
-                    or loc_dir.name in SKIP_CITIES
-                    or not (loc_dir / "panorama").is_dir()):
-                continue
-            landmarks_dir = loc_dir / "landmarks"
-            if not landmarks_dir.is_dir():
-                continue
-            feather_files = list(landmarks_dir.glob("*.feather"))
-            if not feather_files:
-                continue
-            landmark_file = f"landmarks/{feather_files[0].name}"
-            configs.append(DatasetConfig(f"{loc_dir.name}", loc_dir, landmark_file))
-            already.add(loc_dir.name)
+    # Mapillary-sourced cities: flat at the dataset root (current layout),
+    # with base/mapillary/ kept as a fallback for pre-flatten checkouts.
+    for city in MAPILLARY_CITIES:
+        for root in (base, base / "mapillary"):
+            loc_dir = root / city
+            if (loc_dir / "panorama").is_dir():
+                break
+        else:
+            continue
+        landmarks_dir = loc_dir / "landmarks"
+        if not landmarks_dir.is_dir():
+            continue
+        feather_files = sorted(landmarks_dir.glob("*.feather"))
+        if not feather_files:
+            continue
+        configs.append(DatasetConfig(city, loc_dir, f"landmarks/{feather_files[0].name}"))
 
     return configs
 

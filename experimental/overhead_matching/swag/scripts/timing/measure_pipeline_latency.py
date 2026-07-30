@@ -8,7 +8,7 @@ observation finishes before the robot has moved farther than the filter's
 noise can absorb), not strict realtime. The local LLM and sentence encoder
 stand in for Gemini / Vertex text-embedding-005.
 
-Stages timed (see /home/erick/.claude/plans/this-isn-t-quite-right-eventual-tide.md):
+Stages timed:
   1. pano_encode       - pano_model forward on one pano image
   2. ollama             - single-shot Ollama call on 4 yaw pinhole images
   3. sentence_embed    - local SBERT on any novel text values from stage 2
@@ -22,7 +22,7 @@ that isn't load-bearing for the per-step wall clock claim).
 
 Usage:
     # With Ollama running at localhost:11434
-    bazel run //experimental/overhead_matching/swag/scripts:measure_pipeline_latency -- \\
+    bazel run //experimental/overhead_matching/swag/scripts/timing:measure_pipeline_latency -- \\
         --num-samples 5 --warmup 1 \\
         --city Chicago \\
         --dataset-path /data/overhead_matching/datasets/VIGOR/Chicago \\

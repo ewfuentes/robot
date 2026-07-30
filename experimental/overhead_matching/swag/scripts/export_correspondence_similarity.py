@@ -10,16 +10,16 @@ Usage:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \\
         --model_path /data/.../best_model.pt \\
         --text_embeddings_path /data/.../eval_text_embeddings.pkl \\
-        --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \\
-        --pano_v2_base /data/.../semantic_landmark_embeddings/mapillary \\
-        --output_path /tmp/miami_corr.pt \\
+        --dataset_path /data/overhead_matching/datasets/VIGOR/Middletown \\
+        --pano_v2_base /data/.../semantic_landmark_embeddings/panov2_tuned_prompt \\
+        --output_path /tmp/middletown_corr.pt \\
         --compute_similarity
 
 Load an existing raw artifact and re-run only the similarity-matrix step:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \\
-        --from_raw /tmp/miami_corr.pt \\
-        --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \\
-        --output_path /tmp/miami_corr.pt \\
+        --from_raw /tmp/middletown_corr.pt \\
+        --dataset_path /data/overhead_matching/datasets/VIGOR/Middletown \\
+        --output_path /tmp/middletown_corr.pt \\
         --compute_similarity
 """
 

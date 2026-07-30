@@ -21,7 +21,7 @@ CITY_TO_PBF: dict[str, CityPbf] = {
     "Middletown":             CityPbf("connecticut-250101.osm.pbf",   "connecticut_250101_Middletown"),
     "SanFrancisco_mapillary": CityPbf("norcal-220101.osm.pbf",        "norcal_220101_SanFrancisco_mapillary"),
     "post_hurricane_ian_sw":  CityPbf("florida-220101.osm.pbf",       "florida_220101_post_hurricane_ian_sw"),
-    # Benchmark-v2 rural cities (flat layout, <vigor-root>/<City>/; replaced the retired Norway split).
+    # Benchmark-v2 rural cities (flat layout, <vigor-root>/<City>/).
     "netherlands_norr":       CityPbf("netherlands-250101.osm.pbf",   "netherlands_250101_netherlands_norr"),
     "netherlands_veluwe":     CityPbf("netherlands-250101.osm.pbf",   "netherlands_250101_netherlands_veluwe"),
 }

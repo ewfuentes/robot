@@ -17,8 +17,8 @@ Usage:
 
     # From feather + pano_v2 (expand to new cities):
     bazel run ...precompute_value_embeddings -- \
-        --feather_dirs /data/.../VIGOR/mapillary/MiamiBeach /data/.../VIGOR/NewYork \
-        --pano_v2_base /data/.../semantic_landmark_embeddings/mapillary \
+        --feather_dirs /data/.../VIGOR/Middletown /data/.../VIGOR/NewYork \
+        --pano_v2_base /data/.../semantic_landmark_embeddings/panov2_tuned_prompt \
         --base_embeddings /data/.../eval_text_embeddings.pkl \
         --output /data/.../eval_text_embeddings_expanded.pkl
 
