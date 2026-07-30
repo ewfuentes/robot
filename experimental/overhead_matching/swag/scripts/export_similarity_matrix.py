@@ -88,6 +88,32 @@ def load_models_from_training_output(base_path: Path, device='cuda', checkpoint=
     return pano_model, sat_model, checkpoint
 
 
+def override_tag_text_embeddings(models, pickle_path: Path) -> int:
+    """Repoint tag-bundle extractors at `pickle_path` and force a reload.
+
+    Both extractor classes lazy-load their tag-value embedding table from a
+    path attribute at first forward, so swapping the attribute before export
+    is sufficient. Returns the number of extractors updated.
+    """
+    from experimental.overhead_matching.swag.model import tag_bundle_extractor as tbe
+    pickle_path = Path(pickle_path).expanduser().resolve()
+    if not pickle_path.exists():
+        raise FileNotFoundError(f"override embeddings pickle not found: {pickle_path}")
+    count = 0
+    for model in models:
+        for module in model.modules():
+            if isinstance(module, tbe.OSMTagBundleExtractor):
+                module._embedding_path = pickle_path
+            elif isinstance(module, tbe.PanoramaTagBundleExtractor):
+                module._text_embedding_path = pickle_path
+            else:
+                continue
+            module._text_embeddings = None
+            module._files_loaded = False
+            count += 1
+    return count
+
+
 def get_git_info():
     try:
         commit = subprocess.check_output(
@@ -133,12 +159,23 @@ def main():
     parser.add_argument("--disable_safa_cache", action="store_true",
                         help="Force live SAFA computation (load images, ignore tensor cache). "
                              "Needed for cities that weren't pre-cached during training.")
+    parser.add_argument("--tag_text_embeddings_override", type=Path, default=None,
+                        help="Repoint every TagBundleExtractor in the loaded models at this "
+                             "tag-value text-embeddings pickle before export. Use when exporting "
+                             "a city whose tag values postdate the pickle recorded in the model "
+                             "config (the override must be a superset of it).")
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
     pano_model, sat_model, checkpoint_idx = load_models_from_training_output(
         model_path, device=args.device, checkpoint=args.checkpoint,
         fallback_to_config=args.fallback_to_config)
+
+    if args.tag_text_embeddings_override is not None:
+        n = override_tag_text_embeddings(
+            [pano_model, sat_model], args.tag_text_embeddings_override)
+        print(f"Overrode tag text embeddings on {n} extractor(s) -> "
+              f"{args.tag_text_embeddings_override}")
 
     # Determine effective use_cached_extractors. With --disable_safa_cache,
     # treat everything as uncached so SAFA runs live on images.
