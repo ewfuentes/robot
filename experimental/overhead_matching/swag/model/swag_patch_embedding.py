@@ -91,10 +91,9 @@ def create_extractor(config: ExtractorConfig, auxiliary_info: dict[str, Any]):
         case PanoramaSemanticLandmarkExtractorConfig(): return PanoramaSemanticLandmarkExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaProperNounExtractorConfig(): return PanoramaProperNounExtractor(config, auxiliary_info[config.auxiliary_info_key])
         case PanoramaLocationTypeExtractorConfig(): return PanoramaLocationTypeExtractor(config, auxiliary_info[config.auxiliary_info_key])
-        # The four extractors below are imported lazily so the paper-release
-        # code closure (which never instantiates them) does not carry their
-        # modules; consumers that use these config kinds must depend on
-        # :extractor_extras (or the individual extractor libs).
+        # The four extractors below are imported lazily; consumers that
+        # instantiate these config kinds must depend on :extractor_extras
+        # (or the individual extractor libs).
         case SemanticSegmentExtractorConfig():
             from experimental.overhead_matching.swag.model.semantic_segment_extractor import (
                 SemanticSegmentExtractor)

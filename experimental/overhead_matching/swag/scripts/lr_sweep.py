@@ -1,6 +1,5 @@
 import torch
 from pathlib import Path
-from dataclasses import dataclass
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
@@ -10,17 +9,11 @@ from experimental.overhead_matching.swag.scripts.pairing import create_pairs, Pa
 from experimental.overhead_matching.swag.data import vigor_dataset
 
 
-@dataclass
-class LearningRateSweepConfig:
-    start_lr: float = 1.5e-7  # 0.1x burn-in LR
-    end_lr: float = 1.5e-1    # 100x burn-in LR
-    num_batches: int = 1000   # 10x more batches for fine resolution
-    burn_in_batches: int = 50
-    burn_in_lr: float = 1.5e-5
-
-
+# NOTE: LearningRateSweepConfig lives in train.py (it is part of the
+# trainer's config schema); this module is lazy-imported by train.py's
+# --lr_sweep mode and duck-types the config to avoid a circular import.
 def run_lr_sweep(
-        lr_sweep_config: LearningRateSweepConfig,
+        lr_sweep_config,  # train.LearningRateSweepConfig
         dataset,
         panorama_model,
         satellite_model,

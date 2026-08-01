@@ -1,85 +1,42 @@
 #!/bin/bash
 
-# Download OpenStreetMap dumps for all US states from Geofabrik
+# Download the dated Geofabrik OSM extracts the paper's landmark tables and
+# rasterized-OSM tiles are derived from (one entry per benchmark region; the
+# region -> city mapping lives in
+# experimental/overhead_matching/baseline/dataset/city_pbf_map.py).
+# Geofabrik archives dated extracts as <region>-<YYMMDD>.osm.pbf.
 
-BASE_URL="https://download.geofabrik.de/north-america/us"
+BASE_URL="https://download.geofabrik.de"
 OUTPUT_DIR="/data/overhead_matching/datasets/osm_dumps"
 
-# Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# List of US states
-STATES=(
-    "Alabama"
-    "Alaska"
-    "Arizona"
-    "Arkansas"
-    "California"
-    "Colorado"
-    "Connecticut"
-    "Delaware"
-    "Florida"
-    "Georgia"
-    "Hawaii"
-    "Idaho"
-    "Illinois"
-    "Indiana"
-    "Iowa"
-    "Kansas"
-    "Kentucky"
-    "Louisiana"
-    "Maine"
-    "Maryland"
-    "Massachusetts"
-    "Michigan"
-    "Minnesota"
-    "Mississippi"
-    "Missouri"
-    "Montana"
-    "Nebraska"
-    "Nevada"
-    "New Hampshire"
-    "New Jersey"
-    "New Mexico"
-    "New York"
-    "North Carolina"
-    "North Dakota"
-    "Ohio"
-    "Oklahoma"
-    "Oregon"
-    "Pennsylvania"
-    "Rhode Island"
-    "South Carolina"
-    "South Dakota"
-    "Tennessee"
-    "Texas"
-    "Utah"
-    "Vermont"
-    "Virginia"
-    "Washington"
-    "West Virginia"
-    "Wisconsin"
-    "Wyoming"
+DUMPS=(
+    "north-america/us/illinois-200101.osm.pbf"           # Chicago (train)
+    "north-america/us/washington-200101.osm.pbf"         # Seattle (calibration/val)
+    "north-america/us/new-york-200101.osm.pbf"           # New York
+    "north-america/us/massachusetts-260101.osm.pbf"      # Boston Snowy/Night, Framingham
+    "north-america/us/connecticut-250101.osm.pbf"        # Middletown
+    "north-america/us/california/norcal-220101.osm.pbf"  # San Francisco (Mapillary)
+    "north-america/us/florida-220101.osm.pbf"            # Fort Myers (post_hurricane_ian_sw)
+    "europe/netherlands-250101.osm.pbf"                  # Noordoostpolder, Veluwe
 )
 
-for state in "${STATES[@]}"; do
-    # Convert to lowercase and replace spaces with hyphens
-    state_slug=$(echo "$state" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-
-    filename="${state_slug}-200101.osm.pbf"
-    url="${BASE_URL}/${filename}"
+for rel in "${DUMPS[@]}"; do
+    filename=$(basename "$rel")
+    url="${BASE_URL}/${rel}"
     output_path="${OUTPUT_DIR}/${filename}"
 
     if [[ -f "$output_path" ]]; then
-        echo "Skipping $state (already exists)"
+        echo "Skipping $filename (already exists)"
         continue
     fi
 
-    echo "Downloading $state..."
+    echo "Downloading $filename..."
     if wget -q --show-progress -O "$output_path" "$url"; then
-        echo "Downloaded $state successfully"
+        echo "Downloaded $filename successfully"
     else
-        echo "Failed to download $state"
+        echo "Failed to download $filename"
         rm -f "$output_path"  # Remove partial download
     fi
 done

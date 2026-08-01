@@ -23,7 +23,6 @@ from experimental.overhead_matching.swag.model.landmark_scheduler import (
 )
 from experimental.overhead_matching.swag.scripts.logging_utils import (
     log_batch_metrics, log_embedding_stats, log_gradient_stats, log_validation_metrics, log_feature_counts)
-from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
 from experimental.overhead_matching.swag.evaluation.retrieval_metrics import validation_metrics_from_similarity
 from typing import Union
 from dataclasses import dataclass, field
@@ -35,7 +34,6 @@ from contextlib import nullcontext
 import datetime
 import random
 import numpy as np
-from experimental.overhead_matching.swag.scripts.lr_sweep import LearningRateSweepConfig, run_lr_sweep
 
 
 def setup_reproducibility(seed: int | None) -> torch.Generator | None:
@@ -95,6 +93,18 @@ class LearningRateSchedule:
 
     warmup_factor: float
     num_warmup_epochs: int
+
+
+@dataclass
+class LearningRateSweepConfig:
+    """Config for the optional --lr_sweep mode. Lives here (not in
+    lr_sweep.py) because it is part of the trainer's config schema; the sweep
+    implementation in lr_sweep.py is imported lazily."""
+    start_lr: float = 1.5e-7  # 0.1x burn-in LR
+    end_lr: float = 1.5e-1    # 100x burn-in LR
+    num_batches: int = 1000   # 10x more batches for fine resolution
+    burn_in_batches: int = 50
+    burn_in_lr: float = 1.5e-5
 
 
 @dataclass
@@ -398,9 +408,10 @@ def train(config: TrainConfig,
             opt_config.num_epochs
         )
 
-    # Create model inspector if requested
+    # Create model inspector if requested (lazy import: debug-only feature)
     inspector = None
     if capture_model_data:
+        from experimental.overhead_matching.swag.scripts.model_inspector import ModelInspector
         inspector = ModelInspector(
             output_dir=output_dir,
             num_batches_to_capture=num_batches_to_capture)
@@ -780,8 +791,10 @@ def main(
     train_config.output_dir = output_dir
     train_config.tensorboard_output = tensorboard_output
 
-    # Run learning rate sweep if requested
+    # Run learning rate sweep if requested (lazy import: dev-only feature)
     if lr_sweep:
+        from experimental.overhead_matching.swag.scripts.lr_sweep import run_lr_sweep
+
         # Create default LR sweep config if not in train config
         if train_config.opt_config.lr_sweep_config is None:
             train_config.opt_config.lr_sweep_config = LearningRateSweepConfig()
