@@ -305,6 +305,15 @@ def main() -> None:
              "SAFA image stream. "
              "'normalized': r = 1 - sim_t / sim_max, calibrates σ_lm for "
              "SafaPlusNormalizedLandmarkAggregator's landmark stream.")
+    parser.add_argument(
+        "--exclude-zero-sim-true", action="store_true",
+        help="Drop (pano, true-patch) pairs whose true-patch similarity is "
+             "exactly 0 before the MLE. Under --residual-form normalized "
+             "such pairs have their residual pinned at exactly 1 (the pano "
+             "matched no landmarks on its true patch) and carry no "
+             "information about the noise scale. The paper's LOCI landmark "
+             "sigma (0.4673) is the normalized fit with this exclusion; "
+             "without it the same samples give the 0.7370 base fit.")
     args = parser.parse_args()
 
     output_path = Path(args.output_path).expanduser()
@@ -352,6 +361,13 @@ def main() -> None:
         print(f"  sampled negative pairs: {len(residuals_neg)}")
 
     r_pair = residuals_pair.numpy()
+    num_excluded_zero_sim = 0
+    if args.exclude_zero_sim_true:
+        keep = sims_pair.numpy() > 0
+        num_excluded_zero_sim = int((~keep).sum())
+        r_pair = r_pair[keep]
+        print(f"  excluded {num_excluded_zero_sim} zero-sim true pairs "
+              f"(residual pinned at 1); {len(r_pair)} pairs remain")
     sigma_mle_pair = float(np.sqrt(np.mean(r_pair ** 2)))
     sigma_median_pair = float(np.median(r_pair))
     print(f"  σ_MLE per-pair = {sigma_mle_pair:.6f}  "
@@ -389,6 +405,11 @@ def main() -> None:
         "sigma_mle_per_pair": sigma_mle_pair,
         "sigma_median_per_pair": sigma_median_pair,
     }
+    if args.exclude_zero_sim_true:
+        # Only recorded when the exclusion is active, so default runs stay
+        # byte-compatible with the published calibration JSONs.
+        summary["exclude_zero_sim_true"] = True
+        summary["num_excluded_zero_sim_true"] = num_excluded_zero_sim
     with open(output_path / f"{prefix}sigma_calibration.json", "w") as f:
         json.dump(summary, f, indent=2)
 
