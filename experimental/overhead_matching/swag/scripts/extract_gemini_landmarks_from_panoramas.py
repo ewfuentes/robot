@@ -640,7 +640,7 @@ def main():
     )
     parser.add_argument(
         "--prompt_type", default="osm_tags",
-        choices=["osm_tags", "panorama"],
+        choices=["osm_tags", "panorama", "osm_tags_farfield"],
         help="Prompt type (default: osm_tags)",
     )
     parser.add_argument(

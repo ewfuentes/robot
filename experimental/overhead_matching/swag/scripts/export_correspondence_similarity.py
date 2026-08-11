@@ -28,6 +28,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
 import numpy as np
+import pandas as pd
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -131,6 +132,17 @@ def build_raw_cost_data(args) -> cm.RawCorrespondenceData:
         pano_tags_from_pano_id.update(tags)
         print(f"  {len(tags)} panoramas from {base.name}")
     print(f"  Total: {len(pano_tags_from_pano_id)} panoramas with tags")
+
+    if args.pano_metadata_from_tags:
+        # Score an EXTERNAL set of panorama landmarks (e.g. a non-VIGOR dataset)
+        # against this dataset's OSM landmarks. precompute_raw_cost_data only
+        # scores pano_ids present in dataset._panorama_metadata, so replace it
+        # with the pano_ids supplied via --pano_v2_base. The OSM columns
+        # (_satellite_metadata / _landmark_metadata) are left untouched.
+        external_ids = sorted(pano_tags_from_pano_id.keys())
+        dataset._panorama_metadata = pd.DataFrame({"pano_id": external_ids})
+        print(f"  Overrode panorama metadata with {len(external_ids)} external pano_ids "
+              f"(--pano_metadata_from_tags)")
 
     print("Precomputing raw cost matrix data...")
     cost_matrix_memmap_path = None
@@ -255,6 +267,11 @@ def main():
     parser.add_argument("--ks", type=str, default="1,5,10",
                         help="Comma-separated top-k values for retrieval metrics "
                              "(used with --compute_similarity).")
+    parser.add_argument("--pano_metadata_from_tags", action="store_true",
+                        help="Score an external pano set (from --pano_v2_base) against this "
+                             "dataset's OSM landmarks by overriding the dataset's panorama "
+                             "metadata with the supplied pano_ids. Use when the panoramas are "
+                             "not part of the loaded VIGOR dataset.")
     parser.add_argument("--allow_missing_text_embeddings", action="store_true",
                         help="Silently substitute zero vectors for text values "
                              "not found in the embeddings pickle. Not recommended.")

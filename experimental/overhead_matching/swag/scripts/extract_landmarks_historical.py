@@ -130,6 +130,10 @@ def main(
         "public_transport": True,
         "railway": True,
         "waterway": True,
+        # Far-field / maritime (2026-08): islands (place=island is a top
+        # panorama-extracted category) and raw-OSM navigational aids.
+        "place": True,
+        "seamark:type": True,
     }
 
     print(f"Extracting landmarks from {pbf_path}...")

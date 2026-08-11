@@ -1,0 +1,67 @@
+# Default landmark-filtering config for walking-trajectory panoramas.
+# All fields mirror the msgspec defaults in pipeline_config.py except
+# yaw_offset.method, which enables the triangulation sweep.
+kind: FilterPipelineConfig
+ingest:
+  kind: IngestConfig
+  fov_deg: 90.0
+  seam_gap_norm: 25
+  seam_min_y_iou: 0.3
+heuristic:
+  kind: HeuristicConfig
+  confidence_gate:
+    kind: ConfidenceGateConfig
+    enabled: true
+    min_confidence: medium
+  angular_width_gate:
+    kind: AngularWidthGateConfig
+    enabled: true
+    max_angular_width_deg: 45.0
+  tag_blocklist:
+    kind: TagBlocklistConfig
+    enabled: true
+    blocked_primary_keys: [highway, barrier, crossing]
+    blocked_primary_tags: []
+  elevation_gate:
+    kind: ElevationGateConfig
+    enabled: true
+    min_center_elevation_deg: -25.0
+  edge_truncation:
+    kind: EdgeTruncationConfig
+    enabled: true
+    edge_margin_norm: 25
+  intra_frame_dedup:
+    kind: IntraFrameDedupConfig
+    enabled: true
+    max_bearing_sep_deg: 5.0
+association:
+  kind: AssociationConfig
+  bearing_sigma_deg: 3.0
+  gate_chi2: 9.0
+  motion_gate_gain_deg_per_m: 2.0
+  max_frame_gap: 3
+  semantic_backend: description_cosine
+  min_similarity: 0.75
+  similarity_cost_weight: 1.0
+  min_track_length: 3
+triangulation:
+  kind: TriangulationConfig
+  bearing_sigma_deg: 3.0
+  huber_delta: 1.5
+  min_parallax_deg: 2.0
+  far_range_m: 200.0
+  max_sigma_major_m: 500.0
+yaw_offset:
+  kind: YawOffsetConfig
+  method: triangulation_sweep
+  fixed_offset_deg: 0.0
+  sweep_step_deg: 1.0
+  sweep_top_n_tracks: 20
+  bearing_sign: 1
+semantic_similarity:
+  kind: SemanticSimilarityConfig
+  diagnostic_backends: [description_cosine, correspondence_model]
+  max_diagnostic_obs: 400
+  correspondence_model_path: /data/overhead_matching/training_outputs/landmark_correspondence/simple_v1_v5/best_model.pt
+  text_embeddings_path: /data/overhead_matching/datasets/landmark_correspondence/eval_text_embeddings_panov2_tuned_v5_all.pkl
+  num_example_pairs: 50

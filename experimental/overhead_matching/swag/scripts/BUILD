@@ -621,14 +621,21 @@ py_binary(
   ],
 )
 
-py_binary(
-  name="vertex_batch_manager",
+py_library(
+  name="vertex_batch_manager_lib",
   srcs=["vertex_batch_manager.py"],
   visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
     requirement("google-genai"),
     requirement("google-cloud-storage"),
   ]
+)
+
+py_binary(
+  name="vertex_batch_manager",
+  srcs=["vertex_batch_manager.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[":vertex_batch_manager_lib"],
 )
 
 py_binary(
@@ -1015,6 +1022,21 @@ py_binary(
 )
 
 py_binary(
+  name="build_correspondence_bundle_data",
+  srcs=["build_correspondence_bundle_data.py"],
+  deps=[
+    requirement("torch"),
+    requirement("numpy"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
+    ":landmark_pairing_cli_lib",
+  ]
+)
+
+py_binary(
   name="calibrate_sigma",
   srcs=["calibrate_sigma.py"],
   deps=[
@@ -1024,5 +1046,96 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+  ]
+)
+
+py_library(
+  name="download_enc_cells_lib",
+  srcs=["download_enc_cells.py"],
+  deps=[
+    requirement("requests"),
+  ]
+)
+
+py_binary(
+  name="download_enc_cells",
+  srcs=["download_enc_cells.py"],
+  deps=[
+    ":download_enc_cells_lib",
+  ]
+)
+
+py_test(
+  name="download_enc_cells_test",
+  srcs=["download_enc_cells_test.py"],
+  deps=[
+    ":download_enc_cells_lib",
+  ]
+)
+
+py_library(
+  name="landmark_feather_utils",
+  srcs=["landmark_feather_utils.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("geopandas"),
+    requirement("pandas"),
+    requirement("shapely"),
+    requirement("pyarrow"),
+  ]
+)
+
+py_test(
+  name="landmark_feather_utils_test",
+  srcs=["landmark_feather_utils_test.py"],
+  deps=[
+    ":landmark_feather_utils",
+    requirement("geopandas"),
+    requirement("pandas"),
+    requirement("shapely"),
+  ]
+)
+
+py_binary(
+  name="merge_landmark_feathers",
+  srcs=["merge_landmark_feathers.py"],
+  deps=[
+    ":landmark_feather_utils",
+    requirement("geopandas"),
+    requirement("pyarrow"),
+  ]
+)
+
+py_library(
+  name="extract_landmarks_from_enc_lib",
+  srcs=["extract_landmarks_from_enc.py"],
+  deps=[
+    ":landmark_feather_utils",
+    requirement("geopandas"),
+    requirement("pyogrio"),
+    requirement("shapely"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+  ]
+)
+
+py_binary(
+  name="extract_landmarks_from_enc",
+  srcs=["extract_landmarks_from_enc.py"],
+  deps=[
+    ":extract_landmarks_from_enc_lib",
+  ]
+)
+
+py_test(
+  name="extract_landmarks_from_enc_test",
+  srcs=["extract_landmarks_from_enc_test.py"],
+  deps=[
+    ":extract_landmarks_from_enc_lib",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+    requirement("geopandas"),
+    requirement("shapely"),
+    requirement("torch"),
   ]
 )
