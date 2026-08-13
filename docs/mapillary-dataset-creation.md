@@ -1,0 +1,316 @@
+# Creating a far-field dataset from Mapillary
+
+How to turn a Mapillary app link into a dataset the farfield/landmark-filtering
+pipeline can consume. Written so an agent can follow it without rediscovering the
+traps; the "Things that will bite you" section is the part that matters most.
+
+The collection scripts live outside this repo, in `~/scratch/mappilary`, because
+they carry a Mapillary API token. Everything they call for landmarks, figures and
+auditing is a bazel target in here.
+
+## The short version
+
+```bash
+cd ~/scratch/mappilary
+
+# 1. Is this seed worth collecting? Metadata only, no downloads.
+python screen_seeds.py --names folkestone_dover
+
+# 2. Everything, for one trajectory.
+python run_farfield_collection.py --trajectories folkestone_dover
+
+# 3. Or the whole registry, pruning staged originals as it goes.
+python run_farfield_collection.py --trajectories all --prune_raw
+```
+
+`--trajectories` is one **comma-separated** value (or `all`/`pilot`/`pano`/`perspective`),
+not a space-separated list — argparse rejects the space-separated form outright,
+so you find out immediately rather than silently collecting only the first name.
+Running several lanes concurrently is how the batch was done:
+
+```bash
+for lane in "nagasaki_tometome,tokyo_bay,harima_a" "london_thames,sf_bay_pano"; do
+    nohup python run_farfield_collection.py --prune_raw --trajectories "$lane" &
+done
+```
+
+Three lanes is a safe default: stage 4 measures ~3 GB per extraction against its
+24 GB cap, and Python block-buffers stdout when redirected, so a lane's log stays
+empty for minutes before flushing. Watch `_raw/<name>/` growing rather than the log
+to confirm a lane is alive.
+
+Output lands in `/data/farfield_matching/mapillary_datasets/<name>/`.
+
+## Adding a trajectory
+
+1. Find a capture in the Mapillary web app and copy the `pKey=` value out of the
+   URL. That identifies one **image**, which is all you need.
+
+   **Do not trust the URL's `lat`/`lng`** — that is the map viewport centre, not
+   the image position. One seed here was labelled "anglesey_menai" from a URL
+   reading 53.2273/-4.1111 while the image is actually at 51.0224/2.1732, mid
+   Dover Strait, and it turned out to be a second link into a trip already in the
+   registry. Resolve the pKey against the API first:
+
+   ```bash
+   python -c "from mapillary_lib.api import MapillaryClient as C; \
+       d=C().get_image_detail('<pKey>'); \
+       print(d['computed_geometry']['coordinates'], d['sequence'], d['creator'])"
+   ```
+
+   Getting this wrong picks the wrong OSM extract for the whole trajectory.
+2. Add an entry to `~/scratch/mappilary/farfield_trajectories.py`:
+
+```python
+"my_harbour": {
+    "seed_pkey": "298475668560052",
+    "user": "jg360",           # cross-check only
+    "pano": True,              # verified against the API, not trusted
+    "osm": "europe/united-kingdom-latest.osm.pbf",
+    "enc_state": None,         # NOAA state code where US waters
+    "note": "what you picked it for",
+},
+```
+
+3. Find out which OSM extracts the area actually needs, rather than guessing:
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:pbf_coverage -- \
+    --suggest --bbox <west> <south> <east> <north>
+```
+
+   Stage 4 refuses to build a partial catalog, so a wrong `osm` list fails loudly
+   with the uncovered bounds instead of quietly producing a thin dataset.
+
+4. Download the extracts it names into `~/scratch/osm_downloads/`.
+
+## The stages
+
+| # | stage | what it does |
+|---|---|---|
+| 1 | RESOLVE | seed pKey → whole-trip stitched manifest |
+| 2 | DOWNLOAD | ordered, resume-safe image download |
+| 3 | CONVERT | images + metadata → dataset directory |
+| 4 | OSM | landmark feather (+ NOAA ENC in US waters), merged |
+| 5 | PINHOLE | four 90° faces — **equirectangular datasets only** |
+| 6 | TRIM | observable-from-water subset (`trim_landmark_feather`) |
+| 7 | PLOT | landmark coverage figure + gap checks |
+| 8 | TIMELAPSE | `trajectory.png` + `gps_timelapse.mp4` |
+| 9 | AUDIT | dataset contract audit, non-zero exit on failure |
+
+Run a subset with `--stages 4,7`. Stage 1 skips if a manifest exists (`--force`
+to redo).
+
+## What a finished dataset looks like
+
+```
+<name>/
+├── panorama/                  -> frames (relative symlink; ingest requires this name)
+│   └── f0000,51.019702,2.187010,.jpg     {f%04d},{lat:.6f},{lon:.6f},.jpg
+├── frames/                    the images as captured
+├── frames_gps.csv             idx, video_t_s, sensor_elapsed_s, dist_m,
+│                              latitude, longitude, altitude_m, speed_mps, frame_file
+├── intrinsics.csv             per frame: projection, w/h, focal_norm, k1, k2,
+│                              hfov, vfov, heading_deg, heading_reference
+├── extraction_log.csv         full Mapillary provenance per frame
+├── pano_id_mapping.csv        pano_id, lat, lon, filename
+├── pipeline_metadata.json     projection, azimuth_convention, heading_reliable, ...
+├── landmarks/
+│   ├── v1.feather             -> the merged catalog
+│   ├── v1_trimmed.feather     -> the observable-from-water subset
+│   ├── sources/               per-extract feathers before merging
+│   ├── PROVENANCE.json        which PBFs/ENC cells, and the bbox
+│   └── landmark_coverage.png
+├── trajectory.png
+└── gps_timelapse.mp4
+```
+
+Pinhole faces go to `/data/overhead_matching/datasets/pinhole_images/<name>/`,
+matching where `boston_harbor_leg1`'s already live.
+
+## Things that will bite you
+
+**Images are stored unrotated.** Panoramas are *not* north-aligned. Orientation
+lives in `intrinsics.csv:heading_deg`, and `heading_reference` says what that
+bearing is *of* — `column_0` for equirectangular frames, `optical_axis` for
+perspective. The formula is in `pipeline_metadata.json:azimuth_convention`:
+
+```
+equirect:    azimuth = (heading_deg + (col/width)*360) mod 360
+perspective: azimuth = (heading_deg + degrees(atan((2*col/width - 1)*tan(hfov/2)))) mod 360
+```
+
+**The heading-quality field to read differs by projection**, and getting this
+backwards makes 14 datasets look broken:
+
+* **equirectangular** → `heading_reliable` (true/false). It scores the heading
+  against GPS course. `kurashiki_pano_dense`, `harima_a`, `harima_b_pano` and
+  `sf_bay_pano` are `false`; `kurashiki`'s `compass_angle` is exactly 0.0 on every
+  frame.
+* **perspective** → `heading_sources_disagree` plus
+  `heading_sources_median_disagreement_deg`. Here `heading_reliable` is `null`,
+  meaning **not applicable, not unknown** — it is deliberately not computed,
+  because a perspective camera need not point along the direction of travel, so
+  scoring it against GPS course rejects a legitimately side-facing or panning rig
+  (`portsmouth_navalbase` spreads 66.9°). The two heading sources are cross-checked
+  against each other instead: portsmouth agrees to 8.9°, `tokyo_bay` to 5.4°, and
+  `heading_sources_disagree` is `false` for both. `null` is falsy, so do not test
+  this field for truthiness across projections.
+
+See
+`~/scratch/mappilary/AZIMUTH_CONVENTION.md` for the measurement, and note the
+corollary: the six older Mapillary VIGOR datasets *were* rotated, with north at
+column 0, which is 180° from the convention the self-collected datasets use.
+
+**Most captures are not 360.** 14 of 22 registry entries are `perspective`,
+56–93° HFOV. They get no pinhole faces and need a single-view path through
+`ingest.py`; see `~/scratch/mappilary/PERSPECTIVE_SUPPORT.md` for the full list of
+what to change. FOV varies *within* a trajectory (NYC has 23 distinct values), so
+it must be read per frame, never from a config scalar.
+
+**Mapillary's per-frame focal length is unreliable, sometimes unphysically so.**
+It comes from SfM or EXIF and can be wrong for a long run of frames. Two real
+cases, both caught by the audit's plausibility gate and repaired by the converter:
+
+* `tokyo_bay` — 70 contiguous frames report `focal_norm` 5.7999, a **9.85° FOV**,
+  against ~0.51 (88°) everywhere else. Visual check: those frames show the same
+  broad horizon as their neighbours, so it is metadata, not a zoom.
+* `fukuyama_yasunari` — 75% of frames report `focal_norm` ~0.058, a **167° FOV**,
+  with `k1 ≈ 0.0005`. A rectilinear 167° lens does not exist, and the images are
+  ordinary ~80° photos with straight horizons and no barrel distortion.
+
+Frames outside 25–160° get the trajectory-median focal and are labelled
+`intrinsics.csv:focal_source = substituted_implausible`; `api` means measured.
+`pipeline_metadata.json:focals_substituted` carries the count. Two traps:
+
+* **The median must be trajectory-wide, not per-sequence.** On `tokyo_bay` the bad
+  value is the *majority of its own sequence* (70 of 106), so a per-sequence
+  median substitutes the garbage straight back in.
+* **A large substituted share is not itself a defect**, so don't gate on it. These
+  are fixed single-camera captures, so true FOV is near-constant and a median
+  estimates it well — `fukuyama_yasunari` reports 45 distinct focals for one
+  4096×3072 camera. What matters is the size of the plausible set behind the
+  median; the audit fails below 30 frames and warns otherwise.
+
+Even the surviving `api` rows are noisy — `fukuyama_yasunari`'s plausible set still
+spans 69–153°. Anything needing one FOV per trajectory should use the median of
+the `api` rows rather than trusting a single frame.
+
+For a dataset built before this check, or whose `_raw/` was pruned so stage 3
+cannot re-run, apply it in place (idempotent):
+
+```bash
+python ~/scratch/mappilary/repair_intrinsics_focals.py --all --dry_run   # inspect
+python ~/scratch/mappilary/repair_intrinsics_focals.py --all
+```
+
+**Some captures have genuinely noisy positions, and `dist_m` hides it.** Four
+datasets have >10% of consecutive steps above 15 m/s against a boat-speed median:
+`harima_b_pano` (27.9%), `fukuoka_yumechan_a` (26.5%), `harima_a` (17.6%),
+`miura_sagami` (10.7%). Because `dist_m` is a cumulative sum, every position
+outlier is *added* to the track length — `harima_b_pano` reports 93.1 km where its
+median speed over the same 92 minutes implies ~37 km. The audit warns with the
+implied figure. This is Mapillary's SfM `computed` geometry for every frame, not a
+raw/computed mix, so there is no better source to switch to; treat these four as
+noisy ground truth rather than trusting `dist_m` or per-frame position. Distinguish
+this from the benign case: frames a fraction of a second apart show huge implied
+speeds from metre-scale jitter, and the audit says so inline instead of warning.
+
+**Do not derive heading from GPS course on vessel tracks.** On
+`folkestone_dover`, heading matches course to 0.33° median, but 8.4% of frames
+disagree by ~180° — the ferry is backing out of its berth, tracking north on a
+steady south-east heading. `heading.py:heading_model_from_positions` is wrong
+exactly during the manoeuvring segments, which are the ones nearest the harbour
+landmarks.
+
+**Two links can be the same trip.** Registry entries carry `duplicate_of` where
+that has happened — `baltimore_b` (adjacent seed, same 668-image capture) and
+`anglesey_menai` (same jg360 Channel crossing). The selectors skip them. Two seeds
+resolving to identical image counts and extents is the tell.
+
+**A seed link is a fragment, not a trip.** Mapillary splits captures at 500 or
+1000 images. Stitching turns 10,470 seed images into 69,598 across the registry;
+Folkestone alone goes 500 → 10,711 (the whole 33.8 km Channel crossing).
+
+**Seam distance cannot be a fixed threshold.** Some captures have GPS quantized
+in ~200 m steps, so genuinely consecutive sequences begin 200 m apart with a 0.3 s
+gap. A fixed 100 m rejected every seam of an obviously continuous run. The
+allowance is `1.5*(mean_speed * time_gap) + 1.5*(one GPS step)`. Judging by
+implied speed does not work — 200 m over 0.3 s is 690 m/s.
+
+**Discovery must stay endpoint-local.** The `/images` endpoint rejects a bbox
+over 0.010 sq deg *and* separately rejects dense areas on result volume, both as
+HTTP 500. Sweeping a trajectory's whole area subdivides exponentially (depth 10 in
+SF, Seattle, London) and never finishes.
+
+**`--min_spacing_m` matters more than it looks.** These are video extractions at
+1–30 fps and many frames share one GPS fix, so a frame's recorded position often
+belongs to its neighbour. The 5 m default takes Folkestone from 10,711 frames to
+399 without losing a distinct position.
+
+**Mapillary has no 4096 thumbnail** — 2048 (0.25 MB) or the original (3.75 MB for
+a 7680-wide pano) and nothing between. A 4096 cap means fetching originals, so use
+`--prune_raw`.
+
+**The landmark buffer must be large on water.** 8 km around the mid-Channel track
+gave 16 landmarks; 25 km gave 1,708; and 45 km was needed before the English coast
+appeared at all (Dover is 31 km west of that track's western end). Override per
+trajectory with `landmark_buffer_km`.
+
+**Prefer consistent OSM snapshot dates** over minimising file size. National
+extracts are cheap now (see below), and mixing vintages is a real hazard:
+`france-250101` against `nord-pas-de-calais-260812` differs by ~44k features on
+the same bbox, purely from 19 months of mapping.
+
+## Memory, and why big extracts are fine now
+
+`extract_landmarks_historical` used to be unable to handle a country-sized PBF.
+Two independent causes, both fixed:
+
+* **The tag table.** Landmark feathers stored one column per OSM tag key —
+  803,717 rows × 1,716 columns, 0.34% non-null. Tags are now a single JSON
+  `tags` column (`swag/data/landmark_schema.py`), which also reads the legacy
+  wide layout. That took one extraction from 34.6 GB / 8:39 to 2.9 GB / 0:31.
+* **The node index.** libosmium's `FlexMem` held every node in the file.
+  `--node_margin_deg` (0.1 by default in the orchestrator) bounds it to
+  bbox + margin, taking whole France from 28 GB and climbing to 3.0 GB / 1:37.
+
+Stage 4 also runs inside `systemd-run --scope -p MemoryMax=24G -p
+MemorySwapMax=0`, so a surprise dies in its own cgroup instead of taking the
+machine down — which it did once, before these fixes.
+
+**Always read landmark feathers through `landmark_schema`** (`tag_dicts`,
+`row_dicts`), never by touching tag columns, or you will break on one of the two
+layouts.
+
+## Checking your work
+
+```bash
+# contract audit: naming, ordering, table agreement, image integrity, staleness
+bazel run //experimental/overhead_matching/swag/scripts:audit_dataset -- <dataset> [...]
+
+# landmark coverage figure + quantitative gap checks
+bazel run //experimental/overhead_matching/swag/scripts:plot_landmarks -- <dataset>
+```
+
+The audit catches the failures that are otherwise silent: raw numeric Mapillary
+ids (ingest joins on `int(pano_id[1:])`), absolute `panorama/` symlinks, dot-files
+that `vigor_dataset.iterdir()` would ingest as phantom panoramas, and pinhole
+faces older than the panoramas they came from — a real hazard, since re-rendering
+a panorama does not change its filename, so a name-only check passes on stale
+faces.
+
+Watch the plot's per-source line. If one source contributes a few percent of
+features with most of them on the bbox rim, the buffer is clipping that landmass
+rather than covering it; that is exactly how the missing English coast was found.
+
+Two audit warnings are expected on video-derived tracks: high implied speeds
+between frames a fraction of a second apart, which is GPS jitter over a tiny time
+base rather than motion. The audit prints the cause inline.
+
+## Related
+
+* `~/scratch/mappilary/README.md` — the collection scripts themselves
+* `~/scratch/mappilary/AZIMUTH_CONVENTION.md` — how the convention was measured
+* `~/scratch/mappilary/PERSPECTIVE_SUPPORT.md` — consuming the non-360 datasets
+* `docs/object-tracking-runbook.md` — the M0–M6 tracking pipeline downstream

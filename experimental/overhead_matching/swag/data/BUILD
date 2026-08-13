@@ -2,6 +2,20 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+  name = "landmark_schema",
+  srcs = ["landmark_schema.py"],
+  visibility = [
+    "//experimental/overhead_matching:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("geopandas"),
+  ]
+)
+
+py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
   visibility = [
@@ -10,6 +24,7 @@ py_library(
     "//common/python:__subpackages__",
   ],
   deps = [
+    ":landmark_schema",
     requirement("numpy"),
     requirement("torch"),
     requirement("torchvision"),
@@ -183,3 +198,4 @@ py_test(
     ":landmark_correspondence_dataset",
   ],
 )
+

@@ -9,6 +9,8 @@ stored in the file.
 import math
 
 import geopandas as gpd
+
+from experimental.overhead_matching.swag.data import landmark_schema
 import pandas as pd
 import shapely
 
@@ -22,8 +24,23 @@ def tag_columns(gdf: gpd.GeoDataFrame) -> list[str]:
     return [c for c in gdf.columns if c not in META_COLUMNS]
 
 
+def tag_signatures(gdf: gpd.GeoDataFrame) -> list[tuple]:
+    """Hashable tag set per row: populated string tags only, sorted.
+
+    Handles both the `tags` dict layout and the legacy one-column-per-key one.
+    object_class is excluded either way (it is provenance, not a tag), which is
+    what makes dedup compare like with like across the two layouts.
+    """
+    skip = set(META_COLUMNS)
+    return [
+        tuple(sorted((k, v) for k, v in props.items()
+                     if k not in skip and isinstance(v, str) and v))
+        for props in landmark_schema.tag_dicts(gdf)
+    ]
+
+
 def tag_signature(row, columns: list[str]) -> tuple:
-    """Hashable tag set for a row: only populated string tags, sorted."""
+    """Hashable tag set for a single wide-layout row. Prefer tag_signatures."""
     return tuple(sorted(
         (c, row[c]) for c in columns if isinstance(row[c], str) and row[c]))
 
@@ -71,16 +88,17 @@ def dedupe_exact_duplicates(
     """
     if len(gdf) == 0:
         return gdf
-    columns = tag_columns(gdf)
     tolerance_deg = tolerance_m / METERS_PER_DEG_LAT
 
     by_signature: dict[tuple, list[int]] = {}
-    for position, (_, row) in enumerate(gdf.iterrows()):
-        by_signature.setdefault(tag_signature(row, columns), []).append(position)
+    for position, signature in enumerate(tag_signatures(gdf)):
+        by_signature.setdefault(signature, []).append(position)
 
     keep_positions: list[int] = []
     merged_geometry: dict[int, object] = {}
     n_dropped = 0
+    n_repaired = 0
+    n_union_failed = 0
     for positions in by_signature.values():
         if len(positions) == 1:
             keep_positions.append(positions[0])
@@ -93,8 +111,26 @@ def dedupe_exact_duplicates(
             first = positions[members[0]]
             keep_positions.append(first)
             if len(members) > 1:
-                merged_geometry[first] = shapely.union_all(
-                    [geometries[m] for m in members])
+                parts = [geometries[m] for m in members]
+                # OSM polygons are not always valid (self-touching rings are
+                # common), and GEOS raises a TopologyException rather than
+                # degrading. Repair on demand instead of paying make_valid on
+                # every geometry: on a NY+NJ merge only a handful of the 3.2M
+                # clusters need it.
+                try:
+                    union = shapely.union_all(parts)
+                except shapely.errors.GEOSException:
+                    try:
+                        union = shapely.union_all(
+                            [shapely.make_valid(p) for p in parts])
+                        n_repaired += 1
+                    except shapely.errors.GEOSException:
+                        # Keeping the first member is the conservative outcome:
+                        # the cluster is duplicates of one landmark, so its
+                        # geometry is representative even un-unioned.
+                        union = parts[0]
+                        n_union_failed += 1
+                merged_geometry[first] = union
                 n_dropped += len(members) - 1
 
     keep_positions.sort()
@@ -108,6 +144,10 @@ def dedupe_exact_duplicates(
     if verbose:
         print(f"Dedupe (identical tags, geometries within {tolerance_m:g} m): "
               f"{len(gdf)} -> {len(out)} landmarks ({n_dropped} merged away)")
+        if n_repaired or n_union_failed:
+            print(f"  {n_repaired} cluster(s) needed make_valid before union; "
+                  f"{n_union_failed} kept a representative member because the "
+                  f"union failed even after repair")
     return out.reset_index(drop=True)
 
 
@@ -126,6 +166,38 @@ def merge_feathers(frames: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
 
     merged = gpd.GeoDataFrame(
         pd.concat(frames, ignore_index=True, sort=False), crs="EPSG:4326")
+
+    # The same OSM feature legitimately appears in two overlapping extracts:
+    # Geofabrik ships complete ways, so anything crossing a border -- the Channel
+    # Tunnel, submarine cables, maritime boundaries -- is in both national files.
+    # It is one landmark, so collapse it rather than refusing the merge. Each copy
+    # is clipped to its own extract, so keep whichever retained more geometry.
+    duplicated = merged["id"].duplicated(keep=False)
+    if duplicated.any():
+        import shapely
+        # Only same-source duplicates are a border artifact. The id schemes are
+        # source-prefixed -- ('way', 123) versus ('enc', 'LNAM') -- so one id
+        # arriving with two different landmark_types means the schemes have
+        # collided, which silently collapsing would hide.
+        per_id_sources = merged.loc[duplicated].groupby("id")["landmark_type"].nunique()
+        conflicting = per_id_sources[per_id_sources > 1]
+        if len(conflicting):
+            raise ValueError(
+                f"{len(conflicting)} id(s) appear with more than one "
+                f"landmark_type, e.g. {list(conflicting.index[:3])}; the "
+                f"source-prefixed id schemes have collided")
+        counts = shapely.get_num_coordinates(
+            shapely.from_wkb(merged.geometry.to_wkb()))
+        order = pd.Series(counts, index=merged.index)
+        keep = (order.groupby(merged["id"]).idxmax()
+                if duplicated.any() else merged.index)
+        drop = merged.index.difference(pd.Index(keep))
+        n_ids = int(merged.loc[duplicated, "id"].nunique())
+        print(f"  collapsed {len(drop)} duplicate row(s) spanning {n_ids} id(s) "
+              f"present in more than one input (cross-border features); kept the "
+              f"copy with the most complete geometry")
+        merged = merged.drop(index=drop).reset_index(drop=True)
+
     duplicate_ids = merged["id"].duplicated().sum()
     if duplicate_ids:
         raise ValueError(
@@ -143,8 +215,14 @@ def report_cross_source_collisions(
     usually carry different tags, and which one matches better is the
     correspondence model's call, not ours.
     """
-    if "name" not in gdf.columns:
+    # Read names through the schema helper so this works for the dict layout as
+    # well as the legacy one-column-per-tag frames. Assign before slicing, or the
+    # slice has no name column to group by.
+    names = pd.Series([t.get("name") for t in landmark_schema.tag_dicts(gdf)],
+                      index=gdf.index)
+    if names.isna().all():
         return
+    gdf = gdf.assign(name=names)
     named = gdf[gdf["name"].notna()]
     points = {i: named.geometry[i].representative_point() for i in named.index}
     collisions = []

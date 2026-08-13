@@ -47,7 +47,13 @@ MASK_COLOR = (255, 60, 60)        # red
 
 @dataclass
 class AuditConfig:
-    min_supports: int = 3
+    # 2 supports = 3 detections counting the birth. The bar was 3 during the
+    # hand review, where the point was to study tracks with plenty of
+    # evidence; for production that threw away 22 auditable tracks for no
+    # reason. The audit works on three detections, it just has less to
+    # reconcile - and a thin track is where its judgement matters most,
+    # because vote-counting has almost nothing to work with.
+    min_supports: int = 2
     max_support_chips: int = 6
     max_context_chips: int = 2
     max_description_samples: int = 10
@@ -85,7 +91,12 @@ class StrikeVote(BaseModel):
 class NameCandidate(BaseModel):
     name: str
     weight: float     # 0..1 belief this names the tracked object
-    basis: Literal["read_from_images", "reported_by_detections", "both"]
+    # Only two values are reachable. The auditor is shown the detector's names
+    # and forbidden from inventing new ones, so every name it endorses was
+    # reported by some detection; all it can add is visual corroboration. A
+    # third value "read_from_images" existed and occurred zero times in 73
+    # candidates across 105 tracks, because it describes an impossible state.
+    basis: Literal["reported_by_detections", "both"]
 
 
 class PrimaryObject(BaseModel):
@@ -474,7 +485,7 @@ canonical landmark record per track.
 </role>
 
 <provenance>
-A panoramic camera on a moving robot produced landmark detections at each
+A camera on a moving robot produced landmark detections at each
 keyframe: a bounding box, an OpenStreetMap-style tag (key=value), a detector
 confidence (high/medium/low), and a one-sentence description. Separately, a
 mask tracker propagated the object's mask between keyframes, and detections
@@ -483,7 +494,7 @@ Semantic labels played no role in the association. Your job is to audit the
 semantics now.
 
 Downstream, your output is matched by tag + description against map databases
-(OpenStreetMap, nautical charts), and the track's bearing measurements are
+(e.g., OpenStreetMap), and the track's bearing measurements are
 then used for localization. A wrong canonical tag poisons map matching; an
 overly timid answer discards a usable landmark.
 </provenance>

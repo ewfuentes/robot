@@ -54,6 +54,28 @@ def esc(x):
     return html.escape(str(x))
 
 
+def name_candidates(primary_object):
+    """[(name, weight, basis)] highest-weight first.
+
+    Audits written before names became a weighted list are upgraded by
+    semantic_audit.parse_result_line, so both vintages arrive here with
+    `name_candidates`; the fallback covers a raw dict read some other way.
+    """
+    cands = primary_object.get("name_candidates")
+    if cands is None:
+        name = primary_object.get("name", "")
+        cands = ([{"name": name, "weight": 1.0,
+                   "basis": "reported_by_detections"}] if name else [])
+    return sorted(((c["name"], c.get("weight", 0.0),
+                    c.get("basis", "reported_by_detections"))
+                   for c in cands if c.get("name")), key=lambda c: -c[1])
+
+
+def top_name(primary_object):
+    cands = name_candidates(primary_object)
+    return cands[0][0] if cands else ""
+
+
 def load_results(audit_dir: Path):
     audits, errors = {}, {}
     with open(audit_dir / "results.jsonl") as f:
@@ -170,10 +192,11 @@ def name_collision_rows(audits):
     claims = defaultdict(list)
     for key, audit in audits.items():
         po = audit["primary_object"]
-        if po["name"]:
-            claims[po["name"].strip().lower()].append(
-                (po["name"], key, "primary"))
-        for alias in po["name_aliases"]:
+        cands = name_candidates(po)
+        for rank, (name, weight, _) in enumerate(cands):
+            role = "primary" if rank == 0 else f"cand {weight:.2f}"
+            claims[name.strip().lower()].append((name, key, role))
+        for alias in po.get("name_aliases", []):
             if alias.strip():
                 claims[alias.strip().lower()].append((alias, key, "alias"))
     rows = []
@@ -201,7 +224,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips):
     tid = meta_entry["track_id"]
     parts.append(
         f"<h2 id='{key}'><span class='v_{verdict}'>{verdict}</span> {key} "
-        f"&mdash; {esc(po['name'] or po['tags'][0]['tag'] if po['tags'] else '?')}"
+        f"&mdash; {esc(top_name(po) or (po['tags'][0]['tag'] if po['tags'] else '?'))}"
         f"</h2>")
     parts.append(
         f"<p>{esc(audit['landmark_kind'])} | extent: {esc(po['extent'])} | "
@@ -223,11 +246,18 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips):
     tag_txt = ", ".join(f"{esc(t['tag'])} ({t['weight']:.2f})"
                         for t in po["tags"])
     parts.append(f"<p><b>tags:</b> {tag_txt}</p>")
-    if po["name"]:
+    cands = name_candidates(po)
+    if cands:
+        cand_txt = ", ".join(
+            f"'{esc(n)}' {w:.2f}<span style='color:#889'> ({esc(b)})</span>"
+            for n, w, b in cands)
         alias_txt = (" | aliases: " + ", ".join(
             f"'{esc(a)}'" for a in po["name_aliases"])
-            if po["name_aliases"] else "")
-        parts.append(f"<p><b>name:</b> '{esc(po['name'])}'{alias_txt}</p>")
+            if po.get("name_aliases") else "")
+        multi = (" <span class='contested'>[multiple candidates &mdash; "
+                 "matcher resolves]</span>" if len(cands) > 1 else "")
+        parts.append(f"<p><b>name candidates:</b> {cand_txt}{alias_txt}"
+                     f"{multi}</p>")
     parts.append(f"<p><b>description:</b> {esc(po['description'])}<br>"
                  f"<b>features:</b> "
                  f"{esc(', '.join(po['distinctive_features']))}</p>")

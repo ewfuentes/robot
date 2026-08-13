@@ -36,6 +36,8 @@ from scipy import special
 from experimental.overhead_matching.swag.bearing_only_localization import (
     catalog as catalog_mod,
     geodesy,
+    mode_tracker as mode_tracker_mod,
+    proposal as proposal_mod,
     structs,
 )
 
@@ -54,6 +56,26 @@ class ParticleBelief:
     north_m: np.ndarray
     heading_rad: np.ndarray  # clockwise from north
     log_weight: np.ndarray
+    # Provenance (§5.5 [CONTRACT]): which proposal event and which of its
+    # hypotheses produced each particle; -1 for motion-model descent. Two
+    # ints per particle, and the single most valuable thing to have when
+    # asking where a wrong mode came from.
+    proposal_event_id: np.ndarray = None
+    proposal_hypothesis: np.ndarray = None
+    # Mode membership carried from the previous keyframe. Mode identity is
+    # tracked by lineage (mode_tracker.py), so this has to survive
+    # resampling and injection like any other per-particle state.
+    mode_id: np.ndarray = None
+
+    def __post_init__(self):
+        if self.proposal_event_id is None:
+            self.proposal_event_id = np.full(self.east_m.shape[0], -1,
+                                             dtype=np.int64)
+        if self.proposal_hypothesis is None:
+            self.proposal_hypothesis = np.full(self.east_m.shape[0], -1,
+                                               dtype=np.int64)
+        if self.mode_id is None:
+            self.mode_id = np.full(self.east_m.shape[0], -1, dtype=np.int64)
 
     @property
     def n(self) -> int:
@@ -61,7 +83,19 @@ class ParticleBelief:
 
     def copy(self) -> "ParticleBelief":
         return ParticleBelief(self.east_m.copy(), self.north_m.copy(),
-                              self.heading_rad.copy(), self.log_weight.copy())
+                              self.heading_rad.copy(), self.log_weight.copy(),
+                              self.proposal_event_id.copy(),
+                              self.proposal_hypothesis.copy(),
+                              self.mode_id.copy())
+
+    def take(self, idx: np.ndarray) -> None:
+        """Reindex every per-particle array in place (resample/inject)."""
+        self.east_m = self.east_m[idx]
+        self.north_m = self.north_m[idx]
+        self.heading_rad = self.heading_rad[idx]
+        self.proposal_event_id = self.proposal_event_id[idx]
+        self.proposal_hypothesis = self.proposal_hypothesis[idx]
+        self.mode_id = self.mode_id[idx]
 
     def normalized_weights(self) -> np.ndarray:
         return np.exp(self.log_weight - special.logsumexp(self.log_weight))
@@ -73,6 +107,55 @@ class FilterHistory:
     checkpoints: dict  # keyframe_idx -> ParticleBelief (weighted posterior)
     particle_history_sha256: str
     final_belief: ParticleBelief  # weighted posterior at the last keyframe
+    proposal_events: list = dataclasses.field(default_factory=list)
+    mode_events: list = dataclasses.field(default_factory=list)
+
+
+def _mode_records(belief, tracker) -> list:
+    """Re-weight the tracked modes under the current posterior.
+
+    The tracker clusters on the prior; weights and spreads are only
+    meaningful after the measurement update, so they are recomputed here.
+    """
+    weights = belief.normalized_weights()
+    records = []
+    for record in tracker._previous.values():  # noqa: SLF001 - same module
+        member = belief.mode_id == record.mode_id
+        mass = float(weights[member].sum())
+        if mass <= 0.0:
+            continue
+        member_weights = weights[member]
+        records.append(structs.ModeRecord(
+            mode_id=record.mode_id,
+            weight=mass,
+            n_particles=int(member.sum()),
+            mean_east_m=float(member_weights @ belief.east_m[member] / mass),
+            mean_north_m=float(member_weights @ belief.north_m[member] / mass),
+            mean_heading_deg=mode_tracker_mod._circular_mean_deg(  # noqa: SLF001
+                belief.heading_rad[member], member_weights),
+            position_std_m=mode_tracker_mod.ModeTracker._position_std(  # noqa: SLF001
+                belief, member, member_weights),
+            heading_std_deg=mode_tracker_mod._circular_std_deg(  # noqa: SLF001
+                belief.heading_rad[member], member_weights),
+            birth_keyframe_idx=record.birth_keyframe_idx,
+            parent_mode_ids=record.parent_mode_ids,
+            provenance=record.provenance))
+    records.sort(key=lambda r: -r.weight)
+    return records
+
+
+def _mode_entropy(modes) -> float:
+    """Entropy of the mode weights in nats: the §5.1 multimodality flag as a
+    number. 0 when one mode holds everything, log(k) when k modes tie."""
+    if not modes:
+        return 0.0
+    weights = np.array([m.weight for m in modes])
+    total = weights.sum()
+    if total <= 0.0:
+        return 0.0
+    weights = weights / total
+    weights = weights[weights > 0.0]
+    return float(-(weights * np.log(weights)).sum())
 
 
 def von_mises_logpdf(delta_rad, kappa) -> np.ndarray:
@@ -149,7 +232,8 @@ def measurement_update(
         meas: structs.TrackletMeasurement,
         table: structs.CompatibilityTable,
         catalog: catalog_mod.LandmarkCatalog,
-        pi0: float) -> structs.AssociationPosterior:
+        pi0: float,
+        per_mode: bool = True) -> list:
     """Association-marginalized bearing update (design doc §5.3).
 
     p(z|x) = pi0/(2 pi) + (1-pi0) * sum_j w_j * LR_j * vM(delta_j; kappa_eff)
@@ -157,6 +241,11 @@ def measurement_update(
     The candidate axis is processed in blocks so the (n_particles, n_cand)
     temporaries stay bounded; two passes are needed because responsibilities
     are normalized by the total likelihood.
+
+    Returns the whole-belief AssociationPosterior first, then one per mode
+    (§5.4 `[CONTRACT]`): averaging responsibilities across a multimodal
+    belief blends contradictory explanations into a number that describes
+    neither, so the per-mode split is the reportable form.
     """
     if not 0.0 < pi0 < 1.0:
         raise ValueError(f"pi0 must be in (0, 1), got {pi0}")
@@ -190,22 +279,43 @@ def measurement_update(
     log_lik = special.logsumexp(per_block, axis=1)
     belief.log_weight += log_lik
 
-    # Pass 2: responsibilities averaged under the updated particle weights
-    # (§5.4). Per-mode reporting arrives with the mode tracker (§10.5).
+    # Pass 2: responsibilities averaged under the updated particle weights,
+    # for the whole belief and for each mode.
     weights = belief.normalized_weights()
-    responsibilities = {}
-    for sl in blocks:
-        avg = weights @ np.exp(block_log_terms(sl) - log_lik[:, None])
-        for offset, value in enumerate(avg):
-            responsibilities[catalog.landmark_ids[sl.start + offset]] = float(
-                value)
-    null_share = float(weights @ np.exp(log_null - log_lik))
+    groups = [(None, np.ones(belief.n, dtype=bool), weights)]
+    if per_mode:
+        for mode_id in np.unique(belief.mode_id):
+            if int(mode_id) < 0:
+                continue
+            member = belief.mode_id == mode_id
+            mass = float(weights[member].sum())
+            if mass <= 0.0:
+                continue
+            group_weights = np.zeros(belief.n)
+            group_weights[member] = weights[member] / mass
+            groups.append((int(mode_id), member, group_weights))
 
-    return structs.AssociationPosterior(
-        tracklet_id=meas.tracklet_id,
-        anchor_keyframe_idx=meas.anchor_keyframe_idx,
-        null_share=null_share,
-        responsibilities=responsibilities)
+    responsibilities = [{} for _ in groups]
+    null_shares = [0.0] * len(groups)
+    for sl in blocks:
+        resp = np.exp(block_log_terms(sl) - log_lik[:, None])
+        for position, (_, _, group_weights) in enumerate(groups):
+            avg = group_weights @ resp
+            for offset, value in enumerate(avg):
+                responsibilities[position][
+                    catalog.landmark_ids[sl.start + offset]] = float(value)
+    null_term = np.exp(log_null - log_lik)
+    for position, (_, _, group_weights) in enumerate(groups):
+        null_shares[position] = float(group_weights @ null_term)
+
+    return [
+        structs.AssociationPosterior(
+            tracklet_id=meas.tracklet_id,
+            anchor_keyframe_idx=meas.anchor_keyframe_idx,
+            null_share=null_shares[position],
+            responsibilities=responsibilities[position],
+            mode_id=mode_id)
+        for position, (mode_id, _, _) in enumerate(groups)]
 
 
 def ess(log_weight: np.ndarray) -> float:
@@ -249,10 +359,7 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
     cumulative = np.cumsum(weights)
     cumulative[-1] = 1.0  # guard against fp sum < 1
     positions = (rng.random() + np.arange(n)) / n
-    idx = np.searchsorted(cumulative, positions, side="left")
-    belief.east_m = belief.east_m[idx]
-    belief.north_m = belief.north_m[idx]
-    belief.heading_rad = belief.heading_rad[idx]
+    belief.take(np.searchsorted(cumulative, positions, side="left"))
 
     east_sigma = math.hypot(east_scale, position_roughening_m)
     north_sigma = math.hypot(north_scale, position_roughening_m)
@@ -265,6 +372,86 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
         belief.heading_rad = geodesy.wrap_rad(
             belief.heading_rad + rng.normal(0.0, heading_sigma, size=n))
     belief.log_weight = np.zeros(n)
+
+
+def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig,
+                    rng: np.random.Generator) -> int:
+    """Replace a fraction of the belief with proposal-drawn particles.
+
+    Mixture-MCL restart: keep (1 - phi) of the mass resampled from the
+    current belief and draw phi from the proposal, then let the caller apply
+    this keyframe's measurement likelihood to everything.
+
+    APPROXIMATION, stated plainly: a strict mixture proposal would weight
+    injected particles by prior(x)/q(x), which needs a density estimate of
+    both. We take q(x) as approximately proportional to the likelihood the
+    proposal was built from — standard mixture-MCL practice — which biases
+    the injected mass toward whatever the resected bearings support. That
+    bias is exactly what post-recovery NEES would expose, so
+    `proposal_test.RecoveryConsistencyTest` guards it rather than trusting
+    the approximation.
+
+    Returns the number of particles injected.
+    """
+    n_inject = int(round(config.proposal.inject_fraction * belief.n))
+    if not result.hypotheses or n_inject <= 0:
+        return 0
+    n_inject = min(n_inject, belief.n)
+
+    east, north, heading, hypothesis = proposal_mod.sample_particles(
+        result, n_inject, config.proposal, rng)
+    if east.size == 0:
+        return 0
+
+    n_keep = belief.n - n_inject
+    if n_keep > 0:
+        # Resample the retained mass so it is an unweighted sample too;
+        # otherwise kept and injected particles are on different footings.
+        weights = belief.normalized_weights()
+        cumulative = np.cumsum(weights)
+        cumulative[-1] = 1.0
+        positions = (rng.random() + np.arange(n_keep)) / n_keep
+        belief.take(np.searchsorted(cumulative, positions, side="left"))
+    else:
+        belief.take(np.zeros(0, dtype=np.int64))
+
+    belief.east_m = np.concatenate([belief.east_m, east])
+    belief.north_m = np.concatenate([belief.north_m, north])
+    belief.heading_rad = np.concatenate([belief.heading_rad,
+                                         geodesy.wrap_rad(heading)])
+    belief.proposal_event_id = np.concatenate([
+        belief.proposal_event_id,
+        np.full(east.size, result.event_id, dtype=np.int64)])
+    belief.proposal_hypothesis = np.concatenate([
+        belief.proposal_hypothesis, hypothesis.astype(np.int64)])
+    # Injected particles have no ancestor: they will found new modes, and
+    # the mode tracker reads their provenance to say where from.
+    belief.mode_id = np.concatenate([
+        belief.mode_id, np.full(east.size, -1, dtype=np.int64)])
+    # Kept mass carries (1 - phi), injected carries phi, spread evenly
+    # within each component.
+    keep_share = 1.0 - config.proposal.inject_fraction
+    belief.log_weight = np.concatenate([
+        np.full(n_keep, math.log(keep_share / n_keep) if n_keep else 0.0),
+        np.full(east.size,
+                math.log(config.proposal.inject_fraction / east.size))])
+    return int(east.size)
+
+
+def _proposal_event_record(result, n_injected: int) -> structs.ProposalEvent:
+    return structs.ProposalEvent(
+        event_id=result.event_id,
+        keyframe_idx=result.keyframe_idx,
+        trigger=result.trigger,
+        n_hypotheses=len(result.hypotheses),
+        n_injected=n_injected,
+        n_tracklets_considered=result.n_tracklets_considered,
+        n_combinations_examined=result.n_combinations_examined,
+        n_combinations_skipped=result.n_combinations_skipped,
+        hypothesis_tracklet_ids=[list(h.tracklet_ids)
+                                 for h in result.hypotheses],
+        hypothesis_landmark_ids=[list(h.landmark_ids)
+                                 for h in result.hypotheses])
 
 
 def mean_pose(belief: ParticleBelief):
@@ -420,6 +607,7 @@ def run_filter(
     _validate(config, catalog, odometry, measurements, tables)
     rng = np.random.default_rng(config.seed)
     belief = init_belief(config, rng)
+    tracker = mode_tracker_mod.ModeTracker(config.modes)
     heading_rw_rad = math.radians(config.heading_random_walk_deg)
     heading_rough_rad = math.radians(config.heading_roughening_deg)
 
@@ -430,8 +618,13 @@ def run_filter(
     hasher = hashlib.sha256()
     health = []
     checkpoints = {}
+    proposal_events = []
     n_keyframes = len(odometry) + 1
     prev_course_rad = None
+    null_history = []
+    all_mode_events = []
+    low_ess_run = 0
+    last_proposal_kf = None
 
     for kf in range(n_keyframes):
         if kf > 0:
@@ -450,16 +643,102 @@ def run_filter(
             if course_rad is not None:
                 prev_course_rad = course_rad
 
+        keyframe_measurements = meas_by_kf.get(kf, [])
+        # Cluster BEFORE the measurement updates: modes are the hypotheses
+        # entering the update, so "mode A believes tracklet 7 is X" refers to
+        # a mode that existed before tracklet 7 was seen.
+        mode_events = []
+        if config.modes.enabled:
+            assignment = tracker.update(belief, kf, proposal_events)
+            belief.mode_id = assignment.mode_id
+            mode_events = assignment.events
+
         associations = []
-        for meas in meas_by_kf.get(kf, []):
-            associations.append(measurement_update(
-                belief, meas, tables[meas.tracklet_id], catalog, config.pi0))
+        for meas in keyframe_measurements:
+            associations.extend(measurement_update(
+                belief, meas, tables[meas.tracklet_id], catalog, config.pi0,
+                per_mode=config.modes.enabled))
 
         belief.log_weight -= special.logsumexp(belief.log_weight)
         current_ess = ess(belief.log_weight)
 
+        # --- mixture proposal: global init and recovery (§5.5) ---
+        # Kidnapped detection runs off the same null-share the health stream
+        # publishes: when the belief stops explaining the bearings, the
+        # evidence lands on the null hypothesis rather than on any landmark.
+        if associations:
+            mean_null = float(np.mean([a.null_share for a in associations]))
+            null_history.append(
+                mean_null > config.proposal.null_share_threshold)
+            del null_history[:-config.proposal.null_share_window]
+        if current_ess < config.proposal.ess_floor_frac * config.n_particles:
+            low_ess_run += 1
+        else:
+            low_ess_run = 0
+
+        trigger = None
+        if config.proposal.enabled and keyframe_measurements:
+            refractory_ok = (
+                last_proposal_kf is None
+                or kf - last_proposal_kf >= config.proposal.refractory_keyframes)
+            if config.proposal.on_init and not proposal_events:
+                # The FIRST keyframe carrying bearings, not keyframe 0.
+                # Real runs start observing several keyframes in (leg1's
+                # first tracklet anchors at kf 3), and keying this to kf 0
+                # meant the initial proposal silently never fired — the
+                # uniform prior was then left to brute force.
+                trigger = "init"
+            elif refractory_ok and (
+                    len(null_history) >= config.proposal.null_share_window
+                    and (np.mean(null_history)
+                         >= config.proposal.null_share_min_fraction)):
+                trigger = "null_share"
+            elif refractory_ok and (
+                    low_ess_run >= config.proposal.ess_floor_keyframes):
+                trigger = "ess_floor"
+
+        event_id = None
+        if trigger is not None:
+            # Staggered epochs mean one keyframe usually carries a single
+            # bearing, so gather a short window and treat it as simultaneous
+            # (proposal.py documents the translation/range error this costs).
+            window_start = kf - config.proposal.window_keyframes
+            window = [m for m in measurements
+                      if window_start <= m.anchor_keyframe_idx <= kf]
+            result = proposal_mod.propose(
+                window, tables, catalog, config.proposal,
+                event_id=len(proposal_events), keyframe_idx=kf,
+                trigger=trigger)
+            n_injected = inject_proposal(belief, result, config, rng)
+            proposal_events.append(_proposal_event_record(result, n_injected))
+            if n_injected:
+                event_id = result.event_id
+                last_proposal_kf = kf
+                null_history.clear()
+                low_ess_run = 0
+                # Injected particles have not seen this keyframe's bearings,
+                # so re-apply them to the whole belief. Injected mass is
+                # drawn from a subset of tracklets; scoring everything under
+                # the full measurement model is what puts kept and injected
+                # particles on the same footing.
+                associations = []
+                for meas in keyframe_measurements:
+                    associations.extend(measurement_update(
+                        belief, meas, tables[meas.tracklet_id], catalog,
+                        config.pi0, per_mode=config.modes.enabled))
+                belief.log_weight -= special.logsumexp(belief.log_weight)
+                current_ess = ess(belief.log_weight)
+                # Injection changed the belief, so the clusters that entered
+                # the update no longer describe it; re-derive them.
+                if config.modes.enabled:
+                    assignment = tracker.update(belief, kf, proposal_events)
+                    belief.mode_id = assignment.mode_id
+                    mode_events = mode_events + assignment.events
+
         mean_e, mean_n, mean_h = mean_pose(belief)
         map_e, map_n, map_h = map_pose(belief, config.map_cell_size_m)
+        modes = _mode_records(belief, tracker) if config.modes.enabled else []
+        all_mode_events.extend(mode_events)
         resampled = current_ess < config.ess_resample_frac * config.n_particles
         health.append(structs.HealthRecord(
             keyframe_idx=kf,
@@ -473,8 +752,14 @@ def run_filter(
             map_heading_deg=math.degrees(map_h) % 360.0,
             position_std_m=position_std_m(belief),
             heading_std_deg=heading_std_deg(belief),
-            n_measurements=len(meas_by_kf.get(kf, [])),
-            associations=associations))
+            n_measurements=len(keyframe_measurements),
+            proposal_weight_share=float(
+                belief.normalized_weights()[belief.proposal_event_id >= 0]
+                .sum()),
+            proposal_event_id=event_id,
+            associations=associations,
+            modes=modes,
+            mode_entropy_nats=_mode_entropy(modes)))
         _hash_belief(hasher, belief)
         # The last keyframe always checkpoints, so checkpoints[-1] is the
         # final weighted posterior — and it is a copy, unaffected by the
@@ -489,7 +774,9 @@ def run_filter(
 
     return FilterHistory(health=health, checkpoints=checkpoints,
                          particle_history_sha256=hasher.hexdigest(),
-                         final_belief=checkpoints[n_keyframes - 1])
+                         final_belief=checkpoints[n_keyframes - 1],
+                         proposal_events=proposal_events,
+                         mode_events=all_mode_events)
 
 
 def _errors(health: list, truth: list, east_key: str, north_key: str):

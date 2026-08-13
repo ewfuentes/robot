@@ -7,6 +7,7 @@ import json
 import hashlib
 from pathlib import Path
 import pandas as pd
+from experimental.overhead_matching.swag.data import landmark_schema
 import pickle
 import openai
 import base64
@@ -977,7 +978,8 @@ def create_description_requests(args):
 
     print(f'create {args}')
     landmarks = _load_landmarks(args.geojson)
-    unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
+    unique_landmarks = {prune_landmark(d)
+                        for d in landmark_schema.row_dicts(landmarks)}
 
     requests = _create_requests(unique_landmarks, prompt_type=prompt_type)
     print("num requests", len(requests))
@@ -1377,8 +1379,8 @@ def create_sentences_pickle(args):
     # Get unique pruned_tags and their custom_ids
     print("Computing unique pruned_tags...")
     pruned_tags_to_custom_id: dict[frozenset, str] = {}
-    for _, row in tqdm.tqdm(landmarks_df.iterrows(), total=len(landmarks_df), desc="Processing landmarks"):
-        props = row.dropna().to_dict()
+    for props in tqdm.tqdm(landmark_schema.row_dicts(landmarks_df),
+                           total=len(landmarks_df), desc="Processing landmarks"):
         pruned_tags = prune_landmark(props)
         if pruned_tags not in pruned_tags_to_custom_id:
             custom_id = custom_id_from_props(pruned_tags)

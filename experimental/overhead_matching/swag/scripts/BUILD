@@ -358,10 +358,12 @@ py_binary(
     "//common/openstreetmap:extract_landmarks_python.so",
   ],
   deps = [
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("geopandas"),
     requirement("shapely"),
     requirement("pyarrow"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
   ]
 )
@@ -745,6 +747,7 @@ py_binary(
   name="create_tag_key_vocabulary",
   srcs=["create_tag_key_vocabulary.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("geopandas"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
@@ -930,6 +933,7 @@ py_binary(
   name="precompute_value_embeddings",
   srcs=["precompute_value_embeddings.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("tqdm"),
     requirement("numpy"),
     requirement("pandas"),
@@ -1025,6 +1029,7 @@ py_binary(
   name="build_correspondence_bundle_data",
   srcs=["build_correspondence_bundle_data.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("torch"),
     requirement("numpy"),
     requirement("geopandas"),
@@ -1078,6 +1083,7 @@ py_library(
   srcs=["landmark_feather_utils.py"],
   visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("geopandas"),
     requirement("pandas"),
     requirement("shapely"),
@@ -1089,9 +1095,58 @@ py_test(
   name="landmark_feather_utils_test",
   srcs=["landmark_feather_utils_test.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     ":landmark_feather_utils",
     requirement("geopandas"),
     requirement("pandas"),
+    requirement("shapely"),
+  ]
+)
+
+py_library(
+  name="landmark_positive_set_lib",
+  srcs=["landmark_positive_set.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    "//experimental/overhead_matching/swag/landmark_filtering/object_tracking:harbor_catalog",
+  ]
+)
+
+py_binary(
+  name="landmark_positive_set",
+  srcs=["landmark_positive_set.py"],
+  deps=[":landmark_positive_set_lib"],
+)
+
+py_library(
+  name="trim_landmark_feather_lib",
+  srcs=["trim_landmark_feather.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
+    ":landmark_positive_set_lib",
+    "//experimental/overhead_matching/swag/landmark_filtering/object_tracking:harbor_catalog",
+    requirement("geopandas"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+  ]
+)
+
+py_binary(
+  name="trim_landmark_feather",
+  srcs=["trim_landmark_feather.py"],
+  deps=[":trim_landmark_feather_lib"],
+)
+
+py_test(
+  name="trim_landmark_feather_test",
+  srcs=["trim_landmark_feather_test.py"],
+  deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
+    ":trim_landmark_feather_lib",
+    requirement("geopandas"),
+    requirement("numpy"),
     requirement("shapely"),
   ]
 )
@@ -1110,6 +1165,7 @@ py_library(
   name="extract_landmarks_from_enc_lib",
   srcs=["extract_landmarks_from_enc.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     ":landmark_feather_utils",
     requirement("geopandas"),
     requirement("pyogrio"),
@@ -1131,11 +1187,57 @@ py_test(
   name="extract_landmarks_from_enc_test",
   srcs=["extract_landmarks_from_enc_test.py"],
   deps=[
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     ":extract_landmarks_from_enc_lib",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     requirement("geopandas"),
     requirement("shapely"),
     requirement("torch"),
+  ]
+)
+
+py_binary(
+  name = "pbf_coverage",
+  srcs = ["pbf_coverage.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    requirement("shapely"),
+  ]
+)
+
+py_binary(
+  name = "plot_landmarks",
+  srcs = ["plot_landmarks.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    ":pbf_coverage",
+    requirement("matplotlib"),
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("shapely"),
+  ]
+)
+
+py_binary(
+  name = "audit_dataset",
+  srcs = ["audit_dataset.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    requirement("pandas"),
+    requirement("pyarrow"),
+    requirement("pillow"),
+  ]
+)
+
+py_binary(
+  name = "make_dataset_timelapse",
+  srcs = ["make_dataset_timelapse.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    requirement("matplotlib"),
+    requirement("numpy"),
+    requirement("pillow"),
   ]
 )

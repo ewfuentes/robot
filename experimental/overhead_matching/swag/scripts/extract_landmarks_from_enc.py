@@ -45,6 +45,8 @@ from collections import Counter
 from pathlib import Path
 
 import geopandas as gpd
+
+from experimental.overhead_matching.swag.data import landmark_schema as ls
 import pandas as pd
 import pyogrio
 
@@ -453,18 +455,23 @@ def read_cells(enc_root: Path, cells: list[str]) -> dict[str, gpd.GeoDataFrame]:
 
 def features_to_geodataframe(features: list[dict], landmark_type: str) -> gpd.GeoDataFrame:
     """Build the pipeline-format feather frame: id/geometry/landmark_type +
-    object_class provenance + one column per tag key. Never writes pruned_props
-    (vigor_dataset.load_landmark_geojson computes it at load time)."""
-    tag_keys = sorted({key for feature in features for key in feature["tags"]})
-    data = {
-        "id": [f"('enc', '{feature['lnam']}')" for feature in features],
-        "geometry": [feature["geometry"] for feature in features],
-        "landmark_type": [landmark_type] * len(features),
-        "object_class": [feature["object_class"] for feature in features],
-    }
-    for key in tag_keys:
-        data[key] = [feature["tags"].get(key) for feature in features]
-    return gpd.GeoDataFrame(data, crs="EPSG:4326")
+    object_class provenance + a `tags` dict column (see data/landmark_schema.py).
+    Never writes pruned_props (vigor_dataset.load_landmark_geojson computes it at
+    load time).
+
+    object_class stays a real column, because landmark_feather_utils treats it as
+    metadata when deduping, and is *also* placed inside the tag dict, because tag
+    consumers have always seen it there -- under the old wide layout it was simply
+    another column and so landed in every tag record."""
+    frame = ls.build_frame(
+        ids=[f"('enc', '{feature['lnam']}')" for feature in features],
+        geometries=[feature["geometry"] for feature in features],
+        landmark_types=[landmark_type] * len(features),
+        tags=[{**feature["tags"], "object_class": feature["object_class"]}
+              for feature in features],
+    )
+    frame["object_class"] = [feature["object_class"] for feature in features]
+    return frame
 
 
 def bbox_from_dataset_path(dataset_path: Path) -> tuple[float, float, float, float]:
@@ -512,8 +519,9 @@ def main(enc_root: Path, cells: list[str], output_path: Path,
     print(f"\n{len(gdf)} landmarks")
     print("object_class counts:")
     print(gdf["object_class"].value_counts().to_string())
-    named = gdf["name"].notna().sum() if "name" in gdf.columns else 0
-    print(f"named: {named}")
+    # Read names through the schema helper: under the dict layout there is no
+    # `name` column, and a column check silently reports zero.
+    print(f"named: {sum(1 for t in ls.tag_dicts(gdf) if t.get('name'))}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     feather_path = output_path.with_suffix(".feather")

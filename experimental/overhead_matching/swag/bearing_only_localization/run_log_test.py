@@ -49,6 +49,7 @@ class RunLogRoundTripTest(unittest.TestCase):
         self.assertEqual(loaded.measurements, data.measurements)
         self.assertEqual(loaded.tables, data.tables)
         self.assertEqual(loaded.health, history.health)
+        self.assertEqual(loaded.proposal_events, history.proposal_events)
         self.assertEqual(set(loaded.checkpoints.keys()),
                          set(history.checkpoints.keys()))
         for kf, belief in history.checkpoints.items():
@@ -56,6 +57,9 @@ class RunLogRoundTripTest(unittest.TestCase):
                 loaded.checkpoints[kf]["east_m"], belief.east_m)
             np.testing.assert_array_equal(
                 loaded.checkpoints[kf]["log_weight"], belief.log_weight)
+            np.testing.assert_array_equal(
+                loaded.checkpoints[kf]["proposal_event_id"],
+                belief.proposal_event_id)
 
     def test_health_records_survive_association_payload(self):
         record = structs.HealthRecord(

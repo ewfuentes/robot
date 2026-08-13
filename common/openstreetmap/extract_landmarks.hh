@@ -58,9 +58,25 @@ struct BoundingBox {
 // - pbf_path: Path to the OSM PBF file
 // - bboxes: Map of region_id -> BoundingBox to extract landmarks for
 // - tag_filters: Map of OSM tags to filter by (e.g., {"amenity": true, "building": true})
+// - node_margin_deg: If >= 0, only node locations within (bbox + this margin) are
+//   held in the way-geometry index. Peak memory then scales with the requested
+//   area instead of the whole file, which is what makes a country-sized PBF
+//   runnable: the index otherwise stores every node in the file even when the
+//   bbox covers ~2% of it. Negative (the default) keeps every node, preserving
+//   the original behaviour exactly.
+//
+//   Two effects to be aware of when it is enabled. A way is selected iff one of
+//   its own vertices lies in a bbox (see the way handler), so filtering does not
+//   change *which* ways match -- but the geometry stored for a selected way is
+//   truncated to the vertices that were retained, so a way running far outside
+//   the region is clipped rather than stored whole. And a way with a single
+//   interior vertex needs its neighbours retained to survive the two-coordinate
+//   minimum. Both argue for a margin comfortably larger than the longest segment
+//   you care about; coastlines and submarine cables have vertices kilometres
+//   apart.
 // Returns: Vector of (region_id, LandmarkFeature) pairs
 std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     const std::string& pbf_path, const std::unordered_map<std::string, BoundingBox>& bboxes,
-    const std::map<std::string, bool>& tag_filters);
+    const std::map<std::string, bool>& tag_filters, double node_margin_deg = -1.0);
 
 }  // namespace robot::openstreetmap

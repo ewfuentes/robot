@@ -157,9 +157,21 @@ def _draw_strip(data, axes):
             assoc_kf.append(record.keyframe_idx)
             assoc_null.append(assoc.null_share)
     axes[3].scatter(assoc_kf, assoc_null, s=6, alpha=0.6)
+    axes[3].plot(keyframes, [h.proposal_weight_share for h in data.health],
+                 lw=0.8, color="tab:purple", label="proposal-descended mass")
     axes[3].set_ylabel("null share")
     axes[3].set_ylim(-0.05, 1.05)
     axes[3].set_xlabel("keyframe")
+    axes[3].legend(fontsize=7)
+    # Proposal events are the §7.3 auto-bookmarks: the debugging table of
+    # contents, so mark them on every panel.
+    for event in data.proposal_events:
+        for ax in axes:
+            ax.axvline(event.keyframe_idx, color="tab:red", lw=1.0,
+                       ls=":", zorder=1)
+        axes[0].annotate(event.trigger, (event.keyframe_idx, 1.0),
+                         xycoords=("data", "axes fraction"), fontsize=6,
+                         rotation=90, va="top", color="tab:red")
     for ax in axes:
         ax.grid(alpha=0.3)
 

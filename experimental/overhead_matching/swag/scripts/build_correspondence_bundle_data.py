@@ -22,6 +22,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
 import geopandas as gpd
+from experimental.overhead_matching.swag.data import landmark_schema
 import numpy as np
 import torch
 
@@ -116,7 +117,7 @@ def main():
     # verify alignment on a sample: pruned feather row == stored osm tags
     for j in (0, n_osm // 2, n_osm - 1):
         idx = osm_lm_indices[j]
-        pruned = dict(prune_landmark(feather.iloc[idx].dropna().to_dict()))
+        pruned = dict(prune_landmark(landmark_schema.row_dicts(feather.iloc[[idx]])[0]))
         assert pruned == osm_lm_tags[j], f"alignment mismatch at col {j}: {pruned} != {osm_lm_tags[j]}"
     print("  alignment verified (feather row == osm column)")
 

@@ -118,7 +118,7 @@ class MeasurementUpdateTest(unittest.TestCase):
         meas = structs.TrackletMeasurement("trk_a", 0, 180.0, 3000.0)
         assoc = pf.measurement_update(
             belief, meas, _identity_table("trk_a", "lm_a"),
-            _catalog(["lm_a"], [0.0], [1000.0]), pi0=0.05)
+            _catalog(["lm_a"], [0.0], [1000.0]), pi0=0.05)[0]
         self.assertTrue(np.all(np.isfinite(belief.log_weight)))
         self.assertGreater(assoc.null_share, 0.99)
 
@@ -145,7 +145,7 @@ class MeasurementUpdateTest(unittest.TestCase):
         self.assertGreater(m, pf.CANDIDATE_BLOCK, "blocking not exercised")
         for pi0 in [0.05, 0.999]:
             b = belief.copy()
-            assoc = pf.measurement_update(b, meas, table, catalog, pi0)
+            assoc = pf.measurement_update(b, meas, table, catalog, pi0)[0]
             self.assertTrue(np.all(np.isfinite(b.log_weight)))
             self.assertTrue(math.isfinite(assoc.null_share))
             total = assoc.null_share + sum(assoc.responsibilities.values())
@@ -171,7 +171,7 @@ class MeasurementUpdateTest(unittest.TestCase):
                     np.linspace(-100, 100, 32), np.linspace(-50, 50, 32),
                     np.linspace(-1.0, 1.0, 32), np.zeros(32))
                 assoc = pf.measurement_update(belief, meas, table, catalog,
-                                              0.1)
+                                              0.1)[0]
                 results.append((belief.log_weight.copy(), assoc))
         finally:
             pf.CANDIDATE_BLOCK = original_block
@@ -292,6 +292,56 @@ class ResamplerTest(unittest.TestCase):
         log_w = np.full(100, -np.inf)
         log_w[0] = 0.0
         self.assertAlmostEqual(pf.ess(log_w), 1.0, places=6)
+
+
+class PerModeAssociationTest(unittest.TestCase):
+    """§5.4 `[CONTRACT]`: two modes with contradictory explanations must be
+    reported separately. The whole-belief average describes neither."""
+
+    def test_modes_report_contradictory_associations(self):
+        # Two clusters, mirrored east/west, each seeing "its" landmark dead
+        # ahead: mode 0 must attribute the bearing to lm_west, mode 1 to
+        # lm_east, and the global average must sit between the two.
+        east = np.concatenate([np.full(500, -1000.0), np.full(500, 1000.0)])
+        belief = pf.ParticleBelief(
+            east_m=east, north_m=np.zeros(1000),
+            heading_rad=np.zeros(1000), log_weight=np.zeros(1000),
+            mode_id=np.concatenate([np.zeros(500, dtype=np.int64),
+                                    np.ones(500, dtype=np.int64)]))
+        catalog = _catalog(["lm_west", "lm_east"], [-1000.0, 1000.0],
+                           [3000.0, 3000.0])
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("lm_west", 2.0),
+                         structs.CompatibilityEntry("lm_east", 2.0)],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        posteriors = pf.measurement_update(
+            belief, structs.TrackletMeasurement("trk", 0, 0.0, 2000.0),
+            table, catalog, pi0=0.05)
+
+        by_mode = {p.mode_id: p for p in posteriors}
+        self.assertEqual(set(by_mode), {None, 0, 1})
+        self.assertGreater(by_mode[0].responsibilities["lm_west"], 0.9)
+        self.assertLess(by_mode[0].responsibilities["lm_east"], 0.05)
+        self.assertGreater(by_mode[1].responsibilities["lm_east"], 0.9)
+        self.assertLess(by_mode[1].responsibilities["lm_west"], 0.05)
+        # The global average is the number that describes neither mode.
+        self.assertAlmostEqual(by_mode[None].responsibilities["lm_west"], 0.5,
+                               delta=0.1)
+        for posterior in posteriors:
+            total = posterior.null_share + sum(
+                posterior.responsibilities.values())
+            self.assertAlmostEqual(total, 1.0, places=6)
+
+    def test_per_mode_can_be_disabled(self):
+        belief = pf.ParticleBelief(np.zeros(4), np.zeros(4), np.zeros(4),
+                                   np.zeros(4),
+                                   mode_id=np.zeros(4, dtype=np.int64))
+        posteriors = pf.measurement_update(
+            belief, structs.TrackletMeasurement("trk", 0, 0.0, 100.0),
+            _identity_table("trk", "lm"), _catalog(["lm"], [0.0], [900.0]),
+            pi0=0.05, per_mode=False)
+        self.assertEqual(len(posteriors), 1)
+        self.assertIsNone(posteriors[0].mode_id)
 
 
 class MapPoseTest(unittest.TestCase):

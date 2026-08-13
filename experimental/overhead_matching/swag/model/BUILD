@@ -236,6 +236,7 @@ py_binary(
     "//common/python:__subpackages__",
   ],
   deps = [
+    "//experimental/overhead_matching/swag/data:landmark_schema",
     requirement("torch"),
     requirement("numpy"),
     requirement("sentence-transformers"),

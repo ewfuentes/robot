@@ -87,6 +87,112 @@ class UniformBoxInit(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     north_max_m: float
 
 
+class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Mixture proposal for global init and recovery (design doc §5.5)."""
+    enabled: bool = True
+    # Fire at keyframe 0 so the initial belief comes from resected poses
+    # rather than a uniform box.
+    on_init: bool = True
+    # Kidnapped detection. A displaced belief does not put ALL its evidence
+    # on the null hypothesis: with the vehicle somewhere else, some bearings
+    # coincidentally line up with the wrong landmark and score well, so the
+    # null share alternates rather than staying pinned high. A consecutive
+    # run therefore never accumulates — measured on the harbour scenario, a
+    # 1900 m kidnap produced null shares alternating between 1.0 and ~0.00.
+    # So fire on the FRACTION of recent measurements that were null-dominated
+    # instead: sustained distress, robust to intermittent lucky matches.
+    null_share_threshold: float = 0.8
+    null_share_window: int = 8
+    null_share_min_fraction: float = 0.4
+    # Fire when ESS stays below this fraction of n_particles for this many
+    # consecutive keyframes: the belief has no viable hypotheses left, and
+    # resampling cannot invent one. Sustained, not instantaneous — a single
+    # collapse is what a diffuse prior does on its first informative
+    # measurement, and resampling handles it.
+    ess_floor_frac: float = 0.02
+    ess_floor_keyframes: int = 3
+    # Minimum keyframes between events; recovery needs time to take hold.
+    refractory_keyframes: int = 10
+
+    # Hypothesis generation.
+    # Candidate identities per tracklet, taken from its table's top entries.
+    # A real matcher emits disjunctions ("one of these 41 storage tanks"),
+    # all tied at the same log_lr, so this needs to be large enough to
+    # enumerate a tie rather than pick an arbitrary few from it — truncating
+    # inside a tie means confidently resecting from a coin-flip identity.
+    top_k_landmarks: int = 64
+    max_tracklets: int = 5
+    # Per-kind combination budgets. Separate, and spent cheapest-kind-first,
+    # so an explosion of three-landmark combinations cannot starve the
+    # single-landmark hypotheses — which are the cheap, always-available
+    # ones. A tracklet combination whose identity product does not fit the
+    # remaining budget is skipped WHOLE and counted, never enumerated
+    # part-way: a partial sweep of a tie is arbitrary in exactly the way
+    # this budget exists to avoid.
+    max_combinations_single: int = 512
+    max_combinations_pair: int = 4000
+    max_combinations_triple: int = 8000
+    max_hypotheses_per_kind: int = 256
+    # Resection residual tolerance, in standard deviations of the bearing
+    # measurement. It MUST scale with sigma: the residual of the true-identity
+    # fix grows with bearing noise (measured on a 3-landmark fixture: median
+    # 0.0 / 4.4 / 20.5 / 33.9 deg at sigma 1 / 5 / 15 / 25 deg), so a fixed
+    # ceiling below that rejects real solutions — a 12 deg cap threw away 26%
+    # of true fixes at sigma=5 and 79% at sigma=25. The backstop below only
+    # catches the meaningless end of the range.
+    residual_tolerance_sigma: float = 3.0
+    max_residual_tolerance_deg: float = 90.0
+    # Bearings within this many keyframes of the trigger are treated as
+    # simultaneous. Staggered epochs mean one keyframe rarely carries two
+    # bearings; the cost is translation/range of angular error (~0.6 deg per
+    # keyframe at 2.5 km), which is under the bearing noise.
+    window_keyframes: int = 4
+
+    # How injected mass is split across hypothesis kinds. Three-landmark
+    # fixes are sharp but few and can be wrong; single-landmark discs are
+    # broad but always available and still collapse the heading axis. Shares
+    # are renormalized over the kinds actually generated.
+    share_triple: float = 0.5
+    share_pair: float = 0.35
+    share_single: float = 0.15
+
+    # Injection.
+    # Fraction of particle mass replaced by proposed poses. 1.0 on a
+    # confirmed kidnap is a hard restart.
+    #
+    # Do NOT tune this DOWN to be cautious — the effect is not monotonic.
+    # Measured against an adversarial matcher that misidentifies a landmark:
+    # at 0.5 the belief is displaced ~180 m but stays consistent (sigma
+    # ~1000 m, NEES ~2); at 0.2 and 0.05 it ends up 2500 m out with NEES
+    # ~150. A partial injection drags the belief toward the wrong hypothesis
+    # without leaving enough mass on the alternatives to keep the posterior
+    # honest about the ambiguity.
+    inject_fraction: float = 0.5
+    # FLOOR on the injected spread, not the spread itself. What a coarse
+    # bearing implies is an imprecise fix, not an untrustworthy one: at
+    # sigma=25 deg against 3 km landmarks the fix lands ~800 m from truth.
+    # Injecting that as a tight blob states a precision the geometry does not
+    # have — the same overconfidence class the Milestone 0 audit caught — so
+    # each hypothesis carries its own spread, estimated as
+    # sigma_bearing * range, and this is only the lower bound.
+    injection_sigma_m: float = 100.0
+    injection_heading_sigma_deg: float = 3.0
+    # Ceiling, so one hopeless bearing cannot smear particles over the region.
+    max_injection_sigma_m: float = 2000.0
+
+
+class ModeConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Belief clustering for mode tracking (design doc §5.1/§5.6)."""
+    enabled: bool = True
+    cell_size_m: float = 150.0
+    heading_cell_deg: float = 20.0
+    # Cells lighter than this are noise, not part of any mode.
+    min_cell_weight: float = 1e-4
+    # A cluster must hold this much posterior mass to be called a mode.
+    min_mode_weight: float = 0.02
+
+
+
 class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     n_particles: int
     seed: int
@@ -113,16 +219,49 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Bin size for the highest-density (MAP) position estimate.
     map_cell_size_m: float = 50.0
     checkpoint_every: int = 10
+    proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
+    modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
+
+
+class ModeRecord(msgspec.Struct):
+    """One mode at one keyframe."""
+    mode_id: int
+    weight: float
+    n_particles: int
+    mean_east_m: float
+    mean_north_m: float
+    mean_heading_deg: float
+    position_std_m: float
+    heading_std_deg: float
+    birth_keyframe_idx: int
+    parent_mode_ids: list[int] = []
+    # Where this mode came from: motion-model descent, or a proposal event
+    # with the tracklets/landmarks that generated it (§5.5 [CONTRACT]).
+    provenance: dict[str, str | int] = {}
+
+
+class ModeEvent(msgspec.Struct):
+    """Birth, death or merge — the §7.3 auto-bookmarks for mode bookkeeping."""
+    keyframe_idx: int
+    kind: str  # "birth" | "death" | "merge"
+    mode_id: int
+    parent_mode_ids: list[int] = []
+    detail: dict[str, str | int] = {}
 
 
 class AssociationPosterior(msgspec.Struct):
-    """Per-measurement association responsibilities, averaged over the
-    posterior particle weights (design doc §5.4; per-mode reporting comes
-    with the mode tracker in a later milestone)."""
+    """Per-measurement association responsibilities (design doc §5.4).
+
+    `[CONTRACT]` These are reported PER MODE (`mode_id` set), not only
+    averaged over the whole belief: for a multimodal posterior the global
+    average blends two contradictory explanations into a number describing
+    neither. The whole-belief average is still emitted, with mode_id None.
+    """
     tracklet_id: str
     anchor_keyframe_idx: int
     null_share: float
     responsibilities: dict[str, float] = {}
+    mode_id: int | None = None
 
 
 class HealthRecord(msgspec.Struct):
@@ -145,7 +284,35 @@ class HealthRecord(msgspec.Struct):
     position_std_m: float
     heading_std_deg: float
     n_measurements: int
+    # Weight held by particles that came from some proposal event; 0 when
+    # the belief is entirely motion-model descended.
+    proposal_weight_share: float = 0.0
+    proposal_event_id: int | None = None  # set on keyframes that fired
     associations: list[AssociationPosterior] = []
+    modes: list[ModeRecord] = []
+    # Shannon entropy of the mode weights, in nats: 0 when the belief is
+    # effectively unimodal, log(k) when k modes share the mass equally. The
+    # multimodality flag of §5.1, as a number rather than a boolean.
+    mode_entropy_nats: float = 0.0
+
+
+class ProposalEvent(msgspec.Struct):
+    """A fired proposal, logged for the run's event index (§7.3).
+
+    Carries the provenance every injected particle points back to, so the
+    viewer can answer "where did this mode come from" (§5.5 [CONTRACT]).
+    """
+    event_id: int
+    keyframe_idx: int
+    trigger: str  # "init" | "null_share" | "ess_floor"
+    n_hypotheses: int
+    n_injected: int
+    n_tracklets_considered: int
+    n_combinations_examined: int
+    n_combinations_skipped: int
+    # Parallel to the hypothesis index recorded on each injected particle.
+    hypothesis_tracklet_ids: list[list[str]] = []
+    hypothesis_landmark_ids: list[list[str]] = []
 
 
 class TruthPose(msgspec.Struct):

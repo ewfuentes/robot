@@ -12,6 +12,7 @@ from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
     _TAGS_TO_KEEP_SET,
     prune_landmark,
 )
+from experimental.overhead_matching.swag.data import landmark_schema as ls
 from experimental.overhead_matching.swag.scripts import extract_landmarks_from_enc as ele
 
 
@@ -258,10 +259,18 @@ class FeatherFrameTest(unittest.TestCase):
         self.assertEqual(gdf["landmark_type"].tolist(), ["enc", "enc"])
         self.assertNotIn("pruned_props", gdf.columns)
         self.assertEqual(str(gdf.crs), "EPSG:4326")
-        self.assertIsNone(gdf["name"][1])
-        # Tag columns are exactly the union of tag keys.
-        tag_columns = set(gdf.columns) - {"id", "geometry", "landmark_type", "object_class"}
-        self.assertEqual(tag_columns, {"man_made", "name"})
+        # Tags live in the `tags` dict column (data/landmark_schema.py), and a
+        # landmark carries only the keys it actually has.
+        self.assertTrue(ls.is_dict_schema(gdf))
+        tag_dicts = ls.tag_dicts(gdf)
+        self.assertEqual(tag_dicts[0],
+                         {"man_made": "buoy", "name": "Buoy 2",
+                          "object_class": "BOYLAT"})
+        self.assertEqual(tag_dicts[1],
+                         {"man_made": "pier", "object_class": "SLCONS"})
+        self.assertNotIn("name", tag_dicts[1])
+        # object_class stays a real column too, since dedup treats it as metadata.
+        self.assertEqual(gdf["object_class"].tolist(), ["BOYLAT", "SLCONS"])
 
     def test_bbox_filter(self):
         features = [

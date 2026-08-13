@@ -224,6 +224,38 @@ def generate(config: ScenarioConfig) -> ScenarioData:
         tables=tables)
 
 
+def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
+                 north_m: float) -> ScenarioData:
+    """Teleport the vehicle mid-run, leaving odometry unaware (T-F6).
+
+    Truth and bearings move; the odometry deltas do not, which is exactly
+    what makes this a kidnap rather than a large motion — the filter is given
+    a consistent world that simply is not where it believes it is.
+    """
+    truth = [structs.TruthPose(
+        keyframe_idx=pose.keyframe_idx,
+        east_m=pose.east_m + (east_m if pose.keyframe_idx >= at_keyframe
+                              else 0.0),
+        north_m=pose.north_m + (north_m if pose.keyframe_idx >= at_keyframe
+                                else 0.0),
+        heading_deg=pose.heading_deg) for pose in data.truth]
+    truth_by_kf = {t.keyframe_idx: t for t in truth}
+
+    measurements = []
+    for meas in data.measurements:
+        pose = truth_by_kf[meas.anchor_keyframe_idx]
+        index = data.catalog.index_of(meas.tracklet_id.removeprefix("trk_"))
+        world = math.atan2(data.true_east_m[index] - pose.east_m,
+                           data.true_north_m[index] - pose.north_m)
+        measurements.append(structs.TrackletMeasurement(
+            tracklet_id=meas.tracklet_id,
+            anchor_keyframe_idx=meas.anchor_keyframe_idx,
+            bearing_body_deg=math.degrees(float(geodesy.wrap_rad(
+                world - math.radians(pose.heading_deg)))),
+            kappa=meas.kappa))
+    return dataclasses.replace(data, truth=truth, measurements=measurements)
+
+
 def _landmarks_from_specs(specs) -> list:
     frame = geodesy.RegionFrame(_DEFAULT_ANCHOR_LAT_DEG,
                                 _DEFAULT_ANCHOR_LON_DEG)
