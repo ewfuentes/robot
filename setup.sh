@@ -69,6 +69,25 @@ else
     tar -xzf /tmp/ollama.tar.gz -C ~/.local
 fi
 
+# s5cmd: parallel S3 client, used by //experimental/map_estimation/data:argoverse to fetch the
+# Argoverse 2 dataset. Far faster than the AWS CLI for the many-small-objects case (one sensor
+# log is ~3000 files).
+if command -v s5cmd > /dev/null 2>&1; then
+    :
+else
+    if [ "${ARCH}" = "aarch64" ]; then
+        S5CMD_URL="https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_Linux-arm64.tar.gz"
+    elif [ "${ARCH}" = "x86_64" ]; then
+        S5CMD_URL="https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_Linux-64bit.tar.gz"
+    else
+        echo "Unsupported architecture: ${ARCH}"
+        exit 1
+    fi
+    mkdir -p ~/.local/bin
+    curl -o /tmp/s5cmd.tar.gz -L "${S5CMD_URL}"
+    tar -xzf /tmp/s5cmd.tar.gz -C ~/.local/bin s5cmd
+fi
+
 if [ ! -f /etc/bash_completion.d/bazelisk.bash ]; then 
     bash -c "~/.local/bin/bazel completion bash > /tmp/bazelisk.bash"; 
     sudo mv /tmp/bazelisk.bash /etc/bash_completion.d/bazelisk.bash;
