@@ -214,6 +214,82 @@ py_test(
     ],
 )
 
+py_library(
+    name = "harbor_catalog",
+    srcs = ["harbor_catalog.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+    "//experimental/overhead_matching/swag/data:landmark_schema",
+        requirement("numpy"),
+        requirement("pandas"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+    ],
+)
+
+py_test(
+    name = "harbor_catalog_test",
+    srcs = ["harbor_catalog_test.py"],
+    deps = [
+    "//experimental/overhead_matching/swag/data:landmark_schema",
+        requirement("numpy"),
+        ":harbor_catalog",
+    ],
+)
+
+py_library(
+    name = "bearing_matcher",
+    srcs = ["bearing_matcher.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":harbor_catalog",
+    ],
+)
+
+py_test(
+    name = "bearing_matcher_test",
+    srcs = ["bearing_matcher_test.py"],
+    deps = [":bearing_matcher"],
+)
+
+py_binary(
+    name = "run_index",
+    srcs = ["run_index.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_binary(
+    name = "m9_match_landmarks",
+    srcs = ["m9_match_landmarks.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pandas"),
+        requirement("pyarrow"),
+        "//experimental/overhead_matching/swag/data:landmark_schema",
+        ":bearing_matcher",
+        ":harbor_catalog",
+        ":semantic_audit",
+    ],
+)
+
+py_binary(
+    name = "m10_match_viewer",
+    srcs = ["m10_match_viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_binary(
+    name = "bow_calibration",
+    srcs = ["bow_calibration.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        ":pano_geometry",
+    ],
+)
+
 py_binary(
     name = "m6_merge_tracks",
     srcs = ["m6_merge_tracks.py"],
@@ -294,5 +370,18 @@ py_binary(
         ":viz_common",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+    ],
+)
+
+py_binary(
+    name = "m11_localization_export",
+    srcs = ["m11_localization_export.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        "//common/python:serialization",
+        "//experimental/overhead_matching/swag/bearing_only_localization:geodesy",
+        "//experimental/overhead_matching/swag/bearing_only_localization:structs",
+        ":harbor_catalog",
     ],
 )

@@ -22,8 +22,14 @@ class LandmarkCatalog:
     log w_j; uniform by default.
     """
 
+    # Default visibility radius when the catalog does not carry one. Sized
+    # for far-field harbour landmarks (a lighthouse is visible far past the
+    # ranges these scenarios use); the proposal treats it as "positions this
+    # landmark could have been seen from".
+    DEFAULT_MAX_VISIBLE_RANGE_M = 10000.0
+
     def __init__(self, landmark_ids, east_m, north_m, position_sigma_m=None,
-                 log_prior=None):
+                 log_prior=None, max_visible_range_m=None):
         self.landmark_ids = list(landmark_ids)
         self.east_m = np.asarray(east_m, dtype=np.float64)
         self.north_m = np.asarray(north_m, dtype=np.float64)
@@ -42,6 +48,16 @@ class LandmarkCatalog:
                 np.asarray(position_sigma_m, dtype=np.float64), (n,)).copy()
         if np.any(self.position_sigma_m < 0.0):
             raise ValueError("position_sigma_m must be non-negative")
+
+        if max_visible_range_m is None:
+            self.max_visible_range_m = np.full(
+                n, self.DEFAULT_MAX_VISIBLE_RANGE_M)
+        else:
+            self.max_visible_range_m = np.broadcast_to(
+                np.asarray(max_visible_range_m, dtype=np.float64),
+                (n,)).copy()
+        if np.any(self.max_visible_range_m <= 0.0):
+            raise ValueError("max_visible_range_m must be positive")
 
         if log_prior is None:
             # Uniform over the whole catalog. NOTE: until per-particle
@@ -96,4 +112,5 @@ class LandmarkCatalog:
             self.east_m + rng.normal(0.0, sigma_m, self.n),
             self.north_m + rng.normal(0.0, sigma_m, self.n),
             position_sigma_m=sigma_m,
-            log_prior=self.log_prior)
+            log_prior=self.log_prior,
+            max_visible_range_m=self.max_visible_range_m)

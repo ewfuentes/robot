@@ -122,6 +122,62 @@ class ResamplingRegularizationTest(unittest.TestCase):
         self.assertLess(nees_by_setting[1.0], 6.0)
 
 
+class NoiseFloorConsistencyTest(unittest.TestCase):
+    """T-F12: filter consistency must not depend on producers keeping sigma
+    generous (§5.2 [CONTRACT]). Particle diversity is owned by the
+    kernel-regularized resampler, so NEES must hold even when the odometry
+    is nearly noiseless — the regime where the archived model relied on
+    odometry noise as its only diversity between resamples."""
+
+    def test_nees_with_starved_odometry_noise(self):
+        beliefs, truth = _run_seeds(
+            scenario.harbor_loop(keyframe_period_s=_PERIOD_S,
+                                 odom_sigma_m=0.05, dyaw_sigma_deg=0.1),
+            n_seeds=6)
+        final = truth[-1]
+        nees = np.array([pf.position_nees(b, final.east_m, final.north_m)
+                         for b in beliefs])
+        self.assertLess(float(np.mean(nees)), 8.0,
+                        f"cloud starvation at small sigma: per-seed NEES "
+                        f"{np.round(nees, 1)}")
+
+
+class CorrelatedOdometryMismatchTest(unittest.TestCase):
+    """T-F13: correlated systematic odometry errors (gyro-rate bias, scale
+    error) violate per-step independence anti-conservatively — true error
+    grows with N steps while the filter budgets sqrt(N). This test owns the
+    §5.2 decision between sigma-inflation and per-particle nuisance states:
+    it measures the NEES cost at plausible mismatch levels and verifies that
+    inflating the heading random walk recovers consistency."""
+
+    _MISMATCH = dict(gyro_bias_deg_per_hr=60.0, odom_scale_error=0.03)
+
+    def test_modest_bias_and_scale_stay_bounded(self):
+        beliefs, truth = _run_seeds(
+            scenario.harbor_loop(keyframe_period_s=_PERIOD_S,
+                                 **self._MISMATCH),
+            n_seeds=6)
+        final = truth[-1]
+        nees = np.array([pf.position_nees(b, final.east_m, final.north_m)
+                         for b in beliefs])
+        self.assertLess(float(np.mean(nees)), 12.0,
+                        f"correlated mismatch blew up NEES: per-seed "
+                        f"{np.round(nees, 1)} — time to revisit the §5.2 "
+                        f"sigma-inflation-vs-nuisance-state decision")
+
+    def test_sigma_inflation_recovers_consistency(self):
+        beliefs, truth = _run_seeds(
+            scenario.harbor_loop(keyframe_period_s=_PERIOD_S,
+                                 **self._MISMATCH),
+            n_seeds=6, heading_random_walk_deg=2.0)
+        final = truth[-1]
+        nees = np.array([pf.position_nees(b, final.east_m, final.north_m)
+                         for b in beliefs])
+        self.assertLess(float(np.mean(nees)), 6.0,
+                        f"inflation failed to recover consistency: per-seed "
+                        f"{np.round(nees, 1)}")
+
+
 class HeadingConsistencyTest(unittest.TestCase):
     def test_reported_heading_sigma_covers_error(self):
         """A-1's signature was a reported heading sigma *below* the
@@ -143,10 +199,10 @@ class HeadingConsistencyTest(unittest.TestCase):
 
 class BearingsAnchorHeadingTest(unittest.TestCase):
     def test_heading_is_unobservable_without_bearings(self):
-        """Course is consumed only as increments, so absolute heading must
-        come from landmark bearings alone (§5.2). Without bearings the
-        heading prior must stay essentially uniform — if it collapses, the
-        absolute course reading is leaking in somewhere."""
+        """The odometry carries only yaw increments, so absolute heading
+        must come from landmark bearings alone (§5.2). Without bearings the
+        heading prior must stay essentially uniform — if it collapses, an
+        absolute heading signal is leaking in somewhere."""
         data = scenario.generate(
             scenario.harbor_loop(keyframe_period_s=_PERIOD_S))
         config = structs.FilterConfig(

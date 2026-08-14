@@ -3,8 +3,8 @@
 Produces the filter's full input log from a made-up trajectory and a handful
 of hardcoded landmarks: sparse tracklet measurements (one fused body-frame
 bearing per tracklet per information epoch, anchors staggered across
-tracklets — design doc §5.3), identity-stub CompatibilityTables, world-frame
-odometry, course over ground, and ground truth.
+tracklets — design doc §5.3), identity-stub CompatibilityTables, body-frame
+odometry increments (§5.2), and ground truth.
 
 Perfect observability is the default: every landmark is always visible, no
 dropout, no clutter, and the generator's noise model is exactly the filter's.
@@ -50,21 +50,35 @@ class ScenarioConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     waypoints_north_m: list[float]
     speed_mps: float = 5.0
     keyframe_period_s: float = 2.0
+    # Waypoint corners are rounded with constant-radius arc fillets so the
+    # synthetic trajectories satisfy the same constant-turn-rate assumption
+    # real (smoothly turning) platforms do — an instantaneous corner would
+    # put a whole turn into one keyframe, where the §5.2 midpoint chord is
+    # undefined behaviour for any producer. 0 disables (sharp corners).
+    corner_radius_m: float = 100.0
     epoch_length_keyframes: int = 5
     bearing_sigma_deg: float = 1.0
-    # GPS-derived deltas have ~constant per-fix-pair noise (correlated
-    # absolute errors difference out to ~1 m), unlike wheel odometry's
-    # sqrt-distance scaling. This is also the filter's only position
-    # diversity between resamples — starving it strands the cloud.
+    # Per-increment translation noise: sigma_m = odom_sigma_m
+    # + odom_sigma_per_m * step. Noise POLICY is a producer decision (§5.2);
+    # both parts are declared honestly on the emitted increments.
     odom_sigma_m: float = 1.0
-    # Differenced-GPS course noise after light smoothing (~2 keyframe
-    # baselines): sigma_rel*sqrt(2)/(2*step) ~ 1.4 m / 50 m ~ 1.5 deg
-    # (design doc §5.2 noise ∝ 1/(v*window)). Heading noise floors position
-    # accuracy at ~range*sigma_heading, so this knob dominates convergence.
-    course_sigma_deg: float = 1.5
+    odom_sigma_per_m: float = 0.0
+    # Per-increment yaw noise, declared honestly. Unlike the archived
+    # absolute-course model (whose differenced errors telescoped), these
+    # errors are independent per step, so heading random-walks between
+    # bearing observations — heading noise floors position accuracy at
+    # ~range*sigma_heading, so this knob dominates convergence.
+    dyaw_sigma_deg: float = 1.5
     # --- model-mismatch knobs: the filter is NOT told about any of these ---
     # Constant COG-vs-heading offset (leeway/crab + mount misalignment).
+    # Increments are emitted course-aligned (forward = step, left = 0), the
+    # way the gps_to_odometry derivation must (§5.2): real crab is thereby
+    # misassigned, and the filter drifts ~step*sin(crab) cross-track.
     course_bias_deg: float = 0.0
+    # Constant yaw-rate bias folded into every dyaw (deg per hour).
+    gyro_bias_deg_per_hr: float = 0.0
+    # Multiplicative error on the translation increments.
+    odom_scale_error: float = 0.0
     # Systematic bearing offset (residual yaw miscalibration upstream).
     bearing_bias_deg: float = 0.0
     # Fraction of measurements replaced by a uniformly-random bearing.
@@ -101,15 +115,75 @@ class ScenarioData:
         return self.catalog.landmark_ids
 
 
+def _fillet_pieces(east, north, radius_m: float) -> list:
+    """Waypoint polyline -> ("line", p0, p1) / ("arc", center, r, a0, sweep)
+    pieces with corners rounded by tangent arc fillets.
+
+    `a0` is the angle (standard math convention, in the east/north plane)
+    from the arc center to the entry point; `sweep` is signed CCW. A fillet
+    is clamped so it consumes at most 45% of each adjoining segment, which
+    keeps consecutive fillets from overlapping.
+    """
+    points = np.stack([east, north], axis=1)
+    pieces = []
+    cursor = points[0]
+    for i in range(1, len(points) - 1):
+        v_in = points[i] - points[i - 1]
+        v_out = points[i + 1] - points[i]
+        len_in, len_out = np.linalg.norm(v_in), np.linalg.norm(v_out)
+        u_in, u_out = v_in / len_in, v_out / len_out
+        turn = math.atan2(float(u_in[0] * u_out[1] - u_in[1] * u_out[0]),
+                          float(np.clip(u_in @ u_out, -1.0, 1.0)))
+        if radius_m <= 0.0 or abs(turn) < 1e-9:
+            pieces.append(("line", cursor, points[i]))
+            cursor = points[i]
+            continue
+        tangent = min(radius_m * math.tan(abs(turn) / 2.0),
+                      0.45 * min(len_in, len_out))
+        r_eff = tangent / math.tan(abs(turn) / 2.0)
+        entry = points[i] - u_in * tangent
+        left_of_travel = np.array([-u_in[1], u_in[0]])
+        center = entry + left_of_travel * r_eff * math.copysign(1.0, turn)
+        pieces.append(("line", cursor, entry))
+        a0 = math.atan2(entry[1] - center[1], entry[0] - center[0])
+        pieces.append(("arc", center, r_eff, a0, turn))
+        cursor = points[i] + u_out * tangent
+    pieces.append(("line", cursor, points[-1]))
+    return [p for p in pieces
+            if not (p[0] == "line" and np.linalg.norm(p[2] - p[1]) < 1e-12)]
+
+
+def _piece_length(piece) -> float:
+    if piece[0] == "line":
+        return float(np.linalg.norm(piece[2] - piece[1]))
+    _, _, r, _, sweep = piece
+    return r * abs(sweep)
+
+
+def _piece_pose(piece, s: float):
+    """(east, north, course_rad) at arc length s into the piece."""
+    if piece[0] == "line":
+        _, p0, p1 = piece
+        u = (p1 - p0) / np.linalg.norm(p1 - p0)
+        pos = p0 + u * s
+        return float(pos[0]), float(pos[1]), math.atan2(u[0], u[1])
+    _, center, r, a0, sweep = piece
+    a = a0 + math.copysign(s / r, sweep)
+    pos = center + r * np.array([math.cos(a), math.sin(a)])
+    tangent = math.copysign(1.0, sweep) * np.array([-math.sin(a),
+                                                    math.cos(a)])
+    return float(pos[0]), float(pos[1]), math.atan2(tangent[0], tangent[1])
+
+
 def _build_truth(config: ScenarioConfig) -> list:
     east = np.asarray(config.waypoints_east_m, dtype=np.float64)
     north = np.asarray(config.waypoints_north_m, dtype=np.float64)
     assert len(east) >= 2 and len(east) == len(north)
-    seg_d_east = np.diff(east)
-    seg_d_north = np.diff(north)
-    seg_len = np.hypot(seg_d_east, seg_d_north)
-    assert np.all(seg_len > 0.0), "degenerate waypoint segment"
-    cum_len = np.concatenate([[0.0], np.cumsum(seg_len)])
+    assert np.all(np.hypot(np.diff(east), np.diff(north)) > 0.0), (
+        "degenerate waypoint segment")
+    pieces = _fillet_pieces(east, north, config.corner_radius_m)
+    lengths = [_piece_length(p) for p in pieces]
+    cum_len = np.concatenate([[0.0], np.cumsum(lengths)])
     total = float(cum_len[-1])
     step = config.speed_mps * config.keyframe_period_s
     n_keyframes = int(math.floor(total / step + 1e-9)) + 1
@@ -117,18 +191,16 @@ def _build_truth(config: ScenarioConfig) -> list:
     truth = []
     for kf in range(n_keyframes):
         s = min(kf * step, total)
-        seg = min(int(np.searchsorted(cum_len[1:], s, side="right")),
-                  len(seg_len) - 1)
-        frac = (s - cum_len[seg]) / seg_len[seg]
-        pos_e = east[seg] + frac * seg_d_east[seg]
-        pos_n = north[seg] + frac * seg_d_north[seg]
-        course_deg = math.degrees(
-            math.atan2(seg_d_east[seg], seg_d_north[seg])) % 360.0
+        index = min(int(np.searchsorted(cum_len[1:], s, side="right")),
+                    len(pieces) - 1)
+        pos_e, pos_n, course_rad = _piece_pose(pieces[index],
+                                               s - cum_len[index])
         # True heading = course over ground + crab/leeway + mount offset.
         # Bearings are measured relative to heading; odometry reports course.
         truth.append(structs.TruthPose(
-            keyframe_idx=kf, east_m=float(pos_e), north_m=float(pos_n),
-            heading_deg=(course_deg + config.course_bias_deg) % 360.0))
+            keyframe_idx=kf, east_m=pos_e, north_m=pos_n,
+            heading_deg=(math.degrees(course_rad)
+                         + config.course_bias_deg) % 360.0))
     return truth
 
 
@@ -145,23 +217,46 @@ def generate(config: ScenarioConfig) -> ScenarioData:
         np.array([lm.lat_deg for lm in config.landmarks]),
         np.array([lm.lon_deg for lm in config.landmarks]))
 
-    # Odometry: world-frame deltas + sqrt-distance noise; course over ground.
+    # Odometry: body-frame increments the way the gps_to_odometry producer
+    # emits them — course-aligned (real leeway is misassigned by
+    # construction, §5.2), dyaw = differenced course — resolved into the
+    # midpoint frame the filter reconstructs from (§5.2 propagation order).
+    # Off corners that is exactly forward = step, left = 0; at a polyline
+    # corner the whole turn lands in one step, violating the constant-rate
+    # assumption behind the midpoint chord, so the residual dyaw/2 goes into
+    # left_m rather than becoming a fake ~step*sin(dyaw/4) systematic that
+    # real (smoothly turning) platforms never produce. The declared sigmas
+    # match the injected noise; the mismatch knobs do not appear in what the
+    # filter sees.
     odometry = []
+    prev_course_rad = None
+    gyro_bias_rad = (math.radians(config.gyro_bias_deg_per_hr)
+                     * config.keyframe_period_s / 3600.0)
+    sigma_yaw_rad = math.radians(config.dyaw_sigma_deg)
     for kf in range(1, n_keyframes):
         d_east = truth[kf].east_m - truth[kf - 1].east_m
         d_north = truth[kf].north_m - truth[kf - 1].north_m
         step_m = math.hypot(d_east, d_north)
-        sigma_m = config.odom_sigma_m
-        course_true_deg = math.degrees(math.atan2(d_east, d_north)) % 360.0
+        course_rad = math.atan2(d_east, d_north)
+        dyaw_true_rad = 0.0
+        if prev_course_rad is not None:
+            dyaw_true_rad = float(geodesy.wrap_rad(
+                course_rad - prev_course_rad))
+        prev_course_rad = course_rad
+        # Displacement direction relative to the midpoint frame.
+        beta_rad = dyaw_true_rad / 2.0
+        scale = 1.0 + config.odom_scale_error
+        sigma_m = config.odom_sigma_m + config.odom_sigma_per_m * step_m
         odometry.append(structs.OdometryDelta(
             keyframe_idx=kf,
-            dx_m=d_east + rng.normal(0.0, sigma_m),
-            dy_m=d_north + rng.normal(0.0, sigma_m),
+            forward_m=(step_m * math.cos(beta_rad) * scale
+                       + rng.normal(0.0, sigma_m)),
+            left_m=(-step_m * math.sin(beta_rad) * scale
+                    + rng.normal(0.0, sigma_m)),
+            dyaw_rad=(dyaw_true_rad + gyro_bias_rad
+                      + rng.normal(0.0, sigma_yaw_rad)),
             sigma_m=sigma_m,
-            speed_mps=step_m / config.keyframe_period_s,
-            course_deg=(course_true_deg
-                        + rng.normal(0.0, config.course_sigma_deg)) % 360.0,
-            course_sigma_deg=config.course_sigma_deg))
+            sigma_yaw_rad=sigma_yaw_rad))
 
     # Tracklet measurements: one fused body-frame bearing per landmark per
     # epoch, anchors staggered round-robin across tracklets.
@@ -222,6 +317,38 @@ def generate(config: ScenarioConfig) -> ScenarioData:
         true_east_m=true_east_m, true_north_m=true_north_m,
         truth=truth, odometry=odometry, measurements=measurements,
         tables=tables)
+
+
+def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
+                 north_m: float) -> ScenarioData:
+    """Teleport the vehicle mid-run, leaving odometry unaware (T-F6).
+
+    Truth and bearings move; the odometry deltas do not, which is exactly
+    what makes this a kidnap rather than a large motion — the filter is given
+    a consistent world that simply is not where it believes it is.
+    """
+    truth = [structs.TruthPose(
+        keyframe_idx=pose.keyframe_idx,
+        east_m=pose.east_m + (east_m if pose.keyframe_idx >= at_keyframe
+                              else 0.0),
+        north_m=pose.north_m + (north_m if pose.keyframe_idx >= at_keyframe
+                                else 0.0),
+        heading_deg=pose.heading_deg) for pose in data.truth]
+    truth_by_kf = {t.keyframe_idx: t for t in truth}
+
+    measurements = []
+    for meas in data.measurements:
+        pose = truth_by_kf[meas.anchor_keyframe_idx]
+        index = data.catalog.index_of(meas.tracklet_id.removeprefix("trk_"))
+        world = math.atan2(data.true_east_m[index] - pose.east_m,
+                           data.true_north_m[index] - pose.north_m)
+        measurements.append(structs.TrackletMeasurement(
+            tracklet_id=meas.tracklet_id,
+            anchor_keyframe_idx=meas.anchor_keyframe_idx,
+            bearing_body_deg=math.degrees(float(geodesy.wrap_rad(
+                world - math.radians(pose.heading_deg)))),
+            kappa=meas.kappa))
+    return dataclasses.replace(data, truth=truth, measurements=measurements)
 
 
 def _landmarks_from_specs(specs) -> list:

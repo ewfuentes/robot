@@ -116,7 +116,11 @@ def main():
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--min_supports", type=int, default=3)
+    parser.add_argument("--min_supports", type=int, default=2,
+                        help="Supports required to audit a track. 2 means "
+                             "3 detections counting the birth. Tracks below "
+                             "this are dropped from the pipeline entirely - "
+                             "un-audited tracks are not carried forward.")
     parser.add_argument("--max_tracks", type=int, default=None,
                         help="Cap request count (debugging)")
     parser.add_argument("--model", default="gemini-3-flash-preview")

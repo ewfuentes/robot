@@ -225,11 +225,70 @@ class AreaHandler : public osmium::handler::Handler {
     std::vector<std::pair<std::string, LandmarkFeature>> features_;
 };
 
+// Feeds the way-geometry index only with nodes near the requested bboxes.
+//
+// osmium's NodeLocationsForWays stores every node it is handed, which is why
+// peak memory tracks the size of the PBF rather than the size of the request. It
+// is not a requirement of the problem: a way here is selected iff one of its own
+// vertices falls in a bbox, and that question is answered just as well by an
+// index holding only the nodes near those bboxes.
+//
+// Wrapping rather than subclassing because the inner handler's way() mutates the
+// node refs it is given, and we want that behaviour untouched.
+template <typename TIndex>
+class BoundedNodeLocations : public osmium::handler::Handler {
+   public:
+    BoundedNodeLocations(TIndex& index, std::vector<BoundingBox> keep)
+        : inner_(index), keep_(std::move(keep)) {
+        // Nodes outside the margin are deliberately absent, so a way that
+        // references them must not be treated as a corrupt file. The existing
+        // way handler already skips refs whose location is invalid.
+        inner_.ignore_errors();
+    }
+
+    void node(const osmium::Node& node) {
+        const auto& loc = node.location();
+        if (!loc.valid()) {
+            return;
+        }
+        for (const auto& bbox : keep_) {
+            if (bbox.contains(loc.lon(), loc.lat())) {
+                inner_.node(node);
+                ++kept_;
+                return;
+            }
+        }
+        ++dropped_;
+    }
+
+    void way(osmium::Way& way) { inner_.way(way); }
+
+    std::size_t kept() const { return kept_; }
+    std::size_t dropped() const { return dropped_; }
+
+   private:
+    osmium::handler::NodeLocationsForWays<TIndex> inner_;
+    std::vector<BoundingBox> keep_;
+    std::size_t kept_ = 0;
+    std::size_t dropped_ = 0;
+};
+
+std::vector<BoundingBox> expand_bboxes(
+    const std::unordered_map<std::string, BoundingBox>& bboxes, double margin_deg) {
+    std::vector<BoundingBox> out;
+    out.reserve(bboxes.size());
+    for (const auto& [region_id, bbox] : bboxes) {
+        out.push_back(BoundingBox{bbox.left_deg - margin_deg, bbox.bottom_deg - margin_deg,
+                                  bbox.right_deg + margin_deg, bbox.top_deg + margin_deg});
+    }
+    return out;
+}
+
 }  // namespace
 
 std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     const std::string& pbf_path, const std::unordered_map<std::string, BoundingBox>& bboxes,
-    const std::map<std::string, bool>& tag_filters) {
+    const std::map<std::string, bool>& tag_filters, double node_margin_deg) {
     // Verify file exists
     if (!std::filesystem::exists(pbf_path)) {
         throw std::runtime_error("PBF file not found: " + pbf_path);
@@ -243,54 +302,66 @@ std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     using LocationHandler = osmium::handler::NodeLocationsForWays<IndexType>;
 
     IndexType index;
-    LocationHandler location_handler(index);
 
-    // Pass 1: Extract nodes and ways (with node locations for ways)
-    {
-        osmium::io::Reader reader(pbf_path,
-                                  osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
-
-        LandmarkHandler handler(bboxes, tag_filters);
-        osmium::apply(reader, location_handler, handler);
-        reader.close();
-
-        all_features = handler.features();
-    }
-
-    // Pass 2: Extract multipolygon relations
-    {
-        // MultipolygonManager collects relations and their members
-        using MultipolygonManager = osmium::area::MultipolygonManager<osmium::area::Assembler>;
-
-        osmium::area::Assembler::config_type assembler_config;
-        MultipolygonManager mp_manager{assembler_config};
-
-        // First pass: collect relations
+    // Both passes need the same location handler, and the two handler types are
+    // distinct, so the pass sequence is templated on it rather than duplicated.
+    auto run_passes = [&](auto& location_handler) {
+        // Pass 1: Extract nodes and ways (with node locations for ways)
         {
-            osmium::io::Reader reader(pbf_path, osmium::osm_entity_bits::relation);
-            osmium::apply(reader, mp_manager);
-            reader.close();
-        }
+            osmium::io::Reader reader(
+                pbf_path, osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
 
-        // Prepare manager for member lookups
-        mp_manager.prepare_for_lookup();
-
-        // Second pass: read ways/nodes and assemble areas
-        {
-            osmium::io::Reader reader(pbf_path);
-            AreaHandler area_handler(bboxes, tag_filters);
-
-            osmium::apply(reader, location_handler,
-                          mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
-                              osmium::apply(buffer, area_handler);
-                          }));
-
+            LandmarkHandler handler(bboxes, tag_filters);
+            osmium::apply(reader, location_handler, handler);
             reader.close();
 
-            // Add multipolygon features to results
-            const auto& mp_features = area_handler.features();
-            all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
+            all_features = handler.features();
         }
+
+        // Pass 2: Extract multipolygon relations
+        {
+            // MultipolygonManager collects relations and their members
+            using MultipolygonManager = osmium::area::MultipolygonManager<osmium::area::Assembler>;
+
+            osmium::area::Assembler::config_type assembler_config;
+            MultipolygonManager mp_manager{assembler_config};
+
+            // First pass: collect relations
+            {
+                osmium::io::Reader reader(pbf_path, osmium::osm_entity_bits::relation);
+                osmium::apply(reader, mp_manager);
+                reader.close();
+            }
+
+            // Prepare manager for member lookups
+            mp_manager.prepare_for_lookup();
+
+            // Second pass: read ways/nodes and assemble areas
+            {
+                osmium::io::Reader reader(pbf_path);
+                AreaHandler area_handler(bboxes, tag_filters);
+
+                osmium::apply(reader, location_handler,
+                              mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
+                                  osmium::apply(buffer, area_handler);
+                              }));
+
+                reader.close();
+
+                // Add multipolygon features to results
+                const auto& mp_features = area_handler.features();
+                all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
+            }
+        }
+    };
+
+    if (node_margin_deg >= 0.0) {
+        BoundedNodeLocations<IndexType> location_handler(index,
+                                                        expand_bboxes(bboxes, node_margin_deg));
+        run_passes(location_handler);
+    } else {
+        LocationHandler location_handler(index);
+        run_passes(location_handler);
     }
 
     return all_features;

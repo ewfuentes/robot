@@ -61,8 +61,12 @@ def main():
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--min_supports", type=int, default=1,
-                        help="Tracks below this never enter consolidation")
+    parser.add_argument("--min_supports", type=int, default=2,
+                        help="Tracks below this never enter consolidation. "
+                             "Matches the audit bar on purpose: a track that "
+                             "was never audited has no canonical semantics, "
+                             "so it cannot be matched and must not reach the "
+                             "filter.")
     parser.add_argument("--epoch_keyframes", type=int, default=5,
                         help="Keyframes fused into one bearing measurement")
     parser.add_argument("--bearing_sigma_deg", type=float, default=1.0)

@@ -4,6 +4,7 @@ import unittest
 
 import geopandas as gpd
 import pandas as pd
+import shapely
 from shapely.geometry import LineString, Point, Polygon
 
 from experimental.overhead_matching.swag.scripts import landmark_feather_utils as lfu
@@ -103,9 +104,28 @@ class MergeTest(unittest.TestCase):
         self.assertTrue(pd.isna(merged["place"][0]))
         self.assertEqual(merged["place"][1], "island")
 
-    def test_duplicate_ids_raise(self):
-        a = make_frame([{"man_made": "pier"}], [Point(-71.0, 42.3)])
-        b = make_frame([{"man_made": "quay"}], [Point(-70.9, 42.3)])
+    def test_same_source_duplicate_ids_collapse(self):
+        """A cross-border feature is in both national extracts; it is one landmark.
+
+        Geofabrik ships complete ways, so anything crossing a border appears in
+        each side's file, clipped differently. The copy retaining more geometry
+        wins.
+        """
+        short = make_frame([{"man_made": "pier"}],
+                           [LineString([(-71.0, 42.3), (-70.99, 42.3)])])
+        long = make_frame([{"man_made": "pier"}],
+                          [LineString([(-71.0, 42.3), (-70.99, 42.3),
+                                       (-70.98, 42.3), (-70.97, 42.3)])])
+        merged = lfu.merge_feathers([short, long])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(shapely.get_num_coordinates(merged.geometry[0]), 4)
+
+    def test_cross_source_duplicate_ids_raise(self):
+        """Two sources sharing an id means the id schemes collided -- a real bug."""
+        a = make_frame([{"man_made": "pier"}], [Point(-71.0, 42.3)],
+                       landmark_type="historical")
+        b = make_frame([{"man_made": "quay"}], [Point(-70.9, 42.3)],
+                       landmark_type="enc")
         with self.assertRaises(ValueError):
             lfu.merge_feathers([a, b])
 

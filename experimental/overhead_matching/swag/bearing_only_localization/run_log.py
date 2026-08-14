@@ -7,6 +7,8 @@ Layout (all consumers — plots, tests, future viewers — read only this):
   tier1_measurements.jsonl  TrackletMeasurement events
   tier1_tables.json         CompatibilityTable list
   truth.jsonl               TruthPose per keyframe (synthetic runs)
+  events.jsonl              ProposalEvent index (§7.3 auto-bookmarks)
+  mode_events.jsonl         ModeEvent index (birth/death/merge)
   checkpoints/index.json    sorted checkpoint keyframe indices
   checkpoints/kf_00042.npz  particle arrays (east_m/north_m/heading_rad/
                             log_weight)
@@ -40,6 +42,8 @@ class RunData:
     tables: dict
     health: list
     checkpoints: dict  # keyframe_idx -> dict[str, np.ndarray]
+    proposal_events: list = dataclasses.field(default_factory=list)
+    mode_events: list = dataclasses.field(default_factory=list)
 
 
 def _write_jsonl(path: Path, records) -> None:
@@ -75,6 +79,8 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
             sorted(tables.values(), key=lambda t: t.tracklet_id),
             enc_hook=msgspec_enc_hook))
     _write_jsonl(run_dir / "truth.jsonl", truth)
+    _write_jsonl(run_dir / "events.jsonl", history.proposal_events)
+    _write_jsonl(run_dir / "mode_events.jsonl", history.mode_events)
 
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
@@ -86,7 +92,10 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
         np.savez(checkpoint_dir / f"kf_{kf:05d}.npz",
                  east_m=belief.east_m, north_m=belief.north_m,
                  heading_rad=belief.heading_rad,
-                 log_weight=belief.log_weight)
+                 log_weight=belief.log_weight,
+                 proposal_event_id=belief.proposal_event_id,
+                 proposal_hypothesis=belief.proposal_hypothesis,
+                 mode_id=belief.mode_id)
 
 
 def read_run(run_dir: Path) -> RunData:
@@ -121,4 +130,8 @@ def read_run(run_dir: Path) -> RunData:
         tables={t.tracklet_id: t for t in tables_list},
         health=_read_jsonl(run_dir / "tier0_health.jsonl",
                            structs.HealthRecord),
-        checkpoints=checkpoints)
+        checkpoints=checkpoints,
+        proposal_events=_read_jsonl(run_dir / "events.jsonl",
+                                    structs.ProposalEvent),
+        mode_events=_read_jsonl(run_dir / "mode_events.jsonl",
+                                structs.ModeEvent))

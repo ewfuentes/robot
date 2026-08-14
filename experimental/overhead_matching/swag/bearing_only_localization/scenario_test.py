@@ -32,11 +32,20 @@ class TruthTrajectoryTest(unittest.TestCase):
 
 
 class GeneratedInputConsistencyTest(unittest.TestCase):
-    def test_zero_noise_odometry_sums_to_truth(self):
-        cfg = scenario.harbor_loop(odom_sigma_m=0.0, course_sigma_deg=1e-9)
+    def test_zero_noise_odometry_dead_reckons_to_truth(self):
+        """Increments composed under the §5.2 midpoint convention from the
+        true initial heading must reconstruct the trajectory exactly —
+        including through the loop's 90-degree corners, which the generator
+        resolves into the midpoint frame."""
+        cfg = scenario.harbor_loop(odom_sigma_m=0.0, dyaw_sigma_deg=0.0)
         data = scenario.generate(cfg)
-        east = data.truth[0].east_m + sum(o.dx_m for o in data.odometry)
-        north = data.truth[0].north_m + sum(o.dy_m for o in data.odometry)
+        east, north = data.truth[0].east_m, data.truth[0].north_m
+        heading = math.radians(data.truth[0].heading_deg)
+        for o in data.odometry:
+            mid = heading + 0.5 * o.dyaw_rad
+            east += o.forward_m * math.sin(mid) - o.left_m * math.cos(mid)
+            north += o.forward_m * math.cos(mid) + o.left_m * math.sin(mid)
+            heading += o.dyaw_rad
         self.assertAlmostEqual(east, data.truth[-1].east_m, places=6)
         self.assertAlmostEqual(north, data.truth[-1].north_m, places=6)
 
@@ -91,18 +100,35 @@ class GeneratedInputConsistencyTest(unittest.TestCase):
         for table in data.tables.values():
             self.assertEqual(table.entries, [])
 
-    def test_course_bias_separates_heading_from_course(self):
-        """The crab knob must move true heading while leaving the reported
-        course over ground alone -- that separation is the whole point."""
-        unbiased = scenario.generate(scenario.harbor_loop(
-            course_sigma_deg=1e-9, course_bias_deg=0.0))
-        biased = scenario.generate(scenario.harbor_loop(
-            course_sigma_deg=1e-9, course_bias_deg=7.0))
-        for a, b in zip(unbiased.odometry, biased.odometry):
-            self.assertAlmostEqual(a.course_deg, b.course_deg, places=6)
+    def test_crab_moves_heading_but_not_the_increments(self):
+        """The crab knob must move true heading (what bearings are measured
+        against) while leaving the course-aligned increments untouched —
+        that misassignment is the §5.2 derivation artifact the knob
+        exercises."""
+        unbiased = scenario.generate(scenario.harbor_loop(course_bias_deg=0.0))
+        biased = scenario.generate(scenario.harbor_loop(course_bias_deg=7.0))
+        self.assertEqual(unbiased.odometry, biased.odometry)
         for a, b in zip(unbiased.truth, biased.truth):
             self.assertAlmostEqual((b.heading_deg - a.heading_deg) % 360.0,
                                    7.0, places=6)
+
+    def test_mismatch_knobs_skew_increments_not_declarations(self):
+        """gyro_bias_deg_per_hr and odom_scale_error must corrupt the
+        emitted increments while the declared sigmas stay unchanged — the
+        filter is NOT told (T-F13's contract with the generator)."""
+        clean = scenario.generate(scenario.harbor_loop(
+            odom_sigma_m=0.0, dyaw_sigma_deg=0.0))
+        skewed = scenario.generate(scenario.harbor_loop(
+            odom_sigma_m=0.0, dyaw_sigma_deg=0.0,
+            gyro_bias_deg_per_hr=3600.0, odom_scale_error=0.1))
+        bias_per_step = math.radians(
+            3600.0 / 3600.0 * clean.config.keyframe_period_s)
+        for a, b in zip(clean.odometry, skewed.odometry):
+            self.assertAlmostEqual(b.dyaw_rad - a.dyaw_rad, bias_per_step,
+                                   places=9)
+            self.assertAlmostEqual(b.forward_m, 1.1 * a.forward_m, places=9)
+            self.assertEqual(b.sigma_m, a.sigma_m)
+            self.assertEqual(b.sigma_yaw_rad, a.sigma_yaw_rad)
 
     def test_catalog_error_moves_only_the_filters_copy(self):
         data = scenario.generate(scenario.harbor_loop(

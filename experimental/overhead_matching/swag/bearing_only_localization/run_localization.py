@@ -74,6 +74,10 @@ def main():
     parser.add_argument("--epoch_length", type=int, default=5)
     parser.add_argument("--bearing_sigma_deg", type=float, default=1.0)
     parser.add_argument("--checkpoint_every", type=int, default=10)
+    parser.add_argument("--kidnap_at", type=int, default=None,
+                        help="teleport the vehicle at this keyframe (T-F6)")
+    parser.add_argument("--kidnap_east_m", type=float, default=1500.0)
+    parser.add_argument("--kidnap_north_m", type=float, default=-1200.0)
     args = parser.parse_args()
 
     scenario_config = scenario.get_scenario_config(
@@ -82,6 +86,9 @@ def main():
         epoch_length_keyframes=args.epoch_length,
         bearing_sigma_deg=args.bearing_sigma_deg)
     data = scenario.generate(scenario_config)
+    if args.kidnap_at is not None:
+        data = scenario.apply_kidnap(data, args.kidnap_at,
+                                     args.kidnap_east_m, args.kidnap_north_m)
     filter_config = build_filter_config(args, data)
 
     print(f"Scenario '{scenario_config.name}': {data.n_keyframes} keyframes, "
@@ -118,6 +125,10 @@ def main():
     print(f"Final reported sigma: {history.health[-1].position_std_m:.1f} m; "
           f"NEES {nees:.1f} (2 dof, ideal ~2.0)")
     print(f"First keyframe with error < 100 m: {first_converged}")
+    for event in history.proposal_events:
+        print(f"  proposal #{event.event_id} kf={event.keyframe_idx} "
+              f"trigger={event.trigger} hypotheses={event.n_hypotheses} "
+              f"injected={event.n_injected}")
     print(f"Particle history sha256: {history.particle_history_sha256}")
     print(f"Run written to {args.output_dir}")
 

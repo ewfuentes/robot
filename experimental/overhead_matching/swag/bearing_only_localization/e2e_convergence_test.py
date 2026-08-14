@@ -84,10 +84,16 @@ class GlobalInitConvergenceTest(unittest.TestCase):
 
 
 class OdometryOnlyTest(unittest.TestCase):
-    def test_uncertainty_grows_without_measurements(self):
+    def test_dead_reckoning_fans_out_honestly(self):
         """T-F4a-lite: no tracklets -> belief degrades gracefully to
-        odometry-only; position spread grows, mean stays near truth."""
-        cfg = scenario.harbor_loop(keyframe_period_s=_PERIOD_S)
+        odometry-only. Under the body-frame contract heading is unknown
+        (uniform init) and position routes through it (§5.2), so the cloud
+        fans out around the start instead of tracking truth — the honest
+        GPS-denied wedge. Graceful means the spread grows AND the belief
+        stays honest about containing truth; under the archived world-frame
+        model this test could demand a small mean error, which flattered
+        exactly the problem the filter exists to solve."""
+        cfg = scenario.straight_leg(keyframe_period_s=_PERIOD_S)
         data = scenario.generate(cfg)
         filter_config = structs.FilterConfig(
             n_particles=5000, seed=5,
@@ -96,11 +102,18 @@ class OdometryOnlyTest(unittest.TestCase):
         history = pf.run_filter(filter_config, data.catalog, data.odometry,
                                 [], {})
 
-        errors = pf.position_errors_m(history.health, data.truth)
         std_start = history.health[1].position_std_m
         std_end = history.health[-1].position_std_m
-        self.assertGreater(std_end, 2.0 * std_start)
-        self.assertLess(float(errors[-1]), 50.0)
+        self.assertGreater(std_end, 10.0 * std_start,
+                           "the dead-reckoning wedge failed to grow")
+        final = data.truth[-1]
+        nees = pf.position_nees(history.final_belief, final.east_m,
+                                final.north_m)
+        self.assertLess(nees, 8.0,
+                        f"odometry-only belief is dishonest about its "
+                        f"ignorance: NEES {nees:.1f}")
+        self.assertGreater(pf.heading_std_deg(history.final_belief), 60.0,
+                           "heading collapsed without bearings")
 
 
 class ClutterRobustnessTest(unittest.TestCase):
@@ -198,33 +211,42 @@ class MultimodalityPreservationTest(unittest.TestCase):
         history = pf.run_filter(filter_config, data.catalog, data.odometry,
                                 data.measurements, tables)
 
+        # Scored on tracked modes, not on mass either side of the axis: a
+        # single cloud straddling the axis passes a side-mass check while
+        # being entirely unimodal, so that version of this test asserted
+        # nothing. The mode tracker makes the real question answerable.
+        early = history.health[5]
+        self.assertGreaterEqual(len(early.modes), 2,
+                                "belief collapsed to one mode immediately")
+        self.assertGreater(sorted(early.modes,
+                                  key=lambda m: -m.weight)[1].weight, 0.15)
+        self.assertGreater(early.mode_entropy_nats, 0.4)
+
         truth = data.truth[-1]
-        belief = history.final_belief
-        east = belief.east_m
-        weights = belief.normalized_weights()
-        # Mirror ambiguity is about the east=0 axis: mass should survive on
-        # both sides rather than collapsing to one.
-        east_side = float(weights[east > 0.0].sum())
-        west_side = float(weights[east < 0.0].sum())
-        self.assertGreater(min(east_side, west_side), 0.15,
-                           f"belief collapsed to one mode: east={east_side:.2f}"
-                           f" west={west_side:.2f}")
-        # ...and the true pose must remain one of the surviving modes.
         self.assertGreater(
-            pf.mass_within_radius(belief, truth.east_m, truth.north_m, 400.0),
-            0.1)
+            pf.mass_within_radius(history.final_belief, truth.east_m,
+                                  truth.north_m, 400.0),
+            0.1, "the true pose is not among the surviving hypotheses")
 
 
 class LlrSaturationTest(unittest.TestCase):
     """T-F5: an adversarial table at the clip bound on a geometrically wrong
-    landmark must not steamroll the geometric term."""
+    landmark must not steamroll the geometric term.
 
-    def test_geometry_wins_over_saturated_llr(self):
-        cfg = scenario.harbor_loop(keyframe_period_s=_PERIOD_S)
-        data = scenario.generate(cfg)
-        # Point one tracklet's whole LLR mass at the wrong landmark.
-        victim = data.landmark_ids[0]
-        liar = data.landmark_ids[1]
+    The guarantee is different in the two regimes, and conflating them hides
+    a real exposure. During tracking, clipping works as §6 argues: the LLR is
+    one bounded additive term against the bearing likelihood, and geometry
+    wins. But the mixture proposal (§5.5) consumes landmark *identities* from
+    the same table, and no clip bounds an identity — a confidently wrong
+    matcher places hypotheses somewhere wrong, and the filter will go there.
+    What survives is the weaker but still meaningful guarantee: it does not
+    go there *confidently*.
+    """
+
+    def _adversarial(self):
+        data = scenario.generate(
+            scenario.harbor_loop(keyframe_period_s=_PERIOD_S))
+        victim, liar = data.landmark_ids[0], data.landmark_ids[1]
         tables = dict(data.tables)
         original = tables[f"trk_{victim}"]
         tables[f"trk_{victim}"] = structs.CompatibilityTable(
@@ -234,15 +256,36 @@ class LlrSaturationTest(unittest.TestCase):
                      structs.CompatibilityEntry(victim, original.clip_lo)],
             default_log_lr=original.clip_lo, clip_lo=original.clip_lo,
             clip_hi=original.clip_hi, status="fast")
+        return data, tables
 
+    def test_geometry_wins_while_tracking(self):
+        """Proposal off: the §6 clipping argument in its pure form."""
+        data, tables = self._adversarial()
         filter_config = structs.FilterConfig(
-            n_particles=20000, seed=5, init=_local_init(data))
+            n_particles=20000, seed=5, init=_local_init(data),
+            proposal=structs.ProposalConfig(enabled=False))
         history = pf.run_filter(filter_config, data.catalog, data.odometry,
                                 data.measurements, tables)
         errors = pf.position_errors_m(history.health, data.truth)
         self.assertLess(float(np.median(errors[-40:])), 250.0,
                         "a saturated LLR on the wrong landmark defeated the "
                         "geometric term")
+
+    def test_adversarial_matcher_cannot_force_a_confident_wrong_fix(self):
+        """Proposal on: the belief may be displaced, but it must stay
+        honest about being displaced."""
+        data, tables = self._adversarial()
+        filter_config = structs.FilterConfig(
+            n_particles=20000, seed=5, init=_local_init(data))
+        history = pf.run_filter(filter_config, data.catalog, data.odometry,
+                                data.measurements, tables)
+        final = data.truth[-1]
+        nees = pf.position_nees(history.final_belief, final.east_m,
+                                final.north_m)
+        self.assertLess(nees, 12.0,
+                        f"confident wrong fix under an adversarial matcher: "
+                        f"NEES {nees:.1f}, sigma "
+                        f"{history.health[-1].position_std_m:.0f} m")
 
 
 class MapErrorRobustnessTest(unittest.TestCase):
