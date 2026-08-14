@@ -184,7 +184,7 @@ def _top_k_landmarks(table: structs.CompatibilityTable, catalog, k: int):
     scored = [(min(max(e.log_lr, table.clip_lo), table.clip_hi),
                e.landmark_id)
               for e in table.entries
-              if e.landmark_id in catalog.landmark_ids
+              if e.landmark_id in catalog
               and e.log_lr > table.default_log_lr]
     scored.sort(reverse=True)
     return [landmark_id for _, landmark_id in scored[:k]]

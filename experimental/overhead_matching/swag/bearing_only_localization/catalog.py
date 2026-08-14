@@ -38,7 +38,8 @@ class LandmarkCatalog:
             raise ValueError(
                 f"catalog arrays disagree with ids: {n} ids, "
                 f"{self.east_m.shape} east, {self.north_m.shape} north")
-        if len(set(self.landmark_ids)) != n:
+        self._index = {lid: i for i, lid in enumerate(self.landmark_ids)}
+        if len(self._index) != n:
             raise ValueError("duplicate landmark_id in catalog")
 
         if position_sigma_m is None:
@@ -76,7 +77,13 @@ class LandmarkCatalog:
         return len(self.landmark_ids)
 
     def index_of(self, landmark_id: str) -> int:
-        return self.landmark_ids.index(landmark_id)
+        try:
+            return self._index[landmark_id]
+        except KeyError:
+            raise ValueError(f"{landmark_id!r} is not in the catalog") from None
+
+    def __contains__(self, landmark_id: str) -> bool:
+        return landmark_id in self._index
 
     def kappa_eff(self, kappa_z: float, range_m: np.ndarray,
                   candidate_slice=slice(None)) -> np.ndarray:

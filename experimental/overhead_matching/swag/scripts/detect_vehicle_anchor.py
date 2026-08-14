@@ -1,0 +1,207 @@
+"""Decide whether a dataset's camera is bolted down, drifting, or unanchored.
+
+`calibrate_mount_offset.py` answers "what is the offset?" but reports failure
+identically for two very different causes: a camera that genuinely panned during
+the run, and a camera that was fixed but sat in front of a scene the estimator
+could not read. This separates them, and in the drifting case it also says
+whether there is anything in frame to align *against*.
+
+Method. Average many frames. World content -- water, coastline, traffic -- moves
+between them and blurs away; anything rigidly attached to the vehicle occupies
+the same pixels every time and stays sharp. So
+
+    persistence = |d/dx mean_t I_t| / mean_t |d/dx I_t|
+
+is ~1 where image content is fixed in the camera frame and ~0 where it is not,
+with the local texture scale divided out.
+
+Two details are load-bearing.
+
+*Normalising by the texture.* A raw temporal difference calls flat overcast sky
+"static" exactly as loudly as it calls a mast static. On nyc_east_river that
+mislabels the top 20% of the frame; dividing by mean|d/dx I| abstains there
+instead, because neither term has any signal.
+
+*Using only the x-derivative.* The full gradient magnitude also flags the
+horizon: with steady pitch it sits on the same image row in every frame, so
+grad(mean) stays sharp along it. It is fixed in the camera frame, but because
+the scene is at infinite range, not because it is part of the boat -- and it is
+precisely the far-field band the mount-offset estimator needs to keep. A horizon
+is a purely horizontal edge with no vertical one; vehicle structure (mast, rail
+stanchion, bow) carries persistent vertical edges. Restricting to d/dx keeps the
+structure and drops the horizon. Masking the horizon out is what made a static
+mask perform *worse* on boston_harbor_leg1, so this is not a hypothetical.
+
+Reading the output: compare the whole-run figure against short windows.
+
+    global ~= windowed, both high   camera and anchor are rigid
+    global ~ 0, windowed high       anchor exists but DRIFTS -- alignable by
+                                    tracking it, which is the only route to a
+                                    per-frame camera yaw for a handheld capture
+    both ~ 0                        nothing vehicle-fixed in frame; either the
+                                    camera only ever sees the world (fine, but
+                                    unverifiable this way) or there is no anchor
+                                    to stabilise against
+
+    bazel run //experimental/overhead_matching/swag/scripts:detect_vehicle_anchor -- \
+        --dataset_path /data/farfield_matching/mapillary_datasets/*
+"""
+
+import argparse
+import csv
+import json
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+# A pixel counts as anchored when its mean-image edge survives at 60% of the
+# per-frame edge strength. Well separated in practice: rigid mounts land near
+# 0.9 and world content near 0.1, so the threshold is not a tuned knob.
+ANCHOR_THRESHOLD = 0.6
+# Below this mean edge strength there is no texture to judge, so abstain.
+TEXTURE_FLOOR = 1.5
+
+
+def box_blur(a, k=5):
+    """Mean over a k x k window; one-pixel misregistration must not flip a pixel."""
+    pad = k // 2
+    p = np.pad(a, pad, mode="edge")
+    c = np.cumsum(np.cumsum(p, axis=0), axis=1)
+    c = np.pad(c, ((1, 0), (1, 0)))
+    return (c[k:, k:] - c[:-k, k:] - c[k:, :-k] + c[:-k, :-k]) / (k * k)
+
+
+def persistence_map(ds: Path, rows, index_range, n_samples, work_w):
+    lo, hi = index_range
+    count = min(n_samples, hi - lo + 1)
+    if count < 4:
+        return None, None
+    idxs = np.linspace(lo, hi, count).astype(int)
+    acc_img = acc_edge = None
+    for i in idxs:
+        path = ds / "panorama" / rows[i]["frame_file"]
+        if not path.exists():
+            continue
+        im = Image.open(path).convert("L")
+        height = max(1, round(work_w * im.height / im.width))
+        a = np.asarray(im.resize((work_w, height), Image.BILINEAR), dtype=np.float32)
+        if acc_img is None:
+            acc_img, acc_edge = np.zeros_like(a), np.zeros_like(a)
+        acc_img += a
+        acc_edge += np.abs(np.gradient(a, axis=1))
+    if acc_img is None:
+        return None, None
+    mean_img = acc_img / len(idxs)
+    numerator = box_blur(np.abs(np.gradient(mean_img, axis=1)))
+    denominator = box_blur(acc_edge / len(idxs))
+    persistence = np.where(denominator > TEXTURE_FLOOR,
+                           numerator / np.maximum(denominator, 1e-6), np.nan)
+    return persistence, mean_img
+
+
+def anchor_fraction(persistence):
+    if persistence is None:
+        return None
+    valid = np.isfinite(persistence)
+    if not valid.any():
+        return None
+    return float((valid & (persistence > ANCHOR_THRESHOLD)).mean())
+
+
+def classify(global_frac, window_fracs, rigid_ratio=0.5, min_anchor_frac=0.03):
+    """rigid / drifting / no_anchor, from whole-run versus short-window persistence.
+
+    `no_anchor` is a statement about the *imagery*, not the mount: it means
+    nothing vehicle-fixed is in frame, so this method has no opinion either way
+    and the mount-offset axis MAD is the only evidence available. Several
+    perfectly rigid captures land here simply because the camera looks out at
+    open water and never sees its own vessel.
+
+    min_anchor_frac exists because a percent or two of "persistent" pixels is
+    what noise alone produces; calling that a drifting anchor would invent a
+    finding out of nothing.
+    """
+    windows = [w for w in window_fracs if w is not None]
+    best_window = max(windows) if windows else 0.0
+    if global_frac is None:
+        return "unknown", best_window
+    if best_window < min_anchor_frac:
+        return "no_anchor", best_window
+    if global_frac >= rigid_ratio * best_window:
+        return "rigid", best_window
+    return "drifting", best_window
+
+
+def analyse(ds: Path, args):
+    rows = list(csv.DictReader(open(ds / "frames_gps.csv")))
+    n = len(rows)
+    if n < args.window + 2:
+        print(f"{ds.name}: only {n} frames, skipping")
+        return None
+    whole, mean_img = persistence_map(ds, rows, (0, n - 1), args.samples,
+                                      args.work_width)
+    global_frac = anchor_fraction(whole)
+
+    starts = np.linspace(0, n - 1 - args.window, args.n_windows).astype(int)
+    window_fracs = []
+    for lo in starts:
+        p, _ = persistence_map(ds, rows, (int(lo), int(lo) + args.window),
+                               args.window_samples, args.work_width)
+        window_fracs.append(anchor_fraction(p))
+
+    verdict, best_window = classify(global_frac, window_fracs)
+    result = {
+        "dataset": ds.name,
+        "n_frames": n,
+        "global_anchor_frac": global_frac,
+        "window_anchor_fracs": window_fracs,
+        "best_window_anchor_frac": best_window,
+        "window_frames": args.window,
+        "verdict": verdict,
+    }
+    print(f"{ds.name:<24} {verdict:<9} whole-run {100 * (global_frac or 0):>5.1f}%   "
+          f"{args.window}-frame windows " +
+          " ".join(f"{100 * (w or 0):>5.1f}" for w in window_fracs))
+
+    if args.write_overlay and whole is not None and mean_img is not None:
+        mask = np.isfinite(whole) & (whole > ANCHOR_THRESHOLD)
+        base = np.clip(mean_img, 0, 255)
+        vis = np.stack([base, base * (1 - 0.75 * mask), base * (1 - 0.75 * mask)], -1)
+        out = ds / "vehicle_anchor.png"
+        Image.fromarray(vis.astype(np.uint8)).save(out)
+        result["overlay"] = str(out)
+    return result
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dataset_path", nargs="+", required=True, type=Path)
+    p.add_argument("--samples", type=int, default=60,
+                   help="frames averaged for the whole-run map")
+    p.add_argument("--window", type=int, default=30,
+                   help="length of each short window, in frames")
+    p.add_argument("--n_windows", type=int, default=6)
+    p.add_argument("--window_samples", type=int, default=25)
+    p.add_argument("--work_width", type=int, default=480)
+    p.add_argument("--write_overlay", action="store_true",
+                   help="save vehicle_anchor.png in each dataset")
+    p.add_argument("--output_json", type=Path)
+    args = p.parse_args()
+
+    results = []
+    for ds in args.dataset_path:
+        if not (ds / "frames_gps.csv").exists():
+            continue
+        out = analyse(ds, args)
+        if out:
+            results.append(out)
+    if args.output_json:
+        args.output_json.write_text(json.dumps(results, indent=2) + "\n")
+        print(f"\nwrote {args.output_json}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

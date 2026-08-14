@@ -79,6 +79,10 @@ def main():
     parser.add_argument("--pi0", type=float, default=0.2)
     parser.add_argument("--checkpoint_every", type=int, default=5)
     parser.add_argument("--max_visible_range_m", type=float, default=15000.0)
+    parser.add_argument("--backend", default="numpy",
+                        choices=["numpy", "torch"],
+                        help="measurement-update engine; torch uses the GPU "
+                             "when available (float32, see torch_backend.py)")
     parser.add_argument("--no_proposal", action="store_true",
                         help="brute-force control: uniform prior with no "
                              "resection proposal")
@@ -106,6 +110,7 @@ def main():
         pi0=args.pi0,
         position_roughening_m=25.0, heading_roughening_deg=1.0,
         checkpoint_every=args.checkpoint_every,
+        measurement_backend=args.backend,
         proposal=structs.ProposalConfig(enabled=not args.no_proposal))
 
     measurements = [] if args.no_bearings else data.measurements

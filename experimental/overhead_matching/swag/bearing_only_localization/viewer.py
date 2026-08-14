@@ -60,10 +60,36 @@ def _landmark_positions(data):
     return east, north
 
 
+def _referenced_landmark_ids(data) -> set:
+    """Landmarks the run actually talks about: endorsed table entries,
+    proposal-hypothesis identities, and anything that ever carried reported
+    association mass. Everything else renders as catalog backdrop — a
+    whole-map catalog (13k rows on the harbor runs) drawn as labelled
+    glyphs is unreadable and unresponsive."""
+    ids = set()
+    for table in data.tables.values():
+        default = min(max(table.default_log_lr, table.clip_lo),
+                      table.clip_hi)
+        for entry in table.entries:
+            clipped = min(max(entry.log_lr, table.clip_lo), table.clip_hi)
+            if clipped > default + 1e-12:
+                ids.add(entry.landmark_id)
+    for event in data.proposal_events:
+        for landmark_ids in event.hypothesis_landmark_ids:
+            ids.update(landmark_ids)
+    for record in data.health:
+        for assoc in record.associations:
+            for landmark_id, value in assoc.responsibilities.items():
+                if value > 1e-3:
+                    ids.add(landmark_id)
+    return ids
+
+
 def build_payload(data, max_particles=MAX_PARTICLES_PER_FRAME) -> dict:
     """Everything the page needs, shaped for the browser."""
     east, north = _landmark_positions(data)
     truth_by_kf = {t.keyframe_idx: t for t in data.truth}
+    referenced = _referenced_landmark_ids(data)
 
     checkpoints = {}
     rng = np.random.default_rng(0)
@@ -145,7 +171,13 @@ def build_payload(data, max_particles=MAX_PARTICLES_PER_FRAME) -> dict:
         "historyHash": data.manifest.particle_history_sha256[:12],
         "landmarks": [{"id": lm.landmark_id, "type": lm.type_key,
                        "e": round(float(e), 1), "n": round(float(n), 1)}
-                      for lm, e, n in zip(data.manifest.landmarks, east, north)],
+                      for lm, e, n in zip(data.manifest.landmarks, east,
+                                          north)
+                      if lm.landmark_id in referenced],
+        "backdrop": [[int(round(float(e))), int(round(float(n)))]
+                     for lm, e, n in zip(data.manifest.landmarks, east,
+                                         north)
+                     if lm.landmark_id not in referenced],
         "truth": [[round(t.east_m, 1), round(t.north_m, 1)] for t in data.truth],
         "health": health,
         "checkpoints": checkpoints,
@@ -283,12 +315,21 @@ const nearestCk = kf => ckKeys.reduce((best,k) =>
 let X0=1e9,X1=-1e9,Y0=1e9,Y1=-1e9;
 const grow=(e,n)=>{X0=Math.min(X0,e);X1=Math.max(X1,e);Y0=Math.min(Y0,n);Y1=Math.max(Y1,n);};
 D.landmarks.forEach(l=>grow(l.e,l.n));
+(D.backdrop||[]).forEach(p=>grow(p[0],p[1]));
 D.truth.forEach(p=>grow(p[0],p[1]));
 H.forEach(h=>grow(h.mapE,h.mapN));
 const pad=(X1-X0+Y1-Y0)*0.06+150; X0-=pad;X1+=pad;Y0-=pad;Y1+=pad;
 const span=Math.max(X1-X0,Y1-Y0);
 const MW=760, MH=560;
 const px=e=>((e-X0)/span)*MW, py=n=>MH-((n-Y0)/span)*MH;
+// Unreferenced catalog rows: one static path of 1-px dots (a single DOM
+// node), rendered behind everything. Built once — scrubbing re-renders
+// the rest of the map every frame.
+const BACKDROP=(D.backdrop&&D.backdrop.length)
+  ? `<path d="${D.backdrop.map(p=>"M"+px(p[0]).toFixed(1)+" "
+      +py(p[1]).toFixed(1)+"h.1").join("")}" stroke="#59606e"
+      stroke-width="1.6" stroke-linecap="round" fill="none" opacity=".4"/>`
+  : "";
 
 // ---------- overview strip ----------
 const SW=980, ROW=30;
@@ -380,7 +421,7 @@ function drawStrip(){
 // ---------- map ----------
 function drawMap(){
   const h=H[t], ck=nearestCk(t), P=D.checkpoints[ck];
-  let out="";
+  let out=BACKDROP;
   // particles, coloured by mode
   for(let i=0;i<P.e.length;i++){
     const m=P.m[i];
@@ -433,12 +474,23 @@ function drawMap(){
         opacity="${(0.15+0.6*p).toFixed(2)}" stroke-dasharray="2 3"/>`;
     });
   });
-  // landmarks on top
+  // Referenced landmarks on top. Labels only where the filter is
+  // currently putting association mass (or everywhere, in small worlds) —
+  // a whole-map run references thousands of tie members and labelling
+  // them all makes the map unreadable.
+  const active={};
+  h.assoc.forEach(a=>Object.entries(a.resp).forEach(([lm,p])=>{
+    if(p>=0.05) active[lm]=Math.max(active[lm]||0,p);}));
+  const many=D.landmarks.length>60;
   D.landmarks.forEach(l=>{
-    out+=`<circle cx="${px(l.e).toFixed(1)}" cy="${py(l.n).toFixed(1)}" r="5"
-      fill="#f5c542" stroke="#7a5c00" stroke-width="1.2"/>
-      <text class="axis" x="${(px(l.e)+8).toFixed(1)}"
-      y="${(py(l.n)+3).toFixed(1)}">${l.id}</text>`;
+    const hot=active[l.id]!==undefined;
+    const r=many?(hot?4:2.2):5;
+    out+=`<circle cx="${px(l.e).toFixed(1)}" cy="${py(l.n).toFixed(1)}"
+      r="${r}" fill="#f5c542" stroke="#7a5c00"
+      stroke-width="${many&&!hot?0.6:1.2}" opacity="${many&&!hot?0.55:1}"/>`;
+    if(hot||!many)
+      out+=`<text class="axis" x="${(px(l.e)+8).toFixed(1)}"
+        y="${(py(l.n)+3).toFixed(1)}">${l.id}</text>`;
   });
   // truth marker at t
   if(h.truthE!==undefined)

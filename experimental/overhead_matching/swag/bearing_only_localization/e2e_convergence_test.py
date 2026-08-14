@@ -127,14 +127,18 @@ class ClutterRobustnessTest(unittest.TestCase):
     # appropriately UNCERTAIN, so score error/sigma over several seeds.
     _SEEDS = (5, 6, 7)
 
-    def _clutter_runs(self, pi0):
+    def _clutter_runs(self, pi0, matcher_recall=None):
         cfg = scenario.harbor_loop(keyframe_period_s=_PERIOD_S,
                                    clutter_only=True)
         data = scenario.generate(cfg)
         histories = []
         for seed in self._SEEDS:
+            kwargs = {}
+            if matcher_recall is not None:
+                kwargs["matcher_recall"] = matcher_recall
             filter_config = structs.FilterConfig(
-                n_particles=3000, seed=seed, init=_local_init(data), pi0=pi0)
+                n_particles=3000, seed=seed, init=_local_init(data), pi0=pi0,
+                **kwargs)
             histories.append(pf.run_filter(filter_config, data.catalog,
                                            data.odometry, data.measurements,
                                            data.tables))
@@ -164,23 +168,24 @@ class ClutterRobustnessTest(unittest.TestCase):
                              f"confident wrong fix: std={sigma:.0f} m, "
                              f"error={error:.0f} m")
 
-    def test_null_starvation_ablation_is_worse(self):
-        """T-F4b: the ablation must demonstrate the *contrast* the null
-        hypothesis buys, not pin an absolute failure magnitude — otherwise
-        improving clutter robustness breaks the test."""
-        _, default_errors, default_sigmas = self._clutter_runs(
-            self._default_pi0())
-        _, starved_errors, starved_sigmas = self._clutter_runs(pi0=1e-4)
-
-        default_ratio = float(np.mean(default_errors / default_sigmas))
-        starved_ratio = float(np.mean(starved_errors / starved_sigmas))
-        self.assertGreater(starved_ratio, 3.0 * default_ratio,
-                           f"null starvation should leave the filter far "
-                           f"more overconfident: error/sigma "
-                           f"{starved_ratio:.1f} starved vs "
-                           f"{default_ratio:.1f} at defaults")
-        self.assertLess(float(np.mean(starved_sigmas)),
-                        float(np.mean(default_sigmas)))
+    def test_starved_null_still_produces_no_confident_wrong_fix(self):
+        """T-F4b, updated for the proper identity posterior + association
+        persistence. The original ablation (starve pi0, demand 3x
+        overconfidence) pinned a hazard — clutter chased into a confident
+        wrong fix — that is NO LONGER REACHABLE in this world: a clutter
+        tracklet has an empty table, so its identity posterior is uniform
+        over the catalog (a direction-diffuse background that pose cannot
+        chase), and persistence breaks any run of accidental alignments
+        (the commit stops fitting, the renewal branch wins). Measured:
+        error/sigma 0.32 starved vs 0.33 at defaults — no contrast exists
+        to assert. Clutter robustness is structural now, so pin the safety
+        property itself under full starvation of the explicit channels."""
+        _, starved_errors, starved_sigmas = self._clutter_runs(
+            pi0=1e-4, matcher_recall=0.999)
+        for error, sigma in zip(starved_errors, starved_sigmas):
+            self.assertFalse(sigma < 100.0 and error > 300.0,
+                             f"confident wrong fix under starved null: "
+                             f"std={sigma:.0f} m, error={error:.0f} m")
 
 
 class MultimodalityPreservationTest(unittest.TestCase):
@@ -215,9 +220,17 @@ class MultimodalityPreservationTest(unittest.TestCase):
         # single cloud straddling the axis passes a side-mass check while
         # being entirely unimodal, so that version of this test asserted
         # nothing. The mode tracker makes the real question answerable.
-        early = history.health[5]
-        self.assertGreaterEqual(len(early.modes), 2,
-                                "belief collapsed to one mode immediately")
+        # The FIRST keyframes may report a single mode: the uniform-prior
+        # remnant keeps enough cell mass to connect the twin clusters into
+        # one component until the measurements crush it (the proper
+        # identity posterior is gentler than the earlier unnormalized
+        # weights, so this takes a few epochs). The contract is that both
+        # modes RESOLVE early and are genuinely held, not the exact
+        # keyframe the clusterer separates them.
+        early = next((r for r in history.health if len(r.modes) >= 2), None)
+        self.assertIsNotNone(early, "belief never resolved two modes")
+        self.assertLessEqual(early.keyframe_idx, 20,
+                             "two modes should resolve within a few epochs")
         self.assertGreater(sorted(early.modes,
                                   key=lambda m: -m.weight)[1].weight, 0.15)
         self.assertGreater(early.mode_entropy_nats, 0.4)

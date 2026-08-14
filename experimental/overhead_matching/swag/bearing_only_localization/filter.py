@@ -44,6 +44,10 @@ MAX_KAPPA = 1.0e6
 # Candidate-axis block size for the measurement update. Bounds the (N, M)
 # temporaries; see the memory table in the Milestone 0 audit (A-8).
 CANDIDATE_BLOCK = 256
+# Per-particle association state (§5.3 persistence): a particle's belief
+# about WHICH physical object a tracklet is. Catalog index when committed.
+ASSOC_UNCOMMITTED = -2  # tracklet not yet observed by this particle
+ASSOC_NULL = -1  # committed to "this tracklet is clutter"
 
 
 @dataclasses.dataclass
@@ -62,6 +66,10 @@ class ParticleBelief:
     # tracked by lineage (mode_tracker.py), so this has to survive
     # resampling and injection like any other per-particle state.
     mode_id: np.ndarray = None
+    # Per-tracklet association state (§5.3 persistence): tracklet_id ->
+    # int32 array of catalog indices / ASSOC_NULL / ASSOC_UNCOMMITTED.
+    # Survives resampling like any other per-particle state.
+    associations: dict = None
 
     def __post_init__(self):
         if self.proposal_event_id is None:
@@ -72,6 +80,8 @@ class ParticleBelief:
                                                dtype=np.int64)
         if self.mode_id is None:
             self.mode_id = np.full(self.east_m.shape[0], -1, dtype=np.int64)
+        if self.associations is None:
+            self.associations = {}
 
     @property
     def n(self) -> int:
@@ -82,7 +92,9 @@ class ParticleBelief:
                               self.heading_rad.copy(), self.log_weight.copy(),
                               self.proposal_event_id.copy(),
                               self.proposal_hypothesis.copy(),
-                              self.mode_id.copy())
+                              self.mode_id.copy(),
+                              {tid: arr.copy()
+                               for tid, arr in self.associations.items()})
 
     def take(self, idx: np.ndarray) -> None:
         """Reindex every per-particle array in place (resample/inject)."""
@@ -92,6 +104,8 @@ class ParticleBelief:
         self.proposal_event_id = self.proposal_event_id[idx]
         self.proposal_hypothesis = self.proposal_hypothesis[idx]
         self.mode_id = self.mode_id[idx]
+        for tid in self.associations:
+            self.associations[tid] = self.associations[tid][idx]
 
     def normalized_weights(self) -> np.ndarray:
         return np.exp(self.log_weight - special.logsumexp(self.log_weight))
@@ -222,25 +236,131 @@ def _clipped_log_lr(table: structs.CompatibilityTable,
     return np.clip(log_lr, table.clip_lo, table.clip_hi)
 
 
+def _mixture_block_log_terms(east_m, north_m, heading_rad, observed_rad,
+                             kappa_z, log_weight, catalog, sl):
+    """log[p(j|appearance) * vM(delta_j; kappa_eff)] for one candidate
+    block, from arbitrary pose arrays. `log_weight` is the proper identity
+    posterior (`_identity_log_weights`); the (1-pi0) mixture constant is
+    the caller's."""
+    bearing_world, range_m = catalog.bearings_from(east_m, north_m, sl)
+    delta = geodesy.wrap_rad(
+        bearing_world - heading_rad[:, None] - observed_rad)
+    kappa_eff = catalog.kappa_eff(kappa_z, range_m, sl)
+    return log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
+
+
+def pose_log_likelihood(east_m, north_m, heading_rad,
+                        meas: structs.TrackletMeasurement,
+                        table: structs.CompatibilityTable,
+                        catalog: catalog_mod.LandmarkCatalog,
+                        pi0: float,
+                        log_weight: np.ndarray = None,
+                        matcher_recall: float = 0.5) -> np.ndarray:
+    """p(z | pose) under the §5.3 mixture, for arbitrary pose arrays.
+
+    Exactly the density the belief update applies — exposed so proposal
+    hypotheses can be scored on the same footing as the belief (§5.5
+    evidence gate)."""
+    kappa_z = min(float(meas.kappa), MAX_KAPPA)
+    if log_weight is None:
+        log_weight = _identity_log_weights(table, catalog, matcher_recall)
+    observed_rad = math.radians(meas.bearing_body_deg)
+    log_null = math.log(pi0) - math.log(2.0 * math.pi)
+    log_mix = math.log1p(-pi0)
+    east_m = np.asarray(east_m, dtype=np.float64)
+    north_m = np.asarray(north_m, dtype=np.float64)
+    heading_rad = np.asarray(heading_rad, dtype=np.float64)
+    blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
+              for start in range(0, catalog.n, CANDIDATE_BLOCK)]
+    per_block = np.empty((east_m.shape[0], len(blocks) + 1))
+    per_block[:, 0] = log_null
+    for i, sl in enumerate(blocks):
+        per_block[:, i + 1] = special.logsumexp(
+            log_mix + _mixture_block_log_terms(
+                east_m, north_m, heading_rad, observed_rad, kappa_z,
+                log_weight, catalog, sl), axis=1)
+    return special.logsumexp(per_block, axis=1)
+
+
+def _responsibility_groups(belief: ParticleBelief, per_mode: bool) -> list:
+    """(mode_id, group_weights) rows: the whole belief first, then each mode.
+
+    Group weights are the posterior weights renormalized within the group,
+    zero outside it — the averaging weights for §5.4 per-mode association
+    posteriors. Shared by the numpy and torch backends so the reportable
+    form cannot drift between them.
+    """
+    weights = belief.normalized_weights()
+    groups = [(None, weights)]
+    if per_mode:
+        for mode_id in np.unique(belief.mode_id):
+            if int(mode_id) < 0:
+                continue
+            member = belief.mode_id == mode_id
+            mass = float(weights[member].sum())
+            if mass <= 0.0:
+                continue
+            group_weights = np.zeros(belief.n)
+            group_weights[member] = weights[member] / mass
+            groups.append((int(mode_id), group_weights))
+    return groups
+
+
 def measurement_update(
         belief: ParticleBelief,
         meas: structs.TrackletMeasurement,
         table: structs.CompatibilityTable,
         catalog: catalog_mod.LandmarkCatalog,
         pi0: float,
-        per_mode: bool = True) -> list:
-    """Association-marginalized bearing update (design doc §5.3).
+        per_mode: bool = True,
+        log_weight: np.ndarray = None,
+        resp_min: float = 0.0,
+        assoc: np.ndarray = None,
+        renewal_rate: float = 0.1,
+        outlier_rate: float = 0.1,
+        rng: np.random.Generator = None,
+        surprise: np.ndarray = None,
+        matcher_recall: float = 0.5) -> list:
+    """Bearing update (design doc §5.3), in one of two association regimes.
 
-    p(z|x) = pi0/(2 pi) + (1-pi0) * sum_j w_j * LR_j * vM(delta_j; kappa_eff)
+    `assoc is None` — per-epoch marginalization:
+
+        p(z|x) = pi0/(2 pi) + (1-pi0) * sum_j p(j|appearance) * vM(delta_j)
+
+    where p(j|appearance) is the PROPER identity posterior built from the
+    tracklet's table (`_identity_log_weights`; `matcher_recall` splits mass
+    between endorsed entries and the rest of the catalog).
+
+    `assoc` given — persistence: a tracklet is ONE physical object, so its
+    identity is a latent variable that persists across its epochs under a
+    renewal HMM, p(a_t | a_{t-1}) = (1-beta) delta + beta renewal:
+
+        w *= (1-beta) * p(z | x, a) + beta * p_mixture(z | x)
+
+    with p(z|x, a=j) = (1-eps) vM(delta_j) + eps/(2 pi) and p(z|x, null) =
+    1/(2 pi); the association renews (sampled from the mixture components,
+    Gumbel-max) exactly when the renewal branch wins, and uncommitted
+    particles reduce to the pure mixture (beta_effective = 1). Marginalizing
+    independently per epoch re-pays the 1/|catalog| candidate prior on
+    EVERY epoch of a tracklet, coupling bearing evidence to catalog size —
+    the A-5 dilution that kept the whole-map harbor run pinned to the null.
+    Persistence pays the identity prior once per tracklet; subsequent
+    epochs are pure geometry. `assoc` (int32: catalog index, ASSOC_NULL, or
+    ASSOC_UNCOMMITTED) is updated IN PLACE; `rng` is required.
 
     The candidate axis is processed in blocks so the (n_particles, n_cand)
-    temporaries stay bounded; two passes are needed because responsibilities
-    are normalized by the total likelihood.
+    temporaries stay bounded. `log_weight` (identity posterior) and
+    `surprise` (endorsement mask) may be passed precomputed — run_filter
+    caches one of each per table. `resp_min` drops responsibilities below
+    the threshold from the returned posteriors — a reporting filter only,
+    the likelihood itself is never truncated.
 
     Returns the whole-belief AssociationPosterior first, then one per mode
     (§5.4 `[CONTRACT]`): averaging responsibilities across a multimodal
     belief blends contradictory explanations into a number that describes
-    neither, so the per-mode split is the reportable form.
+    neither, so the per-mode split is the reportable form. Under
+    persistence the reported responsibilities are committed shares: the
+    weighted fraction of the group committed to each landmark.
     """
     if not 0.0 < pi0 < 1.0:
         raise ValueError(f"pi0 must be in (0, 1), got {pi0}")
@@ -248,23 +368,28 @@ def measurement_update(
         raise ValueError(f"kappa must be positive and finite, got "
                          f"{meas.kappa}")
     kappa_z = min(float(meas.kappa), MAX_KAPPA)
-    log_lr = _clipped_log_lr(table, catalog)
+    if log_weight is None:
+        log_weight = _identity_log_weights(table, catalog, matcher_recall)
+    if surprise is None:
+        surprise = _surprise_mask(table, _clipped_log_lr(table, catalog))
     observed_rad = math.radians(meas.bearing_body_deg)
     log_null = math.log(pi0) - math.log(2.0 * math.pi)
     log_mix = math.log1p(-pi0)
 
     def block_log_terms(sl):
-        """log[(1-pi0) * w_j * LR_j * vM(...)] for one candidate block."""
-        bearing_world, range_m = catalog.bearings_from(
-            belief.east_m, belief.north_m, sl)
-        delta = geodesy.wrap_rad(
-            bearing_world - belief.heading_rad[:, None] - observed_rad)
-        kappa_eff = catalog.kappa_eff(kappa_z, range_m, sl)
-        return (log_mix + catalog.log_prior[sl][None, :] + log_lr[sl][None, :]
-                + von_mises_logpdf(delta, kappa_eff))
+        """log[(1-pi0) * p(j|app) * vM(...)] for one candidate block."""
+        return log_mix + _mixture_block_log_terms(
+            belief.east_m, belief.north_m, belief.heading_rad,
+            observed_rad, kappa_z, log_weight, catalog, sl)
 
     blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
               for start in range(0, catalog.n, CANDIDATE_BLOCK)]
+
+    if assoc is not None:
+        return _persistence_update(
+            belief, meas, catalog, block_log_terms, blocks, log_null,
+            observed_rad, kappa_z, per_mode, resp_min, assoc,
+            renewal_rate, outlier_rate, rng, surprise)
 
     # Pass 1: total log-likelihood per particle.
     per_block = np.empty((belief.n, len(blocks) + 1))
@@ -276,31 +401,22 @@ def measurement_update(
 
     # Pass 2: responsibilities averaged under the updated particle weights,
     # for the whole belief and for each mode.
-    weights = belief.normalized_weights()
-    groups = [(None, np.ones(belief.n, dtype=bool), weights)]
-    if per_mode:
-        for mode_id in np.unique(belief.mode_id):
-            if int(mode_id) < 0:
-                continue
-            member = belief.mode_id == mode_id
-            mass = float(weights[member].sum())
-            if mass <= 0.0:
-                continue
-            group_weights = np.zeros(belief.n)
-            group_weights[member] = weights[member] / mass
-            groups.append((int(mode_id), member, group_weights))
+    groups = _responsibility_groups(belief, per_mode)
 
     responsibilities = [{} for _ in groups]
     null_shares = [0.0] * len(groups)
+    surprise_shares = [0.0] * len(groups)
     for sl in blocks:
         resp = np.exp(block_log_terms(sl) - log_lik[:, None])
-        for position, (_, _, group_weights) in enumerate(groups):
+        for position, (_, group_weights) in enumerate(groups):
             avg = group_weights @ resp
-            for offset, value in enumerate(avg):
+            surprise_shares[position] += float(avg @ surprise[sl])
+            for offset in np.nonzero(avg >= resp_min)[0]:
                 responsibilities[position][
-                    catalog.landmark_ids[sl.start + offset]] = float(value)
+                    catalog.landmark_ids[sl.start + offset]] = float(
+                        avg[offset])
     null_term = np.exp(log_null - log_lik)
-    for position, (_, _, group_weights) in enumerate(groups):
+    for position, (_, group_weights) in enumerate(groups):
         null_shares[position] = float(group_weights @ null_term)
 
     return [
@@ -309,13 +425,239 @@ def measurement_update(
             anchor_keyframe_idx=meas.anchor_keyframe_idx,
             null_share=null_shares[position],
             responsibilities=responsibilities[position],
-            mode_id=mode_id)
-        for position, (mode_id, _, _) in enumerate(groups)]
+            mode_id=mode_id,
+            surprise_share=surprise_shares[position])
+        for position, (mode_id, _) in enumerate(groups)]
+
+
+def measurement_draw_seed(seed: int, meas) -> int:
+    """Deterministic per-(tracklet, epoch) seed for persistence draws.
+
+    Association renewal SAMPLES. If those draws came from the shared run
+    rng, the outcome would depend on measurement order within a keyframe
+    (T-F7) and on how many draws unrelated machinery consumed. Deriving
+    each epoch's stream from (seed, tracklet, anchor) restores exact order
+    invariance. (The post-injection re-apply is made single-count by
+    restoring the kept mass's association state, not by draw identity —
+    the internal resample permutes particles across the stream.)
+    """
+    digest = hashlib.sha256(
+        f"{seed}:{meas.tracklet_id}:{meas.anchor_keyframe_idx}".encode()
+    ).digest()
+    return int.from_bytes(digest[:8], "little")
+
+
+def _identity_log_weights(table: structs.CompatibilityTable,
+                          catalog: catalog_mod.LandmarkCatalog,
+                          matcher_recall: float) -> np.ndarray:
+    """log p(j | tracklet appearance): a PROPER identity posterior over the
+    catalog, replacing the unnormalized w_j * LR_j product in the §5.3
+    mixture.
+
+    Entries the matcher endorses (clipped LLR above the clipped default)
+    share `matcher_recall` of the mass, softmax-weighted by their clipped
+    LLRs; every other row — unlisted or rejected — shares the remainder
+    uniformly. A table with no endorsed entries is uniform over the catalog
+    (the matcher said nothing).
+
+    Why not w_j * LR_j directly: it leaves the mixture IMPROPER — the
+    landmark branch integrates to (1-pi0) * sum_j w_j LR_j, a
+    table-dependent constant (~0.02 on the whole-map harbor tables), so the
+    effective clutter share was ~92% instead of the configured pi0. And
+    the tables' default_log_lr, summed over 13,208 unlisted rows, claims
+    87% odds the true landmark is one the matcher REJECTED, where the
+    measured miss rate is ~40%. Under that arithmetic a PERFECT
+    top-endorsed explanation scores below "call it clutter" (0.07 vs
+    1/2pi = 0.159 per radian), so the filter null-committed good tracklets
+    whenever its pose was a few hundred metres off, muting exactly the
+    bearings that would have corrected it — the exp5 drift.
+    `matcher_recall` is a property of the MATCHER (probability the true
+    landmark appears among a table's endorsed entries), not of any map;
+    the softmax preserves the table's relative evidence within entries.
+    """
+    if not 0.0 < matcher_recall < 1.0:
+        raise ValueError(f"matcher_recall must be in (0, 1), got "
+                         f"{matcher_recall}")
+    log_lr = _clipped_log_lr(table, catalog)
+    endorsed = ~_surprise_mask(table, log_lr)
+    n_endorsed = int(endorsed.sum())
+    weights = np.empty(catalog.n)
+    if n_endorsed == 0:
+        weights.fill(-math.log(catalog.n))
+        return weights
+    entry_logits = log_lr[endorsed]
+    if n_endorsed == catalog.n:
+        # No unendorsed remainder to hold (1 - recall): all mass goes to
+        # the endorsed softmax (degenerate but common in small test worlds).
+        weights[:] = log_lr - special.logsumexp(log_lr)
+        return weights
+    weights[endorsed] = (math.log(matcher_recall) + entry_logits
+                         - special.logsumexp(entry_logits))
+    weights[~endorsed] = (math.log1p(-matcher_recall)
+                          - math.log(catalog.n - n_endorsed))
+    return weights
+
+
+def _surprise_mask(table: structs.CompatibilityTable,
+                   log_lr: np.ndarray) -> np.ndarray:
+    """Candidates the matcher does NOT vouch for: clipped LLR at or below
+    the clipped default. Mass explaining a tracklet through these is
+    'identity surprise' — geometry says yes, the matcher says no — the
+    §8.4 kidnap signal that null share alone cannot see once a displaced
+    belief re-explains bearings with wrong landmarks."""
+    default_clipped = min(max(table.default_log_lr, table.clip_lo),
+                          table.clip_hi)
+    return log_lr <= default_clipped + 1e-12
+
+
+def committed_log_density(east_m, north_m, heading_rad, landmark_idx,
+                          observed_rad, kappa_z, outlier_rate, catalog):
+    """log p(z | pose, committed to landmark_idx): the persistence-regime
+    per-epoch geometry term, (1-eps) vM(delta; kappa_eff) + eps/(2 pi)."""
+    d_east = catalog.east_m[landmark_idx] - east_m
+    d_north = catalog.north_m[landmark_idx] - north_m
+    range_m = np.hypot(d_east, d_north)
+    bearing = geodesy.compass_bearing_rad(d_east, d_north)
+    delta = geodesy.wrap_rad(bearing - heading_rad - observed_rad)
+    kappa_eff = catalog.kappa_eff(kappa_z, range_m, landmark_idx)
+    vm = np.exp(von_mises_logpdf(delta, kappa_eff))
+    return np.log((1.0 - outlier_rate) * vm
+                  + outlier_rate / (2.0 * math.pi))
+
+
+def _persistence_update(belief, meas, catalog, block_log_terms, blocks,
+                        log_null, observed_rad, kappa_z, per_mode, resp_min,
+                        assoc, renewal_rate, outlier_rate, rng,
+                        surprise_mask) -> list:
+    """The persistence regime of `measurement_update` (see its docstring)."""
+    if rng is None:
+        raise ValueError("the persistence path samples associations and "
+                         "needs an rng")
+    if not 0.0 < renewal_rate <= 1.0:
+        raise ValueError(f"renewal_rate must be in (0, 1], got "
+                         f"{renewal_rate}")
+    n = belief.n
+    if assoc.shape != (n,):
+        raise ValueError(f"assoc shape {assoc.shape} != ({n},)")
+
+    # One blocked pass: mixture log-likelihood AND a Gumbel-max categorical
+    # sample for the renewal draw, without holding the full (n, catalog.n)
+    # matrix.
+    #
+    # Commitment requires matcher ENDORSEMENT: the sample space is
+    # {endorsed candidates} + one background bucket holding the null AND
+    # every default-LLR candidate. The mixture (and so the weight) keeps
+    # unendorsed candidates exactly; they just cannot be committed to.
+    # Letting a particle commit to the best-aligned of hundreds of in-cone
+    # default candidates and then ride full vM concentration is
+    # data-association overfitting — measured on the whole-map run, the
+    # dominant mode anchored itself on cherry-picked `place=square`-grade
+    # nodes (residual ~0.2 deg beats the true landmark's honest 2 deg by
+    # e^2 per epoch) and drifted 13 km while holding 80% of the posterior.
+    # A background commitment scores 1/(2 pi): uniform cannot compound.
+    per_block = np.empty((n, len(blocks) + 1))
+    per_block[:, 0] = log_null
+    background = np.full(n, log_null)  # running logsumexp: null + defaults
+    best_gumbel = np.full(n, -np.inf)
+    sampled = np.full(n, ASSOC_NULL, dtype=np.int32)
+    for i, sl in enumerate(blocks):
+        terms = block_log_terms(sl)
+        per_block[:, i + 1] = special.logsumexp(terms, axis=1)
+        unendorsed = surprise_mask[sl]
+        if unendorsed.any():
+            background = np.logaddexp(
+                background,
+                special.logsumexp(terms[:, unendorsed], axis=1))
+        endorsed = ~unendorsed
+        if endorsed.any():
+            gumbel = terms[:, endorsed] + rng.gumbel(
+                size=(n, int(endorsed.sum())))
+            arg = np.argmax(gumbel, axis=1)
+            value = gumbel[np.arange(n), arg]
+            better = value > best_gumbel
+            best_gumbel = np.where(better, value, best_gumbel)
+            block_idx = (sl.start + np.nonzero(endorsed)[0]).astype(np.int32)
+            sampled = np.where(better, block_idx[arg], sampled)
+    background_gumbel = background + rng.gumbel(size=n)
+    sampled = np.where(background_gumbel > best_gumbel,
+                       np.int32(ASSOC_NULL), sampled)
+    log_mix_lik = special.logsumexp(per_block, axis=1)
+
+    keep = np.zeros(n)
+    committed = assoc >= 0
+    if committed.any():
+        keep[committed] = np.exp(committed_log_density(
+            belief.east_m[committed], belief.north_m[committed],
+            belief.heading_rad[committed], assoc[committed],
+            observed_rad, kappa_z, outlier_rate, catalog))
+    keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
+
+    uncommitted = assoc == ASSOC_UNCOMMITTED
+    keep_scale = np.where(uncommitted, 0.0, 1.0 - renewal_rate)
+    renew_scale = np.where(uncommitted, 1.0, renewal_rate)
+    renew_term = renew_scale * np.exp(log_mix_lik)
+    likelihood = keep_scale * keep + renew_term
+    belief.log_weight += np.log(likelihood)
+
+    renew = rng.random(n) < renew_term / likelihood
+    assoc[renew] = sampled[renew]
+
+    return _commit_share_posteriors(belief, meas, assoc,
+                                    catalog.landmark_ids, per_mode, resp_min,
+                                    surprise_mask)
+
+
+def _commit_share_posteriors(belief, meas, assoc, landmark_ids, per_mode,
+                             resp_min, surprise_mask=None) -> list:
+    """AssociationPosterior from committed shares: the weighted fraction of
+    each group committed to each landmark / to the null (§5.4 reportable
+    form under persistence). Shared by the numpy and torch backends."""
+    groups = _responsibility_groups(belief, per_mode)
+    committed = assoc >= 0
+    surprised = (committed & surprise_mask[np.clip(assoc, 0, None)]
+                 if surprise_mask is not None
+                 else np.zeros(assoc.shape[0], dtype=bool))
+    posteriors = []
+    for mode_id, group_weights in groups:
+        responsibilities = {}
+        if committed.any():
+            mass = np.bincount(assoc[committed],
+                               weights=group_weights[committed],
+                               minlength=len(landmark_ids))
+            for j in np.nonzero(mass > max(resp_min, 0.0))[0]:
+                responsibilities[landmark_ids[j]] = float(mass[j])
+        posteriors.append(structs.AssociationPosterior(
+            tracklet_id=meas.tracklet_id,
+            anchor_keyframe_idx=meas.anchor_keyframe_idx,
+            null_share=float(group_weights[assoc == ASSOC_NULL].sum()),
+            responsibilities=responsibilities,
+            mode_id=mode_id,
+            surprise_share=float(group_weights[surprised].sum())))
+    return posteriors
 
 
 def ess(log_weight: np.ndarray) -> float:
     w = np.exp(log_weight - special.logsumexp(log_weight))
     return 1.0 / float(np.sum(np.square(w)))
+
+
+def _bandwidth_group_index(belief: ParticleBelief) -> np.ndarray:
+    """Group id per particle for kernel-bandwidth estimation.
+
+    Groups: each mode; then, for particles no mode has claimed, each
+    proposal (event, hypothesis) cluster; then the diffuse remainder.
+    Provenance matters because injected clusters are hypothesis-shaped long
+    before they hold enough posterior mass to register as modes — smoothing
+    them with the diffuse pool's bandwidth destroys them at birth.
+    """
+    kind = np.where(belief.mode_id >= 0, 0,
+                    np.where(belief.proposal_event_id >= 0, 1, 2))
+    a = np.where(kind == 0, belief.mode_id,
+                 np.where(kind == 1, belief.proposal_event_id, 0))
+    b = np.where(kind == 1, belief.proposal_hypothesis, 0)
+    _, inverse = np.unique(np.stack([kind, a, b]), axis=1,
+                           return_inverse=True)
+    return inverse
 
 
 def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
@@ -338,34 +680,98 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
     rather than injecting a fixed, arbitrary variance. `*_roughening_*` add
     a floor on top, for beliefs so collapsed that a proportional bandwidth
     cannot recover them (brute-force global init).
+
+    Resampling and smoothing are both PER GROUP (`_bandwidth_group_index`),
+    not global — the mixture-tracking construction (Vermaak et al.):
+
+    - Stratified allocation: each group's offspring count is its posterior
+      mass times n (largest-remainder rounding), and the low-variance draw
+      runs within the group. Resampling is a representational step, so mass
+      may move between hypotheses only through EVIDENCE (weight updates),
+      never through sampling noise. Globally-drawn resampling lets exactly
+      symmetric twin modes drift to 87/13 within 32 resamples (measured,
+      T-F3 world); stratified allocation holds them balanced until actual
+      evidence separates them.
+    - Per-group bandwidth: one global bandwidth is only right for a
+      unimodal belief. During global localization the belief is a set of
+      tight hypotheses inside a region-scale cloud, and a region-scale
+      bandwidth — 4.6 km median on the whole-map harbor run — re-diffused
+      every cluster at every resample; that run repeatedly found the true
+      pose and was un-finding it. Within a group the rule is unchanged, so
+      a unimodal belief behaves exactly as before. (Known approximation: an
+      arc-shaped proposal cluster gets an isotropic bandwidth from its own
+      elongated spread; acceptable because injected clusters are re-scored
+      by the very next measurement.)
     """
     n = belief.n
     weights = belief.normalized_weights()
+    group_index = _bandwidth_group_index(belief)
+    n_groups = int(group_index.max()) + 1
+
     # Bandwidths come from the pre-resample posterior — the distribution
-    # actually being smoothed.
-    bandwidth = regularization * n ** (-1.0 / 6.0) if regularization > 0 else 0.0
-    east_scale = north_scale = heading_scale = 0.0
-    if bandwidth > 0.0:
-        cov = position_covariance(belief)
-        east_scale = bandwidth * math.sqrt(max(cov[0, 0], 0.0))
-        north_scale = bandwidth * math.sqrt(max(cov[1, 1], 0.0))
-        heading_scale = bandwidth * math.radians(heading_std_deg(belief))
+    # actually being smoothed — one scale triple per group.
+    east_scale = np.zeros(n)
+    north_scale = np.zeros(n)
+    heading_scale = np.zeros(n)
+    if regularization > 0.0:
+        for group in range(n_groups):
+            member = group_index == group
+            n_group = int(member.sum())
+            mass = float(weights[member].sum())
+            if n_group < 2 or mass <= 0.0:
+                continue
+            w = weights[member] / mass
+            bandwidth = regularization * n_group ** (-1.0 / 6.0)
+            d_east = belief.east_m[member] - float(w @ belief.east_m[member])
+            d_north = (belief.north_m[member]
+                       - float(w @ belief.north_m[member]))
+            east_scale[member] = bandwidth * math.sqrt(
+                max(float(w @ (d_east * d_east)), 0.0))
+            north_scale[member] = bandwidth * math.sqrt(
+                max(float(w @ (d_north * d_north)), 0.0))
+            resultant = math.hypot(
+                float(w @ np.sin(belief.heading_rad[member])),
+                float(w @ np.cos(belief.heading_rad[member])))
+            resultant = min(max(resultant, 1e-15), 1.0 - 1e-15)
+            heading_scale[member] = bandwidth * math.sqrt(
+                -2.0 * math.log(resultant))
 
-    cumulative = np.cumsum(weights)
-    cumulative[-1] = 1.0  # guard against fp sum < 1
-    positions = (rng.random() + np.arange(n)) / n
-    belief.take(np.searchsorted(cumulative, positions, side="left"))
+    # Offspring per group: mass * n, largest-remainder rounding among
+    # groups that actually hold mass.
+    group_mass = np.bincount(group_index, weights=weights,
+                             minlength=n_groups)
+    raw = group_mass * n
+    counts = np.floor(raw).astype(np.int64)
+    shortfall = n - int(counts.sum())
+    if shortfall > 0:
+        fraction = np.where(group_mass > 0.0, raw - np.floor(raw), -1.0)
+        counts[np.argsort(-fraction)[:shortfall]] += 1
 
-    east_sigma = math.hypot(east_scale, position_roughening_m)
-    north_sigma = math.hypot(north_scale, position_roughening_m)
-    heading_sigma = math.hypot(heading_scale, heading_roughening_rad)
-    if east_sigma > 0.0:
-        belief.east_m += rng.normal(0.0, east_sigma, size=n)
-    if north_sigma > 0.0:
-        belief.north_m += rng.normal(0.0, north_sigma, size=n)
-    if heading_sigma > 0.0:
-        belief.heading_rad = geodesy.wrap_rad(
-            belief.heading_rad + rng.normal(0.0, heading_sigma, size=n))
+    idx_parts = []
+    for group in range(n_groups):
+        if counts[group] <= 0:
+            continue
+        members = np.nonzero(group_index == group)[0]
+        w_group = weights[members]
+        cumulative = np.cumsum(w_group / w_group.sum())
+        cumulative[-1] = 1.0  # guard against fp sum < 1
+        positions = (rng.random() + np.arange(counts[group])) / counts[group]
+        idx_parts.append(
+            members[np.searchsorted(cumulative, positions, side="left")])
+    idx = np.concatenate(idx_parts)
+    # Each offspring inherits its ancestor's group bandwidth.
+    east_scale = east_scale[idx]
+    north_scale = north_scale[idx]
+    heading_scale = heading_scale[idx]
+    belief.take(idx)
+
+    east_sigma = np.hypot(east_scale, position_roughening_m)
+    north_sigma = np.hypot(north_scale, position_roughening_m)
+    heading_sigma = np.hypot(heading_scale, heading_roughening_rad)
+    belief.east_m += rng.normal(0.0, 1.0, size=n) * east_sigma
+    belief.north_m += rng.normal(0.0, 1.0, size=n) * north_sigma
+    belief.heading_rad = geodesy.wrap_rad(
+        belief.heading_rad + rng.normal(0.0, 1.0, size=n) * heading_sigma)
     belief.log_weight = np.zeros(n)
 
 
@@ -386,17 +792,19 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     `proposal_test.RecoveryConsistencyTest` guards it rather than trusting
     the approximation.
 
-    Returns the number of particles injected.
+    Returns (n_injected, kept_idx): kept_idx is the ancestor index of each
+    retained particle, so per-tracklet association snapshots can be carried
+    through the internal resample (§5.3 persistence).
     """
     n_inject = int(round(config.proposal.inject_fraction * belief.n))
     if not result.hypotheses or n_inject <= 0:
-        return 0
+        return 0, None
     n_inject = min(n_inject, belief.n)
 
     east, north, heading, hypothesis = proposal_mod.sample_particles(
         result, n_inject, config.proposal, rng)
     if east.size == 0:
-        return 0
+        return 0, None
 
     n_keep = belief.n - n_inject
     if n_keep > 0:
@@ -406,9 +814,10 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
         cumulative = np.cumsum(weights)
         cumulative[-1] = 1.0
         positions = (rng.random() + np.arange(n_keep)) / n_keep
-        belief.take(np.searchsorted(cumulative, positions, side="left"))
+        kept_idx = np.searchsorted(cumulative, positions, side="left")
     else:
-        belief.take(np.zeros(0, dtype=np.int64))
+        kept_idx = np.zeros(0, dtype=np.int64)
+    belief.take(kept_idx)
 
     belief.east_m = np.concatenate([belief.east_m, east])
     belief.north_m = np.concatenate([belief.north_m, north])
@@ -423,6 +832,12 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     # the mode tracker reads their provenance to say where from.
     belief.mode_id = np.concatenate([
         belief.mode_id, np.full(east.size, -1, dtype=np.int64)])
+    # ...and no association history: they commit at each tracklet's next
+    # epoch, paying the identity prior the kept mass has already paid.
+    for tid in belief.associations:
+        belief.associations[tid] = np.concatenate([
+            belief.associations[tid],
+            np.full(east.size, ASSOC_UNCOMMITTED, dtype=np.int32)])
     # Kept mass carries (1 - phi), injected carries phi, spread evenly
     # within each component.
     keep_share = 1.0 - config.proposal.inject_fraction
@@ -430,10 +845,12 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
         np.full(n_keep, math.log(keep_share / n_keep) if n_keep else 0.0),
         np.full(east.size,
                 math.log(config.proposal.inject_fraction / east.size))])
-    return int(east.size)
+    return int(east.size), kept_idx
 
 
-def _proposal_event_record(result, n_injected: int) -> structs.ProposalEvent:
+def _proposal_event_record(result, n_injected: int, gate_passed: bool = True,
+                           gate_best: float = None,
+                           gate_ref: float = None) -> structs.ProposalEvent:
     return structs.ProposalEvent(
         event_id=result.event_id,
         keyframe_idx=result.keyframe_idx,
@@ -443,10 +860,138 @@ def _proposal_event_record(result, n_injected: int) -> structs.ProposalEvent:
         n_tracklets_considered=result.n_tracklets_considered,
         n_combinations_examined=result.n_combinations_examined,
         n_combinations_skipped=result.n_combinations_skipped,
+        gate_passed=gate_passed,
+        gate_best_hypothesis_nats=gate_best,
+        gate_reference_nats=gate_ref,
         hypothesis_tracklet_ids=[list(h.tracklet_ids)
                                  for h in result.hypotheses],
         hypothesis_landmark_ids=[list(h.landmark_ids)
                                  for h in result.hypotheses])
+
+
+def _belief_window_reference(belief, window_meas,
+                             config: structs.FilterConfig, catalog,
+                             score_fn, top_k: int = 512) -> float:
+    """The belief's own best explanation of the window, scored EXACTLY as
+    the filter scores it: committed geometry where a particle is committed,
+    the mixture where it is not (§5.3 persistence), maximized over the
+    top-weight particles.
+
+    Scoring the incumbent through the plain mixture (its poses alone)
+    understates a committed mode by orders of magnitude in a dense catalog:
+    measured on the whole-map harbor run, the mixture-referenced gate
+    passed junk injections against a mode holding HALF the posterior within
+    1.5 km of truth, and the resulting churn destroyed that mode during a
+    junk-measurement stretch (kf 280-330)."""
+    weights = belief.normalized_weights()
+    idx = np.argsort(-weights)[:min(top_k, belief.n)]
+    total = np.zeros(idx.size)
+    beta = config.association_renewal_rate
+    for meas in window_meas:
+        mix = np.exp(score_fn(belief.east_m[idx], belief.north_m[idx],
+                              belief.heading_rad[idx], meas))
+        assoc_arr = (belief.associations.get(meas.tracklet_id)
+                     if config.association_persistence else None)
+        if assoc_arr is None:
+            total += np.log(mix)
+            continue
+        assoc = assoc_arr[idx]
+        keep = np.zeros(idx.size)
+        committed = assoc >= 0
+        if committed.any():
+            keep[committed] = np.exp(committed_log_density(
+                belief.east_m[idx][committed],
+                belief.north_m[idx][committed],
+                belief.heading_rad[idx][committed], assoc[committed],
+                math.radians(meas.bearing_body_deg),
+                min(float(meas.kappa), MAX_KAPPA),
+                config.association_outlier_rate, catalog))
+        keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
+        uncommitted = assoc == ASSOC_UNCOMMITTED
+        keep_scale = np.where(uncommitted, 0.0, 1.0 - beta)
+        renew_scale = np.where(uncommitted, 1.0, beta)
+        total += np.log(keep_scale * keep + renew_scale * mix)
+    return float(total.max())
+
+
+def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
+                   rng: np.random.Generator, score_fn, belief,
+                   catalog) -> tuple:
+    """May this proposal displace belief mass? (§5.5 evidence gate.)
+
+    Injection is destructive — it hands `inject_fraction` of the posterior
+    to the proposal — so it has to be justified by evidence, not by distress
+    alone. The absolute null-share trigger cannot make that call: in a dense
+    catalog the null share stays high even while tracking the true pose
+    (whole-map harbor run: 25 of 27 injections carried no truth-consistent
+    hypothesis, each displacing half the belief — the filter repeatedly
+    found the pose and was reset off it by its own recovery mechanism).
+
+    The gate scores hypotheses and the incumbent belief against the same
+    window of recent bearings, treated as simultaneous — the same
+    approximation the proposal itself makes. Hypotheses are scored under
+    the measurement mixture (`pose_log_likelihood`): that is exactly what
+    an injected, uncommitted particle would experience. The incumbent is
+    scored the way the filter actually scores it — committed geometry
+    included (`_belief_window_reference`) — because the mixture understates
+    a committed mode by orders of magnitude in a dense catalog. Injection
+    proceeds only when the best hypothesis beats the incumbent by
+    `evidence_gate_margin_nats`. With no modes to protect (global init, or
+    modes disabled) the gate always passes.
+
+    Returns (passed, best_hypothesis_nats, reference_nats).
+    """
+    latest = {}
+    for meas in window:
+        previous = latest.get(meas.tracklet_id)
+        if (previous is None
+                or meas.anchor_keyframe_idx > previous.anchor_keyframe_idx):
+            latest[meas.tracklet_id] = meas
+    window_meas = sorted(latest.values(), key=lambda m: m.tracklet_id)
+    if not window_meas:
+        return True, None, None
+
+    def window_score(east, north, heading):
+        total = np.zeros(np.asarray(east).shape[0])
+        for meas in window_meas:
+            total += score_fn(east, north, heading, meas)
+        return total
+
+    modes = list(tracker._previous.values())  # noqa: SLF001 - same module
+    if not modes:
+        return True, None, None
+    ref = _belief_window_reference(belief, window_meas, config, catalog,
+                                   score_fn)
+
+    parts = []
+    for hypothesis in result.hypotheses:
+        east, north, heading = hypothesis.sample(
+            config.proposal.evidence_gate_samples, config.proposal, rng)
+        if east.size:
+            parts.append((east, north, heading))
+    if not parts:
+        return True, None, ref
+    scores = window_score(
+        np.concatenate([p[0] for p in parts]),
+        np.concatenate([p[1] for p in parts]),
+        np.concatenate([p[2] for p in parts]))
+    # Each hypothesis is scored by its MARGINAL window likelihood over its
+    # own sampling density (logsumexp - log S: what injecting it would
+    # actually contribute), never by its luckiest single pose. A tie-storm
+    # event scores ~10^4 poses; max-of-all-poses hands junk a
+    # multiple-comparisons bonus of several nats (measured: a 597-
+    # hypothesis event cleared the margin against a converged incumbent at
+    # kf 300 and displaced half of a 50 m-accurate belief 10 km).
+    # Selection across HYPOTHESES stays — one alternative being right is
+    # the point — and the margin covers that model choice.
+    best = -np.inf
+    offset = 0
+    for east, _, _ in parts:
+        segment = scores[offset:offset + east.size]
+        offset += east.size
+        best = max(best, float(special.logsumexp(segment))
+                   - math.log(segment.size))
+    return best >= ref + config.proposal.evidence_gate_margin_nats, best, ref
 
 
 def mean_pose(belief: ParticleBelief):
@@ -613,6 +1158,72 @@ def run_filter(
     heading_rw_rad = math.radians(config.heading_random_walk_deg)
     heading_rough_rad = math.radians(config.heading_roughening_deg)
 
+    # Tables are static for a run, so their identity posteriors and
+    # endorsement masks are computed once, not per measurement.
+    weight_cache = {
+        tid: _identity_log_weights(table, catalog, config.matcher_recall)
+        for tid, table in tables.items()}
+    surprise_cache = {
+        tid: _surprise_mask(table, _clipped_log_lr(table, catalog))
+        for tid, table in tables.items()}
+    resp_min = config.min_reported_responsibility
+
+    def _assoc_for(meas):
+        """This tracklet's per-particle association state (§5.3), created
+        uncommitted on its first epoch; None when persistence is off."""
+        if not config.association_persistence:
+            return None
+        arr = belief.associations.get(meas.tracklet_id)
+        if arr is None:
+            arr = np.full(belief.n, ASSOC_UNCOMMITTED, dtype=np.int32)
+            belief.associations[meas.tracklet_id] = arr
+        return arr
+
+    if config.measurement_backend == "torch":
+        # Lazy import: torch is a heavyweight dependency that only the GPU
+        # backend needs; the numpy path must stay importable without it.
+        from experimental.overhead_matching.swag.bearing_only_localization import (  # noqa: E501
+            torch_backend)
+        engine = torch_backend.TorchMeasurementEngine(
+            catalog, weight_cache, seed=config.seed,
+            surprise_by_tracklet=surprise_cache)
+
+        def apply_measurement(meas):
+            return engine.update(
+                belief, meas, config.pi0, per_mode=config.modes.enabled,
+                resp_min=resp_min, assoc=_assoc_for(meas),
+                renewal_rate=config.association_renewal_rate,
+                outlier_rate=config.association_outlier_rate,
+                draw_seed=measurement_draw_seed(config.seed, meas))
+    elif config.measurement_backend == "numpy":
+        def apply_measurement(meas):
+            return measurement_update(
+                belief, meas, tables[meas.tracklet_id], catalog, config.pi0,
+                per_mode=config.modes.enabled,
+                log_weight=weight_cache[meas.tracklet_id],
+                resp_min=resp_min,
+                assoc=_assoc_for(meas),
+                renewal_rate=config.association_renewal_rate,
+                outlier_rate=config.association_outlier_rate,
+                rng=np.random.default_rng(
+                    measurement_draw_seed(config.seed, meas)),
+                surprise=surprise_cache[meas.tracklet_id])
+    else:
+        raise ValueError(
+            f"unknown measurement_backend {config.measurement_backend!r}; "
+            f"expected 'numpy' or 'torch'")
+
+    if config.measurement_backend == "torch":
+        def score_fn(east, north, heading, meas):
+            return engine.pose_log_likelihood(east, north, heading, meas,
+                                              config.pi0)
+    else:
+        def score_fn(east, north, heading, meas):
+            return pose_log_likelihood(
+                east, north, heading, meas, tables[meas.tracklet_id],
+                catalog, config.pi0,
+                log_weight=weight_cache[meas.tracklet_id])
+
     meas_by_kf = {}
     for meas in measurements:
         meas_by_kf.setdefault(meas.anchor_keyframe_idx, []).append(meas)
@@ -641,11 +1252,17 @@ def run_filter(
             belief.mode_id = assignment.mode_id
             mode_events = assignment.events
 
+        # Snapshot this keyframe's association state: if a proposal fires
+        # below, the kept mass must not consume these epochs twice
+        # (information-epoch rule) — its state is restored before re-apply.
+        assoc_snapshot = {
+            m.tracklet_id: belief.associations[m.tracklet_id].copy()
+            for m in keyframe_measurements
+            if m.tracklet_id in belief.associations}
+
         associations = []
         for meas in keyframe_measurements:
-            associations.extend(measurement_update(
-                belief, meas, tables[meas.tracklet_id], catalog, config.pi0,
-                per_mode=config.modes.enabled))
+            associations.extend(apply_measurement(meas))
 
         belief.log_weight -= special.logsumexp(belief.log_weight)
         current_ess = ess(belief.log_weight)
@@ -655,7 +1272,14 @@ def run_filter(
         # publishes: when the belief stops explaining the bearings, the
         # evidence lands on the null hypothesis rather than on any landmark.
         if associations:
-            mean_null = float(np.mean([a.null_share for a in associations]))
+            # Distress = null share + identity-surprise share: the mass
+            # whose explanation of the tracklet the matcher would reject.
+            # Null alone misses a displaced belief that re-explains
+            # bearings with wrong landmarks — under association
+            # persistence those re-explainers ride committed vM weights
+            # and null share never rises (§8.4 identity-surprise entry).
+            mean_null = float(np.mean([a.null_share + a.surprise_share
+                                       for a in associations]))
             null_history.append(
                 mean_null > config.proposal.null_share_threshold)
             del null_history[:-config.proposal.null_share_window]
@@ -708,13 +1332,50 @@ def run_filter(
                 window, tables, catalog, config.proposal,
                 event_id=len(proposal_events), keyframe_idx=kf,
                 trigger=trigger)
-            n_injected = inject_proposal(belief, result, config, rng)
-            proposal_events.append(_proposal_event_record(result, n_injected))
+            gate_passed, gate_best, gate_ref = True, None, None
+            # The init trigger bypasses the gate: it only fires for an
+            # uninformative prior (§5.5), and the only thing standing is
+            # prior mass — which the mode tracker can still report as a
+            # "mode" in a small world (the uniform box's cells clear the
+            # mass threshold), leaving the gate defending a prior that
+            # says nothing.
+            if (config.proposal.evidence_gate and result.hypotheses
+                    and trigger != "init"):
+                gate_passed, gate_best, gate_ref = _evidence_gate(
+                    tracker, result, window, config, rng, score_fn, belief,
+                    catalog)
+            n_injected, kept_idx = ((0, None) if not gate_passed else
+                                    inject_proposal(belief, result, config,
+                                                    rng))
+            proposal_events.append(_proposal_event_record(
+                result, n_injected, gate_passed, gate_best, gate_ref))
+            if not gate_passed:
+                # A rejected event still consumes the refractory period: the
+                # trigger condition that fired it persists legitimately in a
+                # dense catalog (null share stays high while tracking), so
+                # without this the gate would be re-evaluated every keyframe.
+                last_proposal_kf = kf
             if n_injected:
                 event_id = result.event_id
                 last_proposal_kf = kf
                 null_history.clear()
                 low_ess_run = 0
+                # Restore the kept mass's pre-update association state for
+                # this keyframe's tracklets (remapped through the internal
+                # resample): the epochs are about to be re-applied to score
+                # the injected particles, and consuming them twice would
+                # double-count evidence (§5.3 information-epoch rule).
+                n_kept = belief.n - n_injected
+                for meas in keyframe_measurements:
+                    tid = meas.tracklet_id
+                    if tid not in belief.associations:
+                        continue
+                    previous = assoc_snapshot.get(tid)
+                    if previous is None:
+                        belief.associations[tid][:n_kept] = ASSOC_UNCOMMITTED
+                    else:
+                        belief.associations[tid][:n_kept] = (
+                            previous[kept_idx])
                 # Injected particles have not seen this keyframe's bearings,
                 # so re-apply them to the whole belief. Injected mass is
                 # drawn from a subset of tracklets; scoring everything under
@@ -722,9 +1383,7 @@ def run_filter(
                 # particles on the same footing.
                 associations = []
                 for meas in keyframe_measurements:
-                    associations.extend(measurement_update(
-                        belief, meas, tables[meas.tracklet_id], catalog,
-                        config.pi0, per_mode=config.modes.enabled))
+                    associations.extend(apply_measurement(meas))
                 belief.log_weight -= special.logsumexp(belief.log_weight)
                 current_ess = ess(belief.log_weight)
                 # Injection changed the belief, so the clusters that entered
@@ -764,7 +1423,11 @@ def run_filter(
         # final weighted posterior — and it is a copy, unaffected by the
         # resampling below.
         if kf % config.checkpoint_every == 0 or kf == n_keyframes - 1:
-            checkpoints[kf] = belief.copy()
+            snapshot = belief.copy()
+            # Association state is replayable from Tier 1 and would add
+            # ~n_tracklets * n_particles ints per checkpoint.
+            snapshot.associations = {}
+            checkpoints[kf] = snapshot
 
         if resampled:
             systematic_resample(belief, rng, config.resample_regularization,

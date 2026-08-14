@@ -1222,11 +1222,34 @@ py_binary(
 
 py_binary(
   name = "calibrate_mount_offset",
-  srcs = ["calibrate_mount_offset.py"],
+  # detect_vehicle_anchor is a src so --mask_vehicle shares one definition of
+  # "fixed in the camera frame" with the detector rather than restating it.
+  srcs = [
+    "calibrate_mount_offset.py",
+    "detect_vehicle_anchor.py",
+  ],
+  main = "calibrate_mount_offset.py",
   visibility = ["//visibility:public"],
   deps = [
     requirement("numpy"),
     requirement("opencv-python"),
+    requirement("pillow"),
+  ]
+)
+
+py_binary(
+  name = "annotate_recording_seams",
+  srcs = ["annotate_recording_seams.py"],
+  visibility = ["//visibility:public"],
+)
+
+py_binary(
+  name = "detect_vehicle_anchor",
+  srcs = ["detect_vehicle_anchor.py"],
+  visibility = ["//visibility:public"],
+  deps = [
+    requirement("numpy"),
+    requirement("pillow"),
   ]
 )
 

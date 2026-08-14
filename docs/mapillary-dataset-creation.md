@@ -363,6 +363,101 @@ Two audit warnings are expected on video-derived tracks: high implied speeds
 between frames a fraction of a second apart, which is GPS jitter over a tiny time
 base rather than motion. The audit prints the cause inline.
 
+## Triage after collection: what the audit cannot see
+
+A dataset can pass every contract check and still be useless, because the audit
+compares the dataset's files against each other and they do agree. What it never
+sees is whether the camera was bolted to the vessel — and that, not file
+consistency, is what decides usability. Seven of the first twenty-one
+trajectories were rejected on review, and all seven passed the audit.
+
+Watch `gps_timelapse.mp4` first. Nothing else finds a camera panning across the
+deck, a recording that restarts pointing the other way, or a stretch of open
+water with nothing to localise against. Then run the three tools that turn those
+impressions into numbers.
+
+```bash
+# is there a single mount offset, and is its direction resolved?
+bazel run //experimental/overhead_matching/swag/scripts:calibrate_mount_offset -- \
+    --dataset_path <dataset> --baseline_m 200 --mask_vehicle --write_metadata
+
+# is the camera bolted down, drifting, or is nothing vehicle-fixed in frame?
+bazel run //experimental/overhead_matching/swag/scripts:detect_vehicle_anchor -- \
+    --dataset_path <dataset> --write_overlay
+
+# which steps span a recording restart and must not carry a measured dyaw?
+bazel run //experimental/overhead_matching/swag/scripts:annotate_recording_seams -- \
+    --dataset_path <dataset>
+```
+
+**`--mask_vehicle` is not optional on a vessel-mounted perspective camera.** A
+bow, mast or rail is rigidly attached, so every correspondence on it has zero
+parallax and is consistent with pure rotation. Feed enough of those to
+`findEssentialMat` and the translation direction becomes whatever the remaining
+world points can drag it to. On `seattle` — 5.7% of the frame — masking moved the
+result from axis MAD 23° (rejected) to **MAD 4.0°, 98% aligned, 0% reversals**,
+an offset of 3.3°, i.e. a camera pointing straight down the direction of travel.
+Nothing about the dataset changed; the estimator had simply been fitting the boat.
+
+**Read the anchor detector against the offset, not alone.** They answer different
+questions and the interesting cases are where they disagree:
+
+| anchor | axis MAD | reading |
+|---|---|---|
+| `rigid` | low | calibrated; use the offset |
+| `rigid` | high | fixed camera the estimator could not solve — a method gap, worth retrying with a mask or a different baseline, *not* a reason to reject |
+| `drifting` | high | camera genuinely moved relative to the vessel; no single offset exists, and per-frame alignment against the anchor is the only route |
+| `no_anchor` | any | nothing vehicle-fixed is in frame, so the detector has no opinion; the axis MAD is the only evidence |
+
+`no_anchor` is a statement about the imagery, not the mount. A rigidly bolted
+camera looking out over open water lands there, and so does a handheld one.
+
+**Two gates, not one.** `axis_mad_deg` asks whether a single offset exists;
+`reversal_fraction` asks whether its *direction* is resolved. Near 50% that is a
+coin flip even when the axis is perfect — `fukuoka_yumechan_a` has an axis MAD of
+0.0° and 47% reversals, so its offset is known only to ±180°. Reversals are also
+genuine data: `folkestone_dover` backs off its berth before steaming out, and
+during that the travel direction really does invert while the mount does not.
+
+**Seams are not automatically faults.** `annotate_recording_seams` writes every
+break in continuity, then leaves the judgement to the consumer via `step_m` and
+`implied_speed_mps`. A ferry idle at its berth for three minutes between
+recordings has a large `dt_s` and a five-metre `step_m`: pose is continuous and
+nothing needs doing. The dangerous seam is the one where the vessel *manoeuvred*
+unobserved — `nyc_east_river` turned around during a 235 s gap, which is visible
+in the video and invisible in the positions.
+
+## Trimming
+
+Visual review usually condemns part of a trajectory rather than all of it.
+
+```bash
+bazel run //experimental/overhead_matching/swag/scripts:trim_dataset -- \
+    --dataset_path <dataset> --keep 0:165 --video_fps 15 \
+    --reason "..." --dry_run
+```
+
+Ranges are original frame indices; `--video_fps` converts a timestamp read off
+the timelapse (`frame = seconds x fps`, and check the fps — a track over 1500
+frames is subsampled, so `mississippi_rural` runs at two frames per video frame).
+
+Do not hand-edit the CSVs. The audit requires `frames_gps.idx` to be 0..N-1
+contiguous *and* `pano_id[1:] == idx`, because that equality is the ingest join
+key; cutting from the middle therefore forces a renumber, the renumber forces an
+image rename, and the rename has to reach all four tables together. The script
+moves dropped images and CSV backups to `trimmed_frames/` inside the dataset, so
+a trim costs no extra disk and is reversible.
+
+Two things go stale on every trim and the script says so: the `mount_offset`
+block (it is flagged `stale_after_trim` and forced unusable until re-measured),
+and, for equirectangular datasets, the pinhole faces, which reference the old
+pano_ids and must be regenerated with `panorama_to_pinhole`.
+
+Trims often confirm themselves. `kumamoto_yumechan_b` was cut on the visual
+judgement that its first 19 s had no landmarks; that same span turned out to
+carry 50.5% of steps above 25 m/s against 5.3% after, so the visual call and the
+GPS-quality boundary landed in the same place independently.
+
 ## Related
 
 * `~/scratch/mappilary/README.md` — the collection scripts themselves

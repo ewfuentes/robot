@@ -110,6 +110,34 @@ py_test(
 )
 
 py_library(
+    name = "torch_backend",
+    srcs = ["torch_backend.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        ":catalog",
+        ":filter",
+        ":structs",
+    ],
+)
+
+py_test(
+    name = "torch_backend_test",
+    srcs = ["torch_backend_test.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        ":catalog",
+        ":filter",
+        ":structs",
+        ":torch_backend",
+    ],
+)
+
+py_library(
     name = "scenario",
     srcs = ["scenario.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -279,6 +307,7 @@ py_binary(
         ":geodesy",
         ":run_log",
         ":structs",
+        ":torch_backend",
     ],
 )
 

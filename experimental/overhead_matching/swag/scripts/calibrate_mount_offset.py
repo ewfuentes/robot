@@ -40,6 +40,7 @@ import argparse
 import csv
 import json
 import math
+import sys
 from pathlib import Path
 
 import cv2
@@ -233,6 +234,47 @@ def fit_perspective_offset(pa, pb, focal_px, centre):
     return beta % 360.0, dpsi, int(inliers)
 
 
+def build_vehicle_mask(dataset: Path):
+    """Normalised mask of the parts of the frame bolted to the vehicle, or None.
+
+    A bow, a mast, a rail: rigidly attached structure moves *with* the camera, so
+    every correspondence on it is a pure-rotation observation with zero parallax.
+    Feed enough of those to findEssentialMat and the translation direction it
+    reports is whatever the remaining minority of world points can drag it to.
+    mississippi_rural's mast and bow cover 8.5% of the frame and nyc_east_river's
+    rail and cabin more, which is a large share of a RANSAC consensus set.
+
+    Delegated to detect_vehicle_anchor so there is one definition of "fixed in
+    the camera frame" -- in particular its x-derivative-only rule, without which
+    the mask would also swallow the horizon, the one band this estimator most
+    needs to keep.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import detect_vehicle_anchor as anchor
+    except ImportError:
+        return None
+    rows = list(csv.DictReader(open(dataset / "frames_gps.csv")))
+    persistence, _ = anchor.persistence_map(dataset, rows, (0, len(rows) - 1),
+                                            n_samples=40, work_w=480)
+    if persistence is None:
+        return None
+    mask = np.isfinite(persistence) & (persistence > anchor.ANCHOR_THRESHOLD)
+    return mask if mask.mean() > 0.01 else None
+
+
+def drop_masked_points(matched, mask, work_w, work_h):
+    """Keep only correspondences whose first-frame point is outside the mask."""
+    pa, pb = matched
+    mh, mw = mask.shape
+    cols = np.clip((pa[:, 0] / work_w * mw).astype(int), 0, mw - 1)
+    rows_ = np.clip((pa[:, 1] / work_h * mh).astype(int), 0, mh - 1)
+    keep = ~mask[rows_, cols]
+    if keep.sum() < 25:
+        return None
+    return pa[keep], pb[keep]
+
+
 def calibrate(dataset: Path, args):
     meta = json.loads((dataset / "pipeline_metadata.json").read_text()) \
         if (dataset / "pipeline_metadata.json").exists() else {}
@@ -262,6 +304,13 @@ def calibrate(dataset: Path, args):
         if focal_norm is None:
             print(f"{dataset.name}: perspective but no focal_norm, skipping")
             return None
+
+    vehicle_mask = None
+    if args.mask_vehicle and not is_equirect:
+        vehicle_mask = build_vehicle_mask(dataset)
+        if vehicle_mask is not None:
+            print(f"{dataset.name:24s} masking {100 * vehicle_mask.mean():.1f}% "
+                  f"of the frame as vehicle structure")
 
     orb = cv2.ORB_create(nfeatures=args.features)
     betas, dpsis, quality = [], [], []
@@ -297,6 +346,10 @@ def calibrate(dataset: Path, args):
             matched = match_features(a, b, orb)
             if matched is None:
                 continue
+            if vehicle_mask is not None:
+                matched = drop_masked_points(matched, vehicle_mask, work_w, work_h)
+                if matched is None:
+                    continue
             result = fit_perspective_offset(*matched, focal_px,
                                             (work_w / 2.0, work_h / 2.0))
             if result is None:
@@ -352,6 +405,48 @@ def calibrate(dataset: Path, args):
     }
 
 
+def write_metadata(dataset: Path, result, args):
+    """Put the calibration where a consumer will look for it, gates applied.
+
+    Only a calibration that passes both gates carries a number a caller may
+    apply. The axis MAD says whether a single offset exists at all; the reversal
+    fraction says whether its *direction* is resolved, and near 50% that is a
+    coin flip even when the axis is perfect. Publishing the angle with
+    `usable: false` and the reason beside it is safer than publishing nothing --
+    the next person re-derives it otherwise -- but it must never be readable as
+    an answer.
+    """
+    meta_path = dataset / "pipeline_metadata.json"
+    if not meta_path.exists():
+        return
+    meta = json.loads(meta_path.read_text())
+    if result.get("status") != "ok":
+        meta["mount_offset"] = {"usable": False, "status": result.get("status"),
+                                "baseline_m": args.baseline_m}
+        meta_path.write_text(json.dumps(meta, indent=2))
+        return
+    axis_ok = (result["axis_mad_deg"] <= args.constant_mad_deg
+               and result["aligned_fraction"] >= args.min_aligned_frac)
+    direction_ok = result["reversal_fraction"] <= 0.30
+    meta["mount_offset"] = {
+        "mount_offset_deg": result["mount_offset_deg"],
+        "axis_mad_deg": result["axis_mad_deg"],
+        "aligned_fraction": result["aligned_fraction"],
+        "reversal_fraction": result["reversal_fraction"],
+        "axis_constant": axis_ok,
+        "direction_ambiguous": not direction_ok,
+        "usable": bool(axis_ok and direction_ok),
+        "method": ("focus-of-expansion from image flow "
+                   "(calibrate_mount_offset.py); measures the direction of "
+                   "travel in the camera frame, which is the body x-axis "
+                   "gps_to_odometry declares by setting left_m=0"),
+        "baseline_m": args.baseline_m,
+        "pairs_used": result["usable_pairs"],
+        "projection": result["projection"],
+    }
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -378,7 +473,14 @@ def main():
     parser.add_argument("--constant_mad_deg", type=float, default=15.0,
                         help="Circular MAD at or below which the offset counts "
                              "as constant over the leg (default: 15)")
+    parser.add_argument("--mask_vehicle", action="store_true",
+                        help="Drop features on vehicle-fixed structure "
+                             "before the essential matrix (perspective only)")
     parser.add_argument("--output_json", type=Path)
+    parser.add_argument("--write_metadata", action="store_true",
+                        help="Also write the result into each dataset's "
+                             "pipeline_metadata.json under `mount_offset`, "
+                             "replacing any earlier block")
     args = parser.parse_args()
 
     results = []
@@ -401,6 +503,8 @@ def main():
             result = {"dataset": dataset.name, "status": "error", "error": str(exc)}
         if result:
             results.append(result)
+            if args.write_metadata:
+                write_metadata(dataset, result, args)
 
     if args.output_json:
         args.output_json.write_text(json.dumps(results, indent=2) + "\n")

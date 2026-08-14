@@ -257,9 +257,14 @@ class FilterIntegrationTest(unittest.TestCase):
             for tid, table in data.tables.items()}
         _, history = self._run(tables)
 
-        early = history.health[5]
-        self.assertGreaterEqual(len(early.modes), 2,
-                                "collapsed to one mode immediately")
+        # The first keyframes may report one mode: the uniform-prior remnant
+        # connects the twin clusters into a single component until the
+        # measurements crush it (see e2e_convergence_test's symmetric test).
+        # The contract is that both modes RESOLVE early and are held.
+        early = next((r for r in history.health if len(r.modes) >= 2), None)
+        self.assertIsNotNone(early, "never resolved two modes")
+        self.assertLessEqual(early.keyframe_idx, 20,
+                             "two modes should resolve within a few epochs")
         second_weight = sorted(early.modes, key=lambda m: -m.weight)[1].weight
         self.assertGreater(second_weight, 0.15,
                            "the rival hypothesis was never really held")
@@ -270,8 +275,20 @@ class FilterIntegrationTest(unittest.TestCase):
         self.assertEqual(len(final.modes), 2,
                          "the exactly-symmetric rival was killed without "
                          "evidence — absolute direction is leaking in")
-        self.assertGreater(final.mode_entropy_nats, 0.6,
-                           "modes are no longer balanced")
+        # Both modes must stay HELD, with non-trivial weight. Exact 50/50
+        # balance is NOT required: finite-sample noise in each mode's
+        # likelihood integral makes the mass ratio random-walk (measured
+        # over 8 seeds: final minority weight 0.13-0.50, winning side 4/4
+        # between truth and mirror — unbiased drift, not leakage). The old
+        # 0.6-entropy balance was an artifact of global-bandwidth
+        # resampling, whose region-scale jitter re-diffused both modes into
+        # kernel-shaped clouds each resample — the same over-smoothing that
+        # re-diffused every converged cluster on the whole-map harbor run.
+        self.assertGreater(final.mode_entropy_nats, 0.25,
+                           "the rival mode has effectively starved")
+        minority = sorted(final.modes, key=lambda m: -m.weight)[1].weight
+        self.assertGreater(minority, 0.08,
+                           "the rival mode has effectively starved")
         truth = data.truth[-1]
         nearest = min(
             math.hypot(m.mean_east_m - truth.east_m,

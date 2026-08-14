@@ -102,12 +102,13 @@ class MeasurementUpdateTest(unittest.TestCase):
                 "trk", 0, -180.0 + (i + 0.5) * step, 40.0)
             pf.measurement_update(belief, meas, table, catalog, pi0=0.2)
             total += math.exp(float(belief.log_weight[0])) * math.radians(step)
-        # LLRs are not likelihood ratios of a normalized density, so the
-        # integral is sum_j w_j LR_j (1-pi0) + pi0, not 1. Check that
-        # identity instead -- it is the one the mixture must satisfy.
-        expected = 0.2 + 0.8 * np.mean([math.exp(2.0), math.exp(-1.0),
-                                        math.exp(0.0)])
-        self.assertAlmostEqual(total, expected, delta=1e-3)
+        # The identity posterior (_identity_log_weights) sums to 1 over the
+        # catalog, so the mixture integrates to exactly 1 over the circle.
+        # (Under the earlier unnormalized w_j * LR_j weights the integral
+        # was pi0 + (1-pi0) * sum w_j LR_j — a table-dependent constant
+        # (~0.02 on the whole-map tables) that silently rescaled the
+        # effective clutter share from 20% to ~92%.)
+        self.assertAlmostEqual(total, 1.0, delta=1e-3)
 
     def test_null_floor_and_share(self):
         """Wildly inconsistent bearing: weights finite, null wins."""
@@ -549,6 +550,299 @@ class RunFilterDeterminismTest(unittest.TestCase):
         h2 = pf.run_filter(_tiny_config(8), *args)
         self.assertNotEqual(h1.particle_history_sha256,
                             h2.particle_history_sha256)
+
+
+class GroupBandwidthTest(unittest.TestCase):
+    """Kernel bandwidth is per group (mode / proposal provenance / diffuse):
+    one global bandwidth re-diffuses every converged cluster whenever the
+    belief is spread — the whole-map harbor failure mode."""
+
+    def _two_component_belief(self, rng):
+        n_tight, n_diffuse = 2000, 18000
+        belief = pf.ParticleBelief(
+            east_m=np.concatenate([rng.normal(0.0, 10.0, n_tight),
+                                   rng.uniform(-12000, 12000, n_diffuse)]),
+            north_m=np.concatenate([rng.normal(0.0, 10.0, n_tight),
+                                    rng.uniform(-12000, 12000, n_diffuse)]),
+            heading_rad=np.concatenate([
+                rng.normal(1.0, 0.02, n_tight),
+                rng.uniform(-np.pi, np.pi, n_diffuse)]),
+            log_weight=np.concatenate([
+                np.full(n_tight, math.log(0.5 / n_tight)),
+                np.full(n_diffuse, math.log(0.5 / n_diffuse))]))
+        return belief, n_tight
+
+    def _check_cluster_survives(self, belief):
+        member = np.hypot(belief.east_m, belief.north_m) < 500.0
+        # The cluster held half the posterior mass, so it should keep about
+        # half the particles...
+        self.assertGreater(float(member.mean()), 0.35)
+        # ...and stay tight: its own bandwidth is ~3 m. A global bandwidth
+        # would be ~900 m and smear it past recognition.
+        self.assertLess(float(belief.east_m[member].std()), 40.0)
+        self.assertLess(float(
+            np.std(belief.heading_rad[member] - 1.0)), 0.1)
+
+    def test_tight_mode_survives_resampling_in_spread_belief(self):
+        rng = np.random.default_rng(1)
+        belief, n_tight = self._two_component_belief(rng)
+        belief.mode_id = np.concatenate([
+            np.zeros(n_tight, dtype=np.int64),
+            np.full(belief.n - n_tight, -1, dtype=np.int64)])
+        pf.systematic_resample(belief, rng, regularization=1.0)
+        self._check_cluster_survives(belief)
+
+    def test_injected_cluster_survives_before_becoming_a_mode(self):
+        """Freshly injected hypothesis clusters have no mode yet; their
+        proposal provenance is their bandwidth group."""
+        rng = np.random.default_rng(2)
+        belief, n_tight = self._two_component_belief(rng)
+        belief.proposal_event_id = np.concatenate([
+            np.zeros(n_tight, dtype=np.int64),
+            np.full(belief.n - n_tight, -1, dtype=np.int64)])
+        belief.proposal_hypothesis = np.concatenate([
+            np.full(n_tight, 3, dtype=np.int64),
+            np.full(belief.n - n_tight, -1, dtype=np.int64)])
+        pf.systematic_resample(belief, rng, regularization=1.0)
+        self._check_cluster_survives(belief)
+
+    def test_unimodal_belief_matches_global_rule(self):
+        """With a single group the per-group rule IS the old global rule."""
+        rng = np.random.default_rng(0)
+        n = 20000
+        belief = pf.ParticleBelief(
+            east_m=rng.normal(100.0, 30.0, n),
+            north_m=rng.normal(-50.0, 30.0, n),
+            heading_rad=rng.normal(0.2, 0.05, n), log_weight=np.zeros(n))
+        before_std = pf.position_std_m(belief)
+        pf.systematic_resample(belief, rng, regularization=1.0)
+        expected = before_std * math.sqrt(1.0 + n ** (-1.0 / 3.0))
+        self.assertAlmostEqual(pf.position_std_m(belief), expected, delta=1.5)
+
+
+class AssociationPersistenceTest(unittest.TestCase):
+    """§5.3 persistence: a tracklet pays its identity prior once, then its
+    epochs are pure geometry (the anti-dilution property, audit A-5)."""
+
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        m = 400
+        east = rng.uniform(-9000, 9000, m)
+        north = rng.uniform(-9000, 9000, m)
+        east[0], north[0] = 0.0, 2000.0  # the true landmark
+        self.catalog = _catalog([f"lm_{i}" for i in range(m)], east, north)
+        self.table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("lm_0", 2.0)],
+            default_log_lr=-4.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+
+    @staticmethod
+    def _belief():
+        # Particle 0 at the origin heading north (sees lm_0 dead ahead);
+        # particle 1 in empty water.
+        return pf.ParticleBelief(np.array([0.0, 7000.0]),
+                                 np.array([0.0, -8500.0]),
+                                 np.array([0.0, 0.0]), np.zeros(2))
+
+    def _meas(self, epoch):
+        return structs.TrackletMeasurement("trk", epoch, 0.0, 3000.0)
+
+    def test_renewal_rate_one_reduces_to_the_mixture(self):
+        """beta = 1 is per-epoch marginalization exactly: the persistence
+        model nests the old one."""
+        belief_mixture = self._belief()
+        pf.measurement_update(belief_mixture, self._meas(0), self.table,
+                              self.catalog, 0.2)
+        belief_persist = self._belief()
+        assoc = np.full(2, pf.ASSOC_UNCOMMITTED, dtype=np.int32)
+        pf.measurement_update(belief_persist, self._meas(0), self.table,
+                              self.catalog, 0.2, assoc=assoc,
+                              renewal_rate=1.0,
+                              rng=np.random.default_rng(1))
+        np.testing.assert_allclose(belief_persist.log_weight,
+                                   belief_mixture.log_weight, atol=1e-12)
+
+    def test_committed_epochs_compound(self):
+        """After the first epoch commits, each further epoch is worth
+        ~log(vM_peak / (1/2pi)) — independent of catalog size — instead of
+        the diluted mixture nudge."""
+        rng = np.random.default_rng(3)
+        belief = self._belief()
+        assoc = np.full(2, pf.ASSOC_UNCOMMITTED, dtype=np.int32)
+        for epoch in range(6):
+            pf.measurement_update(belief, self._meas(epoch), self.table,
+                                  self.catalog, 0.2, assoc=assoc,
+                                  renewal_rate=0.05, rng=rng)
+        self.assertEqual(assoc[0], 0, "truth particle did not commit to "
+                                      "the true landmark")
+        self.assertEqual(assoc[1], pf.ASSOC_NULL,
+                         "empty-water particle should call the tracklet "
+                         "clutter")
+        advantage = belief.log_weight[0] - belief.log_weight[1]
+        self.assertGreater(advantage, 10.0,
+                           "committed epochs are not compounding")
+
+    def test_wrong_commitment_renews_away(self):
+        """A bad early commit is not a life sentence: the renewal branch
+        wins whenever the committed geometry stops explaining the bearing."""
+        n = 200
+        belief = pf.ParticleBelief(np.zeros(n), np.zeros(n), np.zeros(n),
+                                   np.zeros(n))
+        assoc = np.full(n, 5, dtype=np.int32)  # committed to a wrong lm
+        rng = np.random.default_rng(4)
+        for epoch in range(4):
+            pf.measurement_update(belief, self._meas(epoch), self.table,
+                                  self.catalog, 0.2, assoc=assoc,
+                                  renewal_rate=0.3, rng=rng)
+        self.assertGreater(float(np.mean(assoc == 0)), 0.8)
+
+    def test_unendorsed_candidates_cannot_be_committed(self):
+        """A perfectly aligned default-LLR candidate must land in the
+        background bucket (ASSOC_NULL), never be committed: committing to
+        the best-aligned of hundreds of in-cone unendorsed candidates and
+        riding full vM concentration is data-association overfitting (the
+        whole-map drift failure). The mixture still counts it exactly."""
+        # lm_1 sits dead ahead of the particle but is NOT a table entry.
+        catalog = _catalog(["lm_0", "lm_1"], [5000.0, 0.0], [5000.0, 2000.0])
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("lm_0", 2.0)],
+            default_log_lr=-4.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        n = 300
+        belief = pf.ParticleBelief(np.zeros(n), np.zeros(n), np.zeros(n),
+                                   np.zeros(n))
+        assoc = np.full(n, pf.ASSOC_UNCOMMITTED, dtype=np.int32)
+        pf.measurement_update(belief, self._meas(0), table, catalog, 0.2,
+                              assoc=assoc, renewal_rate=0.1,
+                              rng=np.random.default_rng(6))
+        self.assertEqual(int(np.sum(assoc == 1)), 0,
+                         "an unendorsed candidate was committed")
+        self.assertGreater(float(np.mean(assoc == pf.ASSOC_NULL)), 0.9)
+
+    def test_take_reindexes_associations(self):
+        belief = self._belief()
+        belief.associations["trk"] = np.array([7, 9], dtype=np.int32)
+        belief.take(np.array([1, 1]))
+        np.testing.assert_array_equal(belief.associations["trk"], [9, 9])
+
+
+class _FakeTracker:
+    def __init__(self, records):
+        self._previous = {r.mode_id: r for r in records}
+
+
+def _mode_record(mode_id, east, north, heading_deg):
+    return structs.ModeRecord(
+        mode_id=mode_id, weight=0.9, n_particles=1000,
+        mean_east_m=east, mean_north_m=north, mean_heading_deg=heading_deg,
+        position_std_m=30.0, heading_std_deg=3.0, birth_keyframe_idx=0)
+
+
+class EvidenceGateTest(unittest.TestCase):
+    """§5.5 evidence gate: injection must beat the best existing mode's
+    explanation of the window, not merely be triggered by distress."""
+
+    def setUp(self):
+        from experimental.overhead_matching.swag.bearing_only_localization import (  # noqa: E501
+            proposal as proposal_mod)
+        self.proposal_mod = proposal_mod
+        self.catalog = _catalog(["lm_true", "lm_far"],
+                                [0.0, 5000.0], [1000.0, -3000.0])
+        self.table = structs.CompatibilityTable(
+            tracklet_id="trk", matcher_version="v",
+            entries=[structs.CompatibilityEntry("lm_true", 4.0),
+                     structs.CompatibilityEntry("lm_far", 4.0)],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        # The vehicle at the origin, heading north, sees lm_true dead ahead.
+        self.window = [structs.TrackletMeasurement("trk", 5, 0.0, 820.0)]
+        self.config = structs.FilterConfig(
+            n_particles=10, seed=0,
+            init=structs.GaussianInit(0.0, 0.0, 1.0))
+
+        def score_fn(east, north, heading, meas):
+            return pf.pose_log_likelihood(east, north, heading, meas,
+                                          self.table, self.catalog, pi0=0.2)
+        self.score_fn = score_fn
+
+    def _disc_hypothesis(self, landmark_id):
+        index = self.catalog.index_of(landmark_id)
+        return self.proposal_mod.VisibilityDiscHypothesis(
+            kind=self.proposal_mod.SINGLE, tracklet_ids=("trk",),
+            landmark_ids=(landmark_id,),
+            landmark=(float(self.catalog.east_m[index]),
+                      float(self.catalog.north_m[index])),
+            bearing_rad=0.0,
+            max_range_m=2000.0)
+
+    def _result(self, hypotheses):
+        return self.proposal_mod.ProposalResult(
+            event_id=0, keyframe_idx=5, trigger="null_share",
+            hypotheses=hypotheses, n_tracklets_considered=1,
+            n_combinations_examined=1, n_combinations_skipped=0)
+
+    @staticmethod
+    def _belief_at(east, north, heading_rad):
+        return pf.ParticleBelief(np.full(4, east), np.full(4, north),
+                                 np.full(4, heading_rad), np.zeros(4))
+
+    def test_no_modes_always_passes(self):
+        passed, _, _ = pf._evidence_gate(
+            _FakeTracker([]), self._result([self._disc_hypothesis("lm_far")]),
+            self.window, self.config, np.random.default_rng(0),
+            self.score_fn, self._belief_at(0.0, 0.0, 0.0), self.catalog)
+        self.assertTrue(passed)
+
+    def test_equivalent_alternative_is_rejected(self):
+        """The belief already explains the bearing (via lm_true); a disc
+        around the tied lm_far explains it no better, so displacing half
+        the belief for it is unjustified."""
+        tracker = _FakeTracker([_mode_record(0, 0.0, 0.0, 0.0)])
+        passed, best, ref = pf._evidence_gate(
+            tracker, self._result([self._disc_hypothesis("lm_far")]),
+            self.window, self.config, np.random.default_rng(0),
+            self.score_fn, self._belief_at(0.0, 0.0, 0.0), self.catalog)
+        self.assertFalse(passed)
+        self.assertLess(best, ref + 1.0)
+
+    def test_kidnapped_mode_is_beaten(self):
+        """A displaced belief explains nothing; the hypothesis explains the
+        bearing exactly — recovery must proceed."""
+        tracker = _FakeTracker([_mode_record(0, 9000.0, 9000.0, 90.0)])
+        passed, best, ref = pf._evidence_gate(
+            tracker, self._result([self._disc_hypothesis("lm_true")]),
+            self.window, self.config, np.random.default_rng(0),
+            self.score_fn, self._belief_at(9000.0, 9000.0, math.pi / 2),
+            self.catalog)
+        self.assertTrue(passed)
+        self.assertGreater(best, ref + 1.0)
+
+    def test_reference_reads_the_committed_state(self):
+        """The reference scores the incumbent AS THE FILTER SCORES IT: a
+        belief committed to the true landmark must out-score the same
+        belief committed to a wrong one — the plain mixture at the same
+        poses cannot tell them apart, which is how the gate passed junk
+        injections against a converged mode (whole-map kf 280-330)."""
+        rng = np.random.default_rng(8)
+        m = 400
+        east = rng.uniform(-9000, 9000, m)
+        north = rng.uniform(-9000, 9000, m)
+        east[0], north[0] = 0.0, 1000.0  # lm_true's geometry
+        dense = _catalog([f"lm_{i}" for i in range(m)], east, north)
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("lm_0", 4.0)],
+            default_log_lr=-4.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+
+        def score_fn(e, n, h, meas):
+            return pf.pose_log_likelihood(e, n, h, meas, table, dense,
+                                          pi0=0.2)
+
+        belief_true = self._belief_at(0.0, 0.0, 0.0)
+        belief_true.associations["trk"] = np.zeros(4, dtype=np.int32)
+        belief_wrong = self._belief_at(0.0, 0.0, 0.0)
+        belief_wrong.associations["trk"] = np.full(4, 7, dtype=np.int32)
+        true_ref = pf._belief_window_reference(
+            belief_true, self.window, self.config, dense, score_fn)
+        wrong_ref = pf._belief_window_reference(
+            belief_wrong, self.window, self.config, dense, score_fn)
+        self.assertGreater(true_ref, wrong_ref + 2.0)
 
 
 if __name__ == "__main__":

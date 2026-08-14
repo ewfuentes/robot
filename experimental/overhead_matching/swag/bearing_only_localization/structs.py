@@ -161,6 +161,20 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # keyframe at 2.5 km), which is under the bearing noise.
     window_keyframes: int = 4
 
+    # Evidence gate on injection (§5.5): a fired trigger may displace belief
+    # mass only when the proposal's best hypothesis explains the recent
+    # bearing window better than every existing mode does, by this margin
+    # (both scored under the exact measurement mixture). Distress alone is
+    # not enough: in a dense catalog the null share stays high even while
+    # tracking the true pose, so the absolute null-share trigger fires
+    # forever — on the whole-map harbor run 25 of 27 injections carried no
+    # truth-consistent hypothesis, each displacing half the belief. With no
+    # modes to protect (global init, or modes disabled) the gate passes.
+    evidence_gate: bool = True
+    evidence_gate_margin_nats: float = 1.0
+    # Poses sampled per hypothesis when scoring it against the window.
+    evidence_gate_samples: int = 16
+
     # How injected mass is split across hypothesis kinds. Three-landmark
     # fixes are sharp but few and can be wrong; single-landmark discs are
     # broad but always available and still collapse the heading axis. Shares
@@ -233,6 +247,42 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Bin size for the highest-density (MAP) position estimate.
     map_cell_size_m: float = 50.0
     checkpoint_every: int = 10
+    # "numpy" (reference, bit-stable, CPU) or "torch" (GPU, float32; same
+    # mixture, reductions differ at fp32 epsilon — torch_backend_test bounds
+    # the divergence). Recorded here so the manifest states which engine
+    # produced a run.
+    measurement_backend: str = "numpy"
+    # §5.3 association persistence: a tracklet is ONE physical object, so
+    # its identity is a latent variable persisting across its epochs under
+    # a renewal HMM — w *= (1-beta) p(z|x, committed a) + beta p_mix(z|x),
+    # with the association renewed from the mixture responsibilities
+    # exactly when the renewal branch wins. Marginalizing independently per
+    # epoch re-pays the 1/|catalog| candidate prior on EVERY epoch,
+    # coupling bearing evidence to catalog size (audit A-5): on the
+    # whole-map harbor catalog (13k entries) even perfect matches could not
+    # beat the null floor, per epoch, forever. Persistence pays the
+    # identity prior once per tracklet; later epochs are pure geometry.
+    association_persistence: bool = True
+    # beta: per-epoch probability the tracklet's physical identity switched
+    # (track swaps at occlusions and bad merges are real tracker behavior;
+    # this is a tracker property, not a map property).
+    association_renewal_rate: float = 0.1
+    # eps: outlier rate within a correct association — a committed tracklet
+    # can still emit a bad bearing (partial occlusion, panorama seam).
+    association_outlier_rate: float = 0.1
+    # Probability the true landmark appears among a table's ENDORSED
+    # entries (given any exist) — a matcher property used to build the
+    # proper identity posterior (filter._identity_log_weights). Without it,
+    # summing the tables' default_log_lr over a whole-map catalog claims
+    # ~87% odds the true landmark is one the matcher rejected, and a
+    # perfect endorsed explanation scores below clutter. Measured ~0.6 on
+    # leg1 tracklets that have entries; 0.5 is the conservative default.
+    matcher_recall: float = 0.5
+    # Responsibilities below this are dropped from REPORTED association
+    # posteriors (likelihoods are never truncated). With a whole-map catalog
+    # the dense per-measurement dicts dominated run time and artifact size:
+    # 13k entries per measurement per mode, nearly all ~0.
+    min_reported_responsibility: float = 1e-6
     proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
     modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
 
@@ -276,6 +326,12 @@ class AssociationPosterior(msgspec.Struct):
     null_share: float
     responsibilities: dict[str, float] = {}
     mode_id: int | None = None
+    # Share of the group's mass explaining this tracklet through a
+    # candidate the matcher does NOT vouch for (clipped LLR at or below the
+    # clipped default): identity surprise. A displaced belief re-explains
+    # bearings with wrong landmarks — cheaply visible here, invisible to
+    # null share (§8.4). Kidnap detection triggers on null + surprise.
+    surprise_share: float = 0.0
 
 
 class HealthRecord(msgspec.Struct):
@@ -324,6 +380,11 @@ class ProposalEvent(msgspec.Struct):
     n_tracklets_considered: int
     n_combinations_examined: int
     n_combinations_skipped: int
+    # Evidence gate (§5.5): a rejected event has n_injected 0 and
+    # gate_passed False. Scores are window log-likelihoods in nats.
+    gate_passed: bool = True
+    gate_best_hypothesis_nats: float | None = None
+    gate_reference_nats: float | None = None
     # Parallel to the hypothesis index recorded on each injected particle.
     hypothesis_tracklet_ids: list[list[str]] = []
     hypothesis_landmark_ids: list[list[str]] = []
