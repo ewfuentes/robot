@@ -94,3 +94,12 @@ py_test(
     srcs = ["argoverse_cli_test.py"],
     deps = [":argoverse_cli_lib"],
 )
+
+# Not a dependency of the download manager (which is stdlib + msgspec only) -- this exists to
+# keep the opencv pin honest, since av2 is the only reason it moved off 4.7.
+py_test(
+    name = "av2_smoke_test",
+    size = "small",
+    srcs = ["av2_smoke_test.py"],
+    deps = [requirement("av2")],
+)

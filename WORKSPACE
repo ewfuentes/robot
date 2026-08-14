@@ -434,18 +434,18 @@ http_archive(
 
 http_archive(
   name = "opencv",
-  url = "https://github.com/opencv/opencv/archive/refs/tags/4.7.0.zip",
-  strip_prefix="opencv-4.7.0",
+  url = "https://github.com/opencv/opencv/archive/refs/tags/4.11.0.zip",
+  strip_prefix="opencv-4.11.0",
   build_file="//third_party:BUILD.opencv",
-  sha256 = "db6fb5e7dc76829d738fdbcdba11a810c66ca0a4752e531eaf3d793361e96de8",
+  sha256 = "11dbd2c8d248fa97ac7d20f33c4bab8559ef32835d1c9274009150bb2cf5218a",
 )
 
 http_archive(
   name = "opencv_contrib",
-  url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.zip",
-  strip_prefix="opencv_contrib-4.7.0",
+  url = "https://github.com/opencv/opencv_contrib/archive/refs/tags/4.11.0.zip",
+  strip_prefix="opencv_contrib-4.11.0",
   build_file="//third_party:BUILD.opencv_contrib",
-  integrity = "sha256-7wAYE+w5IVWTzp3rOuxwqFJ49XoO2IsY9vYVJlhVQ2w=",
+  integrity = "sha256-Pk64sZ7TgIkpaUO912kNhRmNC/0eXSEaKJImS8Z7IXY=",
   patch_args=["-p1"],
   patches = [
         "//third_party:opencv_contrib_0001-vtk9-breaks-spin-once.patch"

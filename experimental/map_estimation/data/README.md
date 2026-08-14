@@ -194,23 +194,33 @@ split-aware, so a bare `download sensor/test` just works.
 bazel test //experimental/map_estimation/data/...   # all offline; no network, no credentials
 ```
 
-## Known issue: the `av2` package and opencv
+## Using the upstream `av2` package
 
-The upstream `av2` package is **not** currently a dependency of this repo, and adding it is not
-yet useful: importing `av2.utils.io` (and therefore
-`av2.datasets.sensor.av2_sensor_dataloader`) fails under the pins this repo carries.
+`av2==0.3.6` is a dependency of this repo, so the upstream loaders work directly on what this
+tool downloads — no staging step, because the local tree mirrors S3 exactly:
 
+```python
+from av2.datasets.sensor.av2_sensor_dataloader import AV2SensorDataLoader
+
+data_dir = request.local_dir(al.DEFAULT_ROOT)          # <root>/sensor/val
+loader = AV2SensorDataLoader(data_dir=data_dir, labels_dir=data_dir)
+sweep_paths = loader.get_ordered_log_lidar_fpaths(log_id)
+pose = loader.get_city_SE3_ego(log_id, int(sweep_paths[0].stem))
 ```
-ModuleNotFoundError: No module named 'cv2.typing'
-```
 
-`av2` requires an unpinned `opencv-python`, while this repo pins `opencv-python==4.7.0.72`;
-`cv2.typing` only exists from 4.8 onward. So using the upstream loaders means resolving that
-opencv pin first — a repo-wide change affecting every existing `cv2` user, which belongs in its
-own PR alongside `av2==0.3.6` in `third_party/python/requirements_3_12.in`.
+**This required moving the opencv pin, and that pin is now load-bearing.** `av2/utils/io.py` does
+`from cv2.typing import MatLike` at module scope, and `cv2.typing` only exists from
+opencv-python 4.8 onward — under the previous 4.7.0.72 pin the sensor dataloader could not be
+imported at all. `av2_smoke_test.py` guards this so a regression fails in CI.
 
-This tooling does **not** depend on `av2` — it needs only the standard library and msgspec — so
-downloading is unaffected, and the downloaded files are readable directly with pyarrow:
+opencv is held at **4.11.x** deliberately: opencv-python ≥ 4.12 (and 5.x) require `numpy>=2`,
+while this repo pins `numpy==1.26.4`. Moving past 4.11 means a numpy 2 migration, whose real cost
+is bumping `pybind11` 2.11.1 → 2.13.x across the repo's 23 `pybind_extension` targets. The C++
+`@opencv` source build in `WORKSPACE` is kept at the matching 4.11.0.
+
+This tooling itself does **not** depend on `av2` — it needs only the standard library and
+msgspec — so downloads work regardless, and the files are also readable directly with pyarrow if
+you would rather skip the devkit:
 
 ```python
 import pyarrow.feather
