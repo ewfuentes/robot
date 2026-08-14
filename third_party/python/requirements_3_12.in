@@ -9,7 +9,7 @@ pandas==2.2.3
 polars==1.27.1
 scikit-learn==1.6.1
 tqdm==4.67.1
-opencv-python==4.7.0.72
+opencv-python==4.11.0.86
 Wand==0.6.11
 torch==2.7.0
 # setuptools==80.3.1
@@ -48,6 +48,7 @@ pyarrow==21.0.0
 z3-solver==4.15.4.0
 watchdog==6.0.0
 pymgl==0.5.0
+av2==0.3.6
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
 dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7

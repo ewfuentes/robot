@@ -34,7 +34,9 @@ cmake(
     generate_crosstool_file = False,
     lib_source = "@opencv//:all",
     includes = ["opencv4"],
-    out_shared_libs = SHARED_LIBS + 
-    [lib + ".407" for lib in SHARED_LIBS],
+    # OpenCV's soname is MAJOR*100 + MINOR. Must match the @opencv version in WORKSPACE, or
+    # the build fails output verification.
+    out_shared_libs = SHARED_LIBS +
+    [lib + ".411" for lib in SHARED_LIBS],
     visibility = ["//visibility:public"],
 )

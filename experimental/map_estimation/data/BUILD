@@ -94,3 +94,11 @@ py_test(
     srcs = ["argoverse_cli_test.py"],
     deps = [":argoverse_cli_lib"],
 )
+
+# The download manager does not use av2; this only guards the opencv pin av2 requires.
+py_test(
+    name = "av2_smoke_test",
+    size = "small",
+    srcs = ["av2_smoke_test.py"],
+    deps = [requirement("av2")],
+)
