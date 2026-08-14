@@ -108,15 +108,19 @@ class ItemValidationTest(unittest.TestCase):
             self.assertEqual(len(json.loads(out)), 2)
 
     def test_group_items_work_on_sensor_test(self):
-        """Every documented group must be usable on sensor/test, minus its absent items."""
+        """Every documented group must be usable on sensor/test, minus its absent items.
+
+        --dry_run keeps this offline; without it the command would really reach S3.
+        """
         for group in ("all", "metadata", "sensors", "cameras"):
             with self.subTest(group=group):
-                with run_cli(["--json", "download", "sensor/test", "--items", group],
+                with run_cli(["--json", "download", "sensor/test", "--items", group,
+                              "--dry_run"],
                              make_catalog(split="test"), root=Path("/tmp")) as (
                     code, out, err
                 ):
                     self.assertEqual(code, 0, err)
-                    self.assertNotIn("annotations", json.loads(out)["items"])
+                    self.assertNotIn("annotations", json.loads(out)["plan"]["items"])
 
 
 class ListTest(unittest.TestCase):
@@ -295,17 +299,37 @@ class DownloadTest(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("--yes", out)
 
-    def test_json_download_emits_only_the_plan(self):
-        """Progress and the final summary would corrupt the JSON stream."""
-        with mock.patch.object(cli, "input", create=True) as prompt, \
-             mock.patch.object(cli.ad, "execute") as execute:
-            with run_cli(["--json", "download", "sensor/val", "--items", "map"],
+    def test_json_dry_run_is_marked_unexecuted(self):
+        """A script must be able to tell a plan from a completed transfer; exit 0 cannot."""
+        with mock.patch.object(cli.ad, "execute") as execute:
+            with run_cli(["--json", "download", "sensor/val", "--items", "map", "--dry_run"],
                          root=self.root) as (code, out, _err):
                 self.assertEqual(code, 0)
                 parsed = json.loads(out)  # must parse: nothing else on stdout
-        prompt.assert_not_called()
         execute.assert_not_called()
-        self.assertEqual(parsed["spec"], "sensor/val")
+        self.assertFalse(parsed["executed"])
+        self.assertEqual(parsed["plan"]["spec"], "sensor/val")
+
+    def test_json_download_actually_transfers_and_says_so(self):
+        with mock.patch.object(cli, "input", create=True) as prompt, \
+             mock.patch.object(cli.ad, "execute", side_effect=self._fake_execute()) as execute:
+            with run_cli(["--json", "download", "sensor/val", "--items", "map"],
+                         root=self.root) as (code, out, err):
+                self.assertEqual(code, 0, err)
+                parsed = json.loads(out)
+        execute.assert_called_once()
+        prompt.assert_not_called()
+        self.assertTrue(parsed["executed"])
+        self.assertTrue(parsed["complete"])
+
+    def test_json_refuses_to_prompt_for_a_large_transfer(self):
+        """There is rarely a tty behind --json, and prompting would corrupt the stream."""
+        with mock.patch.object(cli.ad, "execute") as execute:
+            with run_cli(["--json", "download", "sensor/val", "--items", "map",
+                          "--confirm_above", "1KB"], root=self.root) as (code, _out, err):
+                self.assertEqual(code, 1)
+                self.assertIn("--yes", err)
+        execute.assert_not_called()
 
     def test_insufficient_space_is_reported_not_raised(self):
         with mock.patch.object(cli.ad.shutil, "disk_usage", return_value=mock.Mock(free=10)):
@@ -405,7 +429,7 @@ class IndexTest(unittest.TestCase):
         """--limit silently indexing the whole split would be worse than refusing it."""
         with self.assertRaises(SystemExit):
             with contextlib.redirect_stderr(io.StringIO()):
-                cli.build_parser().parse_args(["index", "sensor/val", "--limit", "10"])
+                cli.parse_args(["index", "sensor/val", "--limit", "10"])
 
     def test_partial_refresh_without_an_existing_catalog_is_refused(self):
         """Saving the one-log result as the split's catalog would hide the other 149 logs."""
@@ -485,8 +509,39 @@ class PlumbingTest(unittest.TestCase):
         self.assertEqual([entry["log_id"] for entry in parsed], [LOG_A])
 
     def test_default_root(self):
-        args = cli.build_parser().parse_args(["list", "sensor/val"])
+        args = cli.parse_args(["list", "sensor/val"])
         self.assertEqual(args.root, al.DEFAULT_ROOT)
+
+    def test_shared_flags_work_after_the_subcommand(self):
+        """The README promises `--json on any subcommand`; argparse rejects it by default."""
+        for argv in (
+            ["list", "sensor/val", "--json"],
+            ["--json", "list", "sensor/val"],
+        ):
+            with self.subTest(argv=argv):
+                self.assertTrue(cli.parse_args(argv).json)
+
+        args = cli.parse_args(["download", "sensor/val", "--root", "/tmp/x",
+                               "--verify_bytes", "--num_workers", "4"])
+        self.assertEqual(args.root, Path("/tmp/x"))
+        self.assertTrue(args.verify_bytes)
+        self.assertEqual(args.num_workers, 4)
+
+    def test_leading_shared_flags_survive_the_subparser(self):
+        """The classic parents= trap: a subparser default clobbering a value given earlier."""
+        args = cli.parse_args(["--root", "/tmp/x", "--json", "list", "sensor/val"])
+        self.assertEqual(args.root, Path("/tmp/x"))
+        self.assertTrue(args.json)
+
+    def test_trailing_position_wins_when_given_twice(self):
+        args = cli.parse_args(
+            ["--root", "/tmp/a", "list", "sensor/val", "--root", "/tmp/b"])
+        self.assertEqual(args.root, Path("/tmp/b"))
+
+    def test_verbosity_levels(self):
+        self.assertEqual(cli.parse_args(["list", "sensor/val"]).verbose, 0)
+        self.assertEqual(cli.parse_args(["list", "sensor/val", "-v"]).verbose, 1)
+        self.assertEqual(cli.parse_args(["list", "sensor/val", "-vv"]).verbose, 2)
 
     def test_print_table_aligns_columns(self):
         stdout = io.StringIO()

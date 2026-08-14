@@ -40,10 +40,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIRM_ABOVE = "10GB"
 
 
-def setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.INFO if verbose else logging.WARNING, format="%(message)s"
-    )
+def setup_logging(verbose: int) -> None:
+    """-v gives s5cmd invocations and periodic transfer progress; -vv adds per-object lines."""
+    level = logging.WARNING
+    if verbose == 1:
+        level = logging.INFO
+    elif verbose >= 2:
+        level = logging.DEBUG
+    logging.basicConfig(level=level, format="%(message)s")
 
 
 def print_json(data) -> None:
@@ -328,12 +332,7 @@ def cmd_download(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
-        # Emit the plan and stop: printing progress and the final summary into the same stream
-        # would corrupt the JSON, and a --json caller has no tty to answer the size prompt.
-        print_json(download_plan)
-        return 0
-    else:
+    if not args.json:
         print(f"plan: {download_plan.spec} -> {request.local_dir(args.root)}")
         print(f"  items: {', '.join(download_plan.items)}")
         print(f"  {download_plan.summary()}")
@@ -351,16 +350,35 @@ def cmd_download(args) -> int:
             print(f"  free space: {s5cmd.format_bytes(download_plan.free_bytes)} -> "
                   f"{s5cmd.format_bytes(after)}")
 
+    def emit_json(executed: bool, result=None, complete: bool | None = None) -> None:
+        """Single JSON document describing what was planned and whether it actually ran.
+
+        `executed` is explicit so a script cannot mistake a plan for a completed transfer --
+        exit status alone would say 0 either way.
+        """
+        print_json({
+            "plan": download_plan,
+            "executed": executed,
+            "complete": complete,
+            "result": result,
+        })
+
     if args.print_commands:
         for command in download_plan.to_commands(overwrite=args.overwrite):
             print(command)
         return 0
 
     if download_plan.is_empty:
-        print("nothing to download; everything requested is already present.")
+        if args.json:
+            emit_json(executed=False, complete=True)
+        else:
+            print("nothing to download; everything requested is already present.")
         return 0
 
     if args.dry_run:
+        if args.json:
+            emit_json(executed=False)
+            return 0
         for transfer in download_plan.transfers[:10]:
             print(f"  {transfer.log_id[:12]}... {transfer.item:<20} "
                   f"{s5cmd.format_bytes(transfer.num_bytes):>10}  {transfer.src}")
@@ -372,6 +390,12 @@ def cmd_download(args) -> int:
 
     threshold = ad.parse_size(args.confirm_above)
     if not args.yes and download_plan.total_bytes > threshold:
+        if args.json:
+            # Prompting would corrupt the JSON stream and there is rarely a tty behind --json.
+            raise ValueError(
+                f"--json needs --yes to transfer {s5cmd.format_bytes(download_plan.total_bytes)} "
+                f"(over --confirm_above {args.confirm_above}), or --dry_run to just see the plan"
+            )
         prompt = (f"Download {s5cmd.format_bytes(download_plan.total_bytes)} to "
                   f"{request.local_dir(args.root)}? [y/N]: ")
         try:
@@ -386,13 +410,16 @@ def cmd_download(args) -> int:
             return 1
 
     result = ad.execute(download_plan, opts=_options(args), overwrite=args.overwrite)
-    rate = download_plan.total_bytes / result.elapsed_s if result.elapsed_s else 0
-    print(f"done: {download_plan.total_objects} objects, "
-          f"{s5cmd.format_bytes(download_plan.total_bytes)} in {result.elapsed_s:.1f} s "
-          f"({s5cmd.format_bytes(int(rate))}/s). {len(result.failures)} failures.")
+    if not args.json:
+        rate = download_plan.total_bytes / result.elapsed_s if result.elapsed_s else 0
+        print(f"done: {download_plan.total_objects} objects, "
+              f"{s5cmd.format_bytes(download_plan.total_bytes)} in {result.elapsed_s:.1f} s "
+              f"({s5cmd.format_bytes(int(rate))}/s). {len(result.failures)} failures.")
     for failure in result.failures[:10]:
         print(f"  {failure}", file=sys.stderr)
     if not result.ok:
+        if args.json:
+            emit_json(executed=True, result=result, complete=False)
         return 1
 
     # A zero exit is not proof the data landed -- `cp -n` silently declines to replace a
@@ -413,7 +440,12 @@ def cmd_download(args) -> int:
                       "objects", file=sys.stderr)
         print("  if local files are the wrong size rather than absent, re-run with "
               "--overwrite", file=sys.stderr)
+        if args.json:
+            emit_json(executed=True, result=result, complete=False)
         return 1
+
+    if args.json:
+        emit_json(executed=True, result=result, complete=True)
     return 0
 
 
@@ -507,34 +539,66 @@ def _add_item_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+# Options accepted either before or after the subcommand. They are parsed in their own pass
+# (see :func:`parse_args`) rather than declared on every subparser, because argparse's merge of
+# a subparser's namespace into the parent's is subtle enough that `--json` given *before* the
+# subcommand was silently lost when the same option also existed on the subparser.
+_SHARED_DESTS = ("json", "verbose", "root", "cache_dir", "catalog", "refresh", "num_workers",
+                 "verify_bytes")
+
+
+def _shared_parser() -> argparse.ArgumentParser:
+    """Parser for the options that may appear anywhere on the command line."""
+    shared = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    shared.add_argument("--json", action="store_true", help="machine-readable output")
+    shared.add_argument("--verbose", "-v", action="count", default=0,
+                        help="log s5cmd invocations; repeat (-vv) for per-object transfer lines")
+    shared.add_argument("--root", type=Path, default=al.DEFAULT_ROOT,
+                        help=f"local dataset root (default: {al.DEFAULT_ROOT})")
+    shared.add_argument("--cache_dir", type=Path, default=ac.CACHE_DIR,
+                        help=f"catalog cache directory (default: {ac.CACHE_DIR})")
+    shared.add_argument("--catalog", type=Path, default=None,
+                        help="explicit catalog json, bypassing the cache")
+    shared.add_argument("--refresh", action="store_true",
+                        help="rebuild the catalog from S3 before running")
+    shared.add_argument("--num_workers", type=int, default=s5cmd.DEFAULT_NUM_WORKERS,
+                        help=f"s5cmd parallelism (default: {s5cmd.DEFAULT_NUM_WORKERS})")
+    shared.add_argument("--verify_bytes", action="store_true",
+                        help="compare local byte counts, not just object counts")
+    return shared
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the command line, accepting shared options on either side of the subcommand.
+
+    Two passes: the shared parser takes its options out of argv wherever they appear, then the
+    subcommand parser handles what is left. Explicit rather than relying on argparse to merge a
+    subparser's namespace into its parent's, which drops values depending on position.
+    """
+    shared_args, remaining = _shared_parser().parse_known_args(argv)
+    args = build_parser().parse_args(remaining)
+    for dest in _SHARED_DESTS:
+        setattr(args, dest, getattr(shared_args, dest))
+    return args
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # The shared options are declared here purely so `--help` lists them; parse_args() has
+    # already removed them from argv by the time this parser runs.
     parser = argparse.ArgumentParser(
         prog="argoverse",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[_shared_parser()],
     )
-    parser.add_argument("--json", action="store_true", help="machine-readable output")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="log every s5cmd invocation")
-    parser.add_argument("--root", type=Path, default=al.DEFAULT_ROOT,
-                        help=f"local dataset root (default: {al.DEFAULT_ROOT})")
-    parser.add_argument("--cache_dir", type=Path, default=ac.CACHE_DIR,
-                        help=f"catalog cache directory (default: {ac.CACHE_DIR})")
-    parser.add_argument("--catalog", type=Path, default=None,
-                        help="explicit catalog json, bypassing the cache")
-    parser.add_argument("--refresh", action="store_true",
-                        help="rebuild the catalog from S3 before running")
-    parser.add_argument("--num_workers", type=int, default=s5cmd.DEFAULT_NUM_WORKERS,
-                        help=f"s5cmd parallelism (default: {s5cmd.DEFAULT_NUM_WORKERS})")
-    parser.add_argument("--verify_bytes", action="store_true",
-                        help="compare local byte counts, not just object counts")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_list = subparsers.add_parser("list", help="list a dataset+split's logs")
     _add_selector_args(p_list)
+    _add_item_args(p_list)
     p_list.add_argument("--local", action="store_true",
-                        help="add a LOCAL column (scans the destination tree)")
+                        help="add a LOCAL column for --items (scans the destination tree)")
     p_list.set_defaults(func=cmd_list)
 
     p_show = subparsers.add_parser("show", help="show one log's items and local state")
@@ -583,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_args(argv)
     setup_logging(args.verbose)
     try:
         return args.func(args)

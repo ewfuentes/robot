@@ -196,18 +196,21 @@ bazel test //experimental/map_estimation/data/...   # all offline; no network, n
 
 ## Known issue: the `av2` package and opencv
 
-`av2==0.3.6` is in `third_party/python/requirements_3_12.in` for downstream dataloading, but
-importing `av2.utils.io` (and therefore `av2.datasets.sensor.av2_sensor_dataloader`) currently
-fails:
+The upstream `av2` package is **not** currently a dependency of this repo, and adding it is not
+yet useful: importing `av2.utils.io` (and therefore
+`av2.datasets.sensor.av2_sensor_dataloader`) fails under the pins this repo carries.
 
 ```
 ModuleNotFoundError: No module named 'cv2.typing'
 ```
 
 `av2` requires an unpinned `opencv-python`, while this repo pins `opencv-python==4.7.0.72`;
-`cv2.typing` only exists from 4.8 onward. This tooling does **not** depend on `av2` — it needs
-only the standard library and msgspec — so downloading is unaffected, and the downloaded files
-are readable directly with pyarrow:
+`cv2.typing` only exists from 4.8 onward. So using the upstream loaders means resolving that
+opencv pin first — a repo-wide change affecting every existing `cv2` user, which belongs in its
+own PR alongside `av2==0.3.6` in `third_party/python/requirements_3_12.in`.
+
+This tooling does **not** depend on `av2` — it needs only the standard library and msgspec — so
+downloading is unaffected, and the downloaded files are readable directly with pyarrow:
 
 ```python
 import pyarrow.feather
@@ -215,4 +218,3 @@ poses = pyarrow.feather.read_table(log.item_path(al.SensorItem.POSES))
 sweep = pyarrow.feather.read_table(next(log.item_path(al.SensorItem.LIDAR).glob("*.feather")))
 ```
 
-Using the `av2` loaders will require resolving that opencv pin first.

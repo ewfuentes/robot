@@ -293,15 +293,20 @@ def _build_prefix_only(
     opts: s5cmd.Options,
     concurrency: int,
     progress: Callable[[int, int], None] | None,
-) -> tuple[list[LogEntry], int]:
+    measure_all: bool = False,
+) -> tuple[list[LogEntry], int, list[str]]:
     """Enumerate log ids, then extrapolate sizes from a small measured sample.
 
     Motion-forecasting scenarios are uniform -- exactly one parquet and one map json -- so a
     sample gives usable plan totals at a fraction of the cost of 250 000 listings. Callers can
     tell these numbers apart via ``Catalog.sizes_are_inferred``.
+
+    `measure_all` lists every id instead of sampling. Required when the caller named specific
+    ids: sampling would leave ids past the sample size unlisted, and each would then be handed
+    a *fabricated* row built from the sample mean -- inventing scenarios that may not exist.
     """
-    sample_ids = list(log_ids[:PREFIX_ONLY_SAMPLE_SIZE])
-    measured, _failed = _build_per_log_detail(request, sample_ids, opts, concurrency, progress)
+    sample_ids = list(log_ids) if measure_all else list(log_ids[:PREFIX_ONLY_SAMPLE_SIZE])
+    measured, failed = _build_per_log_detail(request, sample_ids, opts, concurrency, progress)
     if not measured:
         raise CatalogError(f"could not measure any sample logs under {request.s3_prefix()}")
 
@@ -316,6 +321,10 @@ def _build_prefix_only(
         )
 
     by_id = {entry.log_id: entry for entry in measured}
+    if measure_all:
+        # Every id was listed, so nothing is extrapolated and a failed id must not be invented.
+        return [by_id[log_id] for log_id in log_ids if log_id in by_id], len(measured), failed
+
     # dict(mean_stats) per row rather than the shared instance: LogEntry is frozen but its
     # `items` dict is not, so aliasing one dict across ~250 000 rows would let a single in-place
     # mutation silently rewrite every extrapolated entry.
@@ -323,7 +332,7 @@ def _build_prefix_only(
         by_id.get(log_id, LogEntry(log_id=log_id, city=None, items=dict(mean_stats)))
         for log_id in log_ids
     ]
-    return entries, len(measured)
+    return entries, len(measured), failed
 
 
 def build(
@@ -353,7 +362,12 @@ def build(
     if strategy is BuildStrategy.PER_LOG_DETAIL:
         entries, failed = _build_per_log_detail(request, ids, opts, concurrency, progress)
     else:
-        entries, sampled_logs = _build_prefix_only(request, ids, opts, concurrency, progress)
+        # An explicit id list is short and precise, so measure all of it rather than sampling.
+        entries, sampled_logs, failed = _build_prefix_only(
+            request, ids, opts, concurrency, progress, measure_all=explicit_ids
+        )
+        if explicit_ids:
+            sampled_logs = None  # nothing was extrapolated
 
     if not entries:
         # Never return an empty catalog. Caching one would make every later list/download
@@ -497,8 +511,13 @@ def filter_logs(
         patterns = [str(value).strip() for value in log_ids if str(value).strip()]
         literals = [p for p in patterns if not any(c in p for c in "*?[")]
         globs = [p for p in patterns if p not in literals]
+        # One dict rather than a Catalog.get() linear scan per id: a few thousand ids against
+        # motion-forecasting's ~200k rows would otherwise be O(ids x logs) string comparisons
+        # (plus a difflib pass per miss) before a single byte moves.
+        known = {entry.log_id for entry in catalog.logs}
         for literal in literals:
-            catalog.get(literal)  # raises KeyError with a hint if absent
+            if literal not in known:
+                catalog.get(literal)  # raises KeyError with a near-miss hint
         selected = {p for p in literals}
         matched = [
             entry

@@ -42,6 +42,9 @@ DEFAULT_NUM_WORKERS = 32
 # How much of a failed batch's output to quote back when s5cmd gives no parseable error line.
 _OUTPUT_TAIL_LINES = 20
 
+# Emit a progress line at INFO at most this often during a transfer.
+_PROGRESS_INTERVAL_S = 5.0
+
 
 class S5cmdNotFoundError(RuntimeError):
     """The s5cmd binary could not be located."""
@@ -245,6 +248,7 @@ def run_commands(
         failures: list[str] = []
         tail: collections.deque[str] = collections.deque(maxlen=_OUTPUT_TAIL_LINES)
         num_lines = 0
+        last_progress = time.monotonic()
         with subprocess.Popen(
             cmd,
             env=_child_env(opts),
@@ -264,6 +268,15 @@ def run_commands(
                     logger.warning("%s", line)
                 else:
                     logger.debug("%s", line)
+                    # A periodic summary at INFO rather than a line per object: streaming
+                    # exists so a multi-hour transfer isn't silent, but 2M individual lines
+                    # would be unreadable. Throttled by time rather than by count so the
+                    # cadence is the same for a 150-object log and a 2M-object split.
+                    now = time.monotonic()
+                    if now - last_progress >= _PROGRESS_INTERVAL_S:
+                        last_progress = now
+                        logger.info("... %d objects transferred (%.0fs)", num_lines,
+                                    now - start)
             returncode = process.wait()
         elapsed = time.monotonic() - start
 
