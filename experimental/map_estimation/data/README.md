@@ -208,12 +208,11 @@ sweep_paths = loader.get_ordered_log_lidar_fpaths(log_id)
 pose = loader.get_city_SE3_ego(log_id, int(sweep_paths[0].stem))
 ```
 
-**This required moving the opencv pin, and that pin is now load-bearing.** `av2/utils/io.py` does
-`from cv2.typing import MatLike` at module scope, and `cv2.typing` only exists from
-opencv-python 4.8 onward — under the previous 4.7.0.72 pin the sensor dataloader could not be
-imported at all. `av2_smoke_test.py` guards this so a regression fails in CI.
+`av2` sets the lower bound on the opencv pin: `av2/utils/io.py` does
+`from cv2.typing import MatLike` at module scope, so `opencv-python` must be ≥ 4.8.
+`av2_smoke_test.py` guards it.
 
-opencv is held at **4.11.x** deliberately: opencv-python ≥ 4.12 (and 5.x) require `numpy>=2`,
-while this repo pins `numpy==1.26.4`. Moving past 4.11 means a numpy 2 migration, whose real cost
-is bumping `pybind11` 2.11.1 → 2.13.x across the repo's 23 `pybind_extension` targets. The C++
-`@opencv` source build in `WORKSPACE` is kept at the matching 4.11.0.
+`numpy` sets the upper bound: `opencv-python` ≥ 4.12 requires `numpy>=2` while this repo pins
+`numpy==1.26.4`, so opencv stays on 4.11.x. Going past it means a numpy 2 migration, which also
+requires `pybind11` ≥ 2.12 for the repo's `pybind_extension` targets. The C++ `@opencv` source
+build in `WORKSPACE` tracks the same version.

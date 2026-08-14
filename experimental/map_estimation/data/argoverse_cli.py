@@ -539,10 +539,9 @@ def _add_item_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-# Options accepted either before or after the subcommand. They are parsed in their own pass
-# (see :func:`parse_args`) rather than declared on every subparser, because argparse's merge of
-# a subparser's namespace into the parent's is subtle enough that `--json` given *before* the
-# subcommand was silently lost when the same option also existed on the subparser.
+# Options accepted either before or after the subcommand. They get their own parsing pass (see
+# :func:`parse_args`) and must NOT also be declared on the subparsers: when the same option
+# exists on both, argparse drops the value given before the subcommand.
 _SHARED_DESTS = ("json", "verbose", "root", "cache_dir", "catalog", "refresh", "num_workers",
                  "verify_bytes")
 
@@ -572,8 +571,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the command line, accepting shared options on either side of the subcommand.
 
     Two passes: the shared parser takes its options out of argv wherever they appear, then the
-    subcommand parser handles what is left. Explicit rather than relying on argparse to merge a
-    subparser's namespace into its parent's, which drops values depending on position.
+    subcommand parser handles what is left. The merge is explicit because argparse's own merge of
+    a subparser's namespace into its parent's drops values depending on position.
     """
     shared_args, remaining = _shared_parser().parse_known_args(argv)
     args = build_parser().parse_args(remaining)
