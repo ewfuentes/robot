@@ -1,3 +1,4 @@
+import io
 import os
 import subprocess
 import unittest
@@ -138,6 +139,32 @@ class ListingTest(unittest.TestCase):
                     func("s3://argoverse/datasets/av2/sensor/val")
 
 
+class FakePopen:
+    """Stand-in for subprocess.Popen that replays `output` line by line."""
+
+    def __init__(self, output: str = "", returncode: int = 0, on_start=None):
+        self._output = output
+        self._returncode = returncode
+        self._on_start = on_start
+
+    def __call__(self, cmd, **kwargs):
+        self.cmd = cmd
+        self.kwargs = kwargs
+        if self._on_start is not None:
+            self._on_start(cmd)
+        self.stdout = io.StringIO(self._output)
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def wait(self):
+        return self._returncode
+
+
 class RunCommandsTest(unittest.TestCase):
     def setUp(self):
         self.which = mock.patch.object(s5cmd.shutil, "which", return_value="/usr/bin/s5cmd")
@@ -146,22 +173,18 @@ class RunCommandsTest(unittest.TestCase):
 
     def test_empty_batch_is_a_noop(self):
         """A plan that needs nothing must not spawn a process."""
-        with mock.patch.object(s5cmd.subprocess, "run") as run:
+        with mock.patch.object(s5cmd.subprocess, "Popen") as popen:
             result = s5cmd.run_commands([])
-        run.assert_not_called()
+        popen.assert_not_called()
         self.assertTrue(result.ok)
         self.assertEqual(result.num_commands, 0)
 
     def test_commands_are_written_to_a_batch_file_that_is_cleaned_up(self):
         seen = {}
+        fake = FakePopen(on_start=lambda cmd: seen.update(
+            path=Path(cmd[-1]), contents=Path(cmd[-1]).read_text()))
 
-        def fake_run(cmd, **kwargs):
-            batch_file = Path(cmd[-1])
-            seen["path"] = batch_file
-            seen["contents"] = batch_file.read_text()
-            return _completed()
-
-        with mock.patch.object(s5cmd.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(s5cmd.subprocess, "Popen", new=fake):
             result = s5cmd.run_commands(["cp 'a' 'b'", "cp 'c' 'd'"])
 
         self.assertEqual(seen["contents"], "cp 'a' 'b'\ncp 'c' 'd'\n")
@@ -172,28 +195,66 @@ class RunCommandsTest(unittest.TestCase):
     def test_batch_file_is_removed_even_when_the_call_raises(self):
         seen = {}
 
-        def fake_run(cmd, **kwargs):
+        def explode(cmd, **kwargs):
             seen["path"] = Path(cmd[-1])
             raise OSError("boom")
 
-        with mock.patch.object(s5cmd.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(s5cmd.subprocess, "Popen", side_effect=explode):
             with self.assertRaises(OSError):
                 s5cmd.run_commands(["cp 'a' 'b'"])
         self.assertFalse(seen["path"].exists())
 
     def test_per_command_failures_are_surfaced(self):
-        stderr = "ERROR \"cp s3://b/x /y\": object not found\nsome chatter\n"
-        with mock.patch.object(s5cmd.subprocess, "run",
-                               return_value=_completed(stderr=stderr, returncode=1)):
+        output = 'cp s3://b/a /a\nERROR "cp s3://b/x /y": object not found\nchatter\n'
+        with mock.patch.object(s5cmd.subprocess, "Popen",
+                               new=FakePopen(output, returncode=1)):
             result = s5cmd.run_commands(["cp 'a' 'b'"])
         self.assertFalse(result.ok)
         self.assertEqual(len(result.failures), 1)
         self.assertIn("object not found", result.failures[0])
 
+    def test_hard_failure_without_an_error_line_still_reports_detail(self):
+        """A non-zero exit with no ERROR line must not produce an empty diagnostic.
+
+        Otherwise the caller raises "reported 0 failure(s)" with nothing after the colon and
+        the CLI prints a success-shaped "0 failures".
+        """
+        output = "Incorrect Usage: flag provided but not defined: -numworker\n"
+        with mock.patch.object(s5cmd.subprocess, "Popen",
+                               new=FakePopen(output, returncode=2)):
+            result = s5cmd.run_commands(["cp 'a' 'b'"])
+        self.assertFalse(result.ok)
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("exited 2", result.failures[0])
+        self.assertIn("flag provided but not defined", result.failures[0])
+
+    def test_hard_failure_with_no_output_at_all(self):
+        with mock.patch.object(s5cmd.subprocess, "Popen", new=FakePopen("", returncode=137)):
+            result = s5cmd.run_commands(["cp 'a' 'b'"])
+        self.assertFalse(result.ok)
+        self.assertIn("exited 137", result.failures[0])
+
+    def test_output_is_streamed_not_buffered(self):
+        """s5cmd prints a line per object; a big pull must not accumulate in memory."""
+        fake = FakePopen("cp done\n" * 5)
+        with mock.patch.object(s5cmd.subprocess, "Popen", new=fake):
+            s5cmd.run_commands(["cp 'a' 'b'"])
+        self.assertEqual(fake.kwargs["stdout"], s5cmd.subprocess.PIPE)
+        self.assertEqual(fake.kwargs["stderr"], s5cmd.subprocess.STDOUT)
+        self.assertNotIn("capture_output", fake.kwargs)
+
     def test_dry_run_passes_the_flag(self):
-        with mock.patch.object(s5cmd.subprocess, "run", return_value=_completed()) as run:
+        fake = FakePopen()
+        with mock.patch.object(s5cmd.subprocess, "Popen", new=fake):
             s5cmd.run_commands(["cp 'a' 'b'"], dry_run=True)
-        self.assertIn("--dry-run", run.call_args.args[0])
+        self.assertIn("--dry-run", fake.cmd)
+
+    def test_region_is_injected_for_transfers_too(self):
+        fake = FakePopen()
+        with mock.patch.dict(os.environ, {"AWS_REGION": "us-east-2"}), \
+             mock.patch.object(s5cmd.subprocess, "Popen", new=fake):
+            s5cmd.run_commands(["cp 'a' 'b'"])
+        self.assertEqual(fake.kwargs["env"]["AWS_REGION"], "us-east-1")
 
 
 class HelperTest(unittest.TestCase):

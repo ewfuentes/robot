@@ -180,6 +180,11 @@ class FilterLogsTest(unittest.TestCase):
     def test_none_log_ids_keeps_everything(self):
         self.assertEqual(len(ac.filter_logs(self.catalog, log_ids=None)), 3)
 
+    def test_empty_log_ids_keeps_everything(self):
+        """An empty selection means "no filter", like None -- not "match nothing"."""
+        self.assertEqual(len(ac.filter_logs(self.catalog, log_ids=())), 3)
+        self.assertEqual(len(ac.filter_logs(self.catalog, log_ids=[])), 3)
+
     def test_has_items_filter(self):
         catalog = make_catalog([
             make_entry("aaa", annotations=True),
@@ -280,6 +285,39 @@ class BuildTest(unittest.TestCase):
             with self.assertRaises(ac.CatalogError):
                 ac.build(al.SensorRequest(split=al.SensorSplit.VAL))
 
+    def test_a_catalog_with_no_rows_is_never_produced(self):
+        """A cached empty catalog would make every later command report an empty split."""
+        with mock.patch.object(ac.s5cmd, "list_prefixes", return_value=[self.LOG_A]), \
+             mock.patch.object(ac.s5cmd, "list_objects",
+                               side_effect=s5cmd.S5cmdError("no object found")), \
+             mock.patch.object(ac.s5cmd, "version", return_value="v"):
+            with self.assertRaises(ac.CatalogError):
+                ac.build(al.SensorRequest(split=al.SensorSplit.VAL))
+
+    def test_a_typoed_explicit_log_id_is_an_error(self):
+        """`index --log_id <typo>` must fail loudly rather than cache an empty catalog."""
+        with mock.patch.object(ac.s5cmd, "list_objects",
+                               side_effect=s5cmd.S5cmdError("no object found")), \
+             mock.patch.object(ac.s5cmd, "version", return_value="v"):
+            with self.assertRaises(ac.CatalogError) as ctx:
+                ac.build(al.SensorRequest(split=al.SensorSplit.VAL), log_ids=["not-a-log"])
+        self.assertIn("not-a-log", str(ctx.exception))
+
+    def test_partial_failure_of_an_explicit_id_list_is_an_error(self):
+        """An explicit id list is a precise request; dropping part of it must not be silent."""
+        def flaky(uri, opts=None):
+            log_id = uri[len(SENSOR_PREFIX):].rstrip("/")
+            if log_id == self.LOG_B:
+                raise s5cmd.S5cmdError("no object found")
+            return self._objects_for(log_id, "PIT")
+
+        with mock.patch.object(ac.s5cmd, "list_objects", side_effect=flaky), \
+             mock.patch.object(ac.s5cmd, "version", return_value="v"):
+            with self.assertRaises(ac.CatalogError) as ctx:
+                ac.build(al.SensorRequest(split=al.SensorSplit.VAL),
+                         log_ids=[self.LOG_A, self.LOG_B])
+        self.assertIn(self.LOG_B, str(ctx.exception))
+
     def test_progress_is_reported(self):
         seen = []
         self._patched_build(progress=lambda done, total: seen.append((done, total)))
@@ -364,6 +402,15 @@ class LoadOrBuildTest(unittest.TestCase):
                                        cache_dir=self.cache_dir)
         build.assert_not_called()
         self.assertEqual(catalog.logs[0].log_id, "z")
+
+    def test_explicit_path_for_the_wrong_dataset_is_rejected(self):
+        """Otherwise sensor log ids get pasted into tbv URIs and every transfer 404s."""
+        explicit = Path(self.tmp.name) / "sensor_val.json"
+        ac.save(make_catalog([make_entry("z")]), explicit)
+        with self.assertRaises(ac.CatalogError) as ctx:
+            ac.load_or_build(al.TbvRequest(), catalog_path=explicit, cache_dir=self.cache_dir)
+        self.assertIn("sensor/val", str(ctx.exception))
+        self.assertIn("tbv", str(ctx.exception))
 
 
 class ReadLogIdFileTest(unittest.TestCase):

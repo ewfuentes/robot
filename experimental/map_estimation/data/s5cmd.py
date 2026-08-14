@@ -18,7 +18,7 @@ Two things this wrapper exists to get right:
 Deliberately depends only on the standard library and msgspec so it stays trivially testable.
 """
 
-import json
+import collections
 import logging
 import os
 import shutil
@@ -38,6 +38,9 @@ DEFAULT_REGION = "us-east-1"
 
 # s5cmd's own default is 256, which is more parallelism than is polite on a shared machine.
 DEFAULT_NUM_WORKERS = 32
+
+# How much of a failed batch's output to quote back when s5cmd gives no parseable error line.
+_OUTPUT_TAIL_LINES = 20
 
 
 class S5cmdNotFoundError(RuntimeError):
@@ -86,6 +89,9 @@ class Result(msgspec.Struct):
     num_commands: int
     elapsed_s: float
     failures: tuple[str, ...] = ()
+    """Per-object errors s5cmd reported. Never empty when `ok` is False -- see
+    :func:`run_commands`, which synthesizes an entry from the exit status if s5cmd failed
+    without printing a recognizable error line."""
 
     @property
     def ok(self) -> bool:
@@ -229,23 +235,51 @@ def run_commands(
 
     try:
         cmd = _global_flags(opts, dry_run=dry_run) + ["run", str(batch_file)]
+        logger.info("running: %s", " ".join(cmd))
         logger.info("batch of %d commands in %s", len(commands), batch_file)
         start = time.monotonic()
-        completed = _run(cmd, opts, check=False)
+
+        # Streamed rather than captured: s5cmd prints a line per copied object, so a large pull
+        # (700 logs x 3000 objects) would otherwise buffer hundreds of MB and show the user
+        # nothing until the whole transfer ended. stderr is merged so ordering is preserved.
+        failures: list[str] = []
+        tail: collections.deque[str] = collections.deque(maxlen=_OUTPUT_TAIL_LINES)
+        num_lines = 0
+        with subprocess.Popen(
+            cmd,
+            env=_child_env(opts),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        ) as process:
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                num_lines += 1
+                tail.append(line)
+                if line.strip().startswith("ERROR"):
+                    failures.append(line)
+                    logger.warning("%s", line)
+                else:
+                    logger.debug("%s", line)
+            returncode = process.wait()
         elapsed = time.monotonic() - start
 
-        # s5cmd reports per-command problems on stderr and still exits non-zero, so surface the
-        # individual lines rather than just the exit code.
-        failures = tuple(
-            line for line in completed.stderr.splitlines() if line.strip().startswith("ERROR")
-        )
-        if completed.stdout.strip():
-            logger.debug("s5cmd stdout:\n%s", completed.stdout.strip())
+        if returncode != 0 and not failures:
+            # s5cmd can fail without printing a parseable ERROR line (bad flag, abort, bad
+            # region). Without this the caller would raise "reported 0 failure(s)" with no
+            # detail at all, and the CLI would print a success-shaped "0 failures".
+            detail = "; ".join(tail) if tail else "no output"
+            failures.append(f"ERROR s5cmd exited {returncode} with no error line: {detail}")
+
+        logger.info("s5cmd emitted %d line(s), %d failure(s)", num_lines, len(failures))
         return Result(
-            returncode=completed.returncode,
+            returncode=returncode,
             num_commands=len(commands),
             elapsed_s=elapsed,
-            failures=failures,
+            failures=tuple(failures),
         )
     finally:
         batch_file.unlink(missing_ok=True)

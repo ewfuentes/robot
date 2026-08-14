@@ -15,6 +15,7 @@ Pass ``verify_bytes=True`` for the stricter comparison when a truncated transfer
 
 import enum
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -177,20 +178,34 @@ class LocalLog(msgspec.Struct, frozen=True):
 
 
 def _count_local(path: Path, is_dir: bool) -> ac.ItemStat:
-    """Count the objects and bytes present locally for one item."""
-    if is_dir:
-        if not path.is_dir():
+    """Count the objects and bytes present locally for one item.
+
+    os.scandir rather than Path.rglob: `status sensor/train --items all` walks ~2M entries, and
+    scandir gets file-vs-directory from the directory entry itself, halving the syscalls.
+    """
+    if not is_dir:
+        try:
+            return ac.ItemStat(num_bytes=path.stat().st_size, num_objects=1)
+        except OSError:
             return ac.EMPTY_STAT
-        num_bytes = 0
-        num_objects = 0
-        for child in path.rglob("*"):
-            if child.is_file():
-                num_objects += 1
-                num_bytes += child.stat().st_size
-        return ac.ItemStat(num_bytes=num_bytes, num_objects=num_objects)
-    if not path.is_file():
-        return ac.EMPTY_STAT
-    return ac.ItemStat(num_bytes=path.stat().st_size, num_objects=1)
+
+    num_bytes = 0
+    num_objects = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        num_objects += 1
+                        num_bytes += entry.stat().st_size
+        except OSError:
+            # Absent or unreadable: nothing local for this item, which is the answer we want.
+            continue
+    return ac.ItemStat(num_bytes=num_bytes, num_objects=num_objects)
 
 
 def _item_status(
@@ -202,7 +217,11 @@ def _item_status(
 ) -> ItemStatus:
     expected = entry.stat(item)
     if expected.num_objects == 0:
-        # Not present remotely, e.g. annotations on the sensor test split.
+        # Absent remotely, e.g. annotations on the sensor test split. This reads a *missing*
+        # catalog stat as "there is nothing to fetch", which is only sound because a catalog
+        # entry is written all-or-nothing: argoverse_catalog._build_per_log_detail drops a log
+        # entirely if its listing fails rather than recording a partial row, and build() refuses
+        # to emit a catalog with no rows at all.
         return ItemStatus(item=item.token, expected=expected, local=ac.EMPTY_STAT,
                           state=State.NOT_PRESENT)
 

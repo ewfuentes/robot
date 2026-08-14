@@ -249,6 +249,26 @@ class DownloadTest(unittest.TestCase):
                 self.assertEqual(code, 0)
         prompt.assert_not_called()
 
+    def test_eof_on_the_confirm_prompt_aborts_instead_of_crashing(self):
+        """CI, piped `bazel run`, and nohup all have no tty; a traceback there is a bug."""
+        with mock.patch.object(cli, "input", create=True, side_effect=EOFError):
+            with run_cli(["download", "sensor/val", "--items", "map",
+                          "--confirm_above", "1KB"], root=self.root) as (code, out, _err):
+                self.assertEqual(code, 1)
+                self.assertIn("--yes", out)
+
+    def test_json_download_emits_only_the_plan(self):
+        """Progress and the final summary would corrupt the JSON stream."""
+        with mock.patch.object(cli, "input", create=True) as prompt, \
+             mock.patch.object(cli.ad, "execute") as execute:
+            with run_cli(["--json", "download", "sensor/val", "--items", "map"],
+                         root=self.root) as (code, out, _err):
+                self.assertEqual(code, 0)
+                parsed = json.loads(out)  # must parse: nothing else on stdout
+        prompt.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(parsed["spec"], "sensor/val")
+
     def test_insufficient_space_is_reported_not_raised(self):
         with mock.patch.object(cli.ad.shutil, "disk_usage", return_value=mock.Mock(free=10)):
             with run_cli(["download", "sensor/val", "--items", "lidar"],
@@ -334,6 +354,21 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(out_path.exists())
 
+    def test_glob_log_ids_are_rejected(self):
+        """--log_id patterns become S3 prefixes here, inventing a phantom 'aaa*' log row."""
+        with contextlib.redirect_stderr(io.StringIO()) as stderr, \
+             contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["--cache_dir", str(self.cache_dir), "index", "sensor/val",
+                             "--log_id", "0267*"])
+        self.assertEqual(code, 1)
+        self.assertIn("literal log ids", stderr.getvalue())
+
+    def test_index_does_not_accept_selector_flags_it_would_ignore(self):
+        """--limit silently indexing the whole split would be worse than refusing it."""
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                cli.build_parser().parse_args(["index", "sensor/val", "--limit", "10"])
+
     def test_partial_refresh_merges_into_the_existing_catalog(self):
         """--log_id patches rows rather than discarding the other 149."""
         cache_path = self.cache_dir / "sensor_val.json"
@@ -365,6 +400,15 @@ class PlumbingTest(unittest.TestCase):
                 code = cli.main(["list", "sensor/val"])
         self.assertEqual(code, 1)
         self.assertIn("setup.sh", stderr.getvalue())
+
+    def test_missing_log_id_file_is_a_clean_error(self):
+        """Every other user mistake gets an `error: ...` line, not a traceback."""
+        with run_cli(["list", "sensor/val", "--log_id_file", "/nonexistent/logs.txt"]) as (
+            code, _out, err
+        ):
+            self.assertEqual(code, 1)
+            self.assertIn("error:", err)
+            self.assertIn("/nonexistent/logs.txt", err)
 
     def test_log_id_file_is_read(self):
         with tempfile.TemporaryDirectory() as tmp:

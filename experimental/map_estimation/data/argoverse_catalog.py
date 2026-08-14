@@ -251,15 +251,20 @@ def _build_per_log_detail(
     opts: s5cmd.Options,
     concurrency: int,
     progress: Callable[[int, int], None] | None,
-) -> list[LogEntry]:
-    """List every log concurrently and aggregate.
+) -> tuple[list[LogEntry], list[str]]:
+    """List every log concurrently and aggregate. Returns (entries, failed log ids).
 
     One s5cmd subprocess per log. Threads are the right tool here despite the GIL: the work is
     entirely spent waiting on child processes.
+
+    A log either lists completely or not at all, so every returned entry is a full picture of
+    that log -- which is what lets a missing item stat be read as "absent remotely" rather than
+    "we never looked". Failures are returned rather than swallowed so the caller can decide.
     """
     s3_prefix = request.s3_prefix()
     item_type = request.item_type
     entries: dict[str, LogEntry] = {}
+    failed: list[str] = []
 
     def list_one(log_id: str) -> LogEntry:
         objects = s5cmd.list_objects(f"{s3_prefix}{log_id}/", opts=opts)
@@ -271,14 +276,15 @@ def _build_per_log_detail(
             log_id = futures[future]
             try:
                 entries[log_id] = future.result()
-            except Exception as exc:  # noqa: BLE001 - one bad log must not sink the build
+            except Exception as exc:  # noqa: BLE001 - one bad log must not sink a whole build
                 logger.warning("failed to list %s: %s", log_id, exc)
+                failed.append(log_id)
             if progress is not None:
                 progress(done, len(log_ids))
 
     # Preserve the caller's (sorted) order rather than completion order, so catalogs are
     # byte-identical across rebuilds.
-    return [entries[log_id] for log_id in log_ids if log_id in entries]
+    return [entries[log_id] for log_id in log_ids if log_id in entries], failed
 
 
 def _build_prefix_only(
@@ -295,7 +301,7 @@ def _build_prefix_only(
     tell these numbers apart via ``Catalog.sizes_are_inferred``.
     """
     sample_ids = list(log_ids[:PREFIX_ONLY_SAMPLE_SIZE])
-    measured = _build_per_log_detail(request, sample_ids, opts, concurrency, progress)
+    measured, _failed = _build_per_log_detail(request, sample_ids, opts, concurrency, progress)
     if not measured:
         raise CatalogError(f"could not measure any sample logs under {request.s3_prefix()}")
 
@@ -333,14 +339,37 @@ def build(
     """
     s3_prefix = request.s3_prefix()
     strategy = _STRATEGIES[request.dataset]
-    ids = list(log_ids) if log_ids is not None else _list_log_ids(s3_prefix, opts)
+    explicit_ids = log_ids is not None
+    ids = list(log_ids) if explicit_ids else _list_log_ids(s3_prefix, opts)
+    if not ids:
+        raise CatalogError(f"no logs requested for {request.spec()}")
     logger.info("indexing %d logs of %s (%s)", len(ids), request.spec(), strategy.value)
 
     sampled_logs = None
+    failed: list[str] = []
     if strategy is BuildStrategy.PER_LOG_DETAIL:
-        entries = _build_per_log_detail(request, ids, opts, concurrency, progress)
+        entries, failed = _build_per_log_detail(request, ids, opts, concurrency, progress)
     else:
         entries, sampled_logs = _build_prefix_only(request, ids, opts, concurrency, progress)
+
+    if not entries:
+        # Never return an empty catalog. Caching one would make every later list/download
+        # report an empty split until the user thought to pass --refresh.
+        raise CatalogError(
+            f"listed none of the {len(ids)} requested log(s) of {request.spec()}. "
+            + (f"is {ids[0]!r} a real log id?" if explicit_ids and len(ids) == 1
+               else f"{len(failed)} listing(s) failed.")
+        )
+    if explicit_ids and failed:
+        # An explicit id list is a precise request; silently dropping part of it would leave the
+        # catalog quietly missing rows the caller asked for.
+        raise CatalogError(
+            f"could not list {len(failed)} of {len(ids)} requested log(s) of "
+            f"{request.spec()}: {', '.join(failed[:5])}"
+        )
+    if failed:
+        logger.warning("indexed %d of %d logs; %d failed to list",
+                       len(entries), len(ids), len(failed))
 
     return Catalog(
         schema_version=SCHEMA_VERSION,
@@ -396,7 +425,14 @@ def load_or_build(
     truncated write) is rebuilt rather than raised, since the cache is disposable.
     """
     if catalog_path is not None:
-        return load(catalog_path)
+        catalog = load(catalog_path)
+        if catalog.spec != request.spec():
+            # Otherwise log ids from one dataset would be pasted into another's URIs, and every
+            # transfer would 404 with nothing to explain why.
+            raise CatalogError(
+                f"{catalog_path} describes {catalog.spec}, not {request.spec()}"
+            )
+        return catalog
 
     path = cache_path(request, cache_dir)
     if not refresh and path.exists():
@@ -451,7 +487,10 @@ def filter_logs(
                 )
             entries = [entry for entry in entries if entry.city in wanted]
 
-    if log_ids is not None:
+    # `if log_ids:` rather than `is not None`: an empty selection means "no filter", matching
+    # the None case. Treating it as "match nothing" would make with_log_ids([]) silently yield
+    # zero logs.
+    if log_ids:
         patterns = [str(value).strip() for value in log_ids if str(value).strip()]
         literals = [p for p in patterns if not any(c in p for c in "*?[")]
         globs = [p for p in patterns if p not in literals]

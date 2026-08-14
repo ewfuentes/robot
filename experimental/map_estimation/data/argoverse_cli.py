@@ -141,6 +141,19 @@ def _mb(num_bytes: int) -> str:
 def cmd_index(args) -> int:
     """Rebuild the cached catalog for a dataset+split."""
     request = _build_request(args)
+
+    if request.log_ids:
+        # Elsewhere --log_id accepts fnmatch patterns, but here the ids become S3 prefixes:
+        # listing '.../aaa*/' would file every matched object under the literal string 'aaa*'
+        # and invent a phantom log row. Patterns can only be expanded against a catalog, which
+        # is the thing being built.
+        patterns = [value for value in request.log_ids if any(c in value for c in "*?[")]
+        if patterns:
+            raise ValueError(
+                f"index needs literal log ids, not patterns: {', '.join(patterns)}. "
+                "Rebuild the whole split, or name the ids explicitly."
+            )
+
     catalog = ac.build(
         request,
         opts=_options(args),
@@ -299,7 +312,10 @@ def cmd_download(args) -> int:
         return 1
 
     if args.json:
+        # Emit the plan and stop: printing progress and the final summary into the same stream
+        # would corrupt the JSON, and a --json caller has no tty to answer the size prompt.
         print_json(download_plan)
+        return 0
     else:
         print(f"plan: {download_plan.spec} -> {request.local_dir(args.root)}")
         print(f"  items: {', '.join(download_plan.items)}")
@@ -341,7 +357,14 @@ def cmd_download(args) -> int:
     if not args.yes and download_plan.total_bytes > threshold:
         prompt = (f"Download {s5cmd.format_bytes(download_plan.total_bytes)} to "
                   f"{request.local_dir(args.root)}? [y/N]: ")
-        if input(prompt).strip().lower() not in ("y", "yes"):
+        try:
+            answer = input(prompt)
+        except EOFError:
+            # No tty (CI, piped bazel run, nohup). Decline rather than crash, and say how to
+            # proceed without a prompt.
+            print("\nno input available to confirm; aborting. Pass --yes to skip this prompt.")
+            return 1
+        if answer.strip().lower() not in ("y", "yes"):
             print("aborted.")
             return 1
 
@@ -503,8 +526,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--detail", action="store_true", help="one row per log")
     p_status.set_defaults(func=cmd_status)
 
+    # `index` deliberately does not take the shared selector flags: a catalog always describes a
+    # whole dataset+split, so --city/--limit/--sort would silently do nothing.
     p_index = subparsers.add_parser("index", help="rebuild the cached catalog")
-    _add_selector_args(p_index)
+    p_index.add_argument("spec", type=str,
+                         help="dataset[/split], e.g. sensor/val, tbv, lidar/train")
+    p_index.add_argument("--log_id", action="append", default=None,
+                         help="re-list only these literal log ids and merge them into the "
+                              "existing catalog (no patterns)")
+    p_index.add_argument("--log_id_file", type=Path, default=None,
+                         help="file of literal log ids, one per line")
     p_index.add_argument("--out", type=Path, default=None,
                          help="write the catalog here instead of the cache")
     p_index.set_defaults(func=cmd_index)
@@ -518,8 +549,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (al.UnknownItemError, al.UnknownSplitError, ac.CatalogError, ad.MissingDataError,
-            ad.DownloadFailedError, s5cmd.S5cmdNotFoundError, s5cmd.S5cmdError,
-            KeyError, ValueError) as exc:
+            ad.DownloadFailedError, ad.InsufficientSpaceError, s5cmd.S5cmdNotFoundError,
+            s5cmd.S5cmdError, KeyError, ValueError, OSError) as exc:
         message = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         print(f"error: {message}", file=sys.stderr)
         return 1
