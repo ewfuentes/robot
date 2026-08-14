@@ -217,14 +217,3 @@ opencv is held at **4.11.x** deliberately: opencv-python ≥ 4.12 (and 5.x) requ
 while this repo pins `numpy==1.26.4`. Moving past 4.11 means a numpy 2 migration, whose real cost
 is bumping `pybind11` 2.11.1 → 2.13.x across the repo's 23 `pybind_extension` targets. The C++
 `@opencv` source build in `WORKSPACE` is kept at the matching 4.11.0.
-
-This tooling itself does **not** depend on `av2` — it needs only the standard library and
-msgspec — so downloads work regardless, and the files are also readable directly with pyarrow if
-you would rather skip the devkit:
-
-```python
-import pyarrow.feather
-poses = pyarrow.feather.read_table(log.item_path(al.SensorItem.POSES))
-sweep = pyarrow.feather.read_table(next(log.item_path(al.SensorItem.LIDAR).glob("*.feather")))
-```
-
