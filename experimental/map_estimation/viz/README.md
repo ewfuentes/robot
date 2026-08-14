@@ -1,7 +1,7 @@
 # Argoverse 2 viewer
 
-Renders an AV2 log in [rerun](https://rerun.io). Right now that means the **egovehicle and the
-path it drove**; sensor streams and model output are the next layers on top.
+Renders an AV2 log in [rerun](https://rerun.io). Right now that means the **HD map, the
+egovehicle, and the path it drove**; sensor streams and model output are the next layers on top.
 
 ```bash
 V="bazel run //experimental/map_estimation/viz:view_log --"
@@ -23,7 +23,7 @@ sits on a remote box: same logging code, viewer in a browser.
 | file | role |
 |---|---|
 | `av2_source.py` | finds a log on disk, reports which streams it has, loads them via `av2`. No rerun import. |
-| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths and the vehicle outline. |
+| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, and the vehicle outline. |
 | `view_log.py` | CLI. |
 
 The split exists so the loader stays testable without a renderer, and so prediction tooling can
@@ -35,14 +35,24 @@ A child entity inherits its parent's `Transform3D`, so the path layout *is* the 
 story:
 
 ```
-world                 city frame, right-handed z-up
-world/path            the whole drive as one static polyline, in city coordinates
-world/ego             city_SE3_egovehicle, one per pose timestamp (~170 Hz)
-world/ego/wireframe   the vehicle outline, logged ONCE as static data
+world                                   city frame, right-handed z-up
+world/map/lane_boundaries/<paint>       lane boundaries, bucketed by paint color
+world/map/centerlines                   derived lane centers, 10 points per segment
+world/map/crosswalks                    pedestrian crossings
+world/map/drivable_areas                drivable-area outlines
+world/path                              the whole drive as one static polyline
+world/ego               city_SE3_egovehicle, one per pose timestamp (~170 Hz)
+world/ego/wireframe     the vehicle outline, logged ONCE as static data
 ```
 
-The wireframe is logged once and moves because its parent moves. Nothing re-logs geometry per
-frame. That is the habit to carry into everything added later.
+Everything above `world/ego` is in city coordinates and static; only the ego transform is
+timestamped. The wireframe is logged once and moves because its parent moves. Nothing re-logs
+geometry per frame. That is the habit to carry into everything added later.
+
+**The map and the path are siblings of the ego, not children.** That is not stylistic: a child
+inherits its parent's transform, so hanging the map under `world/ego` would make the road drive
+along with the car. It would not error — it would just render physics that is quietly wrong,
+which is the characteristic failure mode of this data model.
 
 Two consequences worth knowing before extending this:
 
@@ -52,6 +62,41 @@ Two consequences worth knowing before extending this:
 - **Do not synchronize streams yourself.** Log each on its own timestamps; the viewer resolves
   "latest value at time T" when scrubbing. Poses run far faster than any sensor, so anything
   logged later lands against a pose within milliseconds of it.
+
+### The map
+
+Each log ships its own local vector map — 92 lane segments for a `sensor/val` log, 150 for the
+`tbv` one — loaded with `build_raster=False`. `True` would additionally rasterize every
+drivable-area polygon and read the ~1.6 MB ground-height surface off disk, which costs seconds
+per log and produces nothing that gets drawn; it is only needed for `get_ground_height_at_xy`.
+
+Lane boundaries are split into **four batched entities keyed by paint color** — yellow, white,
+blue, and unmarked — because `LaneMarkType` spells the color into its own name and the split
+lets you toggle a centerline separately from a road edge. The **dash pattern is not drawn**:
+`LineStrips3D` has no dash support in the pinned version and faking one means chopping every
+polyline into alternating segments, so what is encoded is the half of the marking that carries
+navigational meaning. Boundary vertices are real city-frame z, so the map sits on the terrain.
+
+Adjacent lane segments each carry their own copy of the boundary they share, so most interior
+lines are drawn twice. At ~1500 vertices that is free; it just makes shared boundaries look
+slightly brighter.
+
+**Centerlines are derived, not annotated.** AV2 stores a lane as a ladder of two boundaries and
+has no centerline field at all; `get_lane_segment_centerline` resamples both boundaries to 10
+points and averages them pairwise. It is a faithful approximation — measured against these logs,
+the result sits within 0.13 m (median) of equidistant from both boundaries, worst case 0.59 m,
+implying lane widths of 3.7–3.9 m median — but the residual is real, because the two boundaries
+are resampled by arc length independently, so paired points are not exactly opposite each other
+on a curve. Look at them; don't regress against them.
+
+**Lane topology is in the data and is not drawn.** `successors`, `predecessors`,
+`left_neighbor_id`, and `right_neighbor_id` are all populated. Two traps if you use them:
+`predecessors` is not the mirror of `successors` (113 vs 52 edges in the `sensor/val` log —
+invert `successors` yourself if you need a reverse index), and ~13 successor ids per log point
+at lanes outside the clipped local map, so traversals have to guard the lookup.
+
+A log with no map, or with a `map/` directory that a partial download left without its archive
+JSON, logs a warning and renders the path anyway. Only an empty *pose* stream is fatal.
 
 ### The view follows the vehicle
 
@@ -89,7 +134,6 @@ annotations but no imagery, while a `tbv` log has seven cameras and no annotatio
 `LogSource.present_items()` rather than assuming. The natural next entities are
 
 ```
-world/map/...              lane boundaries, crosswalks, drivable areas (static, city frame)
 world/ego/lidar            sweeps; already egomotion-compensated into the ego frame
 world/ego/annotations      ground-truth cuboids; AV2 stores these in the ego frame too
 world/ego/cameras/<name>   ego_SE3_cam + Pinhole (static), EncodedImage per timestamp

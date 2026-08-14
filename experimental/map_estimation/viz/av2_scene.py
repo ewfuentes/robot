@@ -1,15 +1,20 @@
-"""Logs an Argoverse 2 log's ego motion into rerun: the vehicle and the path it drove.
+"""Logs an Argoverse 2 log into rerun: the HD map, the vehicle, and the path it drove.
 
 The entity tree *is* the transform hierarchy -- a child inherits its parent's ``Transform3D`` --
 so the layout below is the whole coordinate story:
 
     world                 city frame, right-handed z-up
+    world/map/...         the log's vector HD map, static, in city coordinates
     world/path            the whole drive as one polyline, static, in city coordinates
     world/ego             city_SE3_egovehicle, one per pose timestamp
     world/ego/wireframe   the vehicle outline, logged once and carried by the ego transform
 
 That last line is the part worth internalizing: the wireframe is logged **once**, as static
 data, and it moves because its parent moves. Nothing re-logs geometry per frame.
+
+The map and the path are **siblings** of the ego rather than children, and that is load bearing:
+both are expressed in city coordinates, so inheriting the ego transform would drag the road
+along with the car instead of letting the car drive through it.
 
 Sensor streams are deliberately absent for now. When they arrive they hang off ``world/ego``
 alongside the wireframe -- lidar and annotations are already in the ego frame, cameras get their
@@ -19,6 +24,7 @@ can be toggled and compared without either code path knowing about the other.
 """
 
 import dataclasses
+import logging
 
 import numpy as np
 import rerun as rr
@@ -27,6 +33,11 @@ import rerun.blueprint as rrb
 from experimental.map_estimation.viz import av2_source
 
 WORLD = "world"
+MAP = f"{WORLD}/map"
+LANE_BOUNDARIES = f"{MAP}/lane_boundaries"
+CENTERLINES = f"{MAP}/centerlines"
+CROSSWALKS = f"{MAP}/crosswalks"
+DRIVABLE_AREAS = f"{MAP}/drivable_areas"
 PATH = f"{WORLD}/path"
 EGO = f"{WORLD}/ego"
 WIREFRAME = f"{EGO}/wireframe"
@@ -50,6 +61,24 @@ _PATH_COLOR = (80, 170, 255)
 _BODY_COLOR = (235, 235, 235)
 _WHEEL_COLOR = (140, 140, 150)
 _NOSE_COLOR = (255, 120, 60)
+
+# Lane boundaries are bucketed by the color of the paint on them. LaneMarkType spells the color
+# into its own name -- DASH_SOLID_YELLOW, DOUBLE_SOLID_WHITE, SOLID_BLUE -- so a substring scan
+# is the classification, and NONE/UNKNOWN fall through to "unmarked", which genuinely means
+# there is no paint there and the lane's extent is implied.
+_PAINT_COLORS = {
+    "yellow": (230, 200, 60),
+    "white": (225, 225, 230),
+    "blue": (80, 140, 230),
+    "unmarked": (90, 90, 110),
+}
+_CENTERLINE_COLOR = (120, 190, 150)
+_CROSSWALK_COLOR = (200, 170, 60)
+_DRIVABLE_COLOR = (60, 80, 100)
+
+_LANE_RADIUS_M = 0.08
+_CENTERLINE_RADIUS_M = 0.06
+_MAP_RADIUS_M = 0.10
 
 # Nominal Ford Fusion Hybrid dimensions, in meters. AV2 ships no vehicle model, so these are
 # stated here rather than read from anywhere -- they are for orientation, not measurement.
@@ -78,6 +107,9 @@ class SceneSummary:
     poses: int = 0
     path_length_m: float = 0.0
     duration_s: float = 0.0
+    lane_segments: int = 0
+    crosswalks: int = 0
+    drivable_areas: int = 0
 
 
 def _rect(corners: list[tuple[float, float, float]]) -> np.ndarray:
@@ -181,6 +213,82 @@ def log_coordinate_frames() -> None:
     rr.log(WORLD, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
 
+def paint_bucket(mark_type) -> str:
+    """Which color bucket a ``LaneMarkType`` belongs to.
+
+    ``SOLID_BLUE`` gets its own bucket rather than falling in with the unmarked boundaries: it is
+    real paint, and "unmarked" is the one label that asserts there is none.
+    """
+    name = str(getattr(mark_type, "value", mark_type)).upper()
+    for paint in ("yellow", "white", "blue"):
+        if paint.upper() in name:
+            return paint
+    return "unmarked"
+
+
+def log_map(source: av2_source.LogSource) -> tuple[int, int, int]:
+    """Log the log's vector HD map, static, in city coordinates.
+
+    Everything here is ``static=True``: the map does not change over a log, so it carries no
+    timestamps and is valid wherever you scrub to.
+
+    One batched ``LineStrips3D`` per bucket rather than one entity per lane segment. A hundred
+    entities would be slower to draw and would bury the entity tree under ids nobody can read;
+    N strips in one archetype is one entity with N instances.
+
+    Returns:
+        counts of (lane segments, crosswalks, drivable areas) logged.
+    """
+    static_map = source.static_map()
+
+    # Left and right boundaries are classified independently -- a lane commonly has a yellow
+    # centerline on one side and a white edge line on the other.
+    by_paint: dict[str, list[np.ndarray]] = {paint: [] for paint in _PAINT_COLORS}
+    for segment in static_map.vector_lane_segments.values():
+        for boundary, mark_type in (
+            (segment.left_lane_boundary, segment.left_mark_type),
+            (segment.right_lane_boundary, segment.right_mark_type),
+        ):
+            by_paint[paint_bucket(mark_type)].append(boundary.xyz)
+
+    for paint, strips in by_paint.items():
+        if not strips:
+            continue
+        rr.log(f"{LANE_BOUNDARIES}/{paint}",
+               rr.LineStrips3D(strips, colors=_PAINT_COLORS[paint], radii=_LANE_RADIUS_M),
+               static=True)
+
+    # Centerlines are DERIVED, not annotated: AV2 stores a lane as a ladder of two boundaries and
+    # has no centerline field. get_lane_segment_centerline resamples both boundaries to
+    # NUM_CENTERLINE_INTERP_PTS (10) and averages them pairwise, so what is drawn here is a
+    # 10-point approximation of the middle -- fine to look at, not something to regress against.
+    centerlines = [
+        static_map.get_lane_segment_centerline(segment_id)
+        for segment_id in static_map.vector_lane_segments
+    ]
+    if centerlines:
+        rr.log(CENTERLINES,
+               rr.LineStrips3D(centerlines, colors=_CENTERLINE_COLOR,
+                               radii=_CENTERLINE_RADIUS_M),
+               static=True)
+
+    # Both of these arrive already closed: PedestrianCrossing.polygon repeats its first vertex,
+    # and DrivableArea.from_dict appends the first point to the boundary as it parses.
+    crossings = [crossing.polygon for crossing in static_map.vector_pedestrian_crossings.values()]
+    if crossings:
+        rr.log(CROSSWALKS,
+               rr.LineStrips3D(crossings, colors=_CROSSWALK_COLOR, radii=_MAP_RADIUS_M),
+               static=True)
+
+    areas = [area.xyz for area in static_map.vector_drivable_areas.values()]
+    if areas:
+        rr.log(DRIVABLE_AREAS,
+               rr.LineStrips3D(areas, colors=_DRIVABLE_COLOR, radii=_MAP_RADIUS_M),
+               static=True)
+
+    return len(static_map.vector_lane_segments), len(crossings), len(areas)
+
+
 def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
     """Log the ego pose over time, plus the whole drive as one static polyline.
 
@@ -233,8 +341,18 @@ def default_blueprint() -> rrb.Blueprint:
     return rrb.Blueprint(rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle"))
 
 
-def log_ego_motion(source: av2_source.LogSource) -> SceneSummary:
-    """Log the coordinate frame, the vehicle, and the path it drove."""
+def log_scene(source: av2_source.LogSource) -> SceneSummary:
+    """Log the coordinate frame, the map, the vehicle, and the path it drove."""
     log_coordinate_frames()
     log_vehicle()
-    return log_ego_path(source)
+    summary = log_ego_path(source)
+
+    # A missing or unreadable map is not fatal: the path is still worth looking at, and every
+    # stream here is downloaded independently. An empty *pose* stream stays fatal -- there is
+    # nothing to show without it -- and log_ego_path raises for that above.
+    try:
+        summary.lane_segments, summary.crosswalks, summary.drivable_areas = log_map(source)
+    except av2_source.MissingStreamError as error:
+        logging.warning("drawing %s without a map: %s", source.log_id, error)
+
+    return summary
