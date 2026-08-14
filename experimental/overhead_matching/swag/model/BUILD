@@ -126,7 +126,7 @@ py_library(
 # Extractors the factory in swag_patch_embedding.py imports lazily. Binaries
 # that instantiate these config kinds (AlphaEarth, SemanticSegment,
 # SyntheticLandmark, AbsolutePosition) must add this target (or the
-# individual libs) to their deps; the paper-release closure omits them.
+# individual libs) to their deps.
 py_library(
   name = "extractor_extras",
   visibility = [

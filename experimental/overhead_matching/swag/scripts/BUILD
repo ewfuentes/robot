@@ -158,9 +158,9 @@ py_binary(
   srcs=["train.py"],
   visibility=["//common/python:__subpackages__", "//common/tools/lambda_cloud:__subpackages__"],
   deps=[
+    # :lr_sweep and :model_inspector are lazy-imported dev-only features
+    # (--lr_sweep / model capture); add them back here if you use those modes.
     ":logging_utils",
-    ":lr_sweep",
-    ":model_inspector",
     ":pairing",
     ":losses",
     ":distances",

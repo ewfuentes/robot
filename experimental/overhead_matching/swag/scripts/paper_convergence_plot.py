@@ -447,26 +447,29 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/tmp/paper_plots",
+        required=True,
         help="Directory to save figures",
     )
     parser.add_argument(
         "--baseline_dir",
         type=str,
-        default="/data/overhead_matching/evaluation/results/260428_v6_safa_only_noise014",
-        help="Base directory for SAFA baseline results",
+        required=True,
+        help="Base directory for image-baseline (WAG) results, "
+             "containing <env>/<baseline_method>/ eval outputs",
     )
     parser.add_argument(
         "--ours_dir",
         type=str,
-        default="/data/overhead_matching/evaluation/results/260501_v6_safa_plus_norm_lm",
-        help="Base directory for our method results",
+        required=True,
+        help="Base directory for our method's results, "
+             "containing <env>/<ours_method>/ eval outputs",
     )
     parser.add_argument(
         "--osm_dir",
         type=str,
-        default="/data/overhead_matching/evaluation/results/260504_160045_osm_baseline",
-        help="Base directory for OSM baseline results (may cover only a subset of envs)",
+        default=None,
+        help="Base directory for OSM baseline results (may cover only a "
+             "subset of envs). Skipped if not set; requires --osm_method.",
     )
     parser.add_argument(
         "--seattle_results_dir",
@@ -478,20 +481,21 @@ def main():
     parser.add_argument(
         "--baseline_method",
         type=str,
-        default="safa_only",
+        required=True,
         help="Subdirectory name for baseline method within each city",
     )
     parser.add_argument(
         "--ours_method",
         type=str,
-        default="safa_plus_norm_lm",
+        required=True,
         help="Subdirectory name for our method within each city",
     )
     parser.add_argument(
         "--osm_method",
         type=str,
-        default="dinov3_osm",
-        help="Subdirectory name for OSM baseline method within each city",
+        default=None,
+        help="Subdirectory name for OSM baseline method within each city "
+             "(required when --osm_dir is set)",
     )
     parser.add_argument(
         "--env_dir_override",
@@ -532,8 +536,9 @@ def main():
     parser.add_argument(
         "--early_method",
         type=str,
-        default="early_fusion_attempt_v1",
-        help="Subdirectory name for the early-fusion method within each city",
+        default=None,
+        help="Subdirectory name for the early-fusion method within each city "
+             "(required when --early_dir is set)",
     )
     parser.add_argument(
         "--early_label",
@@ -582,6 +587,11 @@ def main():
              "for every env or loading throws.",
     )
     args = parser.parse_args()
+
+    if args.osm_dir and not args.osm_method:
+        raise SystemExit("--osm_method is required when --osm_dir is set")
+    if args.early_dir and not args.early_method:
+        raise SystemExit("--early_method is required when --early_dir is set")
 
     env_xlim_overrides: dict[str, float] = {}
     for spec in args.env_xlim:
