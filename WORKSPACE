@@ -186,11 +186,20 @@ PIP_ANNOTATIONS = {
 load("@robot//common/torch:extra_torch_targets.bzl", "extra_torch_targets")
 extra_torch_targets()
         """
-    )
+    ),
+    "rerun-sdk": package_annotation(
+        additive_build_content="""
+load("@robot//third_party/python:extra_rerun_targets.bzl", "extra_rerun_targets")
+extra_rerun_targets()
+        """
+    ),
 }
 
 EXTRA_HUB_ALIASES = {
     "torch": ["libtorch"],
+    # Keyed by the *normalized* distribution name: render_pkg_aliases looks this dict up with
+    # normalize_name(), so "rerun-sdk" would silently never match.
+    "rerun_sdk": ["rerun"],
 }
 
 multi_pip_parse(
