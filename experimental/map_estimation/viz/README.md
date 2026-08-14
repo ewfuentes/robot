@@ -12,9 +12,10 @@ $V tbv --log_id 07YOTz..._Spring_2020 --serve      # stream to a browser
 $V sensor/val --log_id 02678d04... --save /tmp/log.rrd
 ```
 
-The dataset spec, `--log_id` and `--root` mean what they mean in
-[`data:argoverse`](../data/README.md), and both tools resolve paths through
-`argoverse_layout`, so whatever you downloaded is what this opens. Use `--serve` when the data
+The dataset spec and `--root` mean what they mean in [`data:argoverse`](../data/README.md), and
+both tools resolve paths through `argoverse_layout`, so whatever you downloaded is what this
+opens. `--log_id` is deliberately *not* that CLI's repeatable, fnmatch-able selector: one
+invocation produces one recording, so it takes exactly one log id. Use `--serve` when the data
 sits on a remote box: same logging code, viewer in a browser.
 
 ## Layout

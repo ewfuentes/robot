@@ -7,14 +7,18 @@
     $V tbv --log_id 07YOTz... --serve          # stream to a browser instead
     $V sensor/val --log_id 02678d04... --save /tmp/log.rrd
 
-The dataset spec, ``--log_id`` and ``--root`` mean what they mean in the download CLI
+The dataset spec and ``--root`` mean what they mean in the download CLI
 (``//experimental/map_estimation/data:argoverse``), and paths are resolved through the same
 layout module, so whatever that tool downloaded is what this one opens.
+
+``--log_id`` is deliberately *not* that CLI's repeatable, fnmatch-able selector: one invocation
+produces one recording, so it takes exactly one log id.
 """
 
 import argparse
 import logging
 import sys
+import threading
 from pathlib import Path
 
 import rerun as rr
@@ -34,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("spec", type=str,
                         help="dataset[/split], e.g. sensor/val, tbv, lidar/train")
     parser.add_argument("--log_id", type=str, default=None,
-                        help="log to view; omit to list the logs present on disk")
+                        help="the single log to view; omit to list the logs present on disk")
     parser.add_argument("--root", type=Path, default=al.DEFAULT_ROOT,
                         help=f"local dataset root (default: {al.DEFAULT_ROOT})")
     parser.add_argument("--verbose", "-v", action="count", default=0)
@@ -87,11 +91,17 @@ def _list_logs(request: al.Request, root: Path) -> int:
     if not log_ids:
         print(f"no logs on disk under {request.local_dir(root)}", file=sys.stderr)
         return 1
-    print(f"{len(log_ids)} log(s) under {request.local_dir(root)}:")
+
+    # Build every row before printing any of it. Scanning a log can fail -- a directory removed
+    # between the listing and the scan, a permission error -- and emitting the count line first
+    # would leave a header promising N logs above a truncated list.
+    rows = []
     for log_id in log_ids:
         source = av2_source.LogSource(request, log_id, root)
-        items = ", ".join(item.token for item in source.present_items())
-        print(f"  {log_id}  [{items}]")
+        rows.append(f"  {log_id}  [{', '.join(i.token for i in source.present_items())}]")
+
+    print(f"{len(rows)} log(s) under {request.local_dir(root)}:")
+    print("\n".join(rows))
     return 0
 
 
@@ -103,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     # they get a one-line message rather than a traceback.
     try:
         request = al.make_request(args.spec)
+        # Before either branch, so an unreadable dataset fails identically whether you are
+        # listing or viewing -- and before anything reaches stdout.
+        av2_source.ensure_supported(request)
         if args.log_id is None:
             return _list_logs(request, args.root)
         source = av2_source.LogSource(request, args.log_id, args.root)
@@ -137,10 +150,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.save}")
     elif args.serve:
         print("serving; ctrl-c to stop")
+        # Block on an event that never fires rather than on stdin. Reading stdin looks
+        # equivalent but dies instantly wherever stdin is not a terminal -- backgrounded, under
+        # nohup, in a CI step -- which is exactly how --serve gets used when the data is on a
+        # remote box, and it would tear the server down while printing that it was serving.
         try:
-            while True:
-                input()
-        except (EOFError, KeyboardInterrupt):
+            threading.Event().wait()
+        except KeyboardInterrupt:
             pass
     return 0
 

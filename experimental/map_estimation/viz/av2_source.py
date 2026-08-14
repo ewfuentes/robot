@@ -30,6 +30,20 @@ class UnsupportedDatasetError(ValueError):
     """The dataset has no log-directory shape this module can read."""
 
 
+def ensure_supported(request: al.Request) -> None:
+    """Raise if this dataset has no log-directory shape to read.
+
+    Separate from :class:`LogSource` so a caller that only wants to *list* logs can reject the
+    dataset before printing anything. Listing motion-forecasting would otherwise find its
+    scenario directories, announce them, and only then fail per-directory.
+    """
+    if request.dataset is al.Dataset.MOTION_FORECASTING:
+        raise UnsupportedDatasetError(
+            "motion-forecasting scenarios are a single parquet file, not a log directory "
+            "with sensor streams; this viewer reads sensor, tbv, and lidar logs"
+        )
+
+
 def discover_log_ids(request: al.Request, root: Path = al.DEFAULT_ROOT) -> list[str]:
     """Log ids present on disk for `request`'s dataset+split, sorted.
 
@@ -53,11 +67,7 @@ class LogSource:
     """
 
     def __init__(self, request: al.Request, log_id: str, root: Path = al.DEFAULT_ROOT) -> None:
-        if request.dataset is al.Dataset.MOTION_FORECASTING:
-            raise UnsupportedDatasetError(
-                "motion-forecasting scenarios are a single parquet file, not a log directory "
-                "with sensor streams; this viewer reads sensor, tbv, and lidar logs"
-            )
+        ensure_supported(request)
         self.request = request
         self.log_id = log_id
         self.root = Path(root)
