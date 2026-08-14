@@ -17,6 +17,7 @@ tooling can reuse it for ego poses without pulling in a viewer.
 from pathlib import Path
 
 from av2.geometry.se3 import SE3
+from av2.map.map_api import ArgoverseStaticMap
 from av2.utils.io import read_city_SE3_ego
 
 from experimental.map_estimation.data import argoverse_layout as al
@@ -122,3 +123,21 @@ class LogSource:
         """
         self._require_named("POSES")
         return read_city_SE3_ego(self.log_dir)
+
+    def static_map(self) -> ArgoverseStaticMap:
+        """The log's vector HD map -- lane segments, crosswalks, drivable areas -- in city coords.
+
+        ``build_raster=False`` because this is the vector map and nothing here rasterizes it:
+        True would additionally rasterize every drivable-area polygon and load the ~1.6 MB
+        ground-height surface, which costs seconds per log. Pass True only for
+        ``get_ground_height_at_xy`` and friends.
+        """
+        map_dir = self._require_named("MAP")
+        try:
+            return ArgoverseStaticMap.from_map_dir(map_dir, build_raster=False)
+        except RuntimeError as error:
+            # has() only asks whether map/ is non-empty, and a partial download leaves the
+            # ground-height .npy and the Sim2 json behind without the archive JSON. from_map_dir
+            # reports that as a bare RuntimeError; make it the same error every other stream
+            # raises so callers have one thing to catch.
+            raise MissingStreamError(f"{self.log_id} has an unreadable map: {error}") from error

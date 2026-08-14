@@ -1,4 +1,4 @@
-"""View an Argoverse 2 log in rerun: the vehicle and the path it drove.
+"""View an Argoverse 2 log in rerun: the HD map, the vehicle, and the path it drove.
 
     V="bazel run //experimental/map_estimation/viz:view_log --"
 
@@ -137,13 +137,15 @@ def main(argv: list[str] | None = None) -> int:
         _spawn_bundled_viewer(blueprint)
 
     try:
-        summary = av2_scene.log_ego_motion(source)
+        summary = av2_scene.log_scene(source)
     except av2_source.MissingStreamError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(
         f"{summary.log_id}: {summary.poses} poses, "
-        f"{summary.path_length_m:.1f} m over {summary.duration_s:.1f} s"
+        f"{summary.path_length_m:.1f} m over {summary.duration_s:.1f} s; "
+        f"map: {summary.lane_segments} lane segments, {summary.crosswalks} crosswalks, "
+        f"{summary.drivable_areas} drivable areas"
     )
 
     if args.save is not None:
