@@ -3911,7 +3911,9 @@ rerun-sdk==0.23.1 \
     --hash=sha256:dc5129f8744f71249bf45558c853422c51ef39b6b5eea0ea1f602c6049ce732f \
     --hash=sha256:ee0d0e17df0e08be13b77cc74884c5d8ba8edb39b6f5a60dc2429d39033d90f6 \
     --hash=sha256:fe06d21cfcf4d84a9396f421d4779efabec7e9674d232a2c552c8a91d871c375
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 retrying==1.4.2 \
     --hash=sha256:bbc004aeb542a74f3569aeddf42a2516efefcdaff90df0eb38fbfbf19f179f59 \
     --hash=sha256:d102e75d53d8d30b88562d45361d6c6c934da06fab31bd81c0420acb97a8ba39
