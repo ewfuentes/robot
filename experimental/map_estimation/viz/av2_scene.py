@@ -1,0 +1,240 @@
+"""Logs an Argoverse 2 log's ego motion into rerun: the vehicle and the path it drove.
+
+The entity tree *is* the transform hierarchy -- a child inherits its parent's ``Transform3D`` --
+so the layout below is the whole coordinate story:
+
+    world                 city frame, right-handed z-up
+    world/path            the whole drive as one polyline, static, in city coordinates
+    world/ego             city_SE3_egovehicle, one per pose timestamp
+    world/ego/wireframe   the vehicle outline, logged once and carried by the ego transform
+
+That last line is the part worth internalizing: the wireframe is logged **once**, as static
+data, and it moves because its parent moves. Nothing re-logs geometry per frame.
+
+Sensor streams are deliberately absent for now. When they arrive they hang off ``world/ego``
+alongside the wireframe -- lidar and annotations are already in the ego frame, cameras get their
+own ``ego_SE3_cam`` child -- and model output belongs under :data:`PREDICTION_CITY` or
+:data:`PREDICTION_EGO`, siblings of the ground-truth paths under the same transforms, so the two
+can be toggled and compared without either code path knowing about the other.
+"""
+
+import dataclasses
+
+import numpy as np
+import rerun as rr
+import rerun.blueprint as rrb
+
+from experimental.map_estimation.viz import av2_source
+
+WORLD = "world"
+PATH = f"{WORLD}/path"
+EGO = f"{WORLD}/ego"
+WIREFRAME = f"{EGO}/wireframe"
+
+PREDICTION_CITY = f"{WORLD}/prediction"
+"""Where to log model output expressed in city coordinates."""
+PREDICTION_EGO = f"{EGO}/prediction"
+"""Where to log model output expressed in the egovehicle frame."""
+
+TIMELINE_ELAPSED = "elapsed"
+"""Seconds since the log's first pose. The timeline you actually scrub.
+
+NOT named ``log_time``: that one is reserved. Rerun stamps every ``rr.log`` call with built-in
+``log_time`` (wall clock) and ``log_tick`` (call counter) timelines, so reusing the name makes
+the SDK complain that the timeline changed type and then interleaves our values with its own.
+"""
+TIMELINE_TIMESTAMP = "timestamp_ns"
+"""Raw AV2 nanosecond timestamps, for cross-referencing a frame against files on disk."""
+
+_PATH_COLOR = (80, 170, 255)
+_BODY_COLOR = (235, 235, 235)
+_WHEEL_COLOR = (140, 140, 150)
+_NOSE_COLOR = (255, 120, 60)
+
+# Nominal Ford Fusion Hybrid dimensions, in meters. AV2 ships no vehicle model, so these are
+# stated here rather than read from anywhere -- they are for orientation, not measurement.
+#
+# The egovehicle frame's origin is the center of the rear axle at ground level, x forward,
+# y left, z up. The calibration rig agrees: every sensor sits at x 1.09..1.64, and the lidar at
+# (1.35, 0.0, 1.64) is a roof rack a little ahead of the vehicle's middle.
+_WHEELBASE_M = 2.85
+_REAR_OVERHANG_M = 1.07
+_FRONT_OVERHANG_M = 0.95
+_HALF_WIDTH_M = 0.925
+_WHEEL_RADIUS_M = 0.35
+_SILL_M = 0.35
+_BELTLINE_M = 1.00
+_ROOF_M = 1.47
+
+_NOSE_M = _WHEELBASE_M + _FRONT_OVERHANG_M
+_TAIL_M = -_REAR_OVERHANG_M
+
+
+@dataclasses.dataclass
+class SceneSummary:
+    """What actually got logged, for the CLI to report."""
+
+    log_id: str
+    poses: int = 0
+    path_length_m: float = 0.0
+    duration_s: float = 0.0
+
+
+def _rect(corners: list[tuple[float, float, float]]) -> np.ndarray:
+    """Close a list of corners into a loop."""
+    return np.array(corners + [corners[0]], dtype=np.float64)
+
+
+def _wheel(center_x: float, y: float, *, sides: int = 8) -> np.ndarray:
+    """A wheel as a polygon in the vehicle's xz plane, at the axle it belongs to."""
+    angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)
+    xs = center_x + _WHEEL_RADIUS_M * np.cos(angles)
+    zs = _WHEEL_RADIUS_M + _WHEEL_RADIUS_M * np.sin(angles)
+    loop = np.stack([xs, np.full_like(xs, y), zs], axis=-1)
+    return np.vstack([loop, loop[:1]])
+
+
+def vehicle_wireframe() -> list[np.ndarray]:
+    """A crude car outline in the egovehicle frame, as a list of polylines.
+
+    Deliberately not a plain box. A box has no heading, and heading is the one thing you need to
+    read off a vehicle when you are checking whether a pose stream is right -- hence the tapered
+    cabin and the nose chevron. The wheels are there because they sit on the axles, and the rear
+    axle is the frame's origin, which is otherwise invisible.
+    """
+    half_w, sill, belt, roof = _HALF_WIDTH_M, _SILL_M, _BELTLINE_M, _ROOF_M
+
+    # Body: a sill loop and a beltline loop, joined at the corners.
+    body_low = _rect([(_TAIL_M, -half_w, sill), (_NOSE_M, -half_w, sill),
+                      (_NOSE_M, half_w, sill), (_TAIL_M, half_w, sill)])
+    body_high = _rect([(_TAIL_M, -half_w, belt), (_NOSE_M, -half_w, belt),
+                       (_NOSE_M, half_w, belt), (_TAIL_M, half_w, belt)])
+    posts = [
+        np.array([(x, y, sill), (x, y, belt)], dtype=np.float64)
+        for x in (_TAIL_M, _NOSE_M)
+        for y in (-half_w, half_w)
+    ]
+
+    # Cabin: inset from the body on all sides, which is what makes the front readable.
+    cabin_back, cabin_front, cabin_half_w = 0.35, 2.55, half_w - 0.12
+    roof_back, roof_front = 0.75, 2.15
+    cabin_base = _rect([(cabin_back, -cabin_half_w, belt), (cabin_front, -cabin_half_w, belt),
+                        (cabin_front, cabin_half_w, belt), (cabin_back, cabin_half_w, belt)])
+    roof_loop = _rect([(roof_back, -cabin_half_w + 0.1, roof),
+                       (roof_front, -cabin_half_w + 0.1, roof),
+                       (roof_front, cabin_half_w - 0.1, roof),
+                       (roof_back, cabin_half_w - 0.1, roof)])
+    pillars = [
+        np.array([(bx, by, belt), (rx, ry, roof)], dtype=np.float64)
+        for (bx, by), (rx, ry) in (
+            ((cabin_back, -cabin_half_w), (roof_back, -cabin_half_w + 0.1)),
+            ((cabin_front, -cabin_half_w), (roof_front, -cabin_half_w + 0.1)),
+            ((cabin_front, cabin_half_w), (roof_front, cabin_half_w - 0.1)),
+            ((cabin_back, cabin_half_w), (roof_back, cabin_half_w - 0.1)),
+        )
+    ]
+
+    return [body_low, body_high, *posts, cabin_base, roof_loop, *pillars]
+
+
+def wheel_outlines() -> list[np.ndarray]:
+    """The four wheels, on the axles. The rear pair straddles the frame origin."""
+    return [
+        _wheel(center_x, y)
+        for center_x in (0.0, _WHEELBASE_M)
+        for y in (-_HALF_WIDTH_M, _HALF_WIDTH_M)
+    ]
+
+
+def nose_chevron() -> np.ndarray:
+    """A forward-pointing V at the front of the vehicle, so heading is unambiguous."""
+    tip = _NOSE_M + 0.45
+    return np.array(
+        [(_NOSE_M, -_HALF_WIDTH_M * 0.6, _BELTLINE_M),
+         (tip, 0.0, _BELTLINE_M),
+         (_NOSE_M, _HALF_WIDTH_M * 0.6, _BELTLINE_M)],
+        dtype=np.float64,
+    )
+
+
+def log_vehicle() -> None:
+    """Log the vehicle outline once, as static data under the ego transform.
+
+    ``static=True`` means it has no timestamp and is therefore valid at every point on the
+    timeline. It follows the vehicle because ``world/ego`` moves, not because anything re-logs
+    it -- the single most useful habit to pick up from rerun's data model.
+    """
+    rr.log(f"{WIREFRAME}/body", rr.LineStrips3D(vehicle_wireframe(), colors=_BODY_COLOR,
+                                                radii=0.02), static=True)
+    rr.log(f"{WIREFRAME}/wheels", rr.LineStrips3D(wheel_outlines(), colors=_WHEEL_COLOR,
+                                                  radii=0.03), static=True)
+    rr.log(f"{WIREFRAME}/nose", rr.LineStrips3D([nose_chevron()], colors=_NOSE_COLOR,
+                                                radii=0.04), static=True)
+
+
+def log_coordinate_frames() -> None:
+    """Declare the city frame's handedness.
+
+    Without ``ViewCoordinates`` the viewer has no idea which way is up and starts the camera in
+    an arbitrary orientation; AV2's city frame is right-handed with +z up.
+    """
+    rr.log(WORLD, rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+
+
+def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
+    """Log the ego pose over time, plus the whole drive as one static polyline.
+
+    The path is static rather than grown frame by frame: it is context for wherever you scrub
+    to, and one polyline of N vertices is far cheaper than N incrementally longer ones.
+    """
+    summary = SceneSummary(log_id=source.log_id)
+    poses = source.city_SE3_ego()
+    if not poses:
+        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+
+    timestamps = sorted(poses)
+    t0_ns = timestamps[0]
+
+    translations = []
+    for timestamp_ns in timestamps:
+        pose = poses[timestamp_ns]
+        rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
+        rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
+        rr.log(EGO, rr.Transform3D(translation=pose.translation, mat3x3=pose.rotation,
+                                   axis_length=2.0))
+        translations.append(pose.translation)
+
+    track = np.asarray(translations)
+    rr.log(PATH, rr.LineStrips3D([track], colors=_PATH_COLOR, radii=0.25), static=True)
+
+    summary.poses = len(timestamps)
+    summary.path_length_m = float(np.linalg.norm(np.diff(track, axis=0), axis=1).sum())
+    summary.duration_s = (timestamps[-1] - t0_ns) / 1e9
+    return summary
+
+
+def default_blueprint() -> rrb.Blueprint:
+    """A single 3D view, anchored to the vehicle.
+
+    A view's ``origin`` is the frame it renders in, and that is the whole of "follow the
+    vehicle" -- rerun applies the inverse ego transform to everything else, so the car holds
+    still and the city sweeps past it. There is no separate follow toggle.
+
+    ``contents`` has to be widened at the same time, and forgetting is the trap. It defaults to
+    ``$origin/**``, which under ``world/ego`` resolves to the vehicle wireframe alone: PATH is a
+    *sibling* of EGO, not a descendant. That placement is deliberate -- the path is in city
+    coordinates and must not inherit the ego transform, or it would drag along with the car
+    instead of staying fixed to the map -- so the view has to reach outside its own origin to
+    show it.
+
+    ``/**`` rather than an explicit include list, so the streams that land under ``world/``
+    later (map, lidar, annotations, cameras) appear without anyone editing this.
+    """
+    return rrb.Blueprint(rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle"))
+
+
+def log_ego_motion(source: av2_source.LogSource) -> SceneSummary:
+    """Log the coordinate frame, the vehicle, and the path it drove."""
+    log_coordinate_frames()
+    log_vehicle()
+    return log_ego_path(source)

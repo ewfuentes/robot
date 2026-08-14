@@ -127,6 +127,7 @@ attrs==25.3.0 \
     #   nox
     #   rasterio
     #   referencing
+    #   rerun-sdk
 av==18.1.0 \
     --hash=sha256:025f84494cb23278498f03b0d8117d3e47a1cbc9c44b97eb31875cf02251e46b \
     --hash=sha256:08a9ae288299cfcbf739dba4ad0c53b9b71f45184303dd45947920d022fed695 \
@@ -2419,6 +2420,7 @@ numpy==1.26.4 \
     #   pycolmap
     #   pyogrio
     #   rasterio
+    #   rerun-sdk
     #   rosbags
     #   sam-2
     #   scikit-image
@@ -2834,6 +2836,7 @@ pillow==10.4.0 \
     #   matplotlib
     #   pillow-heif
     #   reportlab
+    #   rerun-sdk
     #   sam-2
     #   scikit-image
     #   sentence-transformers
@@ -3042,6 +3045,7 @@ pyarrow==21.0.0 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   av2
+    #   rerun-sdk
 pyasn1==0.6.1 \
     --hash=sha256:0d632f46f2ba09143da3a8afe9e33fb6f92fa2320ab7e886e2d0f7672af84629 \
     --hash=sha256:6f580d2bdd84365380830acf45550f2511469f673cb4a5ae3857a3170128b034
@@ -3901,6 +3905,13 @@ requests[socks]==2.32.4 ; platform_machine == 'x86_64' \
     # via
     #   -c constraints.txt
     #   gdown
+rerun-sdk==0.23.1 \
+    --hash=sha256:823ae87bfa644e06fb70bada08a83690dd23d9824a013947f80a22c6731bdc0d \
+    --hash=sha256:d4273db55b56310b053a2de6bf5927a8692cf65f4d234c6e6928fb24ed8a960d \
+    --hash=sha256:dc5129f8744f71249bf45558c853422c51ef39b6b5eea0ea1f602c6049ce732f \
+    --hash=sha256:ee0d0e17df0e08be13b77cc74884c5d8ba8edb39b6f5a60dc2429d39033d90f6 \
+    --hash=sha256:fe06d21cfcf4d84a9396f421d4779efabec7e9674d232a2c552c8a91d871c375
+    # via -r third_party/python/requirements_3_12.in
 retrying==1.4.2 \
     --hash=sha256:bbc004aeb542a74f3569aeddf42a2516efefcdaff90df0eb38fbfbf19f179f59 \
     --hash=sha256:d102e75d53d8d30b88562d45361d6c6c934da06fab31bd81c0420acb97a8ba39
@@ -4790,6 +4801,7 @@ typing-extensions==4.14.1 \
     #   pydantic
     #   pydantic-core
     #   referencing
+    #   rerun-sdk
     #   sentence-transformers
     #   spatialmath-python
     #   starlette
