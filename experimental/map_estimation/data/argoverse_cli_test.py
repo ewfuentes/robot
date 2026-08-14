@@ -107,6 +107,17 @@ class ItemValidationTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(len(json.loads(out)), 2)
 
+    def test_group_items_work_on_sensor_test(self):
+        """Every documented group must be usable on sensor/test, minus its absent items."""
+        for group in ("all", "metadata", "sensors", "cameras"):
+            with self.subTest(group=group):
+                with run_cli(["--json", "download", "sensor/test", "--items", group],
+                             make_catalog(split="test"), root=Path("/tmp")) as (
+                    code, out, err
+                ):
+                    self.assertEqual(code, 0, err)
+                    self.assertNotIn("annotations", json.loads(out)["items"])
+
 
 class ListTest(unittest.TestCase):
     def test_table_output(self):
@@ -220,16 +231,45 @@ class DownloadTest(unittest.TestCase):
         self.assertTrue(all("-n" in line for line in lines))
         self.assertTrue(all(line.endswith("/sensors/lidar/'") for line in lines))
 
+    def _fake_execute(self):
+        """Stand in for s5cmd by materializing the files the plan asked for.
+
+        Necessary because cmd_download verifies that the data actually landed -- a mock that
+        transfers nothing is correctly reported as a failed download.
+        """
+        def execute(download_plan, **kwargs):
+            for transfer in download_plan.transfers:
+                if transfer.is_dir:
+                    transfer.dst.mkdir(parents=True, exist_ok=True)
+                    for index in range(transfer.num_objects):
+                        (transfer.dst / f"{index}.bin").write_bytes(b"x")
+                else:
+                    transfer.dst.parent.mkdir(parents=True, exist_ok=True)
+                    transfer.dst.write_bytes(b"x")
+            return s5cmd.Result(returncode=0, num_commands=len(download_plan.transfers),
+                                elapsed_s=1.0)
+        return execute
+
     def test_confirmation_is_skipped_below_the_threshold(self):
         with mock.patch.object(cli, "input", create=True) as prompt, \
-             mock.patch.object(
-                 cli.ad, "execute",
-                 return_value=s5cmd.Result(returncode=0, num_commands=2, elapsed_s=1.0)):
+             mock.patch.object(cli.ad, "execute", side_effect=self._fake_execute()):
             with run_cli(["download", "sensor/val", "--items", "map"],
-                         root=self.root) as (code, out, _err):
-                self.assertEqual(code, 0)
+                         root=self.root) as (code, out, err):
+                self.assertEqual(code, 0, err)
                 self.assertIn("done:", out)
         prompt.assert_not_called()
+
+    def test_a_download_that_lands_nothing_is_reported_as_a_failure(self):
+        """s5cmd exiting 0 is not proof the data arrived; `cp -n` can skip everything."""
+        with mock.patch.object(
+            cli.ad, "execute",
+            return_value=s5cmd.Result(returncode=0, num_commands=2, elapsed_s=1.0),
+        ):
+            with run_cli(["download", "sensor/val", "--items", "map", "-y"],
+                         root=self.root) as (code, _out, err):
+                self.assertEqual(code, 1)
+                self.assertIn("still incomplete", err)
+                self.assertIn("--overwrite", err)
 
     def test_confirmation_is_requested_above_the_threshold(self):
         with mock.patch.object(cli, "input", create=True, return_value="n") as prompt:
@@ -241,12 +281,10 @@ class DownloadTest(unittest.TestCase):
 
     def test_yes_bypasses_confirmation(self):
         with mock.patch.object(cli, "input", create=True) as prompt, \
-             mock.patch.object(
-                 cli.ad, "execute",
-                 return_value=s5cmd.Result(returncode=0, num_commands=2, elapsed_s=1.0)):
+             mock.patch.object(cli.ad, "execute", side_effect=self._fake_execute()):
             with run_cli(["download", "sensor/val", "--items", "map", "-y",
-                          "--confirm_above", "1KB"], root=self.root) as (code, _out, _err):
-                self.assertEqual(code, 0)
+                          "--confirm_above", "1KB"], root=self.root) as (code, _out, err):
+                self.assertEqual(code, 0, err)
         prompt.assert_not_called()
 
     def test_eof_on_the_confirm_prompt_aborts_instead_of_crashing(self):
@@ -368,6 +406,31 @@ class IndexTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             with contextlib.redirect_stderr(io.StringIO()):
                 cli.build_parser().parse_args(["index", "sensor/val", "--limit", "10"])
+
+    def test_partial_refresh_without_an_existing_catalog_is_refused(self):
+        """Saving the one-log result as the split's catalog would hide the other 149 logs."""
+        with mock.patch.object(cli.ac, "build") as build, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, \
+             contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["--cache_dir", str(self.cache_dir), "index", "sensor/val",
+                             "--log_id", LOG_A])
+        self.assertEqual(code, 1)
+        self.assertIn("Index the whole split first", stderr.getvalue())
+        build.assert_not_called()
+        self.assertFalse((self.cache_dir / "sensor_val.json").exists())
+
+    def test_partial_refresh_targets_the_out_file_when_given(self):
+        out_path = self.cache_dir / "custom.json"
+        ac.save(make_catalog([make_entry(LOG_A), make_entry(LOG_B, "ATX")]), out_path)
+        with mock.patch.object(cli.ac, "build",
+                               return_value=make_catalog([make_entry(LOG_A, "MIA")])), \
+             contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["--cache_dir", str(self.cache_dir), "index", "sensor/val",
+                             "--log_id", LOG_A, "--out", str(out_path)])
+        self.assertEqual(code, 0)
+        merged = ac.load(out_path)
+        self.assertEqual(len(merged), 2, "must merge from --out, not from the cache")
+        self.assertEqual(merged.get(LOG_A).city, "MIA")
 
     def test_partial_refresh_merges_into_the_existing_catalog(self):
         """--log_id patches rows rather than discarding the other 149."""

@@ -199,6 +199,37 @@ class ResolveItemsTest(unittest.TestCase):
             ),
         )
 
+    def test_groups_are_filtered_by_available_items(self):
+        """`--items all` on sensor/test must omit annotations, not fail.
+
+        Otherwise no group alias works on that split and the user has to enumerate items
+        by hand, contradicting the documented interface.
+        """
+        test_request = al.SensorRequest(split=al.SensorSplit.TEST)
+        for group in ("all", "metadata"):
+            with self.subTest(group=group):
+                items = al.resolve_items(al.SensorItem, [group],
+                                         available=test_request.available_items())
+                self.assertNotIn(al.SensorItem.ANNOTATIONS, items)
+                self.assertTrue(items)
+                al.SensorRequest(split=al.SensorSplit.TEST, items=items)  # must not raise
+
+    def test_individually_named_items_are_never_filtered(self):
+        """Filtering groups must not also silence an explicit mistake."""
+        test_request = al.SensorRequest(split=al.SensorSplit.TEST)
+        items = al.resolve_items(al.SensorItem, ["annotations"],
+                                 available=test_request.available_items())
+        self.assertEqual(items, (al.SensorItem.ANNOTATIONS,))
+        with self.assertRaises(al.UnknownItemError):
+            al.SensorRequest(split=al.SensorSplit.TEST, items=items)
+
+    def test_groups_unfiltered_on_splits_that_have_everything(self):
+        items = al.resolve_items(
+            al.SensorItem, ["metadata"],
+            available=al.SensorRequest(split=al.SensorSplit.VAL).available_items(),
+        )
+        self.assertIn(al.SensorItem.ANNOTATIONS, items)
+
     def test_duplicates_collapse_and_order_follows_the_enum(self):
         items = al.resolve_items(al.SensorItem, ["lidar", "map", "lidar", "metadata"])
         self.assertEqual(len(items), 5)

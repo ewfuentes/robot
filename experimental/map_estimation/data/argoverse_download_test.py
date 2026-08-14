@@ -103,6 +103,36 @@ class LocalStatusTest(TmpRootTest):
         self.assertEqual(self._status().state, ad.State.COMPLETE)
         self.assertEqual(self._status(verify_bytes=True).state, ad.State.PARTIAL)
 
+    def test_an_unreadable_entry_does_not_abandon_the_rest_of_the_directory(self):
+        """One bad file must skip that file, not under-count the whole item."""
+        write_item(self.root, self.request, LOG_A, al.SensorItem.LIDAR, 4)
+        real_scandir = ad.os.scandir
+
+        class Exploding:
+            """A DirEntry whose stat() fails, as with a permissions error or a live write."""
+
+            def __init__(self, entry):
+                self._entry = entry
+                self.path = entry.path
+
+            def is_dir(self, follow_symlinks=True):
+                return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+            def is_file(self, follow_symlinks=True):
+                return self._entry.is_file(follow_symlinks=follow_symlinks)
+
+            def stat(self, follow_symlinks=True):
+                raise PermissionError("denied")
+
+        def flaky_scandir(path):
+            entries = list(real_scandir(path))
+            return [Exploding(entries[0])] + entries[1:] if entries else entries
+
+        with mock.patch.object(ad.os, "scandir", side_effect=flaky_scandir):
+            status = self._status()
+        lidar = next(item for item in status.items if item.item == "lidar")
+        self.assertEqual(lidar.local.num_objects, 3, "the other 3 files must still be counted")
+
     def test_items_absent_remotely_are_not_present_not_missing(self):
         """Annotations on a log that has none must not read as an incomplete download."""
         request = al.SensorRequest(
@@ -205,6 +235,29 @@ class PlanTest(TmpRootTest):
         self.assertTrue(
             all(c.startswith("cp '") for c in download_plan.to_commands(overwrite=True))
         )
+
+    def test_wrong_sized_files_drop_no_clobber_so_they_can_be_repaired(self):
+        """`cp -n` would decline to replace a truncated file, making it unrepairable."""
+        request = al.SensorRequest(split=al.SensorSplit.VAL, items=(al.SensorItem.POSES,))
+        write_item(self.root, request, LOG_A, al.SensorItem.POSES, 1, size=1)  # truncated
+
+        # Without --verify_bytes the object count matches, so nothing is flagged at all.
+        relaxed = ad.plan(request, [self.entries[0]], root=self.root)
+        self.assertTrue(relaxed.is_empty)
+
+        strict = ad.plan(request, [self.entries[0]], root=self.root, verify_bytes=True)
+        self.assertEqual(len(strict.transfers), 1)
+        transfer = strict.transfers[0]
+        self.assertTrue(transfer.force_overwrite)
+        self.assertNotIn(" -n ", transfer.to_command())
+
+    def test_merely_missing_files_keep_no_clobber_for_cheap_resume(self):
+        request = al.SensorRequest(split=al.SensorSplit.VAL, items=(al.SensorItem.LIDAR,))
+        write_item(self.root, request, LOG_A, al.SensorItem.LIDAR, 2)  # of 4, all intact
+        download_plan = ad.plan(request, [self.entries[0]], root=self.root)
+        transfer = download_plan.transfers[0]
+        self.assertFalse(transfer.force_overwrite)
+        self.assertIn(" -n ", transfer.to_command())
 
     def test_commands_quote_wildcards(self):
         download_plan = ad.plan(self.request, self.entries, root=self.root)

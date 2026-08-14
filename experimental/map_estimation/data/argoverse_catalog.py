@@ -316,8 +316,11 @@ def _build_prefix_only(
         )
 
     by_id = {entry.log_id: entry for entry in measured}
+    # dict(mean_stats) per row rather than the shared instance: LogEntry is frozen but its
+    # `items` dict is not, so aliasing one dict across ~250 000 rows would let a single in-place
+    # mutation silently rewrite every extrapolated entry.
     entries = [
-        by_id.get(log_id, LogEntry(log_id=log_id, city=None, items=mean_stats))
+        by_id.get(log_id, LogEntry(log_id=log_id, city=None, items=dict(mean_stats)))
         for log_id in log_ids
     ]
     return entries, len(measured)
@@ -503,6 +506,17 @@ def filter_logs(
             if entry.log_id in selected
             or any(fnmatch.fnmatch(entry.log_id, pattern) for pattern in globs)
         ]
+        # An id that exists but was removed by an earlier filter (usually --city) would
+        # otherwise vanish silently, and the command would report success having acted on
+        # fewer logs than were named.
+        excluded = sorted(selected - {entry.log_id for entry in matched})
+        if excluded:
+            verb = "exists" if len(excluded) == 1 else "exist"
+            raise KeyError(
+                f"{', '.join(excluded)} {verb} in {catalog.spec} but "
+                f"{'was' if len(excluded) == 1 else 'were'} excluded by another filter "
+                "(--city?); drop the conflicting filter or the log id"
+            )
         if patterns and not matched:
             raise KeyError(f"no logs of {catalog.spec} match {patterns}")
         entries = matched

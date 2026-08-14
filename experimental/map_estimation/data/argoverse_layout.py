@@ -534,7 +534,11 @@ _GROUP_ALIASES = {
 }
 
 
-def resolve_items(item_type: type[_Item], tokens: Iterable[str]) -> tuple[_Item, ...]:
+def resolve_items(
+    item_type: type[_Item],
+    tokens: Iterable[str],
+    available: Sequence[_Item] | None = None,
+) -> tuple[_Item, ...]:
     """Expand a mix of item names and group aliases into a deduplicated, ordered tuple.
 
     >>> resolve_items(SensorItem, ["metadata", "lidar"])       # doctest: +SKIP
@@ -543,7 +547,14 @@ def resolve_items(item_type: type[_Item], tokens: Iterable[str]) -> tuple[_Item,
     Group aliases resolve against `item_type`, so 'ring' yields 7 cameras for both sensor and
     tbv, and nothing at all for lidar. An alias that expands to nothing is an error rather than
     a silent empty selection.
+
+    `available` narrows what a *group* may expand to -- pass a request's
+    :meth:`_Request.available_items` so that `--items all` on sensor/test quietly omits the
+    annotations that split does not ship. Items named individually are never filtered, so
+    `--items annotations` on sensor/test still raises. Without this split, every group alias
+    would be a hard error on sensor/test and the user would have to enumerate items by hand.
     """
+    allowed = None if available is None else set(available)
     selected: list[_Item] = []
     for raw in tokens:
         for token in str(raw).split(","):
@@ -553,6 +564,8 @@ def resolve_items(item_type: type[_Item], tokens: Iterable[str]) -> tuple[_Item,
             alias = _GROUP_ALIASES.get(token.lower())
             if alias is not None:
                 expanded = getattr(item_type, alias)()
+                if allowed is not None:
+                    expanded = tuple(item for item in expanded if item in allowed)
                 if not expanded:
                     raise UnknownItemError(
                         f"group {token!r} is empty for the {item_type.dataset_label()} "

@@ -107,14 +107,20 @@ class Transfer(msgspec.Struct, frozen=True):
     is_dir: bool = False
     """Whether `dst` names a directory. Carried explicitly because pathlib strips the trailing
     slash that s5cmd needs in order to treat a destination as a directory."""
+    force_overwrite: bool = False
+    """Set when local files exist but are the wrong size, so `-n` must be dropped for this
+    transfer specifically -- otherwise s5cmd would skip the very files that need replacing."""
 
     def to_command(self, *, overwrite: bool = False) -> str:
         """The batch-file line for this copy.
 
         `-n` (--no-clobber) makes a re-run skip files already present, which is what turns an
-        interrupted download into a cheap resume.
+        interrupted download into a cheap resume. It is dropped when the caller asked to
+        overwrite, or when this transfer exists *because* the local bytes are wrong: keeping
+        `-n` there would make a truncated file unrepairable, since s5cmd would decline to
+        replace it while the size check kept flagging it forever.
         """
-        flags = "" if overwrite else " -n"
+        flags = "" if (overwrite or self.force_overwrite) else " -n"
         destination = f"{self.dst}/" if self.is_dir else str(self.dst)
         return f"cp{flags} {s5cmd.quote(self.src)} {s5cmd.quote(destination)}"
 
@@ -195,16 +201,27 @@ def _count_local(path: Path, is_dir: bool) -> ac.ItemStat:
     while stack:
         current = stack.pop()
         try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False):
-                        num_objects += 1
-                        num_bytes += entry.stat().st_size
+            entries = list(os.scandir(current))
         except OSError:
-            # Absent or unreadable: nothing local for this item, which is the answer we want.
+            # Absent or unreadable directory: nothing local here, which is the answer we want.
             continue
+        for entry in entries:
+            # Per-entry, so one unreadable file (permissions, or a race with a concurrent
+            # download) skips that file rather than abandoning the rest of the directory and
+            # under-counting the whole item. A file we cannot stat is left uncounted rather
+            # than counted-with-unknown-size, so the item reads as incomplete and gets
+            # re-fetched -- the conservative direction.
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            num_objects += 1
+            num_bytes += size
     return ac.ItemStat(num_bytes=num_bytes, num_objects=num_objects)
 
 
@@ -297,6 +314,10 @@ def plan(
                 num_bytes=status.expected.num_bytes,
                 num_objects=status.expected.num_objects,
                 is_dir=item.is_dir,
+                # Under --verify_bytes a PARTIAL item may hold short files rather than merely
+                # be missing some, and `cp -n` cannot replace those. Re-fetching a few intact
+                # files is the cheap side of this trade.
+                force_overwrite=verify_bytes and status.state is State.PARTIAL,
             )
             if status.state is State.NOT_PRESENT:
                 skipped.append((transfer, SkipReason.NOT_PRESENT))
@@ -387,7 +408,7 @@ def ensure_logs(
     naming what is absent and the CLI command that would fetch it. Use that in library code
     which must never silently start a multi-gigabyte transfer.
 
-    Returns one :class:`LocalLog` per requested log, in catalog order.
+    Returns one :class:`LocalLog` per requested log, sorted by log id.
     """
     catalog = ac.load_or_build(
         request, cache_dir=cache_dir, refresh=refresh_catalog, opts=opts
@@ -455,7 +476,10 @@ def _verify(
                 f"{item_status.local.num_objects}/{item_status.expected.num_objects} objects"
             )
     raise DownloadFailedError(
-        f"{len(incomplete)} log(s) still incomplete after downloading:\n" + "\n".join(details)
+        f"{len(incomplete)} log(s) still incomplete after downloading:\n"
+        + "\n".join(details)
+        + "\nIf the local files are the wrong size rather than absent, re-run with "
+          "--overwrite to replace them."
     )
 
 

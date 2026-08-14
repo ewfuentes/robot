@@ -193,6 +193,17 @@ class FilterLogsTest(unittest.TestCase):
         entries = ac.filter_logs(catalog, has_items=[al.SensorItem.ANNOTATIONS])
         self.assertEqual([e.log_id for e in entries], ["aaa"])
 
+    def test_a_log_id_excluded_by_city_is_an_error_not_a_silent_drop(self):
+        """Otherwise the command reports success having fetched fewer logs than were named."""
+        with self.assertRaises(KeyError) as ctx:
+            ac.filter_logs(self.catalog, cities=["PIT"], log_ids=["aaa", "bbb"])
+        self.assertIn("bbb", str(ctx.exception))
+        self.assertIn("--city", str(ctx.exception))
+
+    def test_consistent_city_and_log_id_still_work(self):
+        entries = ac.filter_logs(self.catalog, cities=["PIT"], log_ids=["aaa"])
+        self.assertEqual([e.log_id for e in entries], ["aaa"])
+
     def test_min_sweeps_filter(self):
         entries = ac.filter_logs(self.catalog, min_sweeps=200)
         self.assertEqual({e.log_id for e in entries}, {"bbb", "ccc"})
@@ -352,6 +363,14 @@ class PrefixOnlyBuildTest(unittest.TestCase):
         unmeasured = catalog.get("sc059")
         self.assertEqual(unmeasured.stat(al.MotionForecastingItem.SCENARIO).num_bytes, 160_000)
         self.assertEqual(unmeasured.stat(al.MotionForecastingItem.MAP).num_bytes, 60_000)
+
+        # Extrapolated rows must not alias one dict: LogEntry is frozen but its items dict is
+        # not, so a single in-place mutation would otherwise rewrite ~250k rows.
+        extrapolated = [entry for entry in catalog.logs
+                        if entry.log_id not in {f"sc{i:03d}" for i in
+                                                range(ac.PREFIX_ONLY_SAMPLE_SIZE)}]
+        self.assertGreater(len(extrapolated), 1)
+        self.assertIsNot(extrapolated[0].items, extrapolated[1].items)
 
 
 class LoadOrBuildTest(unittest.TestCase):

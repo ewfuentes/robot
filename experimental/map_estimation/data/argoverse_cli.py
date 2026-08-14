@@ -97,10 +97,16 @@ def _build_request(args) -> al.Request:
 
     This is the single place strings become enums; everything downstream is typed.
     """
-    dataset, _ = al.parse_spec(args.spec)
-    item_type = al.ITEM_TYPES[dataset]
+    # Build a default request first so group aliases can be expanded against what this
+    # dataset *and split* actually has -- otherwise `--items all` on sensor/test would expand
+    # to include the annotations that split does not ship, and be rejected.
+    probe = al.make_request(args.spec)
     tokens = getattr(args, "items", None)
-    items = al.resolve_items(item_type, tokens) if tokens else None
+    items = (
+        al.resolve_items(probe.item_type, tokens, available=probe.available_items())
+        if tokens
+        else None
+    )
 
     log_ids = list(args.log_id) if getattr(args, "log_id", None) else []
     if getattr(args, "log_id_file", None):
@@ -154,6 +160,21 @@ def cmd_index(args) -> int:
                 "Rebuild the whole split, or name the ids explicitly."
             )
 
+    out_path = args.out or ac.cache_path(request, args.cache_dir)
+
+    if request.log_ids:
+        # A partial refresh patches rows into an existing catalog. With nothing to patch, the
+        # one-log result would be saved as the canonical catalog for the whole split, and every
+        # later list/download would quietly act on that single log.
+        if not out_path.exists():
+            raise ValueError(
+                f"--log_id patches an existing catalog, but {out_path} does not exist. "
+                f"Index the whole split first: index {request.spec()}"
+            )
+        existing = ac.load(out_path)
+        if existing.spec != request.spec():
+            raise ValueError(f"{out_path} describes {existing.spec}, not {request.spec()}")
+
     catalog = ac.build(
         request,
         opts=_options(args),
@@ -162,17 +183,12 @@ def cmd_index(args) -> int:
     )
 
     if request.log_ids:
-        # Partial refresh: merge the freshly-listed rows into the existing catalog.
-        existing_path = ac.cache_path(request, args.cache_dir)
-        if existing_path.exists():
-            existing = ac.load(existing_path)
-            updated = {entry.log_id: entry for entry in existing.logs}
-            updated.update({entry.log_id: entry for entry in catalog.logs})
-            catalog = msgspec.structs.replace(
-                catalog, logs=tuple(sorted(updated.values(), key=lambda e: e.log_id))
-            )
+        updated = {entry.log_id: entry for entry in existing.logs}
+        updated.update({entry.log_id: entry for entry in catalog.logs})
+        catalog = msgspec.structs.replace(
+            catalog, logs=tuple(sorted(updated.values(), key=lambda e: e.log_id))
+        )
 
-    out_path = args.out or ac.cache_path(request, args.cache_dir)
     ac.save(catalog, out_path)
 
     total = catalog.total()
@@ -216,7 +232,8 @@ def cmd_list(args) -> int:
     if args.local:
         statuses = {
             status.log_id: status
-            for status in ad.local_status(request, entries, root=args.root)
+            for status in ad.local_status(request, entries, root=args.root,
+                                          verify_bytes=args.verify_bytes)
         }
 
     rows = []
@@ -375,7 +392,29 @@ def cmd_download(args) -> int:
           f"({s5cmd.format_bytes(int(rate))}/s). {len(result.failures)} failures.")
     for failure in result.failures[:10]:
         print(f"  {failure}", file=sys.stderr)
-    return 0 if result.ok else 1
+    if not result.ok:
+        return 1
+
+    # A zero exit is not proof the data landed -- `cp -n` silently declines to replace a
+    # wrong-sized file, so without this the command would report success having changed
+    # nothing. ensure_logs() does the same check for library callers.
+    remaining = [
+        status for status in ad.local_status(request, entries, root=args.root,
+                                             verify_bytes=args.verify_bytes)
+        if status.state is not ad.State.COMPLETE
+    ]
+    if remaining:
+        print(f"warning: {len(remaining)} log(s) still incomplete after downloading",
+              file=sys.stderr)
+        for status in remaining[:5]:
+            for item_status in status.missing():
+                print(f"  {status.log_id} {item_status.item}: "
+                      f"{item_status.local.num_objects}/{item_status.expected.num_objects} "
+                      "objects", file=sys.stderr)
+        print("  if local files are the wrong size rather than absent, re-run with "
+              "--overwrite", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_status(args) -> int:
