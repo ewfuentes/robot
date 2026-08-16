@@ -113,20 +113,23 @@ http_archive(
   integrity = "sha256-QPxYvrzzjHWeEae9j9wWNQfSQj71BYu6fyYoDFucVGU=",
 )
 
+# 2.13.6 is the first version we use that supports numpy 2: pybind11 looks up
+# the array API under `numpy._core` on numpy>=2 and `numpy.core` on numpy 1.x.
+# Note the build file was renamed pybind11.BUILD -> pybind11-BUILD.bazel.
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-2.11.1.bzl.2",
-  urls = ["https://github.com/pybind/pybind11_bazel/releases/download/v2.11.1.bzl.2/pybind11_bazel-2.11.1.bzl.2.zip"],
-  sha256 = "d911ef169750491c9ddb4e6630bae882b127425627af10e59d499f0f7ff90a48"
+  strip_prefix = "pybind11_bazel-2.13.6",
+  urls = ["https://github.com/pybind/pybind11_bazel/releases/download/v2.13.6/pybind11_bazel-2.13.6.zip"],
+  sha256 = "9df284330336958c837fb70dc34c0a6254dac52a5c983b3373a8c2bbb79ac35e"
 )
 
 # We still require the pybind library.
 http_archive(
   name = "pybind11",
-  build_file = "@pybind11_bazel//:pybind11.BUILD",
-  strip_prefix = "pybind11-2.11.1",
-  urls = ["https://github.com/pybind/pybind11/archive/v2.11.1.tar.gz"],
-  sha256 = "d475978da0cdc2d43b73f30910786759d593a9d8ee05b1b6846d1eb16c6d2e0c"
+  build_file = "@pybind11_bazel//:pybind11-BUILD.bazel",
+  strip_prefix = "pybind11-2.13.6",
+  urls = ["https://github.com/pybind/pybind11/archive/v2.13.6.tar.gz"],
+  sha256 = "e08cb87f4773da97fa7b5f035de8763abc656d87d5773e62f6da0587d1f0ec20"
 )
 
 http_archive(
@@ -247,6 +250,7 @@ http_archive(
     "@//third_party:embag_0004-fix-build-warnings.patch",
     "@//third_party:embag_0005-display-primitive-arrays.patch",
     "@//third_party:embag_0006-delete-python-build.patch",
+    "@//third_party:embag_0007-fix-make-iterator-return-type.patch",
   ],
   patch_args=["-p1"],
 )

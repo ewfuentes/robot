@@ -22,7 +22,7 @@ ImageInfoDtype = np.dtype(
 SceneInfoDtype = np.dtype(
     [
         ("scene_id", np.int64),
-        ("object_name", (np.unicode_, 1)),
+        ("object_name", (np.str_, 1)),
         ("world_from_object", (np.float32, (3, 4))),
     ]
 )

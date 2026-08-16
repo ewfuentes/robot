@@ -218,6 +218,11 @@ py_binary(
 py_test(
     name="hloc_test",
     srcs=["hloc_test.py"],
+    # Downloads model weights and runs CPU inference over 45 image pairs. It
+    # needs ~110s unloaded but blows past the 300s default under a loaded
+    # `bazel test //...`, so mark it eternal; CI passes
+    # --test_timeout_filters=-eternal and skips it.
+    timeout="eternal",
     data=["@sacre_coeur_snippet//:files"],
     deps=[
         requirement("hloc"),
@@ -230,7 +235,6 @@ py_library(
     srcs=["depth_models.py"],
     deps=[
         requirement("transformers"),
-        requirement("depth_pro"),
         "//common/torch:load_torch_deps",
     ],
 )
@@ -261,6 +265,8 @@ py_library(
 py_test(
     name="hloc_helper_test",
     srcs=["hloc_helper_test.py"],
+    # See hloc_test above: same download + CPU-inference cost.
+    timeout="eternal",
     data=["@sacre_coeur_snippet//:files"],
     deps=[
         ":hloc_helper",

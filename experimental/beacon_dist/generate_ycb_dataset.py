@@ -45,7 +45,7 @@ def serialize_result(
         ],
         dtype=[
             ("scene_id", np.uint64),
-            ("object_name", (np.unicode_, max_name_size)),
+            ("object_name", (np.str_, max_name_size)),
             ("world_from_object", np.float64, (3, 4)),
         ],
     )
