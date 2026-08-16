@@ -29,7 +29,7 @@ KeypointDescriptorDtype = np.dtype(
 ImageDescriptorDtype = np.dtype(
     [
         ("image_id", np.int64),
-        ("char", (np.unicode_, 1)),
+        ("char", (np.str_, 1)),
         ("x", np.float32),
         ("y", np.float32),
         ("theta", np.float32),

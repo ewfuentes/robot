@@ -230,7 +230,6 @@ py_library(
     srcs=["depth_models.py"],
     deps=[
         requirement("transformers"),
-        requirement("depth_pro"),
         "//common/torch:load_torch_deps",
     ],
 )
