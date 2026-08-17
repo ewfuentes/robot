@@ -118,9 +118,7 @@ revolution) has already been applied. Sweep timestamps are a strict subset of po
 |---|---|---|
 | sweeps | 157 @ 10 Hz | 575 |
 | points | 14,284,998 | 56,520,865 |
-| on disk / as `.rrd` | 145 MB / 192 MB | 396 MB / 754 MB |
-| wall clock, whole log | 1.8 s | 3.9 s |
-| peak RSS while writing | 543 MB | 638 MB |
+| on disk | 145 MB | 396 MB |
 
 Nothing is decimated. What the **viewer** can change afterwards: toggle the entity off, override
 radius and color in the Selection panel, and adjust the decay window. What it cannot do is thin
@@ -146,7 +144,7 @@ reads the feather itself and substitutes zeros, which also hoists the sensor ext
 the loop (the devkit re-reads that file once per sweep).
 
 Points are colored by **intensity**, clipped at 110 and run through a five-stop viridis ramp
-built in numpy — rerun 0.23.1 ships no colormap, matplotlib is only a transitive dependency of
+built in numpy — rerun ships no colormap helper, matplotlib is only a transitive dependency of
 `av2`, and `av2.rendering.color.create_range_map` does not do what its name says (it colors by
 `z`, rounds to integers, and indexes negatively below ground). The clip matters: intensity is
 `uint8` but nowhere near uniform over it — median 30, p90 73, p99 108 — so scaling by 255 leaves
@@ -169,22 +167,28 @@ dataset declares none, so `log_cameras` returning `(0, 0)` is ordinary and draws
 |---|---|---|
 | frames | ~1150 @ 20 Hz | 8048 |
 | jpegs on disk | 82–95 MB | 611 MB |
-| added to the `.rrd` | ~88 MB | 654 MB |
+| added to the `.rrd` | ~88 MB | ~1200 MB |
 | added wall clock, warm | 0.08 s | **0.8 s** |
 | added wall clock, cold cache | 0.8 s | **5.4 s** |
-| added peak RSS while writing | — | **none measurable** |
+| added peak RSS while writing | — | **~130 MB** |
 
 **The imagery is nearly free to log and expensive to hold.** `EncodedImage(path=...)` reads the
-jpeg and hands the bytes to Arrow; nothing is ever decoded on the logging side, so seven cameras
-add under a second and no measurable memory to a process already peaking at 638 MB for the
-lidar. What they do add is 654 MB of recording, taking the `tbv` log to **1408 MB on disk and
-~1.9 GB resident** once a viewer holds it. If that ceiling ever bites, a `--cameras` selector is
-the obvious lever and was deliberately left out until it does.
+jpeg and hands the bytes to Arrow; nothing is ever decoded on the logging side. What it costs is
+recording size: the `tbv` log lands at **1404 MB on disk and ~1.9 GB resident** once a viewer
+holds it. If that ceiling ever bites, a `--cameras` selector is the obvious lever and was
+deliberately left out until it does.
 
-For the whole pipeline including cameras: **`tbv` 4.7 s warm / 12.3 s cold, `sensor/val` 1.8 s /
-2.6 s**, measured against the binary directly rather than through `bazel run`.
+Whole pipeline, measured against the binary directly rather than through `bazel run`, two runs
+each:
 
-**Why not video.** rerun 0.23.1 has `AssetVideo`, and transcoding the jpegs to H.264 is 4×
+|  | `sensor/val/02678d04…` | `tbv/07YOTz…_Spring_2020` |
+|---|---|---|
+| wall clock, warm | 1.8 s | 4.5 s |
+| wall clock, cold cache | 2.6 s | 12.3 s |
+| peak RSS while writing | 612 MB | 731 MB |
+| `.rrd` on disk | 201 MB | 1404 MB |
+
+**Why not video.** rerun has `AssetVideo`, and transcoding the jpegs to H.264 is 4×
 smaller (154 MB for all seven) and would play back more smoothly. It is not used because the
 native viewer **decodes H.264 by shelling out to an `ffmpeg` binary it looks up on `$PATH`** —
 `ffmpeg-sidecar` is linked into the viewer, and there is a `video_decoder_ffmpeg_path` setting
@@ -220,6 +224,14 @@ model consuming these frames does.
 The default 3D view is anchored to `world/ego`, so the car holds still and the city sweeps past
 it. A view's **origin** is the frame it renders in, and that is the entire mechanism — rerun has
 no separate follow toggle.
+
+**The eye is placed explicitly**, via `EyeControls3D`, in those same egovehicle coordinates — so
+`look_target=(0, 0, 0)` is the vehicle's own origin, the center of the rear axle at ground
+level, and the eye sits 14 m behind and 7 m above it. Left to itself the viewer picks an eye by
+auto-framing the scene bounding box, which the whole-log map and path dominate: the opening shot
+centers on the map's centroid with the car an invisible speck, and because that centroid moves
+in ego coordinates as the vehicle drives, it is not even a stable wrong answer. `Orbital` rather
+than `FirstPerson` so dragging pivots around the vehicle.
 
 Beside it, when the log has imagery, is a **grid of one 2D view per camera**, ordered front →
 side → rear so the layout reads like where the cameras point (sorting the names would file the
@@ -317,17 +329,34 @@ spike in an error curve jumps the scene to that frame.
 
 ## The rerun pin
 
-`rerun-sdk==0.23.1`, in `third_party/python/requirements_3_12.in`.
+`rerun-sdk==0.36.0`, in `third_party/python/requirements_3_12.in`. This package is its only
+consumer in the repo, so a bump can only break what is here. `GridMap` and `VoxelGridMap` (0.31
+and 0.34) are now available, and are the natural fit for occupancy grids.
 
-**Nothing blocks bumping it.** The pin is inertia, not a constraint. What staying here costs is
-the `GridMap` and `VoxelGridMap` archetypes (added in 0.31 and 0.34), which would be the natural
-fit for occupancy grids — until someone does the bump, a grid is `Points3D` or a batched
-`Boxes3D`.
+Two things to know about debugging any of it.
 
-One thing to know about debugging any of it: rerun degrades the *recording* rather than crashing
-the *logger*, so a component it failed to serialize and one it accepted look identical from the
-outside — you get an `.rrd`, an exit code of 0, and a missing feature. When a setting appears to
-be ignored, check stderr for `RerunWarning` before suspecting your own code.
+First, rerun degrades the *recording* rather than crashing the *logger*, so a component it
+failed to serialize and one it accepted look identical from the outside — you get an `.rrd`, an
+exit code of 0, and a missing feature. When a setting appears to be ignored, check stderr for
+`RerunWarning` before suspecting your own code. **Not everything even warns:** the earlier
+attempt to hide camera frustums with `VisualizerOverrides` serialized clean and the viewer
+ignored it, with nothing on stderr at all.
+
+Second, and following from that: **check the render, do not read the docs.** The viewer can
+screenshot itself headlessly, which turns a guess into a check:
+
+```bash
+V=bazel-bin/.../view_log.runfiles/pip_3_12_rerun_sdk/site-packages/rerun_sdk/rerun_cli/rerun
+XDG_DATA_HOME=$T XDG_CONFIG_HOME=$T HOME=$T \
+xvfb-run -a "$V" --port 9913 --window-size 1500x950 --screenshot-to out.png rec.rrd
+```
+
+Both overrides are load bearing. Redirect the state dirs or you screenshot whatever blueprint
+was last persisted for this application id instead of the one in the code. Pick an unused
+`--port` or, if a viewer is already listening on 9876, the new process streams its data to that
+one and exits without writing a PNG. The shot fires as soon as the app is up, so on a 1.4 GB
+recording the small entities render and the point clouds and jpegs are often still ingesting —
+prove the mechanism on a small synthetic recording, then confirm on a real log.
 
 The wheel also needs `extra_requirement("rerun-sdk", "rerun")` in BUILD files rather than the
 usual `requirement("rerun-sdk")`; see `third_party/python/extra_rerun_targets.bzl` for why.

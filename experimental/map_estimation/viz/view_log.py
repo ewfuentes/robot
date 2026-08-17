@@ -28,6 +28,13 @@ from experimental.map_estimation.viz import av2_scene, av2_source
 
 APPLICATION_ID = "argoverse_log"
 
+# Headroom over the largest recording this tool writes -- a tbv log with seven cameras is
+# 1.4 GB. See :func:`_serve_web` for what gets dropped when the buffer is too small.
+_SERVE_MEMORY_LIMIT = "8GiB"
+
+# rerun's own default, pinned here only so the printed URL cannot disagree with the server.
+_WEB_VIEWER_PORT = 9090
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -86,6 +93,31 @@ def _spawn_bundled_viewer(blueprint, *, port: int = 9876) -> None:
     rr.connect_grpc(f"rerun+http://127.0.0.1:{port}/proxy", default_blueprint=blueprint)
 
 
+def _serve_web(blueprint) -> str:
+    """Host this recording over HTTP for a browser to connect to, and return the URL to open.
+
+    Two servers, not one: a gRPC server that holds the data, and an HTTP server that hands a
+    viewer to the browser. Neither call blocks; the process has to stay alive to keep them up.
+
+    ``open_browser=False`` because ``--serve`` exists for the case where the data is on a remote
+    box. Launching a browser there is either an error or a browser nobody can see. That is also
+    why the URL is returned rather than discarded: with ``open_browser`` off, ``connect_to`` is
+    only used to build the URL rerun would have opened, so a viewer reached by hand at
+    ``:9090`` with no ``?url=`` attaches to nothing and looks broken.
+
+    **The memory limit is the part that bites.** It bounds a buffer the server keeps so a viewer
+    connecting late still receives the whole recording; past it, data is dropped oldest-first, so
+    a browser attached after logging finishes quietly gets a truncated log. The default is 1 GiB
+    and a tbv log with all seven cameras is 1.4 GB.
+
+    Returns:
+        the URL to open, already carrying the gRPC endpoint as its ``url`` query parameter.
+    """
+    uri = rr.serve_grpc(default_blueprint=blueprint, server_memory_limit=_SERVE_MEMORY_LIMIT)
+    rr.serve_web_viewer(web_port=_WEB_VIEWER_PORT, connect_to=uri, open_browser=False)
+    return f"http://localhost:{_WEB_VIEWER_PORT}/?url={uri}"
+
+
 def _list_logs(request: al.Request, root: Path) -> int:
     log_ids = av2_source.discover_log_ids(request, root)
     if not log_ids:
@@ -131,10 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     # Takes the source because the camera grid depends on which cameras are on disk. That is a
     # directory check, not a read, so it stays on this side of the sink.
     blueprint = av2_scene.default_blueprint(source)
+    viewer_url = None
     if args.save is not None:
         rr.save(args.save, default_blueprint=blueprint)
     elif args.serve:
-        rr.serve_web(default_blueprint=blueprint)
+        viewer_url = _serve_web(blueprint)
     else:
         _spawn_bundled_viewer(blueprint)
 
@@ -154,7 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.save is not None:
         print(f"wrote {args.save}")
     elif args.serve:
-        print("serving; ctrl-c to stop")
+        print(f"open {viewer_url}")
+        # Both ports have to be reachable from wherever the browser runs, not just the first:
+        # the page is served from one and then connects to the other itself. Over ssh that is
+        # two -L forwards.
+        print(f"serving on ports {_WEB_VIEWER_PORT} (viewer) and 9876 (data); ctrl-c to stop")
         # Block on an event that never fires rather than on stdin. Reading stdin looks
         # equivalent but dies instantly wherever stdin is not a terminal -- backgrounded, under
         # nohup, in a CI step -- which is exactly how --serve gets used when the data is on a

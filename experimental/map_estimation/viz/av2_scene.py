@@ -90,7 +90,7 @@ _CENTERLINE_RADIUS_M = 0.06
 _MAP_RADIUS_M = 0.10
 
 # Viridis, as five stops interpolated per channel. Spelled out here rather than imported:
-# rerun 0.23.1 ships no colormap, matplotlib is only a transitive dependency of av2, and
+# rerun ships no colormap helper, matplotlib is only a transitive dependency of av2, and
 # av2.rendering.color.create_range_map does not do what its name says (it colors by z, rounds to
 # integers, and indexes negatively for anything below ground).
 _VIRIDIS = np.array([(68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)],
@@ -151,6 +151,19 @@ _CAMERA_GRID_ORDER = (
 # cameras then leave one view alone on the last row, which is the price of not being able to
 # leave a hole in the middle.
 _CAMERA_GRID_COLUMNS = 3
+
+# Where the 3D view's camera starts, in **egovehicle coordinates** -- which is what the view
+# renders in, its origin being EGO. So (0, 0, 0) is the vehicle's own origin: the center of the
+# rear axle at ground level.
+#
+# Without this the viewer picks an eye by auto-framing the scene bounding box, and that box is
+# dominated by the whole-log map and path -- hundreds of meters of it -- so the opening shot
+# centers on the map's centroid with the car an invisible speck somewhere in it. Worse, the
+# centroid moves in ego coordinates as the vehicle drives, so the framing is not even stable.
+#
+# Behind and above, looking slightly down at the axle: the chase view you would pick by hand.
+_EYE_POSITION_M = (-14.0, 0.0, 7.0)
+_EYE_TARGET_M = (0.0, 0.0, 0.0)
 
 # Nominal Ford Fusion Hybrid dimensions, in meters. AV2 ships no vehicle model, so these are
 # stated here rather than read from anywhere -- they are for orientation, not measurement.
@@ -379,13 +392,17 @@ def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
     timestamps = sorted(poses)
     t0_ns = timestamps[0]
 
+    # How long the pose's axis arrows are drawn is a property of the *visualization*, not of any
+    # one pose, so it is logged once and statically rather than restated 8801 times alongside
+    # the transforms it decorates.
+    rr.log(EGO, rr.TransformAxes3D(_EGO_AXIS_M), static=True)
+
     translations = []
     for timestamp_ns in timestamps:
         pose = poses[timestamp_ns]
         rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
         rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
-        rr.log(EGO, rr.Transform3D(translation=pose.translation, mat3x3=pose.rotation,
-                                   axis_length=_EGO_AXIS_M))
+        rr.log(EGO, rr.Transform3D(translation=pose.translation, mat3x3=pose.rotation))
         translations.append(pose.translation)
 
     track = np.asarray(translations)
@@ -509,8 +526,8 @@ def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
         # happy to take them in one call on the same path.
         rr.log(entity,
                rr.Transform3D(translation=camera.ego_SE3_cam.translation,
-                              mat3x3=camera.ego_SE3_cam.rotation,
-                              axis_length=_CAMERA_AXIS_M),
+                              mat3x3=camera.ego_SE3_cam.rotation),
+               rr.TransformAxes3D(_CAMERA_AXIS_M),
                # Logged even though the default view draws no frustum from it. Pinhole is what
                # makes this entity a *camera* rather than a place images are filed: it gives the
                # 2D view its projection, and it is what any later 3D-into-image overlay would
@@ -542,6 +559,10 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     A view's ``origin`` is the frame it renders in, and that is the whole of "follow the
     vehicle" -- rerun applies the inverse ego transform to everything else, so the car holds
     still and the city sweeps past it. There is no separate follow toggle.
+
+    The eye is placed explicitly, in those same egovehicle coordinates -- see
+    :data:`_EYE_POSITION_M`. Left to itself the viewer frames the scene bounding box, which the
+    whole-log map dwarfs.
 
     ``contents`` has to be widened at the same time, and forgetting is the trap. It defaults to
     ``$origin/**``, which under ``world/ego`` resolves to the vehicle and its cameras alone: PATH
@@ -598,6 +619,12 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     scene = rrb.Spatial3DView(
         origin=EGO, name="follow vehicle", overrides={LIDAR: decay},
         contents=["/**", f"- {CAMERAS}/**"] + [f"- {CAMERAS}/{name}" for name in ordered],
+        # Orbital rather than FirstPerson so that dragging pivots around the vehicle, which is
+        # what you want when the question is "where is the car relative to the map".
+        eye_controls=rrb.EyeControls3D(kind="Orbital",
+                                       position=_EYE_POSITION_M,
+                                       look_target=_EYE_TARGET_M,
+                                       eye_up=(0.0, 0.0, 1.0)),
     )
     if not present:
         return rrb.Blueprint(scene)
