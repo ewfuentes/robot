@@ -1,13 +1,33 @@
-"""Camera->body yaw calibration from the vessel's own structure.
+"""Bow azimuth in the camera frame, from the vessel's own structure.
 
-The vessel is the one thing rigidly fixed in the camera frame: across a leg,
-the world sweeps past but the bow, rails and canopy stay on the same pixels.
-So a per-pixel temporal median over many panoramas renders the boat sharp and
-everything else washed toward the median of whatever passed behind it. The
-bow's azimuth in that median image IS the camera->body yaw offset, and it can
-be read at full panorama resolution instead of eyeballed on a preview.
+**This does NOT measure `mount_offset_deg`.** Decided 2026-08-14: the offset the
+pipeline consumes is the azimuth of the **direction of travel** in the camera
+frame, because that is what `gps_to_odometry` declares as body x when it sets
+`left_m = 0`, and it is what `bearing_matcher.estimate_mount_offset` already
+solves for via `bearing_world = course + (bearing_camera - offset)`. The bow
+differs from the direction of travel by the crab angle, so a bow reading is a
+*corroborating* measurement, not a substitute. Feeding one in as the offset
+injects the crab angle as a constant bearing bias, and under design doc 5.2
+position routes through heading, so that bias rotates the whole dead-reckoned
+track.
 
-  bearing_body_deg = (bearing_camera_deg - mount_offset_deg) mod 360
+For boston_harbor leg1 this tool is doubly unsuitable: the deckhouse occludes
+the bow, so the bow tip appears in no frame, and three hand readings disagreed
+by 30 deg (deckhouse centreline ~190, wake ~218, LT20-to-One-International-Place
+222). The leg's accepted offset, **214 deg**, came from sweeping the offset to
+minimise the median triangulation residual over 26 tracklets and was verified
+against a surveyed building over 72 keyframes (mean +0.6 deg, std 2.42 deg).
+That sweep, not this tool, is the reference method.
+
+What remains useful here: the temporal-median render itself, as a way to see
+what is rigidly attached to the camera at full resolution. For an automatic,
+thresholded version of the same idea see
+`swag/scripts/detect_vehicle_anchor.py`, which normalises by local texture and
+uses only the x-derivative so it does not also flag the horizon.
+
+The world sweeps past across a leg while the bow, rails and canopy stay on the
+same pixels, so a per-pixel temporal median renders the boat sharp and
+everything else washed toward the median of whatever passed behind it.
 
 Why bother: an eyeball estimate at 1280 px preview width is worth about
 +/-2.8 deg, and position error floors at ~range * sigma_heading - roughly
@@ -38,7 +58,7 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
     pano_geometry as pg,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/boston_harbor_dataset/processed/leg1")
+DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
 
 
 def temporal_stats(pano_paths, max_frames: int, band: tuple[float, float],

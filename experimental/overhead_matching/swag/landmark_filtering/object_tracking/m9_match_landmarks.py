@@ -42,7 +42,7 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
 )
 
 DEFAULT_FEATHER = Path(
-    "/data/farfield_matching/boston_harbor_dataset/landmarks/harbor_osm_enc_trimmed_v1.feather")
+    "/data/farfield_matching/datasets/boston_harbor_leg1/landmarks/v1_trimmed.feather")
 
 SYSTEM_PROMPT = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
 bundles, identify which landmarks in Set 1 (observed in images) are the same physical object as a

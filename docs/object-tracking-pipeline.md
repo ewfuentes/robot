@@ -51,6 +51,17 @@ bearing_body_deg  = (bearing_camera_deg - mount_offset_deg) mod 360
 bearing_world_deg = (heading_deg + bearing_body_deg) mod 360      # heading ≈ GPS course
 ```
 
+**Convention (decided 2026-08-14, standard everywhere).** `mount_offset_deg` is
+the azimuth **in the camera frame of the vehicle's direction of travel** — *not*
+the bow. Two reasons it has to be travel direction: `gps_to_odometry` declares
+body x to be the travel direction when it sets `left_m = 0`, and the equation
+above already uses `heading ≈ GPS course`, which is the travel direction, so any
+other reading would be internally inconsistent. The bow differs by the crab
+angle; a bow reading corroborates but never substitutes, and substituting one
+injects the crab as a constant bearing bias that §5.2 then rotates the whole
+dead-reckoned track by. `bow_calibration.py` measures the bow and is labelled
+accordingly.
+
 `mount_offset_deg` is **per rig and per leg**. For boston_harbor leg1 it is
 **214.0°** (`m9_match_landmarks.DEFAULT_MOUNT_OFFSET_DEG` if a consumer needs it; the value is recorded in
 `docs/farfield-matching-localization-plan.md` §0, which also records how it was calibrated).
@@ -64,6 +75,15 @@ constant and stops a static object's rays from intersecting. For leg1 the
 curve is smooth and unimodal: 5.95° at 180°, **1.33° at 214°**, 4.34° at 270°.
 
 **Re-derive this for every new leg.** See the runbook's calibration step.
+
+The triangulation-residual sweep remains **the reference method**. There is also
+a purely image-based estimator, `swag/scripts/calibrate_mount_offset.py`, which
+recovers the same quantity from the focus of expansion and needs no map, no
+tracklets and no heading field — but it is **not yet validated for accuracy**. On
+leg1 it reports an axis MAD of 2.0° (i.e. very self-consistent) while landing 14°
+off 214° and choosing the opposite direction of that axis by an 85/15 majority.
+Use it to triage which datasets have a *fixed* mount; do not use its angle as a
+calibration until a residual sweep has confirmed it on that leg.
 
 Assumptions baked in: rigid mount, camera approximately level (roll perturbs
 azimuth by ~`roll·tan(elevation)`, second-order for near-horizon landmarks),
@@ -104,6 +124,11 @@ the run, while one praised at 1.6° spread has condition 1259.
 ---
 
 ## 2. Stages
+
+The numbering has deliberate gaps: **m7 and m8 were retired stages that no
+longer exist and are not used anymore** (M4 survives only as provenance, marked
+below). The numbers are stable identifiers — run directories, docs, and
+artifact trees reference them — so do not renumber to close the gaps.
 
 ### M0 — `m0_render_boxes`
 Reprojects VLM detection boxes onto panoramas. Sanity check that

@@ -408,3 +408,17 @@ class RunManifest(msgspec.Struct):
     landmarks: list[LandmarkEntry]
     matcher_version: str
     particle_history_sha256: str = ""
+    # Catalog visibility radius this run was built with. Required for the
+    # §7.1 replay contract and initially missing from it: the radius is a
+    # LandmarkCatalog argument rather than a FilterConfig field, so a replay
+    # that guessed it silently changed which positions the proposal thinks a
+    # landmark could have been seen from — and therefore the hypotheses, the
+    # injections, and the belief. None means the run predates this field;
+    # `replay` reports that rather than assuming a value.
+    max_visible_range_m: float | None = None
+    # Where the run's inputs came from, so a replay or a viewer can find the
+    # tracklet payload (crops, matcher prompts) that the run log deliberately
+    # does not carry (§7.1: "tracklets carry frame/crop references"). Free
+    # text: an absolute path today, resolvable however a consumer likes.
+    export_dir: str | None = None
+    sources_dir: str | None = None

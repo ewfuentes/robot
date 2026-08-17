@@ -121,6 +121,56 @@ class FilterHistory:
     mode_events: list = dataclasses.field(default_factory=list)
 
 
+class RunObserver:
+    """The Tier-3 instrumentation seam (design doc §7.1, §7.5 [CONTRACT]).
+
+    Every internal quantity the viewer wants — per-particle weight deltas,
+    per-tracklet log-likelihood contributions, gating decisions — exists only
+    transiently inside `run_filter`. §7.5 requires that the code which
+    reconstructs them be the production filter in replay mode, not a second
+    implementation, so that "viewer math disagrees with filter math" is
+    structurally impossible rather than merely unlikely. This class is how:
+    `run_filter` hands its internals out as it computes them, and consumers
+    (attribution, what-if diffing) subclass rather than re-derive.
+
+    Every hook is a no-op by default, and `run_filter` skips the bookkeeping
+    that feeds them entirely when no observer is attached, so an
+    uninstrumented run pays nothing — the determinism contract is unaffected
+    either way, because observers only ever read.
+
+    Arrays passed to hooks are the filter's live buffers. Copy before
+    retaining anything; the filter mutates them in place.
+    """
+
+    def keyframe_start(self, keyframe_idx: int, belief: ParticleBelief) -> None:
+        """After motion and mode clustering, before any measurement."""
+
+    def measurement(self, keyframe_idx: int, meas, log_weight_before,
+                    belief: ParticleBelief, pass_index: int) -> None:
+        """After one measurement's weights land.
+
+        `log_weight_before` is a copy taken before the update; the post-update
+        weights are `belief.log_weight`, and `belief.mode_id` holds the
+        grouping that entered the update. `pass_index` is 0 for the ordinary
+        pass and 1 for the re-application that follows a proposal injection
+        (§5.5), which scores kept and injected mass on the same footing.
+        """
+
+    def injection(self, keyframe_idx: int, event, n_injected: int) -> None:
+        """After a proposal event resolves, injected or gate-rejected."""
+
+    def resample(self, keyframe_idx: int, log_weight_before, mode_id_before,
+                 belief: ParticleBelief) -> None:
+        """After an ESS-triggered resample. The `_before` arrays describe the
+        weighted posterior that was resampled, so a consumer can separate
+        weight change caused by evidence from weight change caused by
+        resampling — the "motion/resample effects" term of §7.2."""
+
+    def keyframe_end(self, keyframe_idx: int, belief: ParticleBelief,
+                     health) -> None:
+        """After the keyframe's HealthRecord is built, before resampling."""
+
+
 def _mode_records(belief, tracker) -> list:
     """Re-weight the tracked modes under the current posterior.
 
@@ -1143,13 +1193,20 @@ def run_filter(
         catalog: catalog_mod.LandmarkCatalog,
         odometry: list,
         measurements: list,
-        tables: dict) -> FilterHistory:
+        tables: dict,
+        observer: RunObserver | None = None) -> FilterHistory:
     """Pure function of (config, ordered event log) -> history (§3.8).
 
     Keyframes are the odometry timebase; tracklet measurements fire sparsely
     at their anchor keyframes. Keyframe k covers: motion from odometry[k-1],
     then all measurements anchored at k, then health/checkpoint from the
     weighted posterior, then ESS-triggered resampling.
+
+    `observer` is the optional Tier-3 instrumentation seam (`RunObserver`).
+    It only ever reads, so an instrumented run and a bare one produce
+    identical histories and identical `particle_history_sha256` — which is
+    what makes replay-with-instrumentation a faithful reconstruction of the
+    original run rather than a different run that resembles it.
     """
     _validate(config, catalog, odometry, measurements, tables)
     rng = np.random.default_rng(config.seed)
@@ -1224,6 +1281,23 @@ def run_filter(
                 catalog, config.pi0,
                 log_weight=weight_cache[meas.tracklet_id])
 
+    def apply_block(keyframe_measurements, kf, pass_index):
+        """Apply one keyframe's measurement block in order.
+
+        The pre-update log-weights are copied only when an observer is
+        attached: they are exactly what §7.2 attribution needs (each
+        tracklet's additive contribution is the difference across this call)
+        and pure overhead otherwise.
+        """
+        block = []
+        for meas in keyframe_measurements:
+            before = (belief.log_weight.copy() if observer is not None
+                      else None)
+            block.extend(apply_measurement(meas))
+            if observer is not None:
+                observer.measurement(kf, meas, before, belief, pass_index)
+        return block
+
     meas_by_kf = {}
     for meas in measurements:
         meas_by_kf.setdefault(meas.anchor_keyframe_idx, []).append(meas)
@@ -1260,9 +1334,10 @@ def run_filter(
             for m in keyframe_measurements
             if m.tracklet_id in belief.associations}
 
-        associations = []
-        for meas in keyframe_measurements:
-            associations.extend(apply_measurement(meas))
+        if observer is not None:
+            observer.keyframe_start(kf, belief)
+
+        associations = apply_block(keyframe_measurements, kf, 0)
 
         belief.log_weight -= special.logsumexp(belief.log_weight)
         current_ess = ess(belief.log_weight)
@@ -1349,6 +1424,8 @@ def run_filter(
                                                     rng))
             proposal_events.append(_proposal_event_record(
                 result, n_injected, gate_passed, gate_best, gate_ref))
+            if observer is not None:
+                observer.injection(kf, proposal_events[-1], n_injected)
             if not gate_passed:
                 # A rejected event still consumes the refractory period: the
                 # trigger condition that fired it persists legitimately in a
@@ -1381,9 +1458,7 @@ def run_filter(
                 # drawn from a subset of tracklets; scoring everything under
                 # the full measurement model is what puts kept and injected
                 # particles on the same footing.
-                associations = []
-                for meas in keyframe_measurements:
-                    associations.extend(apply_measurement(meas))
+                associations = apply_block(keyframe_measurements, kf, 1)
                 belief.log_weight -= special.logsumexp(belief.log_weight)
                 current_ess = ess(belief.log_weight)
                 # Injection changed the belief, so the clusters that entered
@@ -1418,6 +1493,8 @@ def run_filter(
             associations=associations,
             modes=modes,
             mode_entropy_nats=_mode_entropy(modes)))
+        if observer is not None:
+            observer.keyframe_end(kf, belief, health[-1])
         _hash_belief(hasher, belief)
         # The last keyframe always checkpoints, so checkpoints[-1] is the
         # final weighted posterior — and it is a copy, unaffected by the
@@ -1430,9 +1507,14 @@ def run_filter(
             checkpoints[kf] = snapshot
 
         if resampled:
+            resample_before = ((belief.log_weight.copy(), belief.mode_id.copy())
+                               if observer is not None else None)
             systematic_resample(belief, rng, config.resample_regularization,
                                 config.position_roughening_m,
                                 heading_rough_rad)
+            if observer is not None:
+                observer.resample(kf, resample_before[0], resample_before[1],
+                                  belief)
 
     return FilterHistory(health=health, checkpoints=checkpoints,
                          particle_history_sha256=hasher.hexdigest(),

@@ -43,9 +43,9 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/boston_harbor_dataset/processed/leg1")
+DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
 DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/boston_harbor_dataset/panorama_landmarks/boston_harbor_leg1")
+    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 VERDICT_CSS = {"keep": "#3c3", "keep_partial": "#fa2", "drop": "#e55"}
 

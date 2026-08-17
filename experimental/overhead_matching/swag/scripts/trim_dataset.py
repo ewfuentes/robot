@@ -267,7 +267,7 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None):
     # differently. Keep the number for reference but make it unusable until it
     # is re-measured, rather than silently handing a stale angle downstream.
     if isinstance(meta.get("mount_offset"), dict):
-        meta["mount_offset"]["usable"] = False
+        meta["mount_offset"]["self_consistent"] = False
         meta["mount_offset"]["stale_after_trim"] = True
 
     json.dump(meta, open(meta_path, "w"), indent=2)

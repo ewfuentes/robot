@@ -125,8 +125,11 @@ to redo).
 └── gps_timelapse.mp4
 ```
 
-Pinhole faces go to `/data/overhead_matching/datasets/pinhole_images/<name>/`,
-matching where `boston_harbor_leg1`'s already live.
+Pinhole faces live at
+`/data/farfield_matching/artifacts/pinhole_images/<name>/v1/` (moved
+2026-08-16; the orchestrator's stage-5 output root in `~/scratch/mappilary`
+still writes to the old `/data/overhead_matching/datasets/pinhole_images/`
+path — update it before the next collection run).
 
 ## Things that will bite you
 
@@ -220,17 +223,30 @@ It recovers the offset from the **focus of expansion** in image flow — no head
 field, no GPS course, no landmark catalog, so it is independent of everything
 these datasets are unreliable about. Results land in
 `pipeline_metadata.json:mount_offset`, and only calibrations that pass the gates
-carry a number; the rest record why. Validated on `boston_harbor/processed/leg1`,
-whose offset was independently established: **228° at axis MAD 2°** against a
-documented bow of 214°.
+carry a number; the rest record why.
 
-That 14° gap is a real distinction, not error. **The FOE measures the direction of
-travel; the documented value is the bow**, and they differ by crab. Since
-`gps_to_odometry` sets `left_m = 0` "by construction", it *defines* body-x as the
-travel direction — so the FOE value is the right one for the derived-GPS path and
-it absorbs the mean crab §5.2 warns gets misassigned into forward+heading. A true
-gyro body frame would want the bow instead. **The two odometry paths want
-different offsets for the same dataset.**
+**The convention is the direction of travel** (decided 2026-08-14), because
+`gps_to_odometry` declares body x to be the travel direction when it sets
+`left_m = 0`, and because `bearing_matcher.estimate_mount_offset` already solves
+for that same quantity through `bearing_world = course + (bearing_camera −
+offset)`. The bow is a different angle, differing by crab; `bow_calibration.py`
+measures the bow and says so.
+
+**This estimator is not yet validated for accuracy, and an earlier claim here
+that it was is withdrawn.** Checked against `boston_harbor/processed/leg1`, the
+only leg with an external reference, it reports an axis of 48°/228° at axis MAD
+2.0° — so 228° sits **14° off the reference 214°**, and the direction it selects
+is the *other* member of the axis, 48°, chosen by an 85/15 majority. The
+reference is much better supported: a unimodal triangulation-residual sweep over
+26 tracklets (1.33° at 214° against 5.95° at 180°) plus 72 keyframes against a
+surveyed building at mean +0.6°, std 2.42°.
+
+A 2.0° MAD beside a 14° error is the lesson: **these gates measure precision, not
+accuracy.** A systematic bias produces exactly this signature, which is why the
+metadata block carries `accuracy_validated: false` and calls its gate
+`self_consistent` rather than `usable`. Treat the angle as a hypothesis for
+triage — "does this leg have a fixed mount at all?" — and get the number itself
+from a residual sweep.
 
 Four things learned the hard way, all of which will bite a reimplementation:
 
@@ -379,7 +395,7 @@ impressions into numbers.
 ```bash
 # is there a single mount offset, and is its direction resolved?
 bazel run //experimental/overhead_matching/swag/scripts:calibrate_mount_offset -- \
-    --dataset_path <dataset> --baseline_m 200 --mask_vehicle --write_metadata
+    --dataset_path <dataset> --baseline_m 200 --mask_mode both --write_metadata
 
 # is the camera bolted down, drifting, or is nothing vehicle-fixed in frame?
 bazel run //experimental/overhead_matching/swag/scripts:detect_vehicle_anchor -- \
@@ -390,14 +406,51 @@ bazel run //experimental/overhead_matching/swag/scripts:annotate_recording_seams
     --dataset_path <dataset>
 ```
 
-**`--mask_vehicle` is not optional on a vessel-mounted perspective camera.** A
-bow, mast or rail is rigidly attached, so every correspondence on it has zero
-parallax and is consistent with pure rotation. Feed enough of those to
-`findEssentialMat` and the translation direction becomes whatever the remaining
-world points can drag it to. On `seattle` — 5.7% of the frame — masking moved the
-result from axis MAD 23° (rejected) to **MAD 4.0°, 98% aligned, 0% reversals**,
-an offset of 3.3°, i.e. a camera pointing straight down the direction of travel.
-Nothing about the dataset changed; the estimator had simply been fitting the boat.
+**Use `--mask_mode both`, and read the difference.** Masking removes every
+correspondence that has zero parallax because it is bolted to the camera. An
+estimate driven by real scene motion barely notices; one that was really fitting
+the boat collapses. That difference is a per-dataset accuracy test needing no
+map, no tracklets and no external reference — which matters, because
+`boston_harbor_leg1` is the only leg that has one. It is recorded as
+`survives_vehicle_mask`.
+
+It is a sharp test:
+
+| dataset | unmasked | masked | reading |
+|---|---|---|---|
+| dataset | mask | unmasked | masked | axis shift | reading |
+|---|---|---|---|---|---|
+| `seattle` | 5.7% | MAD 22.7°, 59 pairs | MAD **4.0°**, 59 pairs | 6.7° | **survives** — same angle, scatter cleaned up |
+| `kumamoto_yumechan_b` | 22.2% | MAD 35.0°, 37% aligned | MAD **8.0°**, 90% aligned | 1.0° | survives; support 35% |
+| `mississippi_rural` | 8.6% | MAD **1.5°**, 100% aligned | MAD 10.5°, 63% aligned | 6.7° | survives; the *tight MAD* was the boat |
+| `folkestone_dover` | 21.5% | MAD **0.0°**, 59 pairs | MAD 23.5°, 8 pairs | 6.0° | survives; support 14% |
+| `fukuoka_yumechan_a` | 20.5% | MAD **0.0°**, 60 pairs | **0 pairs at any baseline** | — | **fails** — nothing left once the boat is gone |
+
+The takeaway is blunter than "masking helps": **the three tightest MADs in the
+whole collection — 0.0°, 0.0° and 1.5° — all belong to datasets with an 8–22%
+vehicle anchor, and all three loosen or vanish once it is removed.** Zero-parallax
+structure does not just bias a fit, it makes it look *precise*. Never rank
+datasets by MAD.
+
+Angle and support fail independently, hence two fields, `mask_axis_shift_deg` and
+`mask_pair_retention`. `fukuoka_yumechan_a` has no masked answer at all, so its
+0.0° was purely the boat. `folkestone_dover` and `mississippi_rural` keep their
+axis to under 7°, so those angles are corroborated — but on 14% and 27% of the
+pairs, so the confidence is not. Collapsing that into one boolean would misreport
+whichever half the reader cared about.
+
+**A mask that never fires is not a pass.** Seven of the fourteen have no vehicle
+structure in frame, so no mask is built and both runs are the same fit.
+`survives_vehicle_mask` is `null` there, not `true` — reporting a gate that passed
+because it never ran is the exact failure this test exists to catch.
+
+For perspective captures the mechanism is `findEssentialMat` going degenerate:
+static structure is consistent with pure rotation, so with enough of it in the
+consensus set the reported translation direction is whatever the remaining world
+points can drag it to. For equirectangular captures the failure is different —
+the horizon band is already the only region used, so masking a vessel that
+occupies 20% of the frame can leave too few informative points and the estimator
+correctly refuses rather than guessing.
 
 **Read the anchor detector against the offset, not alone.** They answer different
 questions and the interesting cases are where they disagree:

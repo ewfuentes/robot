@@ -38,13 +38,13 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/boston_harbor_dataset/processed/leg1")
+DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
 DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/boston_harbor_dataset/panorama_landmarks/boston_harbor_leg1")
+    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 DEFAULT_VIDEO = Path(
-    "/data/farfield_matching/boston_harbor_dataset/videos/long_wharf_to_hull_wharf.mp4")
+    "/data/farfield_matching/raw_material/boston_harbor_20260712/videos/long_wharf_to_hull_wharf.mp4")
 DEFAULT_OUTPUT = Path(
-    "/data/farfield_matching/boston_harbor_dataset/object_track_runs/m1_heading")
+    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m1_heading")
 
 # (name, anchor_obs_id, n_keyframe_intervals, video-frame stride).
 # The departure case spans the boat's ~50 deg rotation away from the dock:

@@ -72,16 +72,38 @@ def box_blur(a, k=5):
     return (c[k:, k:] - c[:-k, k:] - c[k:, :-k] + c[:-k, :-k]) / (k * k)
 
 
+def resolve_frame_path(ds: Path, rows, i, listing):
+    """Locate row i's image, tolerating the two layouts in use.
+
+    The self-collected datasets symlink `panorama/` to `frames/`, so either
+    works. boston_harbor's `panorama/` instead holds separately *renamed*
+    copies -- its `frame_file` is `f0000_t00070.00s_d00000m.jpg`, which exists
+    only under `frames/` -- so the row's own name has to be tried there first
+    and index alignment kept as a last resort. Looking only in `panorama/`
+    resolves nothing on that dataset, which is how this silently reported "0.0%
+    anchor" for boston_harbor_leg1 when the truth was "no image was read".
+    """
+    name = rows[i]["frame_file"]
+    for candidate in (ds / "frames" / name, ds / "panorama" / name):
+        if candidate.exists():
+            return candidate
+    if i < len(listing):
+        return listing[i]
+    return None
+
+
 def persistence_map(ds: Path, rows, index_range, n_samples, work_w):
+    """(persistence, mean image), or (None, None) if no image could be read."""
     lo, hi = index_range
     count = min(n_samples, hi - lo + 1)
     if count < 4:
         return None, None
+    listing = sorted((ds / "panorama").glob("*.jpg"))
     idxs = np.linspace(lo, hi, count).astype(int)
     acc_img = acc_edge = None
     for i in idxs:
-        path = ds / "panorama" / rows[i]["frame_file"]
-        if not path.exists():
+        path = resolve_frame_path(ds, rows, int(i), listing)
+        if path is None or not path.exists():
             continue
         im = Image.open(path).convert("L")
         height = max(1, round(work_w * im.height / im.width))
@@ -141,6 +163,13 @@ def analyse(ds: Path, args):
         return None
     whole, mean_img = persistence_map(ds, rows, (0, n - 1), args.samples,
                                       args.work_width)
+    if whole is None:
+        # Distinguish "no anchor" from "read nothing". They print almost the
+        # same otherwise, and the second one silently voided a mount-offset
+        # comparison on boston_harbor_leg1.
+        print(f"{ds.name}: NO IMAGES RESOLVED from frames_gps.frame_file — "
+              f"cannot judge the anchor")
+        return {"dataset": ds.name, "n_frames": n, "verdict": "no_images"}
     global_frac = anchor_fraction(whole)
 
     starts = np.linspace(0, n - 1 - args.window, args.n_windows).astype(int)

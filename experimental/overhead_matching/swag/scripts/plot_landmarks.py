@@ -62,9 +62,14 @@ def load_landmarks(ds: Path, bbox=None):
     sources = sorted((lm_dir / "sources").glob("*.feather")) if (lm_dir / "sources").exists() else []
     # Drop the within-sources merge product (osm_<dataset>_v1.feather): it is the
     # union of the per-region feathers sitting beside it, so counting both
-    # double-counts every landmark.
+    # double-counts every landmark. Only applies when per-region OSM feathers
+    # actually exist — on a single-PBF dataset the lone OSM source feather
+    # carries this exact name, and dropping it (because an ENC feather pushed
+    # len(sources) past 1) silently removed all of OSM from the figure.
     combined = f"osm_{ds.name}_v1"
-    if len(sources) > 1:
+    per_region_osm = [p for p in sources
+                      if p.stem.startswith(f"osm_{ds.name}_") and p.stem != combined]
+    if per_region_osm:
         sources = [p for p in sources if p.stem != combined] or sources
     if not sources:
         merged = lm_dir / "v1.feather"

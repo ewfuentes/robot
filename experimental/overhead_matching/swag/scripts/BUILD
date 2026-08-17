@@ -1238,6 +1238,12 @@ py_binary(
 )
 
 py_binary(
+  name = "dataset_status_table",
+  srcs = ["dataset_status_table.py"],
+  visibility = ["//visibility:public"],
+)
+
+py_binary(
   name = "annotate_recording_seams",
   srcs = ["annotate_recording_seams.py"],
   visibility = ["//visibility:public"],
@@ -1251,6 +1257,12 @@ py_binary(
     requirement("numpy"),
     requirement("pillow"),
   ]
+)
+
+py_binary(
+  name = "ingest_selfcollect_dataset",
+  srcs = ["ingest_selfcollect_dataset.py"],
+  visibility = ["//visibility:public"],
 )
 
 py_binary(
@@ -1290,5 +1302,53 @@ py_binary(
     requirement("matplotlib"),
     requirement("numpy"),
     requirement("pillow"),
+  ]
+)
+
+py_library(
+  name="farfield_viewshed_lib",
+  srcs=["farfield_viewshed.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("numpy"),
+    requirement("requests"),
+  ]
+)
+
+py_binary(
+  name="farfield_viewshed",
+  srcs=["farfield_viewshed.py"],
+  deps=[":farfield_viewshed_lib"],
+)
+
+py_test(
+  name="farfield_viewshed_test",
+  srcs=["farfield_viewshed_test.py"],
+  deps=[
+    ":farfield_viewshed_lib",
+    requirement("numpy"),
+  ]
+)
+
+py_library(
+  name="farfield_landmarks_lib",
+  srcs=["farfield_landmarks.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("requests"),
+  ]
+)
+
+py_binary(
+  name="farfield_landmarks",
+  srcs=["farfield_landmarks.py"],
+  deps=[":farfield_landmarks_lib"],
+)
+
+py_test(
+  name="farfield_landmarks_test",
+  srcs=["farfield_landmarks_test.py"],
+  deps=[
+    ":farfield_landmarks_lib",
   ]
 )

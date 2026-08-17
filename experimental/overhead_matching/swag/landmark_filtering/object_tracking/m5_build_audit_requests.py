@@ -40,9 +40,9 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
 )
 from experimental.overhead_matching.swag.scripts import vertex_batch_manager as vbm
 
-DEFAULT_DATASET = Path("/data/farfield_matching/boston_harbor_dataset/processed/leg1")
+DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
 DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/boston_harbor_dataset/panorama_landmarks/boston_harbor_leg1")
+    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 
 def render_all_chips(dossiers, frames_by_idx, dataset_base, chips_dir,

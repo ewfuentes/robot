@@ -233,6 +233,50 @@ The event index is the debugging table of contents: the workflow is "open run �
 
 Run directory = self-describing artifact: `manifest.json` (versions, seed, config), Tier 0/1 Parquet/JSONL, checkpoint blobs, event index. This is the pattern `landmark_filtering` already uses — `artifact_schema.py` + `filter_run_viewer.py`, where the viewer renders *exclusively* from a self-describing artifact and new pipeline stages require no schema/viewer changes; reuse its msgspec serialization conventions (`common/python/serialization`). Viewer: local web app (map stack: deck.gl/MapLibre or similar) + a small replay service (same filter code, headless) for Tier 3 queries. The replay service is the *production filter binary* in replay mode, not a reimplementation — divergence between viewer math and filter math must be structurally impossible. A CLI (`runlog attribute`, `runlog replay --without-tracklet 7`) should expose the same primitives for scripted forensics and CI.
 
+### 7.6 What was built, and what §7.1–7.5 got wrong `[BUILT]`
+
+Implemented in `bearing_only_localization/`: `filter.RunObserver` (the instrumentation
+seam), `replay.py` (Tier-3 service + `Edits` counterfactuals), `attribution.py` (§7.2),
+`forensics.py` (§7.3 derived events + truth-privileged triage), `sources.py` (tracklet
+payload), `basemap.py` (offline vector basemap), `viewer_payload.py` + `viewer.py` (all
+five §7.4 views as one self-contained page), `viewer_server.py`, and `runlog.py`.
+Verified on `260813_m4_bodyframe_leg1/exp7_gate_marginal_llm_chunked`.
+
+Four claims above did not survive contact:
+
+- **§7.2's decomposition is incomplete.** `Δlog W_m = Σ_tracklets + motion/resample`
+  holds only if a mode is a fixed set of particles. It is not — `mode_tracker`
+  re-clusters every keyframe — so a mode's share moves with no evidence arriving. On
+  the synthetic harbour loop the leading mode gained 10.7 nats while its measurement
+  terms summed to 0.04. `attribution.py` adds `recluster` / `settle` / `injection`
+  terms; the split between *evidence* and *structural* nats is now a first-class
+  reading, because "this mode won because the bearings said so" and "because the
+  clusterer merged its rival into it" are different findings.
+- **§7.1's bounded recompute is not available.** Checkpoints carry pose and weight but
+  not the RNG state, the association arrays (dropped on purpose) or the ModeTracker
+  registry, so resuming from one yields a *plausible* continuation, not the run's.
+  Replay is therefore always from keyframe 0 — 31 s for the whole-map run on the GPU
+  backend, hash-verified bit-exact. Fixing this properly means checkpointing the
+  missing state, not resuming without it.
+- **The replay contract needed two additions to actually hold.** `max_visible_range_m`
+  was recorded nowhere despite feeding proposal visibility, and a config field added
+  after a run was written was silently backfilled with today's default — which is why
+  `m3_rerun_v02` cannot be replayed by current code at all. `replay.replayability()`
+  now detects an under-specified manifest instead of quietly replaying different
+  filter semantics under the original run's name.
+- **Truth-privileged triage cannot identify a landmark from one bearing.** With 13,210
+  catalog rows over 23 × 21 km the angular density is ~37 landmarks per degree, so
+  "the landmark this bearing points at" is always an arbitrary row a hundredth of a
+  degree away; the first implementation reported 0.0° error and matcher-fault for 44 of
+  44 tracklets. The test is now per-candidate over *all* of a tracklet's epochs, and
+  `n_consistent_catalog` reports when the geometry identifies nothing so the verdict
+  is read as the weak claim it is.
+
+Two departures from §7.4/§7.5 by choice: tiles rather than live map tiles, because a
+page that needs a tile host is not a frozen forensic record; and the page and the
+server render from one payload builder, so the static artifact and the workbench cannot
+disagree.
+
 ---
 
 ## 8. Testing strategy

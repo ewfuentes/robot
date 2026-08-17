@@ -1,203 +1,46 @@
-"""Interactive run viewer: the §7.4 views as one self-contained HTML page.
+"""Interactive run viewer: the five §7.4 views as one self-contained page.
 
-Builds the three views the design doc says to build first, because they need
-only Tier 0/1 plus checkpoints (§10.6):
+  1. **Run overview strip** — Tier-0 scalars as sparklines, mode lifespans as
+     ribbons whose thickness is their weight, and the §7.3 event index as a
+     clickable glyph rail. The entry point: open a run, look at the strip,
+     click.
+  2. **Map view** — offline vector basemap, catalog backdrop, landmarks glyphed
+     by type, the particle cloud at the selected keyframe drawn as a *weighted*
+     sample and coloured by mode, per-mode 1-sigma circles with heading ticks,
+     bearing wedges from the selected mode, correspondence lines with opacity
+     proportional to association posterior, and a red flag where the matcher's
+     best claim disagrees with where that landmark actually lies.
+  3. **Tracklet inspector** — one tracklet's whole life: crop and payload
+     (tracker), bearing/kappa series, LLR bars per candidate (matcher),
+     per-mode association evolution and attribution series (filter), and a
+     truth-privileged culpability verdict.
+  4. **Mode ledger / genealogy** — modes as rows with weight trajectories,
+     birth provenance, death keyframe, and a pre-computed death waterfall.
+  5. **What-if console** — counterfactual runs ghost-overlaid on the map, with
+     their own final/median error and mode count beside the baseline.
 
-1. **Run overview strip** — health scalars as sparklines, mode lifespans as
-   bands whose thickness is their weight, proposal and mode events as glyphs.
-   The entry point: open a run, look at the strip, click.
-2. **Map view** — landmarks, truth, MAP trail, the particle cloud at the
-   selected keyframe coloured BY MODE, per-mode ellipses, and bearing wedges
-   drawn from the selected mode's centroid with correspondence lines whose
-   opacity is that mode's association posterior.
-3. **Mode ledger** — every mode with its birth keyframe, provenance ("spawned
-   by proposal #1 from tracklets {a,b,c} ↔ landmarks {…}"), weight
-   trajectory, and death.
+The page renders from `viewer_payload.build` and nothing else, so
+`viewer_server.py` shows the same thing from the same data. Where the payload is
+thin — no attribution cache, no sources directory, no ground truth — the
+affected panel says why rather than rendering an empty box.
 
-Deliberately NOT here: the attribution waterfall and the what-if console.
-Both need the Tier 3 replay service, and §7.5 is emphatic that the replay
-path must be the production filter in replay mode rather than a
-reimplementation — a viewer that recomputed likelihoods in JavaScript would
-make viewer-vs-filter divergence possible, which is exactly what that
-requirement exists to prevent.
+Two rules the page keeps:
 
-The page is one file with its data inlined, so a run directory stays
-portable and a viewer session needs no server.
+**Truth-privileged content is fenced.** Anything derived from GPS truth lives
+inside a marked band and is never mixed into a panel that reads as a result.
+The 452 m harbour run's error budget is a debugging artifact, not a measurement.
+
+**Nothing is silently truncated.** Where a cap applies — particles per frame,
+table entries shown, basemap vertices — the page states it.
 """
 
 import argparse
 import json
-import math
 from pathlib import Path
 
-import numpy as np
-
 from experimental.overhead_matching.swag.bearing_only_localization import (
-    filter as pf,
-    geodesy,
-    run_log,
+    viewer_payload,
 )
-
-# Enough particles to read the shape of a cloud, few enough to inline.
-MAX_PARTICLES_PER_FRAME = 900
-# Mode colours are drawn from chart symbology and kept clear of the
-# starboard-green / port-red semantic pair, so "which mode" never reads as
-# "good or bad".
-MODE_COLORS = ["#C21E76", "#2E7FA8", "#B07A16", "#7A4FBF",
-               "#0F8C86", "#A8447E", "#5C6BC0", "#77702A"]
-
-
-def _round(values, decimals=1):
-    return [round(float(v), decimals) for v in values]
-
-
-def _landmark_positions(data):
-    frame = geodesy.RegionFrame(data.manifest.anchor_lat_deg,
-                               data.manifest.anchor_lon_deg)
-    east, north = frame.enu_from_latlon(
-        np.array([lm.lat_deg for lm in data.manifest.landmarks]),
-        np.array([lm.lon_deg for lm in data.manifest.landmarks]))
-    return east, north
-
-
-def _referenced_landmark_ids(data) -> set:
-    """Landmarks the run actually talks about: endorsed table entries,
-    proposal-hypothesis identities, and anything that ever carried reported
-    association mass. Everything else renders as catalog backdrop — a
-    whole-map catalog (13k rows on the harbor runs) drawn as labelled
-    glyphs is unreadable and unresponsive."""
-    ids = set()
-    for table in data.tables.values():
-        default = min(max(table.default_log_lr, table.clip_lo),
-                      table.clip_hi)
-        for entry in table.entries:
-            clipped = min(max(entry.log_lr, table.clip_lo), table.clip_hi)
-            if clipped > default + 1e-12:
-                ids.add(entry.landmark_id)
-    for event in data.proposal_events:
-        for landmark_ids in event.hypothesis_landmark_ids:
-            ids.update(landmark_ids)
-    for record in data.health:
-        for assoc in record.associations:
-            for landmark_id, value in assoc.responsibilities.items():
-                if value > 1e-3:
-                    ids.add(landmark_id)
-    return ids
-
-
-def build_payload(data, max_particles=MAX_PARTICLES_PER_FRAME) -> dict:
-    """Everything the page needs, shaped for the browser."""
-    east, north = _landmark_positions(data)
-    truth_by_kf = {t.keyframe_idx: t for t in data.truth}
-    referenced = _referenced_landmark_ids(data)
-
-    checkpoints = {}
-    rng = np.random.default_rng(0)
-    for keyframe_idx, arrays in sorted(data.checkpoints.items()):
-        count = arrays["east_m"].shape[0]
-        if count > max_particles:
-            index = rng.choice(count, size=max_particles, replace=False)
-        else:
-            index = np.arange(count)
-        checkpoints[str(keyframe_idx)] = {
-            "e": _round(arrays["east_m"][index], 0),
-            "n": _round(arrays["north_m"][index], 0),
-            "m": [int(v) for v in arrays.get(
-                "mode_id", np.full(count, -1))[index]],
-        }
-
-    health = []
-    for record in data.health:
-        truth = truth_by_kf.get(record.keyframe_idx)
-        entry = {
-            "kf": record.keyframe_idx,
-            "ess": round(record.ess, 1),
-            "sigma": round(record.position_std_m, 1),
-            "headingSigma": round(record.heading_std_deg, 2),
-            "meanE": round(record.mean_east_m, 1),
-            "meanN": round(record.mean_north_m, 1),
-            "mapE": round(record.map_east_m, 1),
-            "mapN": round(record.map_north_m, 1),
-            "entropy": round(record.mode_entropy_nats, 3),
-            "proposalShare": round(record.proposal_weight_share, 3),
-            "nMeas": record.n_measurements,
-            "modes": [{
-                "id": mode.mode_id,
-                "w": round(mode.weight, 4),
-                "e": round(mode.mean_east_m, 1),
-                "n": round(mode.mean_north_m, 1),
-                "h": round(mode.mean_heading_deg, 1),
-                "std": round(mode.position_std_m, 1),
-                "born": mode.birth_keyframe_idx,
-                "prov": {k: str(v) for k, v in mode.provenance.items()},
-            } for mode in record.modes],
-            "assoc": [{
-                "mode": a.mode_id,
-                "trk": a.tracklet_id,
-                "null": round(a.null_share, 4),
-                "resp": {k: round(v, 4) for k, v in
-                         sorted(a.responsibilities.items(),
-                                key=lambda kv: -kv[1])[:4] if v > 1e-4},
-            } for a in record.associations],
-        }
-        if truth is not None:
-            entry["truthE"] = round(truth.east_m, 1)
-            entry["truthN"] = round(truth.north_m, 1)
-            entry["err"] = round(math.hypot(record.mean_east_m - truth.east_m,
-                                            record.mean_north_m - truth.north_m), 1)
-            entry["mapErr"] = round(
-                math.hypot(record.map_east_m - truth.east_m,
-                           record.map_north_m - truth.north_m), 1)
-            entry["headingErr"] = round(abs(math.degrees(float(geodesy.wrap_rad(
-                math.radians(record.mean_heading_deg)
-                - math.radians(truth.heading_deg))))), 2)
-        health.append(entry)
-
-    measurements = {}
-    for meas in data.measurements:
-        measurements.setdefault(str(meas.anchor_keyframe_idx), []).append({
-            "trk": meas.tracklet_id,
-            "bearing": round(meas.bearing_body_deg, 2),
-            "sigma": round(math.degrees(1.0 / math.sqrt(max(meas.kappa, 1e-9))),
-                           2),
-        })
-
-    return {
-        "scenario": data.manifest.scenario_name,
-        "nKeyframes": data.manifest.n_keyframes,
-        "nParticles": data.manifest.filter_config.n_particles,
-        "seed": data.manifest.filter_config.seed,
-        "matcher": data.manifest.matcher_version,
-        "historyHash": data.manifest.particle_history_sha256[:12],
-        "landmarks": [{"id": lm.landmark_id, "type": lm.type_key,
-                       "e": round(float(e), 1), "n": round(float(n), 1)}
-                      for lm, e, n in zip(data.manifest.landmarks, east,
-                                          north)
-                      if lm.landmark_id in referenced],
-        "backdrop": [[int(round(float(e))), int(round(float(n)))]
-                     for lm, e, n in zip(data.manifest.landmarks, east,
-                                         north)
-                     if lm.landmark_id not in referenced],
-        "truth": [[round(t.east_m, 1), round(t.north_m, 1)] for t in data.truth],
-        "health": health,
-        "checkpoints": checkpoints,
-        "measurements": measurements,
-        "proposalEvents": [{
-            "id": e.event_id, "kf": e.keyframe_idx, "trigger": e.trigger,
-            "nHyp": e.n_hypotheses, "nInj": e.n_injected,
-            "skipped": e.n_combinations_skipped,
-            "hyp": [{"trk": t, "lm": l} for t, l in
-                    zip(e.hypothesis_tracklet_ids[:8],
-                        e.hypothesis_landmark_ids[:8])],
-        } for e in data.proposal_events],
-        "modeEvents": [{"kf": e.keyframe_idx, "kind": e.kind,
-                        "id": e.mode_id,
-                        "parents": e.parent_mode_ids,
-                        "detail": {k: str(v) for k, v in e.detail.items()}}
-                       for e in data.mode_events],
-        "colors": MODE_COLORS,
-    }
-
 
 _STYLE = """
 /* Palette from NOAA chart symbology: buff chart paper, blue-biased ink,
@@ -209,6 +52,8 @@ _STYLE = """
   --accent:#C21E76; --water:#2E7FA8;
   --starboard:#1B7F52; --port:#B3372C; --caution:#B07A16;
   --truth:#7C8894; --grid:rgba(22,32,43,.08);
+  --land:#EFE9DC; --sea:#DCEAF2; --struct:#C9C0AE;
+  --privileged:#6B4E9E;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --paper:#0E1620; --panel:#16202B; --sunk:#111A24;
@@ -217,6 +62,8 @@ _STYLE = """
   --accent:#E85BA6; --water:#5AA9C9;
   --starboard:#3FB584; --port:#E0705F; --caution:#D8A63C;
   --truth:#7A8796; --grid:rgba(228,234,240,.09);
+  --land:#212E3C; --sea:#0F1922; --struct:#4C5A6A;
+  --privileged:#A98BD8;
 }}
 :root[data-theme="dark"]{
   --paper:#0E1620; --panel:#16202B; --sunk:#111A24;
@@ -225,6 +72,8 @@ _STYLE = """
   --accent:#E85BA6; --water:#5AA9C9;
   --starboard:#3FB584; --port:#E0705F; --caution:#D8A63C;
   --truth:#7A8796; --grid:rgba(228,234,240,.09);
+  --land:#212E3C; --sea:#0F1922; --struct:#4C5A6A;
+  --privileged:#A98BD8;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink);
@@ -232,433 +81,1265 @@ body{margin:0;background:var(--paper);color:var(--ink);
   -webkit-font-smoothing:antialiased}
 .mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-variant-numeric:tabular-nums}
-header{padding:20px 24px 0;max-width:1500px;margin:0 auto}
+.wrap{max-width:1560px;margin:0 auto;padding:0 22px}
+header{padding:20px 0 0}
 .eyebrow{font-size:11px;letter-spacing:.13em;text-transform:uppercase;
   color:var(--accent);font-weight:600}
 h1{margin:6px 0 4px;font-size:21px;font-weight:640;letter-spacing:-.01em;
   text-wrap:balance}
 .meta{color:var(--ink-soft);font-size:12.5px}
 .meta b{color:var(--ink);font-weight:600}
-/* Summary before detail: the run at a glance. */
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));
-  gap:9px;max-width:1500px;margin:16px auto 0;padding:0 24px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+  gap:9px;margin:14px 0 0}
 .tile{background:var(--panel);border:1px solid var(--rule);border-radius:7px;
-  padding:9px 11px}
+  padding:9px 11px;min-width:0}
 .tile .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
   color:var(--ink-faint);font-weight:600}
-.tile .v{font-size:19px;font-weight:600;margin-top:3px;letter-spacing:-.01em}
+.tile .v{font-size:19px;font-weight:600;margin-top:3px;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile .u{font-size:11.5px;color:var(--ink-faint);font-weight:500}
 .pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;
   font-weight:650;padding:2px 8px;border-radius:999px;letter-spacing:.02em}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;
-  background:currentColor}
+  background:currentColor;flex:none}
 .pill.ok{color:var(--starboard);background:color-mix(in srgb,var(--starboard) 14%,transparent)}
 .pill.warn{color:var(--caution);background:color-mix(in srgb,var(--caution) 16%,transparent)}
 .pill.bad{color:var(--port);background:color-mix(in srgb,var(--port) 14%,transparent)}
-main{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);
-  gap:14px;max-width:1500px;margin:0 auto;padding:14px 24px 36px}
-@media (max-width:960px){main{grid-template-columns:minmax(0,1fr)}}
+.pill.info{color:var(--water);background:color-mix(in srgb,var(--water) 14%,transparent)}
+main{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(320px,1fr);
+  gap:13px;padding:13px 0 40px}
+@media (max-width:1000px){main{grid-template-columns:minmax(0,1fr)}}
 section{background:var(--panel);border:1px solid var(--rule);border-radius:9px;
-  padding:14px;min-width:0}
-.strip{grid-column:1/-1}
-h2{margin:0 0 10px;font-size:11px;font-weight:650;letter-spacing:.11em;
+  padding:13px;min-width:0}
+.full{grid-column:1/-1}
+h2{margin:0 0 9px;font-size:11px;font-weight:650;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--ink-faint);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2 .hint{font-weight:500;letter-spacing:0;text-transform:none;
+  color:var(--ink-faint);font-size:11px}
+h3{margin:12px 0 6px;font-size:10.5px;font-weight:650;letter-spacing:.09em;
   text-transform:uppercase;color:var(--ink-faint)}
-h2+h2{margin-top:18px}
 svg{display:block;width:100%;overflow:visible}
 .axis{fill:var(--ink-faint);font-size:9.5px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.cursor{stroke:var(--accent);stroke-width:1.5}
+.cursor{stroke:var(--accent);stroke-width:1.5;pointer-events:none}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
-th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--rule-soft)}
+th,td{text-align:left;padding:4px 7px;border-bottom:1px solid var(--rule-soft);
+  vertical-align:top}
 th{color:var(--ink-faint);font-weight:650;font-size:10.5px;
-  letter-spacing:.07em;text-transform:uppercase}
-td.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+td.num,th.num{text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums}
-tr.mode{cursor:pointer}
-tr.mode:hover td{background:var(--sunk)}
-tr.mode.sel td{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+tr.sel td{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+tr.click{cursor:pointer}
+tr.click:hover td{background:var(--sunk)}
 .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;
-  margin-right:6px;vertical-align:baseline}
+  margin-right:6px;vertical-align:baseline;flex:none}
 .prov{color:var(--ink-soft);font-size:11.5px}
-.controls{display:flex;gap:11px;align-items:center;margin-bottom:11px;
+.controls{display:flex;gap:10px;align-items:center;margin-bottom:10px;
   flex-wrap:wrap}
-input[type=range]{flex:1;min-width:190px;accent-color:var(--accent);height:20px}
+input[type=range]{flex:1;min-width:180px;accent-color:var(--accent);height:20px}
 button{background:var(--panel);color:var(--ink);border:1px solid var(--rule);
-  border-radius:6px;padding:4px 11px;cursor:pointer;font:inherit;
+  border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;
   font-size:12.5px;font-weight:550}
 button:hover{border-color:var(--accent);color:var(--accent)}
+button.on{border-color:var(--accent);color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 10%,transparent)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--accent);
   outline-offset:2px}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}
+.tabs{display:flex;gap:5px;border-bottom:1px solid var(--rule);
+  margin:-4px -4px 10px;padding:0 4px;flex-wrap:wrap}
+.tab{background:none;border:none;border-bottom:2px solid transparent;
+  border-radius:0;padding:6px 9px;color:var(--ink-soft);font-size:11px;
+  font-weight:650;letter-spacing:.08em;text-transform:uppercase}
+.tab:hover{color:var(--accent)}
+.tab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 13px;font-size:12.5px}
 .kv dt{color:var(--ink-soft)}
 .kv dd{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums}
-.legend{color:var(--ink-soft);font-size:11.5px;margin-top:9px;
-  line-height:1.55;max-width:74ch}
+.legend{color:var(--ink-soft);font-size:11.5px;margin-top:8px;line-height:1.55;
+  max-width:84ch}
 .scroll{overflow-x:auto}
+.scrollY{max-height:290px;overflow-y:auto}
+/* Truth-privileged band: visually fenced so it can never be mistaken for a
+   result. Left rule + tinted ground + explicit header. */
+.privileged{border-left:3px solid var(--privileged);
+  background:color-mix(in srgb,var(--privileged) 7%,transparent);
+  border-radius:0 7px 7px 0;padding:10px 12px;margin-top:12px}
+.privileged .tag{font-size:10px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--privileged)}
+.notes{font-size:11.5px;color:var(--ink-soft);margin-top:8px}
+.notes summary{cursor:pointer;color:var(--ink-faint);font-weight:600;
+  font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.notes li{margin:3px 0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));
+  gap:13px}
+.crop{width:100%;max-width:210px;border-radius:6px;border:1px solid var(--rule);
+  display:block;background:var(--sunk)}
+.bar{height:9px;border-radius:2px;background:var(--water);display:block}
+.chip{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;
+  background:var(--sunk);color:var(--ink-soft);margin:1px 3px 1px 0;
+  font-family:ui-monospace,Menlo,monospace}
+.empty{color:var(--ink-faint);font-size:12px;font-style:italic;padding:6px 0}
+.wf{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;
+  font-size:12px}
+.wf .lab{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-family:ui-monospace,Menlo,monospace}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;
   transition:none!important}}
 """
 
 _SCRIPT = r"""
 const D = window.__RUN__;
-const H = D.health, KF = D.nKeyframes - 1;
-let t = 0, selMode = null;
+const H = D.health, KF = D.run.nKeyframes - 1, RUN = D.run;
+const $ = id => document.getElementById(id);
+let t = 0, selMode = null, selTrk = null, tab = "state";
+let showGhosts = true, showBase = true, showParticles = true;
+
 const color = id => id == null || id < 0 ? "#8b93a3"
   : D.colors[id % D.colors.length];
-const $ = id => document.getElementById(id);
-const ckKeys = Object.keys(D.checkpoints).map(Number).sort((a,b)=>a-b);
-const nearestCk = kf => ckKeys.reduce((best,k) =>
-  Math.abs(k-kf) < Math.abs(best-kf) ? k : best, ckKeys[0]);
+const fmt = (v, d = 0) => (v === undefined || v === null || !isFinite(v))
+  ? "—" : v.toFixed(d);
+const esc = s => String(s == null ? "" : s)
+  .replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ckKeys = Object.keys(D.checkpoints).map(Number).sort((a, b) => a - b);
+const nearestCk = kf => ckKeys.reduce((best, k) =>
+  Math.abs(k - kf) < Math.abs(best - kf) ? k : best, ckKeys[0]);
+const TRK = new Map(D.tracklets.map(x => [x.id, x]));
+const LM = new Map(D.landmarks.map(l => [l.id, l]));
+const wrap180 = a => ((a % 360) + 540) % 360 - 180;
 
-// ---------- bounds ----------
-let X0=1e9,X1=-1e9,Y0=1e9,Y1=-1e9;
-const grow=(e,n)=>{X0=Math.min(X0,e);X1=Math.max(X1,e);Y0=Math.min(Y0,n);Y1=Math.max(Y1,n);};
-D.landmarks.forEach(l=>grow(l.e,l.n));
-(D.backdrop||[]).forEach(p=>grow(p[0],p[1]));
-D.truth.forEach(p=>grow(p[0],p[1]));
-H.forEach(h=>grow(h.mapE,h.mapN));
-const pad=(X1-X0+Y1-Y0)*0.06+150; X0-=pad;X1+=pad;Y0-=pad;Y1+=pad;
-const span=Math.max(X1-X0,Y1-Y0);
-const MW=760, MH=560;
-const px=e=>((e-X0)/span)*MW, py=n=>MH-((n-Y0)/span)*MH;
-// Unreferenced catalog rows: one static path of 1-px dots (a single DOM
-// node), rendered behind everything. Built once — scrubbing re-renders
-// the rest of the map every frame.
-const BACKDROP=(D.backdrop&&D.backdrop.length)
-  ? `<path d="${D.backdrop.map(p=>"M"+px(p[0]).toFixed(1)+" "
-      +py(p[1]).toFixed(1)+"h.1").join("")}" stroke="#59606e"
-      stroke-width="1.6" stroke-linecap="round" fill="none" opacity=".4"/>`
+// ---------- projection ----------
+let X0 = 1e9, X1 = -1e9, Y0 = 1e9, Y1 = -1e9;
+const grow = (e, n) => { if (!isFinite(e) || !isFinite(n)) return;
+  X0 = Math.min(X0, e); X1 = Math.max(X1, e);
+  Y0 = Math.min(Y0, n); Y1 = Math.max(Y1, n); };
+D.landmarks.forEach(l => grow(l.e, l.n));
+(D.backdrop || []).forEach(p => grow(p[0], p[1]));
+D.truth.forEach(p => grow(p[0], p[1]));
+H.forEach(h => grow(h.mapE, h.mapN));
+const pad = (X1 - X0 + Y1 - Y0) * 0.05 + 150;
+X0 -= pad; X1 += pad; Y0 -= pad; Y1 += pad;
+const span = Math.max(X1 - X0, Y1 - Y0);
+const MW = 780, MH = 600;
+const px = e => ((e - X0) / span) * MW;
+const py = n => MH - ((n - Y0) / span) * MH;
+const mPerPx = span / MW;
+
+// ---------- static map layers, built once ----------
+// The backdrop and basemap do not change with the scrubber, and rebuilding
+// ~12k dots and 37k basemap vertices every frame is what makes a viewer feel
+// broken. Each becomes one path string, concatenated ahead of the live layers.
+const BASE_STYLE = {
+  land:      {fill: "var(--land)",  stroke: "var(--struct)", w: 0.5, op: 1},
+  water:     {fill: "var(--sea)",   stroke: "none",          w: 0,   op: 1},
+  coastline: {fill: "none",         stroke: "var(--struct)", w: 0.9, op: .95},
+  pier:      {fill: "none",         stroke: "var(--struct)", w: 0.7, op: .8},
+  bridge:    {fill: "none",         stroke: "var(--struct)", w: 0.8, op: .8},
+  building:  {fill: "var(--struct)", stroke: "none",         w: 0,   op: .35},
+};
+function buildBasemap() {
+  const layers = (D.basemap && D.basemap.layers) || [];
+  return layers.map(layer => {
+    const st = BASE_STYLE[layer.name] || BASE_STYLE.coastline;
+    let d = "";
+    for (const path of layer.paths) {
+      for (let i = 0; i < path.length; i += 2)
+        d += (i ? "L" : "M") + px(path[i]).toFixed(1) + " "
+          + py(path[i + 1]).toFixed(1);
+      if (layer.kind === "polygon") d += "Z";
+    }
+    return `<path d="${d}" fill="${st.fill}" stroke="${st.stroke}"
+      stroke-width="${st.w}" opacity="${st.op}" stroke-linejoin="round"/>`;
+  }).join("");
+}
+const BASEMAP = buildBasemap();
+const BACKDROP = (D.backdrop && D.backdrop.length)
+  ? `<path d="${D.backdrop.map(p => "M" + px(p[0]).toFixed(1) + " "
+      + py(p[1]).toFixed(1) + "h.1").join("")}" stroke="var(--ink-faint)"
+      stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".38"/>`
   : "";
 
-// ---------- overview strip ----------
-const SW=980, ROW=30;
-function series(key){return H.map(h=>h[key]);}
-function sparkline(y0,vals,label,col,log){
-  if(vals.every(v=>v===undefined))return "";
-  const fin=vals.filter(v=>v!==undefined&&isFinite(v));
-  if(!fin.length)return "";
-  let lo=Math.min(...fin),hi=Math.max(...fin);
-  if(log){lo=Math.max(lo,1e-3);hi=Math.max(hi,lo*1.01);}
-  if(hi-lo<1e-9)hi=lo+1;
-  const base=y0+ROW-3;
-  const sc=v=>{const a=log?Math.log(Math.max(v,lo)):v,
-    b=log?Math.log(lo):lo, c=log?Math.log(hi):hi;
-    return y0+ROW-3-((a-b)/(c-b))*(ROW-8);};
-  let d="",area="",last=null;
-  vals.forEach((v,i)=>{if(v===undefined||!isFinite(v))return;
-    const X=(i/KF)*SW, Y=sc(v);
-    d+=(d?"L":"M")+X.toFixed(1)+" "+Y.toFixed(1);
-    area+=(area?"L":"M"+X.toFixed(1)+" "+base+"L")+X.toFixed(1)+" "+Y.toFixed(1);
-    last=[X,Y];});
-  const uid="g"+label.replace(/\W/g,"");
-  return `<line x1="0" y1="${base}" x2="${SW}" y2="${base}"
-    stroke="var(--grid)" stroke-width="1"/>
-  <line x1="0" y1="${y0+3}" x2="${SW}" y2="${y0+3}"
-    stroke="var(--grid)" stroke-width="1"/>
-  <path d="${area}L${last?last[0].toFixed(1):0} ${base}Z" fill="${col}"
+// Scale bar: a map with no basemap and no scale is unreadable at a glance.
+function scaleBar() {
+  const targetPx = 130;
+  const raw = targetPx * mPerPx;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const nice = [1, 2, 5, 10].map(m => m * pow)
+    .reduce((a, b) => Math.abs(b - raw) < Math.abs(a - raw) ? b : a);
+  const w = nice / mPerPx;
+  const y = MH - 16, x = 14;
+  const label = nice >= 1000 ? (nice / 1000) + " km" : nice + " m";
+  return `<g opacity=".85"><line x1="${x}" y1="${y}" x2="${x + w}" y2="${y}"
+    stroke="var(--ink)" stroke-width="1.6"/>
+    <line x1="${x}" y1="${y - 4}" x2="${x}" y2="${y + 4}" stroke="var(--ink)"
+      stroke-width="1.6"/>
+    <line x1="${x + w}" y1="${y - 4}" x2="${x + w}" y2="${y + 4}"
+      stroke="var(--ink)" stroke-width="1.6"/>
+    <text class="axis" x="${x + w / 2}" y="${y - 7}" text-anchor="middle"
+      fill="var(--ink)">${label}</text></g>`;
+}
+const SCALEBAR = scaleBar();
+
+// ---------- landmark glyphs by type (§7.4) ----------
+// Shape carries class, so "which kind of thing is the filter believing in"
+// survives a screenshot. Fill intensity carries whether it is live right now.
+function glyph(l, r, hot) {
+  const x = px(l.e), y = py(l.n);
+  const col = hot ? "var(--accent)" : "var(--caution)";
+  const sw = hot ? 1.3 : 0.6, op = hot ? 1 : 0.62;
+  const a = {stroke: `stroke="${col}" stroke-width="${sw}" opacity="${op}"`,
+             fill: `fill="${hot ? col : "none"}"`};
+  const A = `${a.fill} ${a.stroke}`;
+  switch (l.g) {
+    case "light": // triangle point-up: fixed light / lighthouse
+      return `<path d="M${x} ${y - r * 1.2}L${x + r} ${y + r * .8}L${x - r} ${y + r * .8}Z" ${A}/>`;
+    case "navaid": // diamond: floating or minor aid
+      return `<path d="M${x} ${y - r}L${x + r} ${y}L${x} ${y + r}L${x - r} ${y}Z" ${A}/>`;
+    case "tank": // circle: storage tank, silo, chimney
+      return `<circle cx="${x}" cy="${y}" r="${r * .95}" ${A}/>`;
+    case "tower": // vertical bar with a cap: tower, mast, crane, monument
+      return `<path d="M${x} ${y + r}L${x} ${y - r * 1.3}" ${a.stroke}
+        stroke-width="${sw + 0.9}"/><circle cx="${x}" cy="${y - r * 1.3}"
+        r="${r * .48}" ${A}/>`;
+    case "bridge": // horizontal double rule
+      return `<path d="M${x - r * 1.2} ${y - r * .4}h${r * 2.4}M${x - r * 1.2} ${y + r * .4}h${r * 2.4}" ${a.stroke}/>`;
+    case "water": // half-square open to the water: pier, dock, marina
+      return `<path d="M${x - r} ${y + r}L${x - r} ${y - r}L${x + r} ${y - r}L${x + r} ${y + r}" ${a.fill} ${a.stroke}/>`;
+    case "nature": // hollow rounded blob: island, cape, beach
+      return `<circle cx="${x}" cy="${y}" r="${r}" fill="none" ${a.stroke}
+        stroke-dasharray="2 1.5"/>`;
+    default: // square: building and everything unclassified
+      return `<rect x="${x - r * .85}" y="${y - r * .85}" width="${r * 1.7}"
+        height="${r * 1.7}" ${A}/>`;
+  }
+}
+
+// ---------- view 1: run overview strip ----------
+// Gutters, not overlays: the row name goes left of the plot and the axis
+// extremes go right of it, so a label can never sit on top of the data it
+// describes. Everything time-indexed goes through X() and shares one axis.
+const SW = 1000, GL = 120, GR = 54, PW = SW - GL - GR, ROW = 32;
+const X = kf => GL + (kf / KF) * PW;
+function sparkline(y0, vals, label, col, log) {
+  const fin = vals.filter(v => v !== undefined && v !== null && isFinite(v));
+  if (!fin.length)
+    return `<text class="axis" x="2" y="${y0 + 13}"
+      opacity=".55">${label}</text>
+      <text class="axis" x="${GL + 4}" y="${y0 + 13}" opacity=".55">
+      no data</text>`;
+  let lo = Math.min(...fin), hi = Math.max(...fin);
+  if (log) { lo = Math.max(lo, 1e-3); hi = Math.max(hi, lo * 1.01); }
+  if (hi - lo < 1e-9) hi = lo + 1;
+  const top = y0 + 4, base = y0 + ROW - 6;
+  const sc = v => {
+    const a = log ? Math.log(Math.max(v, lo)) : v;
+    const b = log ? Math.log(lo) : lo, c = log ? Math.log(hi) : hi;
+    return base - ((a - b) / (c - b)) * (base - top);
+  };
+  let d = "", area = "", last = null;
+  vals.forEach((v, i) => {
+    if (v === undefined || v === null || !isFinite(v)) return;
+    const x = X(i), y = sc(v);
+    d += (d ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1);
+    area += (area ? "L" : "M" + x.toFixed(1) + " " + base + "L")
+      + x.toFixed(1) + " " + y.toFixed(1);
+    last = [x, y];
+  });
+  const num = v => Math.abs(v) < 10 ? v.toFixed(2)
+    : Math.abs(v) < 100000 ? String(Math.round(v))
+    : (v / 1000).toFixed(0) + "k";
+  return `<line x1="${GL}" y1="${base}" x2="${GL + PW}" y2="${base}"
+    stroke="var(--grid)"/>
+  <line x1="${GL}" y1="${top}" x2="${GL + PW}" y2="${top}"
+    stroke="var(--grid)"/>
+  <path d="${area}L${last ? last[0].toFixed(1) : GL} ${base}Z" fill="${col}"
     opacity=".10"/>
   <path d="${d}" fill="none" stroke="${col}" stroke-width="1.3"
     stroke-linejoin="round"/>
-  ${last?`<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4"
-    fill="${col}"/>`:""}
-  <text class="axis" x="2" y="${y0+10}">${label}</text>
-  <text class="axis" x="${SW-2}" y="${y0+10}" text-anchor="end">${
-    hi.toFixed(hi<10?2:0)}</text>
-  <text class="axis" x="${SW-2}" y="${base}" text-anchor="end">${
-    lo.toFixed(lo<10?2:0)}</text>`;
-}
-function modeBands(y0){
-  // Lifespan per mode: first..last keyframe seen, thickness = mean weight.
-  const life={};
-  H.forEach(h=>h.modes.forEach(m=>{
-    const L=life[m.id]||(life[m.id]={a:h.kf,b:h.kf,w:[],born:m.born});
-    L.b=h.kf; L.w.push(m.w);}));
-  const ids=Object.keys(life).map(Number).sort((a,b)=>a-b);
-  let out="", y=y0;
-  ids.forEach(id=>{
-    const L=life[id], w=L.w.reduce((a,b)=>a+b,0)/L.w.length;
-    const x=(L.a/KF)*SW, x2=(L.b/KF)*SW, th=3+w*11;
-    out+=`<rect x="${x.toFixed(1)}" y="${(y+7-th/2).toFixed(1)}"
-      width="${Math.max(x2-x,1.5).toFixed(1)}" height="${th.toFixed(1)}"
-      fill="${color(id)}" opacity="${selMode===id?1:.72}" rx="2"
-      class="band" data-mode="${id}" style="cursor:pointer"/>
-      <text class="axis" x="${(x+3).toFixed(1)}" y="${y+5}">m${id}</text>`;
-    y+=15;
-  });
-  return {svg:out, height:Math.max(y-y0, 16)};
-}
-function drawStrip(){
-  let y=4, out="";
-  const css=getComputedStyle(document.documentElement);
-  const C=n=>css.getPropertyValue(n).trim();
-  out+=sparkline(y,series("err"),"pos err (m)",C("--port"),true); y+=ROW;
-  out+=sparkline(y,series("sigma"),"reported σ (m)",C("--starboard"),true); y+=ROW;
-  out+=sparkline(y,series("ess"),"ESS",C("--water"),true); y+=ROW;
-  out+=sparkline(y,series("entropy"),"mode entropy",C("--accent"),false); y+=ROW;
-  const bands=modeBands(y); out+=bands.svg; y+=bands.height+6;
-  // event glyphs
-  D.proposalEvents.forEach(e=>{const X=(e.kf/KF)*SW;
-    out+=`<line x1="${X}" y1="0" x2="${X}" y2="${y}" stroke="var(--warn)"
-      stroke-width="1" stroke-dasharray="3 2" opacity=".8"/>
-      <text class="axis" x="${X+2}" y="${y-2}" fill="var(--warn)">
-      ⟐ ${e.trigger}</text>`;});
-  D.modeEvents.filter(e=>e.kind!=="death").forEach(e=>{
-    const X=(e.kf/KF)*SW;
-    out+=`<circle cx="${X}" cy="${y+8}" r="3" fill="${color(e.id)}"
-      opacity=".9"><title>${e.kind} m${e.id} @kf${e.kf}</title></circle>`;});
-  y+=16;
-  const cx=(t/KF)*SW;
-  out+=`<line class="cursor" x1="${cx}" y1="0" x2="${cx}" y2="${y}"/>`;
-  const svg=$("strip");
-  svg.setAttribute("viewBox",`0 0 ${SW} ${y}`);
-  svg.innerHTML=out;
-  svg.querySelectorAll(".band").forEach(b=>b.onclick=ev=>{
-    ev.stopPropagation();
-    selMode = selMode===+b.dataset.mode ? null : +b.dataset.mode; render();});
+  <text class="axis" x="2" y="${(top + base) / 2 + 3}"
+    fill="${col}">${label}</text>
+  <text class="axis" x="${SW - 2}" y="${top + 4}" text-anchor="end">${
+    num(hi)}</text>
+  <text class="axis" x="${SW - 2}" y="${base + 2}" text-anchor="end">${
+    num(lo)}</text>`;
 }
 
-// ---------- map ----------
-function drawMap(){
-  const h=H[t], ck=nearestCk(t), P=D.checkpoints[ck];
-  let out=BACKDROP;
-  // particles, coloured by mode
-  for(let i=0;i<P.e.length;i++){
-    const m=P.m[i];
-    if(selMode!==null && m!==selMode) continue;
-    out+=`<circle cx="${px(P.e[i]).toFixed(1)}" cy="${py(P.n[i]).toFixed(1)}"
-      r="1.5" fill="${color(m)}" opacity=".5"/>`;
+// Mode ribbons: thickness is weight over time, so a mode that dies thins to
+// nothing instead of simply stopping. This is the §7.4 view-4 "weight
+// trajectory" living in the strip where it can be compared across modes.
+function modeRibbons(y0) {
+  let out = "", y = y0;
+  const H_RIB = 15;
+  for (const mode of D.modes) {
+    if (!mode.kf.length) continue;
+    const mid = y + H_RIB / 2;
+    let top = "", bot = "";
+    mode.kf.forEach((kf, i) => {
+      const x = X(kf), half = Math.max(mode.w[i] * (H_RIB / 2 - 1), 0.3);
+      top += (i ? "L" : "M") + x.toFixed(1) + " " + (mid - half).toFixed(2);
+      bot = "L" + x.toFixed(1) + " " + (mid + half).toFixed(2) + bot;
+    });
+    const peak = Math.max(...mode.w);
+    out += `<line x1="${GL}" y1="${mid}" x2="${GL + PW}" y2="${mid}"
+      stroke="var(--grid)"/>
+      <path d="${top}${bot}Z" fill="${color(mode.id)}"
+      opacity="${selMode === mode.id ? .95 : .6}" class="ribbon"
+      data-mode="${mode.id}" style="cursor:pointer"><title>mode ${mode.id}: born kf ${mode.born}${
+      mode.died !== undefined ? ", died kf " + mode.died : ""}, peak weight ${
+      (peak * 100).toFixed(0)}%</title></path>
+      <text class="axis" x="2" y="${mid + 3}"
+        fill="${color(mode.id)}" font-weight="${selMode === mode.id ? 700 : 400}"
+        >mode ${mode.id}</text>
+      <text class="axis" x="${SW - 2}" y="${mid + 3}" text-anchor="end">${
+      (peak * 100).toFixed(0)}%</text>`;
+    y += H_RIB;
   }
-  // truth + MAP trails
-  let dt="",dm="";
-  D.truth.forEach((p,i)=>{dt+=(i?"L":"M")+px(p[0]).toFixed(1)+" "+py(p[1]).toFixed(1);});
-  H.slice(0,t+1).forEach((r,i)=>{dm+=(i?"L":"M")+px(r.mapE).toFixed(1)+" "+py(r.mapN).toFixed(1);});
-  out+=`<path d="${dt}" fill="none" stroke="var(--truth)" stroke-width="1.5"
-    stroke-dasharray="4 3"/>`;
-  out+=`<path d="${dm}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>`;
-  // mode ellipses + heading ticks
-  h.modes.forEach(m=>{
-    if(selMode!==null && m.id!==selMode) return;
-    const r=Math.max(px(X0+m.std)-px(X0),2.5);
-    out+=`<circle cx="${px(m.e).toFixed(1)}" cy="${py(m.n).toFixed(1)}"
-      r="${r.toFixed(1)}" fill="none" stroke="${color(m.id)}"
-      stroke-width="1.4" opacity=".95"/>`;
-    const a=m.h*Math.PI/180, L=22;
-    out+=`<line x1="${px(m.e).toFixed(1)}" y1="${py(m.n).toFixed(1)}"
-      x2="${(px(m.e)+L*Math.sin(a)).toFixed(1)}"
-      y2="${(py(m.n)-L*Math.cos(a)).toFixed(1)}"
-      stroke="${color(m.id)}" stroke-width="1.4"/>`;
-    out+=`<text class="axis" x="${(px(m.e)+6).toFixed(1)}"
-      y="${(py(m.n)-6).toFixed(1)}" fill="${color(m.id)}">m${m.id} ${(m.w*100).toFixed(0)}%</text>`;
+  return {svg: out, height: Math.max(y - y0, 14)};
+}
+
+const EV_STYLE = {
+  proposal: {glyph: "◇", col: "var(--accent)"},
+  map_jump: {glyph: "⤴", col: "var(--port)"},
+  ess_crash: {glyph: "↓", col: "var(--port)"},
+  resample_storm: {glyph: "≈", col: "var(--caution)"},
+  null_spike: {glyph: "⊘", col: "var(--caution)"},
+  association_flip: {glyph: "⇄", col: "var(--caution)"},
+  mode_birth: {glyph: "●", col: "var(--water)"},
+  mode_death: {glyph: "×", col: "var(--ink-faint)"},
+  mode_merge: {glyph: "⊕", col: "var(--water)"},
+};
+function eventRail(y0) {
+  // One row per kind, so a hundred association flips cannot bury the one MAP
+  // jump that explains the run, and the count per kind is visible at a glance.
+  const order = Object.keys(EV_STYLE);
+  const kinds = [...new Set(D.events.map(e => e.kind))].sort(
+    (a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  let out = "", y = y0;
+  for (const kind of kinds) {
+    const st = EV_STYLE[kind] || {glyph: "•", col: "var(--ink-soft)"};
+    const evs = D.events.filter(e => e.kind === kind);
+    out += `<text class="axis" x="2" y="${y + 9}" fill="${st.col}">${
+      st.glyph} ${kind}</text>
+      <text class="axis" x="${SW - 2}" y="${y + 9}" text-anchor="end">${
+      evs.length}</text>
+      <line x1="${GL}" y1="${y + 6}" x2="${GL + PW}" y2="${y + 6}"
+        stroke="var(--grid)"/>`;
+    for (const ev of evs) {
+      out += `<text x="${X(ev.keyframe_idx).toFixed(1)}" y="${y + 9.5}"
+        fill="${st.col}" font-size="9.5" text-anchor="middle" class="evg"
+        data-kf="${ev.keyframe_idx}" style="cursor:pointer"
+        opacity="${ev.source === "derived" ? .7 : 1}">${st.glyph}<title>kf ${
+        ev.keyframe_idx} — ${esc(ev.label)}: ${esc(ev.detail)}</title></text>`;
+    }
+    y += 13;
+  }
+  return {svg: out, height: Math.max(y - y0, 13)};
+}
+
+function drawStrip() {
+  let y = 4, out = "";
+  const S = k => H.map(h => h[k]);
+  out += sparkline(y, S("err"), "pos err (m)", "var(--port)", true); y += ROW;
+  out += sparkline(y, S("sigma"), "reported σ (m)", "var(--starboard)", true); y += ROW;
+  out += sparkline(y, S("ess"), "ESS", "var(--water)", true); y += ROW;
+  out += sparkline(y, S("null"), "null share", "var(--caution)", false); y += ROW;
+  out += sparkline(y, S("entropy"), "mode entropy", "var(--accent)", false);
+  y += ROW + 4;
+  const rib = modeRibbons(y); out += rib.svg; y += rib.height + 6;
+  const rail = eventRail(y); out += rail.svg; y += rail.height + 4;
+  // Keyframe ruler, so the horizontal axis is readable without hovering.
+  const ticks = 8;
+  for (let i = 0; i <= ticks; i++) {
+    const kf = Math.round(KF * i / ticks);
+    out += `<text class="axis" x="${X(kf).toFixed(1)}" y="${y + 8}"
+      text-anchor="middle">${kf}</text>`;
+  }
+  y += 12;
+  const cx = X(t);
+  out += `<line class="cursor" x1="${cx.toFixed(1)}" y1="0"
+    x2="${cx.toFixed(1)}" y2="${y - 12}"/>
+    <text class="axis" x="${cx.toFixed(1)}" y="${y + 8}" text-anchor="middle"
+      fill="var(--accent)" font-weight="700">kf ${t}</text>`;
+  const svg = $("strip");
+  svg.setAttribute("viewBox", `0 0 ${SW} ${y + 2}`);
+  svg.innerHTML = out;
+  svg.querySelectorAll(".ribbon").forEach(el => el.onclick = ev => {
+    ev.stopPropagation();
+    selMode = selMode === +el.dataset.mode ? null : +el.dataset.mode;
+    render();
   });
-  // bearing wedges from the selected (or heaviest) mode
-  const anchor = h.modes.find(m=>m.id===selMode) || h.modes[0];
-  const meas = D.measurements[String(t)]||[];
-  if(anchor) meas.forEach(mm=>{
-    const world=(anchor.h+mm.bearing)*Math.PI/180, R=span*0.55;
-    const wedge=(off,op,w)=>`<line x1="${px(anchor.e).toFixed(1)}"
+  svg.querySelectorAll(".evg").forEach(el => el.onclick = ev => {
+    ev.stopPropagation(); t = +el.dataset.kf; render();
+  });
+}
+
+// ---------- view 2: map ----------
+function drawMap() {
+  const h = H[t], ck = nearestCk(t), P = D.checkpoints[ck];
+  let out = (showBase ? BASEMAP : "") + BACKDROP;
+
+  if (showParticles && P) {
+    // One path per mode rather than one circle per particle: 900 DOM nodes per
+    // frame is what makes scrubbing stutter.
+    const byMode = new Map();
+    for (let i = 0; i < P.e.length; i++) {
+      const m = P.m[i];
+      if (selMode !== null && m !== selMode) continue;
+      let d = byMode.get(m); if (!d) byMode.set(m, d = []);
+      d.push("M" + px(P.e[i]).toFixed(1) + " " + py(P.n[i]).toFixed(1) + "h.1");
+    }
+    for (const [m, d] of byMode)
+      out += `<path d="${d.join("")}" stroke="${color(m)}" stroke-width="2.4"
+        stroke-linecap="round" fill="none" opacity=".5"/>`;
+  }
+
+  // Truth then baseline MAP trail then ghosts, so the baseline reads on top.
+  let dt = "";
+  D.truth.forEach((p, i) => {
+    dt += (i ? "L" : "M") + px(p[0]).toFixed(1) + " " + py(p[1]).toFixed(1); });
+  if (dt) out += `<path d="${dt}" fill="none" stroke="var(--truth)"
+    stroke-width="1.5" stroke-dasharray="4 3"/>`;
+  if (showGhosts) D.ghosts.forEach(g => {
+    let d = "";
+    g.trail.slice(0, t + 1).forEach((p, i) => {
+      d += (i ? "L" : "M") + px(p[0]).toFixed(1) + " " + py(p[1]).toFixed(1); });
+    out += `<path d="${d}" fill="none" stroke="var(--water)" stroke-width="1.4"
+      stroke-dasharray="6 3" opacity=".8"><title>${esc(g.label)}</title></path>`;
+  });
+  let dm = "";
+  H.slice(0, t + 1).forEach((r, i) => {
+    dm += (i ? "L" : "M") + px(r.mapE).toFixed(1) + " " + py(r.mapN).toFixed(1); });
+  out += `<path d="${dm}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`;
+
+  // Per-mode 1-sigma circle + heading tick.
+  h.modes.forEach(m => {
+    if (selMode !== null && m.id !== selMode) return;
+    const r = Math.max(m.std / mPerPx, 2.5);
+    const a = m.h * Math.PI / 180, L = 20;
+    out += `<circle cx="${px(m.e).toFixed(1)}" cy="${py(m.n).toFixed(1)}"
+      r="${r.toFixed(1)}" fill="none" stroke="${color(m.id)}"
+      stroke-width="1.4"/>
+      <line x1="${px(m.e).toFixed(1)}" y1="${py(m.n).toFixed(1)}"
+        x2="${(px(m.e) + L * Math.sin(a)).toFixed(1)}"
+        y2="${(py(m.n) - L * Math.cos(a)).toFixed(1)}"
+        stroke="${color(m.id)}" stroke-width="1.4"/>
+      <text class="axis" x="${(px(m.e) + 6).toFixed(1)}"
+        y="${(py(m.n) - 6).toFixed(1)}" fill="${color(m.id)}">m${m.id} ${
+      (m.w * 100).toFixed(0)}%</text>`;
+  });
+
+  // Bearing wedges and correspondence, from the selected (else heaviest) mode.
+  const anchor = h.modes.find(m => m.id === selMode) || h.modes[0];
+  const meas = D.measurements[String(t)] || [];
+  const flags = [];
+  if (anchor) meas.forEach(mm => {
+    const world = (anchor.h + mm.bearing) * Math.PI / 180;
+    const R = span * 0.6 / mPerPx;
+    const ray = (off, op, w) => `<line x1="${px(anchor.e).toFixed(1)}"
       y1="${py(anchor.n).toFixed(1)}"
-      x2="${(px(anchor.e)+ (R/span)*MW*Math.sin(world+off)).toFixed(1)}"
-      y2="${(py(anchor.n)- (R/span)*MH*Math.cos(world+off)).toFixed(1)}"
-      stroke="var(--warn)" stroke-width="${w}" opacity="${op}"/>`;
-    const s=mm.sigma*Math.PI/180;
-    out+=wedge(0,.85,1.3)+wedge(2*s,.35,.8)+wedge(-2*s,.35,.8);
-    // correspondence lines: opacity = this mode's association posterior
-    const a=h.assoc.find(x=>x.trk===mm.trk && x.mode===(anchor?anchor.id:null))
-         || h.assoc.find(x=>x.trk===mm.trk && x.mode===null);
-    if(a) Object.entries(a.resp).forEach(([lm,p])=>{
-      const L=D.landmarks.find(x=>x.id===lm); if(!L||p<0.02)return;
-      out+=`<line x1="${px(anchor.e).toFixed(1)}" y1="${py(anchor.n).toFixed(1)}"
+      x2="${(px(anchor.e) + R * Math.sin(world + off)).toFixed(1)}"
+      y2="${(py(anchor.n) - R * Math.cos(world + off)).toFixed(1)}"
+      stroke="var(--accent)" stroke-width="${w}" opacity="${op}"/>`;
+    const s = mm.sigma * Math.PI / 180;
+    out += ray(0, .8, 1.3) + ray(2 * s, .3, .8) + ray(-2 * s, .3, .8);
+
+    // §7.4 red flag: the matcher's best claim vs where that landmark is.
+    // Computed against THIS mode's pose, so it re-evaluates as you switch
+    // modes — a claim can be geometrically fine under one hypothesis and
+    // absurd under another, which is the whole point of per-mode views.
+    const top = mm.topLm ? LM.get(mm.topLm) : null;
+    if (top) {
+      const predicted = Math.atan2(top.e - anchor.e, top.n - anchor.n)
+        * 180 / Math.PI;
+      const disagree = Math.abs(wrap180(predicted - (anchor.h + mm.bearing)));
+      if (disagree > 15) {
+        flags.push({trk: mm.trk, lm: mm.topLm, deg: disagree});
+        out += `<line x1="${px(anchor.e).toFixed(1)}" y1="${py(anchor.n).toFixed(1)}"
+          x2="${px(top.e).toFixed(1)}" y2="${py(top.n).toFixed(1)}"
+          stroke="var(--port)" stroke-width="1.5" stroke-dasharray="1 3"
+          opacity=".85"><title>${esc(mm.trk)}: matcher's best claim ${
+          esc(mm.topLm)} lies ${disagree.toFixed(0)}° off the measured
+          bearing under mode ${anchor.id}</title></line>
+          <circle cx="${px(top.e).toFixed(1)}" cy="${py(top.n).toFixed(1)}"
+            r="7" fill="none" stroke="var(--port)" stroke-width="1.6"/>`;
+      }
+    }
+    const a = h.assoc.find(x => x.trk === mm.trk && x.mode === anchor.id)
+           || h.assoc.find(x => x.trk === mm.trk && x.mode === null);
+    if (a) Object.entries(a.resp).forEach(([lm, p]) => {
+      const L = LM.get(lm); if (!L || p < 0.02) return;
+      out += `<line x1="${px(anchor.e).toFixed(1)}" y1="${py(anchor.n).toFixed(1)}"
         x2="${px(L.e).toFixed(1)}" y2="${py(L.n).toFixed(1)}"
-        stroke="${color(anchor.id)}" stroke-width="${(1+2*p).toFixed(1)}"
-        opacity="${(0.15+0.6*p).toFixed(2)}" stroke-dasharray="2 3"/>`;
+        stroke="${color(anchor.id)}" stroke-width="${(1 + 2 * p).toFixed(1)}"
+        opacity="${(0.15 + 0.6 * p).toFixed(2)}" stroke-dasharray="2 3"/>`;
     });
   });
-  // Referenced landmarks on top. Labels only where the filter is
-  // currently putting association mass (or everywhere, in small worlds) —
-  // a whole-map run references thousands of tie members and labelling
-  // them all makes the map unreadable.
-  const active={};
-  h.assoc.forEach(a=>Object.entries(a.resp).forEach(([lm,p])=>{
-    if(p>=0.05) active[lm]=Math.max(active[lm]||0,p);}));
-  const many=D.landmarks.length>60;
-  D.landmarks.forEach(l=>{
-    const hot=active[l.id]!==undefined;
-    const r=many?(hot?4:2.2):5;
-    out+=`<circle cx="${px(l.e).toFixed(1)}" cy="${py(l.n).toFixed(1)}"
-      r="${r}" fill="#f5c542" stroke="#7a5c00"
-      stroke-width="${many&&!hot?0.6:1.2}" opacity="${many&&!hot?0.55:1}"/>`;
-    if(hot||!many)
-      out+=`<text class="axis" x="${(px(l.e)+8).toFixed(1)}"
-        y="${(py(l.n)+3).toFixed(1)}">${l.id}</text>`;
+
+  // Landmarks on top. Labels only where the filter is putting association
+  // mass right now (or everywhere, in a small world): a whole-map run
+  // references thousands of tie members and labelling them all is illegible.
+  const active = {};
+  h.assoc.forEach(a => Object.entries(a.resp).forEach(([lm, p]) => {
+    if (p >= 0.05) active[lm] = Math.max(active[lm] || 0, p); }));
+  meas.forEach(mm => { if (mm.topLm) active[mm.topLm] = active[mm.topLm] || 0.05; });
+  const many = D.landmarks.length > 60;
+  D.landmarks.forEach(l => {
+    const hot = active[l.id] !== undefined;
+    const r = many ? (hot ? 4.5 : 2.2) : 5.5;
+    out += glyph(l, r, hot);
+    if ((hot || !many) && (selTrk === null || true))
+      out += `<text class="axis" x="${(px(l.e) + 8).toFixed(1)}"
+        y="${(py(l.n) + 3).toFixed(1)}">${esc(l.id)}</text>`;
   });
-  // truth marker at t
-  if(h.truthE!==undefined)
-    out+=`<circle cx="${px(h.truthE).toFixed(1)}" cy="${py(h.truthN).toFixed(1)}"
-      r="4" fill="none" stroke="var(--truth)" stroke-width="2"/>`;
-  const svg=$("map");
-  svg.setAttribute("viewBox",`0 0 ${MW} ${MH}`);
-  svg.innerHTML=out;
-  $("mapnote").textContent =
-    `particles from checkpoint kf ${ck}${ck!==t?" (nearest to "+t+")":""}`;
+  if (h.truthE !== undefined)
+    out += `<circle cx="${px(h.truthE).toFixed(1)}" cy="${py(h.truthN).toFixed(1)}"
+      r="4.5" fill="none" stroke="var(--truth)" stroke-width="2"/>`;
+  out += SCALEBAR;
+
+  const svg = $("map");
+  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);
+  svg.innerHTML = out;
+  $("mapnote").innerHTML =
+    `particles: weighted sample of ${RUN.nParticles.toLocaleString()} from `
+    + `checkpoint kf ${ck}${ck !== t ? ` (nearest to ${t})` : ""}`
+    + (flags.length ? ` · <b style="color:var(--port)">${flags.length} `
+        + `LLR/geometry disagreement${flags.length > 1 ? "s" : ""}: `
+        + flags.map(f => `${esc(f.trk)} ${f.deg.toFixed(0)}°`).join(", ")
+        + "</b>" : "");
 }
 
-// ---------- side panels ----------
-function drawLedger(){
-  const h=H[t];
-  let rows="";
-  h.modes.forEach(m=>{
-    const p=m.prov||{};
-    const origin = p.source==="proposal"
-      ? `proposal #${p.proposal_event_id} (${p.trigger||"?"})` +
-        (p.landmark_ids?`<br><code>${p.landmark_ids}</code>`:"")
-      : "motion";
-    rows+=`<tr class="mode ${selMode===m.id?"sel":""}" data-mode="${m.id}">
-      <td><span class="swatch" style="background:${color(m.id)}"></span>m${m.id}</td>
-      <td class="num">${(m.w*100).toFixed(1)}%</td>
-      <td class="num">${m.std.toFixed(0)}</td>
-      <td class="num">${m.born}</td><td class="prov">${origin}</td></tr>`;
-  });
-  if(!rows) rows=`<tr><td colspan="5" class="prov">no modes above weight
-    threshold</td></tr>`;
-  $("ledger").innerHTML=`<table><thead><tr><th>mode</th><th>weight</th>
-    <th>σ (m)</th><th>born</th><th>origin</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
-  $("ledger").querySelectorAll("tr.mode").forEach(r=>r.onclick=()=>{
-    selMode = selMode===+r.dataset.mode ? null : +r.dataset.mode; render();});
-}
-function drawAssoc(){
-  const h=H[t];
-  const rows=h.assoc.filter(a=>selMode===null ? a.mode===null
-                                              : a.mode===selMode);
-  let out="";
-  rows.forEach(a=>{
-    const parts=Object.entries(a.resp)
-      .map(([lm,p])=>`${lm} <b>${(p*100).toFixed(0)}%</b>`).join(" · ");
-    out+=`<tr><td><code>${a.trk}</code></td>
-      <td class="num">${(a.null*100).toFixed(0)}%</td>
-      <td class="prov">${parts||"—"}</td></tr>`;
-  });
-  if(!out) out=`<tr><td colspan="3" class="prov">no measurement at this
-    keyframe</td></tr>`;
-  $("assoc").innerHTML=`<table><thead><tr><th>tracklet</th><th>null</th>
-    <th>believes it is${selMode!==null?` (mode ${selMode})`:" (all modes)"}
-    </th></tr></thead><tbody>${out}</tbody></table>`;
-}
-function drawTiles(){
-  const h=H[t], last=H[H.length-1];
-  // Status encodes state in form, not just number: consistent means the
-  // reported sigma actually covers the error being made.
-  let status="ok", label="tracking";
-  if(h.err!==undefined){
-    if(h.err>3*Math.max(h.sigma,1)){status="bad";label="overconfident";}
-    else if(h.modes.length>1){status="warn";label="multimodal";}
-    else if(h.err>300){status="warn";label="searching";}
-  } else {status="warn";label="no ground truth";}
-  const tile=(k,v,u="")=>`<div class="tile"><div class="k">${k}</div>
+// ---------- tiles + state ----------
+function drawTiles() {
+  const h = H[t], last = H[H.length - 1];
+  let status = "ok", label = "tracking";
+  if (h.err !== undefined) {
+    if (h.err > 3 * Math.max(h.sigma, 1)) { status = "bad"; label = "overconfident"; }
+    else if (h.modes.length > 1) { status = "warn"; label = "multimodal"; }
+    else if (h.err > 500) { status = "warn"; label = "searching"; }
+  } else { status = "info"; label = "no ground truth"; }
+  const tile = (k, v, u = "") => `<div class="tile"><div class="k">${k}</div>
     <div class="v mono">${v}<span class="u"> ${u}</span></div></div>`;
-  const f=(v,d=0)=>v===undefined?"—":v.toFixed(d);
   $("tiles").innerHTML =
     `<div class="tile"><div class="k">status @ kf ${h.kf}</div>
       <div class="v"><span class="pill ${status}">${label}</span></div></div>`
-    + tile("mean error", f(h.err), "m")
-    + tile("reported σ", f(h.sigma), "m")
-    + tile("MAP error", f(h.mapErr), "m")
-    + tile("modes", h.modes.length, `H=${f(h.entropy,2)}`)
-    + tile("ESS", f(h.ess), `/ ${D.nParticles}`)
-    + tile("final error", f(last.err), "m")
-    + tile("proposals", D.proposalEvents.length,
-           D.proposalEvents.length ? D.proposalEvents[D.proposalEvents.length-1].trigger : "none");
+    + tile("mean error", fmt(h.err), "m")
+    + tile("reported σ", fmt(h.sigma), "m")
+    + tile("MAP error", fmt(h.mapErr), "m")
+    + tile("modes", h.modes.length, `H=${fmt(h.entropy, 2)}`)
+    + tile("ESS", fmt(h.ess), `/ ${RUN.nParticles.toLocaleString()}`)
+    + tile("null share", fmt(h.null, 2))
+    + tile("final error", fmt(last.err), "m")
+    + `<div class="tile"><div class="k">replay</div><div class="v">
+      <span class="pill ${RUN.replayable ? "ok" : "bad"}">${
+      RUN.replayable ? "exact" : "not replayable"}</span></div></div>`;
 }
-function drawStats(){
-  const h=H[t];
-  const f=(v,d=1)=>v===undefined?"—":v.toFixed(d);
-  $("stats").innerHTML=`
+
+function drawState() {
+  const h = H[t];
+  $("state").innerHTML = `<dl class="kv">
     <dt>keyframe</dt><dd>${h.kf} / ${KF}</dd>
-    <dt>heading error</dt><dd>${f(h.headingErr,2)}°</dd>
-    <dt>heading σ</dt><dd>${f(h.headingSigma,2)}°</dd>
+    <dt>mean pose</dt><dd>${fmt(h.meanE)}, ${fmt(h.meanN)} @ ${fmt(h.meanH)}°</dd>
+    <dt>heading error</dt><dd>${fmt(h.headingErr, 2)}°</dd>
+    <dt>heading σ</dt><dd>${fmt(h.headingSigma, 2)}°</dd>
     <dt>measurements</dt><dd>${h.nMeas}</dd>
-    <dt>proposal-descended</dt><dd>${(h.proposalShare*100).toFixed(0)}%</dd>`;
+    <dt>resampled</dt><dd>${h.resampled ? "yes" : "no"}</dd>
+    <dt>proposal-descended</dt><dd>${(h.proposalShare * 100).toFixed(0)}%</dd>
+    </dl>
+    <h3>Association posteriors ${selMode !== null
+      ? "(mode " + selMode + ")" : "(whole belief)"}</h3>` + assocTable();
 }
-function render(){
-  $("kf").textContent=t; $("slider").value=t;
-  drawTiles(); drawStrip(); drawMap(); drawLedger(); drawAssoc(); drawStats();
+function assocTable() {
+  const h = H[t];
+  const rows = h.assoc.filter(a => selMode === null ? a.mode === null
+                                                    : a.mode === selMode);
+  if (!rows.length) return `<div class="empty">no measurement at this keyframe</div>`;
+  let out = "";
+  for (const a of rows) {
+    const parts = Object.entries(a.resp)
+      .map(([lm, p]) => `${esc(lm)} <b>${(p * 100).toFixed(0)}%</b>`).join(" · ");
+    out += `<tr class="click" data-trk="${esc(a.trk)}">
+      <td><code>${esc(a.trk)}</code></td>
+      <td class="num">${(a.null * 100).toFixed(0)}%</td>
+      <td class="num">${(a.surprise * 100).toFixed(0)}%</td>
+      <td class="prov">${parts || "—"}</td></tr>`;
+  }
+  return `<div class="scroll"><table><thead><tr><th>tracklet</th>
+    <th class="num">null</th><th class="num">surprise</th>
+    <th>believes it is</th></tr></thead><tbody>${out}</tbody></table></div>`;
 }
-$("slider").max=KF;
-$("slider").oninput=e=>{t=+e.target.value; render();};
-$("strip").onclick=e=>{
-  const r=$("strip").getBoundingClientRect();
-  t=Math.max(0,Math.min(KF,Math.round(((e.clientX-r.left)/r.width)*KF)));
-  render();};
-$("clear").onclick=()=>{selMode=null; render();};
-document.addEventListener("keydown",e=>{
-  if(e.key==="ArrowRight"){t=Math.min(KF,t+1);render();}
-  if(e.key==="ArrowLeft"){t=Math.max(0,t-1);render();}});
-let timer=null;
-$("play").onclick=()=>{
-  if(timer){clearInterval(timer);timer=null;$("play").textContent="▶ play";return;}
-  $("play").textContent="⏸ pause";
-  timer=setInterval(()=>{t=(t+1)%(KF+1);render();},90);};
+
+// ---------- view 4: mode ledger + death waterfalls ----------
+function waterfallHtml(wf) {
+  if (!wf) return `<div class="empty">no attribution for this mode</div>`;
+  const max = Math.max(...wf.terms.map(term => Math.abs(term.nats)), 1e-6);
+  const marker = {tracklet: "", recluster: "✱ ", settle: "✱ ",
+                  injection: "! ", resample: "≈ "};
+  let rows = "";
+  for (const term of wf.terms.slice(0, 12)) {
+    const w = Math.abs(term.nats) / max * 100;
+    const col = term.kind !== "tracklet" ? "var(--ink-faint)"
+      : term.nats < 0 ? "var(--port)" : "var(--starboard)";
+    rows += `<div class="lab" title="${esc(term.kind)}">${
+      marker[term.kind] || ""}${esc(term.label)}</div>
+      <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+        <span class="bar" style="width:${w.toFixed(1)}px;max-width:110px;
+          background:${col}"></span>
+        <span class="mono" style="min-width:52px;text-align:right">${
+        term.nats >= 0 ? "+" : ""}${term.nats.toFixed(2)}</span></div>`;
+  }
+  const extra = wf.terms.length > 12 ? `<div class="prov">+ ${
+    wf.terms.length - 12} smaller terms</div>` : "";
+  return `<div class="prov" style="margin-bottom:6px">
+    kf ${wf.range[0]}–${wf.range[1]}: <b>${wf.total >= 0 ? "+" : ""}${
+    wf.total.toFixed(2)} nats</b> of log-share
+    (<span style="color:var(--starboard)">${wf.evidence >= 0 ? "+" : ""}${
+    wf.evidence.toFixed(2)} evidence</span>,
+    <span style="color:var(--ink-faint)">${wf.structural >= 0 ? "+" : ""}${
+    wf.structural.toFixed(2)} structural</span>)</div>
+    <div class="wf">${rows}</div>${extra}
+    ${wf.residual !== null ? `<div class="prov" style="margin-top:5px">
+      residual vs Tier 0: ${wf.residual >= 0 ? "+" : ""}${wf.residual.toFixed(3)}
+      nats — the decomposition is checked against the independently
+      recorded mode weight.</div>` : ""}`;
+}
+
+function drawModes() {
+  const h = H[t];
+  const live = new Set(h.modes.map(m => m.id));
+  let rows = "";
+  for (const mode of D.modes) {
+    const now = h.modes.find(m => m.id === mode.id);
+    const p = mode.prov || {};
+    const origin = p.source === "proposal"
+      ? `proposal #${p.proposal_event_id} (${p.trigger || "?"})`
+        + (p.landmark_ids ? `<br><code>${esc(p.landmark_ids)}</code>` : "")
+      : "motion";
+    // Sparkline of this mode's weight over its whole life: the §7.4 "weight
+    // trajectory" at row scale, so the ledger answers "was it ever strong".
+    const W = 92, Hh = 16;
+    let d = "";
+    mode.kf.forEach((kf, i) => {
+      d += (i ? "L" : "M") + (kf / KF * W).toFixed(1) + " "
+        + (Hh - mode.w[i] * (Hh - 1)).toFixed(1); });
+    rows += `<tr class="click ${selMode === mode.id ? "sel" : ""}"
+      data-mode="${mode.id}">
+      <td><span class="swatch" style="background:${color(mode.id)}"></span>m${mode.id}</td>
+      <td><svg viewBox="0 0 ${W} ${Hh}" width="${W}" height="${Hh}"
+        style="width:${W}px"><path d="${d}" fill="none"
+        stroke="${color(mode.id)}" stroke-width="1.3"/>
+        <line x1="${(t / KF * W).toFixed(1)}" y1="0"
+          x2="${(t / KF * W).toFixed(1)}" y2="${Hh}" stroke="var(--accent)"
+          stroke-width=".8" opacity=".7"/></svg></td>
+      <td class="num">${now ? (now.w * 100).toFixed(1) + "%"
+        : `<span class="prov">${live.has(mode.id) ? "" : "gone"}</span>`}</td>
+      <td class="num">${now ? fmt(now.std) : "—"}</td>
+      <td class="num">${mode.born}</td>
+      <td class="num">${mode.died !== undefined ? mode.died : "—"}</td>
+      <td class="prov">${origin}</td></tr>`;
+  }
+  const deaths = (D.attribution && D.attribution.deaths) || {};
+  let deathHtml = "";
+  for (const [id, wf] of Object.entries(deaths))
+    deathHtml += `<h3>Why mode ${id} died</h3>${waterfallHtml(wf)}`;
+  if (!Object.keys(deaths).length)
+    deathHtml = `<h3>Mode deaths</h3><div class="empty">${
+      D.attribution ? "no mode died in this run"
+        : "needs the Tier-3 attribution cache"}</div>`;
+  $("modes").innerHTML = `<div class="scroll"><table><thead><tr><th>mode</th>
+    <th>weight trajectory</th><th class="num">now</th><th class="num">σ</th>
+    <th class="num">born</th><th class="num">died</th><th>origin</th></tr>
+    </thead><tbody>${rows || `<tr><td colspan="7" class="empty">no modes
+    above threshold in this run</td></tr>`}</tbody></table></div>` + deathHtml;
+  $("modes").querySelectorAll("tr.click").forEach(r => r.onclick = () => {
+    selMode = selMode === +r.dataset.mode ? null : +r.dataset.mode; render(); });
+}
+
+// ---------- view 3: tracklet inspector ----------
+const VERDICT_PILL = {consistent: "ok", "tracker-fault": "bad",
+                      "matcher-fault": "bad", "filter-fault": "warn",
+                      "no-evidence": "info"};
+function drawTrackletList() {
+  const rows = D.tracklets.map(trk => {
+    const tri = trk.triage;
+    const pill = tri ? `<span class="pill ${VERDICT_PILL[tri.verdict] || "info"}"
+      >${tri.verdict}</span>` : "";
+    const nats = trk.attributionTotal;
+    return `<tr class="click ${selTrk === trk.id ? "sel" : ""}"
+      data-trk="${esc(trk.id)}">
+      <td><code>${esc(trk.id)}</code></td>
+      <td class="num">${trk.epochs.length}</td>
+      <td class="num">${trk.table ? trk.table.nEndorsed : "—"}</td>
+      <td class="num" style="color:${nats === undefined ? "inherit"
+        : nats < 0 ? "var(--port)" : "var(--starboard)"}">${
+      nats === undefined ? "—" : (nats >= 0 ? "+" : "") + nats.toFixed(1)}</td>
+      <td>${pill}${tri && tri.antiEvidence
+        ? ' <span class="pill bad">anti</span>' : ""}</td></tr>`;
+  }).join("");
+  $("trklist").innerHTML = `<div class="scroll scrollY"><table><thead><tr>
+    <th>tracklet</th><th class="num">epochs</th><th class="num">endorsed</th>
+    <th class="num">nats</th><th>verdict</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <div class="legend">"nats" is this tracklet's total contribution to the
+    whole belief's log-likelihood (§7.2). "verdict" is truth-privileged.
+    </div>`;
+  $("trklist").querySelectorAll("tr.click").forEach(r => r.onclick = () => {
+    selTrk = selTrk === r.dataset.trk ? null : r.dataset.trk;
+    render(); if (selTrk) $("inspector").scrollIntoView({block: "nearest"}); });
+}
+
+function seriesChart(rows, xKey, yKey, opts) {
+  // A tiny shared line/bar chart: bearing series, attribution series and
+  // association evolution are all the same shape over the keyframe axis.
+  const o = Object.assign({w: 300, h: 74, col: "var(--water)", bars: false,
+                           band: null, zero: false}, opts || {});
+  if (!rows.length) return `<div class="empty">no data</div>`;
+  const ys = rows.map(r => r[yKey]);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (o.band) {
+    lo = Math.min(lo, ...rows.map(r => r[yKey] - 2 * r[o.band]));
+    hi = Math.max(hi, ...rows.map(r => r[yKey] + 2 * r[o.band]));
+  }
+  if (o.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if (hi - lo < 1e-9) { hi = lo + 1; }
+  // Local axis: these charts live in a narrow panel and carry their own
+  // keyframe range, so they do not share the strip's gutters.
+  const X = kf => (kf / KF) * o.w;
+  const Y = v => o.h - 12 - ((v - lo) / (hi - lo)) * (o.h - 20);
+  let out = `<line x1="0" y1="${Y(lo)}" x2="${o.w}" y2="${Y(lo)}"
+    stroke="var(--grid)"/>`;
+  if (o.zero && lo < 0 && hi > 0)
+    out += `<line x1="0" y1="${Y(0)}" x2="${o.w}" y2="${Y(0)}"
+      stroke="var(--ink-faint)" stroke-width=".7" opacity=".6"/>`;
+  if (o.band) {
+    let up = "", dn = "";
+    rows.forEach((r, i) => {
+      up += (i ? "L" : "M") + X(r[xKey]).toFixed(1) + " "
+        + Y(r[yKey] + 2 * r[o.band]).toFixed(1);
+      dn = "L" + X(r[xKey]).toFixed(1) + " "
+        + Y(r[yKey] - 2 * r[o.band]).toFixed(1) + dn; });
+    out += `<path d="${up}${dn}Z" fill="${o.col}" opacity=".16"/>`;
+  }
+  if (o.bars) {
+    for (const r of rows) {
+      const y0 = Y(0), y1 = Y(r[yKey]);
+      out += `<line x1="${X(r[xKey]).toFixed(1)}" y1="${y0.toFixed(1)}"
+        x2="${X(r[xKey]).toFixed(1)}" y2="${y1.toFixed(1)}"
+        stroke="${r[yKey] < 0 ? "var(--port)" : "var(--starboard)"}"
+        stroke-width="1.8"><title>kf ${r[xKey]}: ${r[yKey].toFixed(2)}</title></line>`;
+    }
+  } else {
+    let d = "";
+    rows.forEach((r, i) => {
+      d += (i ? "L" : "M") + X(r[xKey]).toFixed(1) + " " + Y(r[yKey]).toFixed(1); });
+    out += `<path d="${d}" fill="none" stroke="${o.col}" stroke-width="1.4"/>`;
+    for (const r of rows)
+      out += `<circle cx="${X(r[xKey]).toFixed(1)}" cy="${Y(r[yKey]).toFixed(1)}"
+        r="1.7" fill="${o.col}"><title>kf ${r[xKey]}: ${
+        r[yKey].toFixed(2)}</title></circle>`;
+  }
+  out += `<line x1="${X(t).toFixed(1)}" y1="0" x2="${X(t).toFixed(1)}"
+    y2="${o.h - 12}" stroke="var(--accent)" stroke-width="1" opacity=".8"/>
+    <text class="axis" x="0" y="${o.h - 2}">kf 0</text>
+    <text class="axis" x="${o.w}" y="${o.h - 2}" text-anchor="end">kf ${KF}</text>
+    <text class="axis" x="${o.w}" y="9" text-anchor="end">${hi.toFixed(1)}</text>
+    <text class="axis" x="0" y="9">${lo.toFixed(1)}</text>`;
+  return `<svg viewBox="0 0 ${o.w} ${o.h}">${out}</svg>`;
+}
+
+function drawInspector() {
+  if (!selTrk) {
+    $("inspector").innerHTML = `<h2>Tracklet inspector <span class="hint">
+      &mdash; §7.4 view 3</span></h2>
+      <div class="empty">Pick a tracklet from the list, the association table,
+      or a correspondence line on the map. This panel answers "did the tracker,
+      the matcher, or the filter get this wrong?" by showing the raw track, the
+      LLRs and the responsibilities side by side.</div>`;
+    return;
+  }
+  const trk = TRK.get(selTrk);
+  if (!trk) { $("inspector").innerHTML = `<div class="empty">unknown tracklet</div>`;
+    return; }
+  const src = trk.source || {};
+  const tbl = trk.table;
+
+  // --- tracker column ---
+  let tracker = `<h3>Tracker — what was looked at</h3>`;
+  if (src.thumb) tracker += `<img class="crop" src="${src.thumb}"
+    alt="crop of ${esc(trk.id)}" loading="lazy">`;
+  tracker += `<dl class="kv" style="margin-top:8px">
+    <dt>name</dt><dd>${esc(src.name || "—")}${
+      src.nameContested ? ' <span class="pill warn">contested</span>' : ""}</dd>
+    <dt>supports</dt><dd>${src.nSupports || "—"}</dd>
+    <dt>span</dt><dd>${src.span && src.span.length
+      ? "kf " + src.span[0] + "–" + src.span[1] : "—"}</dd>
+    <dt>epochs</dt><dd>${trk.epochs.length}</dd>
+    <dt>tracks</dt><dd>${(src.trackIds || []).join(", ") || "—"}</dd></dl>`;
+  if (src.tags && src.tags.length)
+    tracker += `<div style="margin-top:6px">${src.tags
+      .map(tg => `<span class="chip">${esc(tg)}</span>`).join("")}</div>`;
+  if (src.description)
+    tracker += `<div class="legend">“${esc(src.description)}”</div>`;
+  if (src.unresolved)
+    tracker += `<div class="legend" style="color:var(--caution)">
+      tracker flagged: ${esc(src.unresolved)}</div>`;
+  if (src.handoffs && src.handoffs.length)
+    tracker += `<div class="legend">merge unsure about: ${src.handoffs
+      .map(x => `${esc(x.with)} (gap ${x.gap})`).join(", ")} — this
+      "tracklet" may be more than one object.</div>`;
+  if (!src.thumb && !src.name)
+    tracker += `<div class="empty">no source payload; pass --sources_dir</div>`;
+
+  // --- bearing series ---
+  const bearings = `<h3>Bearing &amp; κ</h3>` + seriesChart(
+    trk.epochs, "kf", "bearing", {band: "sigma", col: "var(--accent)"})
+    + `<div class="legend">Body-frame bearing, shaded ±2σ from the
+    fused κ. A step here that the vehicle did not make is a tracker
+    problem, not a matcher one.</div>`;
+
+  // --- matcher column ---
+  let matcher = `<h3>Matcher — log-LR per candidate</h3>`;
+  if (tbl) {
+    const maxAbs = Math.max(...tbl.entries.map(e => Math.abs(e.lr)),
+                            Math.abs(tbl.default), 1e-6);
+    let bars = "";
+    for (const e of tbl.entries.slice(0, 14)) {
+      const w = Math.abs(e.lr) / maxAbs * 96;
+      bars += `<div class="lab">${e.endorsed ? "" : "· "}${esc(e.lm)}</div>
+        <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+        <span class="bar" style="width:${w.toFixed(1)}px;background:${
+        e.endorsed ? "var(--water)" : "var(--ink-faint)"}"></span>
+        <span class="mono" style="min-width:44px;text-align:right">${
+        e.lr >= 0 ? "+" : ""}${e.lr.toFixed(2)}</span></div>`;
+    }
+    matcher += `<div class="wf">${bars}</div>
+      <dl class="kv" style="margin-top:8px">
+      <dt>status</dt><dd>${esc(tbl.status)}</dd>
+      <dt>entries</dt><dd>${tbl.nEntries} (${tbl.nEndorsed} endorsed)</dd>
+      <dt>tied at top</dt><dd>${tbl.nTied}${tbl.nTied > 1
+        ? " — a disjunction, not an identity" : ""}</dd>
+      <dt>default</dt><dd>${tbl.default.toFixed(2)}</dd>
+      <dt>clip</dt><dd>[${tbl.clipLo}, ${tbl.clipHi}]</dd></dl>`;
+    if (tbl.nEntries > tbl.entries.length)
+      matcher += `<div class="legend">showing the top ${tbl.entries.length}
+        of ${tbl.nEntries} entries.</div>`;
+    if (src.noMatchRate !== null && src.noMatchRate !== undefined)
+      matcher += `<div class="legend">The matcher's own verdict across
+        ${src.nChunks} chunks: mean no-match confidence
+        <b>${src.noMatchRate.toFixed(2)}</b>, median uniqueness
+        <b>${src.uniqueness}</b>. A high no-match rate means the matcher
+        declared it had nothing, which is different from being confidently
+        wrong.</div>`;
+  } else {
+    matcher += `<div class="empty">no compatibility table for this tracklet
+      — the filter had no semantic evidence at all, only geometry.</div>`;
+  }
+
+  // --- filter column ---
+  let filter = `<h3>Filter — attribution &amp; belief</h3>`;
+  if (trk.attribution)
+    filter += seriesChart(trk.attribution, "kf", "nats",
+                          {bars: true, zero: true})
+      + `<div class="legend">Per-epoch contribution to the whole belief's
+      log-likelihood (§7.2), total <b>${
+      trk.attributionTotal >= 0 ? "+" : ""}${trk.attributionTotal}</b> nats.
+      </div>`;
+  else
+    filter += `<div class="empty">needs the Tier-3 attribution cache
+      (<code>runlog attribute</code>)</div>`;
+  // Association evolution: which identity the posterior favoured over time.
+  const whole = trk.assoc.filter(a => a.mode === null);
+  if (whole.length) {
+    const names = new Set();
+    whole.forEach(a => Object.keys(a.resp).forEach(k => names.add(k)));
+    const list = [...names].slice(0, 5);
+    const W = 300, Hh = 62;
+    let paths = "";
+    list.forEach((lm, k) => {
+      let d = "";
+      whole.forEach((a, i) => {
+        const v = a.resp[lm] || 0;
+        d += (i ? "L" : "M") + (a.kf / KF * W).toFixed(1) + " "
+          + (Hh - 10 - v * (Hh - 18)).toFixed(1); });
+      paths += `<path d="${d}" fill="none" stroke="${
+        D.colors[k % D.colors.length]}" stroke-width="1.3"><title>${
+        esc(lm)}</title></path>`;
+    });
+    let dn = "";
+    whole.forEach((a, i) => {
+      dn += (i ? "L" : "M") + (a.kf / KF * W).toFixed(1) + " "
+        + (Hh - 10 - a.null * (Hh - 18)).toFixed(1); });
+    filter += `<h3>Association posterior over time</h3>
+      <svg viewBox="0 0 ${W} ${Hh}">${paths}
+      <path d="${dn}" fill="none" stroke="var(--ink-faint)" stroke-width="1.2"
+        stroke-dasharray="3 2"><title>null</title></path>
+      <line x1="${(t / KF * W).toFixed(1)}" y1="0"
+        x2="${(t / KF * W).toFixed(1)}" y2="${Hh - 10}" stroke="var(--accent)"
+        stroke-width="1" opacity=".8"/>
+      <text class="axis" x="0" y="${Hh - 1}">0</text>
+      <text class="axis" x="0" y="9">1</text></svg>
+      <div class="legend">${list.map((lm, k) =>
+        `<span style="color:${D.colors[k % D.colors.length]}">▬</span> ${
+        esc(lm)}`).join(" ")}
+        <span style="color:var(--ink-faint)">╌ null</span></div>`;
+  }
+
+  // --- truth-privileged band ---
+  let priv = "";
+  const tri = trk.triage;
+  if (tri) {
+    const fitLine = (label, fit) => fit
+      ? `<dt>${label}</dt><dd><code>${esc(fit.lm)}</code> — RMS ${
+        fmt(fit.rms, 2)}°, worst ${fmt(fit.max, 1)}°, ${
+        (fit.rangeM / 1000).toFixed(1)} km${fit.lr !== null
+          ? `, LLR ${fit.lr >= 0 ? "+" : ""}${fit.lr.toFixed(2)}` : ""}${
+        fit.rms !== null && fit.rms <= tri.toleranceDeg
+          ? ' <span class="pill ok">explains it</span>'
+          : ' <span class="pill bad">does not explain it</span>'}</dd>`
+      : `<dt>${label}</dt><dd>—</dd>`;
+    const rows = tri.epochs.map(e => `<tr>
+      <td class="num">${e.kf}</td>
+      <td class="num">${e.bearing.toFixed(1)}</td>
+      <td class="num">±${e.sigma.toFixed(1)}</td>
+      <td class="num">${e.worldBearing.toFixed(0)}</td>
+      <td class="num">${fmt(e.bestRes, 2)}</td>
+      <td class="num">${fmt(e.topRes, 1)}</td>
+      <td><code>${esc(e.filterTop || "—")}</code>
+        <span class="prov">${(e.filterTopShare * 100).toFixed(0)}%</span></td>
+      <td class="num">${(e.bestFitShare * 100).toFixed(0)}%</td>
+      <td class="num">${(e.null * 100).toFixed(0)}%</td>
+      <td class="num">${(e.surprise * 100).toFixed(0)}%</td></tr>`).join("");
+    priv = `<div class="privileged">
+      <div class="tag">⚠ Truth-privileged — uses GPS ground truth;
+        a debugging instrument, never evidence of localization performance</div>
+      <div style="margin:7px 0 6px"><span class="pill ${
+        VERDICT_PILL[tri.verdict] || "info"}">${tri.verdict}</span>
+        ${tri.antiEvidence ? '<span class="pill bad">anti-evidence</span>' : ""}
+        ${tri.ambiguous ? '<span class="pill warn">geometrically ambiguous</span>'
+          : ""}</div>
+      <dl class="kv">
+      <dt>tolerance</dt><dd>${tri.toleranceDeg}° (3× this tracklet's median
+        σ of ${tri.medianSigmaDeg}°, clamped)</dd>
+      ${fitLine("best in catalog", tri.bestFit)}
+      ${fitLine("best endorsed", tri.bestEndorsed)}
+      ${fitLine("matcher's top claim", tri.topEndorsed)}
+      <dt>catalog rows that fit</dt><dd>${tri.nConsistent}${tri.ambiguous
+        ? " — too many to identify anything, so this verdict is a weak claim"
+        : " — the geometry discriminates"}</dd>
+      <dt>endorsed entries</dt><dd>${tri.nEndorsed} of ${tri.nTableEntries}</dd>
+      <dt>max mass on a fit</dt><dd>${(tri.bestFilterShare * 100).toFixed(0)}%</dd>
+      </dl>
+      <div class="scroll" style="margin-top:8px"><table><thead><tr>
+        <th class="num">kf</th><th class="num">bearing</th><th class="num">σ</th>
+        <th class="num">world</th><th class="num">best res°</th>
+        <th class="num">top res°</th><th>filter believes</th>
+        <th class="num">mass on fit</th><th class="num">null</th>
+        <th class="num">surprise</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <div class="legend">"best res" is the angular residual of the
+      best-fitting catalog landmark at that epoch; "top res" is the residual of
+      the matcher's highest-scoring claim. A tracklet is only identifiable
+      because one landmark has to explain <em>every</em> epoch — a single
+      bearing in a 13,210-row catalog is satisfied by dozens of rows.</div>
+      </div>`;
+  } else {
+    priv = `<div class="empty">no ground truth in this run, so culpability
+      cannot be assigned automatically.</div>`;
+  }
+
+  $("inspector").innerHTML = `<h2>Tracklet <code>${esc(trk.id)}</code>
+    <span class="hint">&mdash; §7.4 view 3</span>
+    <button id="closetrk">close</button></h2>
+    <div class="grid2"><div>${tracker}</div><div>${bearings}</div>
+    <div>${matcher}</div><div>${filter}</div></div>${priv}`;
+  $("closetrk").onclick = () => { selTrk = null; render(); };
+}
+
+// ---------- view 5: what-if console ----------
+function drawWhatIf() {
+  const rows = D.ghosts.map(g => `<tr>
+    <td>${esc(g.label)}</td>
+    <td class="num">${fmt(g.finalErr)}</td>
+    <td class="num">${fmt(g.medianErr)}</td>
+    <td class="num">${g.nModes}</td></tr>`).join("");
+  const last = H[H.length - 1];
+  const baseMedian = (() => {
+    const errs = H.map(h => h.mapErr).filter(v => v !== undefined);
+    if (!errs.length) return undefined;
+    const s = [...errs].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  })();
+  const cmd = `bazel run //experimental/overhead_matching/swag/`
+    + `bearing_only_localization:runlog -- replay \\\n  --run_dir ${RUN.runDir} \\\n`
+    + `  --without_tracklet ${selTrk || "<TRACKLET>"} \\\n`
+    + `  --output_dir /tmp/cf_${selTrk || "TRACKLET"}\n\n`
+    + `# then re-render with the ghost overlaid:\n`
+    + `bazel run //...:viewer -- --run_dir ${RUN.runDir} \\\n`
+    + `  --ghost /tmp/cf_${selTrk || "TRACKLET"}`;
+  $("whatif").innerHTML = `<div class="scroll"><table><thead><tr>
+    <th>counterfactual</th><th class="num">final err (m)</th>
+    <th class="num">median err (m)</th><th class="num">modes</th></tr></thead>
+    <tbody><tr><td><b>baseline</b> (this run)</td>
+      <td class="num">${fmt(last.mapErr)}</td>
+      <td class="num">${fmt(baseMedian)}</td>
+      <td class="num">${last.modes.length}</td></tr>
+    ${rows || `<tr><td colspan="4" class="empty">no counterfactuals loaded
+      — pass --ghost &lt;run_dir&gt;</td></tr>`}</tbody></table></div>
+    <div class="legend">A counterfactual is a full replay from keyframe 0 with
+    one input changed, written as its own run directory, so it can be opened,
+    diffed and archived like any other run. On this run a replay takes about
+    ${RUN.nCatalog > 5000 ? "30 s on the GPU backend" : "a couple of minutes"}.
+    </div>
+    <h3>Run one</h3>
+    <pre class="mono" style="white-space:pre-wrap;font-size:11px;
+      background:var(--sunk);padding:9px;border-radius:6px;overflow-x:auto">${
+    esc(cmd)}</pre>`;
+}
+
+// ---------- event index ----------
+let evFilter = null;
+function drawEvents() {
+  const kinds = [...new Set(D.events.map(e => e.kind))];
+  const chips = kinds.map(k => `<button class="tab ${evFilter === k ? "on" : ""}"
+    data-kind="${k}">${k} (${D.events.filter(e => e.kind === k).length})</button>`
+    ).join("");
+  const shown = D.events.filter(e => !evFilter || e.kind === evFilter);
+  const rows = shown.map(e => `<tr class="click" data-kf="${e.keyframe_idx}">
+    <td class="num">${e.keyframe_idx}</td>
+    <td><span class="pill ${e.severity === "alarm" ? "bad"
+      : e.severity === "warn" ? "warn" : "info"}">${e.kind}</span></td>
+    <td>${esc(e.label)}</td><td class="prov">${esc(e.detail)}</td>
+    <td class="prov">${e.source}</td></tr>`).join("");
+  $("events").innerHTML = `<div class="tabs">
+    <button class="tab ${evFilter === null ? "on" : ""}" data-kind="">all (${
+    D.events.length})</button>${chips}</div>
+    <div class="scroll scrollY"><table><thead><tr><th class="num">kf</th>
+    <th>kind</th><th>what</th><th>detail</th><th>source</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5" class="empty">no events</td></tr>`}
+    </tbody></table></div>
+    <div class="legend"><b>logged</b> events were emitted by the filter as it
+    ran. <b>derived</b> events were reconstructed from the Tier-0 stream
+    afterwards — real findings, but the filter did not react to them at the
+    time (§7.3 asks for these to be detected online and checkpointed;
+    they are not yet).</div>`;
+  $("events").querySelectorAll(".tab").forEach(b => b.onclick = () => {
+    evFilter = b.dataset.kind || null; drawEvents(); });
+  $("events").querySelectorAll("tr.click").forEach(r => r.onclick = () => {
+    t = +r.dataset.kf; render(); });
+}
+
+// ---------- attribution tab ----------
+function drawAttribution() {
+  if (!D.attribution) {
+    $("attr").innerHTML = `<div class="empty">No Tier-3 attribution cache.
+      Build it with <code>runlog attribute --run_dir ...</code>; it replays the
+      run under instrumentation and caches the whole decomposition (about 45 KB
+      for a 379-keyframe run), after which every waterfall here is a lookup.
+      </div>`;
+    return;
+  }
+  const a = D.attribution;
+  let out = `<div class="prov">${a.nRows.toLocaleString()} contribution rows`
+    + (a.verified ? `, verified against the run's recorded history hash`
+       : `, <b style="color:var(--port)">not verified against the run</b>`)
+    + `.</div>`;
+  const ids = Object.keys(a.modes).sort((x, y) => +x - +y);
+  for (const id of ids) {
+    if (selMode !== null && +id !== selMode) continue;
+    out += `<h3><span class="swatch" style="background:${color(+id)}"></span>
+      mode ${id} over the whole run</h3>` + waterfallHtml(a.modes[id]);
+  }
+  if (selMode !== null && !a.modes[String(selMode)])
+    out += `<div class="empty">no attribution rows for mode ${selMode}</div>`;
+  out += `<div class="legend">A <b>tracklet</b> term is evidence: a bearing
+    changed this mode's share of the belief. The starred <b>re-clustering</b>,
+    <b>proposal injection</b> and <b>resampling</b> terms are belief
+    bookkeeping — a mode whose rise is mostly structural has not been
+    confirmed by anything the vehicle saw. §7.2 lists only the tracklet and
+    resample terms; the others are needed for the decomposition to add up,
+    because a mode is a tracked cluster rather than a fixed set of particles.
+    </div>`;
+  $("attr").innerHTML = out;
+}
+
+// ---------- wiring ----------
+const TABS = {state: drawState, modes: drawModes, attr: drawAttribution,
+              trklist: drawTrackletList, whatif: drawWhatIf};
+function drawTab() {
+  for (const key of Object.keys(TABS)) {
+    const el = $(key);
+    el.parentElement.style.display = key === tab ? "" : "none";
+  }
+  TABS[tab]();
+  document.querySelectorAll("#tabbar .tab").forEach(b =>
+    b.classList.toggle("on", b.dataset.tab === tab));
+}
+function render() {
+  $("kf").textContent = t; $("slider").value = t;
+  drawTiles(); drawStrip(); drawMap(); drawTab(); drawInspector();
+  // Association rows are a way into the inspector from wherever you are.
+  document.querySelectorAll("[data-trk]").forEach(el => {
+    if (el.tagName === "TR" && el.closest("#state"))
+      el.onclick = () => { selTrk = el.dataset.trk; render(); };
+  });
+}
+$("slider").max = KF;
+$("slider").oninput = e => { t = +e.target.value; render(); };
+$("strip").onclick = e => {
+  // Map the click through the same gutter geometry the plots use, so clicking
+  // under a point selects that point rather than one shifted by the gutter.
+  const r = $("strip").getBoundingClientRect();
+  const frac = ((e.clientX - r.left) / r.width * SW - GL) / PW;
+  t = Math.max(0, Math.min(KF, Math.round(frac * KF)));
+  render();
+};
+$("clear").onclick = () => { selMode = null; selTrk = null; render(); };
+document.querySelectorAll("#tabbar .tab").forEach(b =>
+  b.onclick = () => { tab = b.dataset.tab; drawTab(); });
+$("tgBase").onclick = e => { showBase = !showBase;
+  e.target.classList.toggle("on", showBase); drawMap(); };
+$("tgPart").onclick = e => { showParticles = !showParticles;
+  e.target.classList.toggle("on", showParticles); drawMap(); };
+$("tgGhost").onclick = e => { showGhosts = !showGhosts;
+  e.target.classList.toggle("on", showGhosts); drawMap(); };
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const step = e.shiftKey ? 10 : 1;
+  if (e.key === "ArrowRight") { t = Math.min(KF, t + step); render(); }
+  if (e.key === "ArrowLeft") { t = Math.max(0, t - step); render(); }
+});
+let timer = null;
+$("play").onclick = () => {
+  if (timer) { clearInterval(timer); timer = null; $("play").textContent = "▶ play";
+    return; }
+  $("play").textContent = "⏸ pause";
+  timer = setInterval(() => { t = (t + 1) % (KF + 1); render(); }, 80);
+};
+drawEvents();
 render();
 """
 
 
 def render_html(payload: dict, body_only: bool = False) -> str:
-    events = payload["proposalEvents"]
-    event_summary = " · ".join(
-        f"#{e['id']} kf{e['kf']} {e['trigger']} → {e['nInj']} particles "
-        f"from {e['nHyp']} hypotheses" for e in events) or "none"
-    body = f"""<header>
-<div class="eyebrow">Bearing-only localization · run viewer</div>
-<h1>{payload['scenario'].replace('_', ' ')}</h1>
-<div class="meta"><b>{payload['nParticles']:,}</b> particles ·
-seed <b>{payload['seed']}</b> · <b>{payload['nKeyframes']}</b> keyframes ·
-matcher <b>{payload['matcher']}</b> ·
-history <code>{payload['historyHash']}</code></div>
-<div class="meta">proposal events: {event_summary}</div>
+    run = payload["run"]
+    notes = payload.get("notes") or []
+    notes_html = ""
+    if notes:
+        notes_html = ("<details class=\"notes\"><summary>"
+                      f"{len(notes)} note(s) about this run's completeness"
+                      "</summary><ul>"
+                      + "".join(f"<li>{_escape(n)}</li>" for n in notes)
+                      + "</ul></details>")
+    replay_pill = ("ok" if run["replayable"] else "bad")
+    replay_text = ("replayable" if run["replayable"]
+                   else "not faithfully replayable")
+    body = f"""<div class="wrap">
+<header>
+<div class="eyebrow">Bearing-only localization &middot; run viewer</div>
+<h1>{_escape(run['scenario'])}</h1>
+<div class="meta"><b>{run['nParticles']:,}</b> particles &middot;
+<b>{run['nCatalog']:,}</b> catalog landmarks &middot;
+<b>{run['nKeyframes']}</b> keyframes &middot; seed <b>{run['seed']}</b> &middot;
+&pi;<sub>0</sub> <b>{run['pi0']}</b> &middot;
+recall <b>{run['matcherRecall']}</b> &middot;
+backend <b>{_escape(run['backend'])}</b> &middot;
+matcher <b>{_escape(run['matcher'])}</b> &middot;
+history <code>{_escape(run['historyHash'])}</code>
+<span class="pill {replay_pill}">{replay_text}</span></div>
+<div class="meta" style="margin-top:4px">triage (truth-privileged):
+{_escape(payload.get('triageSummary', ''))}</div>
+{notes_html}
 </header>
 <div class="tiles" id="tiles"></div>
 <main>
-<section class="strip">
-<h2>Run overview</h2>
+<section class="full">
+<h2>Run overview <span class="hint">&mdash; &sect;7.4 view 1 &middot; click to
+scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h2>
 <div class="controls">
-<button id="play">▶ play</button>
+<button id="play">&#9654; play</button>
 <input id="slider" type="range" min="0" value="0">
 <span>kf <b id="kf">0</b></span>
-<button id="clear">show all modes</button>
+<button id="clear">clear selection</button>
 </div>
 <svg id="strip"></svg>
-<div class="legend">Click the strip to scrub; click a mode band or ledger row
-to isolate that mode. Dashed red verticals are proposal events; dots are mode
-births and merges.</div>
 </section>
 <section>
-<h2>Map</h2>
+<h2>Map <span class="hint">&mdash; &sect;7.4 view 2</span></h2>
+<div class="controls" style="margin-bottom:8px">
+<button id="tgBase" class="on">basemap</button>
+<button id="tgPart" class="on">particles</button>
+<button id="tgGhost" class="on">ghosts</button>
+</div>
 <svg id="map"></svg>
-<div class="legend"><span id="mapnote"></span> — dashed grey is ground truth,
-blue is the MAP trail, circles are per-mode 1σ with a heading tick, red rays
-are bearing wedges (±2σ) from the selected mode, dashed coloured lines are
-correspondence with opacity ∝ association posterior.</div>
+<div class="legend"><span id="mapnote"></span></div>
+<div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
+dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
+heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
+selected mode; dashed coloured lines are correspondence with opacity &prop;
+association posterior. A <b style="color:var(--port)">red dotted line and
+ring</b> mark an LLR/geometry disagreement: the matcher's best claim lies more
+than 15&deg; off the measured bearing under this mode. Glyphs by type:
+&#9651; light &middot; &#9671; navaid &middot; &#9711; tank &middot;
+&#9770; tower/crane &middot; &#8801; bridge &middot; &#8852; pier/dock
+&middot; &#9723; building. Filled and labelled means the filter is putting
+association mass there at this keyframe.</div>
 </section>
 <section>
-<h2>State</h2>
-<dl class="kv" id="stats"></dl>
-<h2 style="margin-top:14px">Mode ledger</h2>
-<div class="scroll" id="ledger"></div>
-<h2 style="margin-top:14px">Association posteriors</h2>
-<div class="scroll" id="assoc"></div>
+<div class="tabs" id="tabbar">
+<button class="tab on" data-tab="state">State</button>
+<button class="tab" data-tab="modes">Modes</button>
+<button class="tab" data-tab="trklist">Tracklets</button>
+<button class="tab" data-tab="attr">Attribution</button>
+<button class="tab" data-tab="whatif">What-if</button>
+</div>
+<div><div id="state"></div></div>
+<div><div id="modes"></div></div>
+<div><div id="trklist"></div></div>
+<div><div id="attr"></div></div>
+<div><div id="whatif"></div></div>
+</section>
+<section class="full" id="inspector"></section>
+<section class="full">
+<h2>Event index <span class="hint">&mdash; &sect;7.3 &middot; the debugging
+table of contents; click a row to jump</span></h2>
+<div id="events"></div>
 </section>
 </main>
-<script>window.__RUN__ = {json.dumps(payload, separators=(',', ':'))};</script>
+</div>
+<script>window.__RUN__ = {_inline_json(payload)};</script>
 <script>{_SCRIPT}</script>"""
     style = f"<style>{_STYLE}</style>"
     if body_only:
         return style + body
-    return (f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
-            f"<meta name=\"viewport\" content=\"width=device-width,"
-            f"initial-scale=1\">"
-            f"<title>{payload['scenario']} — bearing-only localization</title>"
+    return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\">"
+            f"<title>{_escape(run['scenario'])} — run viewer</title>"
             f"{style}</head><body>{body}</body></html>")
+
+
+def _escape(text) -> str:
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _inline_json(payload: dict) -> str:
+    """JSON safe to embed inside a <script> element.
+
+    `json.dumps` leaves `<` alone, so any string in the payload containing
+    `</script>` would close the element and the rest of the payload would be
+    parsed as HTML. Scenario names and landmark ids come from data files rather
+    than from this code, so that is reachable input, not a hypothetical. The
+    three escapes below are valid JSON string escapes, so the parsed value is
+    unchanged.
+    """
+    return (json.dumps(payload, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            # U+2028/U+2029 are literal line terminators in JS source but legal
+            # inside a JSON string, so they break the script the same way.
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
 def main():
@@ -666,23 +1347,48 @@ def main():
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=None,
                         help="defaults to <run_dir>/viewer.html")
+    parser.add_argument("--sources_dir", type=Path, default=None,
+                        help="object-track run directory, for tracklet crops "
+                             "and matcher payload")
+    parser.add_argument("--feather", type=Path, default=None,
+                        help="landmark feather, for the offline vector "
+                             "basemap")
+    parser.add_argument("--ghost", type=Path, action="append", default=[],
+                        help="counterfactual run directory to overlay "
+                             "(repeatable)")
+    parser.add_argument("--max_particles", type=int,
+                        default=viewer_payload.MAX_PARTICLES_PER_FRAME)
+    parser.add_argument("--max_visible_range_m", type=float, default=None)
+    parser.add_argument("--no_thumbnails", action="store_true")
     parser.add_argument("--body_only", action="store_true",
                         help="emit a fragment for embedding rather than a "
                              "standalone document")
-    parser.add_argument("--max_particles", type=int,
-                        default=MAX_PARTICLES_PER_FRAME)
     args = parser.parse_args()
 
-    data = run_log.read_run(args.run_dir)
-    payload = build_payload(data, args.max_particles)
+    payload = viewer_payload.build(
+        args.run_dir, sources_dir=args.sources_dir, feather=args.feather,
+        ghost_dirs=args.ghost, max_particles=args.max_particles,
+        max_visible_range_m=args.max_visible_range_m,
+        embed_thumbnails=not args.no_thumbnails)
     output = args.output or (args.run_dir / "viewer.html")
     output.write_text(render_html(payload, args.body_only))
+
     size_kb = output.stat().st_size / 1024
-    print(f"Wrote {output} ({size_kb:.0f} KB): "
-          f"{len(payload['health'])} keyframes, "
+    print(f"Wrote {output} ({size_kb:,.0f} KB)")
+    print(f"  {len(payload['health'])} keyframes, "
           f"{len(payload['checkpoints'])} checkpoints, "
-          f"{len(payload['proposalEvents'])} proposal events, "
-          f"{len(payload['modeEvents'])} mode events")
+          f"{len(payload['tracklets'])} tracklets, "
+          f"{len(payload['events'])} events, "
+          f"{len(payload['landmarks'])} referenced landmarks, "
+          f"{len(payload['backdrop'])} backdrop rows, "
+          f"{len(payload['ghosts'])} ghosts")
+    print(f"  attribution: "
+          + ("absent" if not payload["attribution"]
+             else f"{payload['attribution']['nRows']} rows, "
+                  f"verified={payload['attribution']['verified']}"))
+    print(f"  triage: {payload['triageSummary']}")
+    for note in payload["notes"]:
+        print(f"  note: {note}")
 
 
 if __name__ == "__main__":

@@ -273,13 +273,191 @@ py_test(
 
 
 py_binary(
+    name = "viewer_server",
+    srcs = ["viewer_server.py"],
+    deps = [
+        requirement("flask"),
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        ":replay",
+        ":run_log",
+        ":sources",
+        ":torch_backend",
+        ":viewer_lib",
+        ":viewer_payload",
+    ],
+)
+
+py_test(
+    name = "viewer_test",
+    size = "large",
+    srcs = ["viewer_test.py"],
+    deps = [
+        requirement("flask"),
+        requirement("numpy"),
+        ":attribution",
+        ":filter",
+        ":run_log",
+        ":scenario",
+        ":structs",
+        ":viewer_lib",
+        ":viewer_payload",
+        ":viewer_server",
+    ],
+)
+
+py_binary(
+    name = "runlog",
+    srcs = ["runlog.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        ":attribution",
+        ":forensics",
+        ":replay",
+        ":run_log",
+        ":sources",
+        ":torch_backend",
+    ],
+)
+
+py_library(
+    name = "viewer_payload",
+    srcs = ["viewer_payload.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":attribution",
+        ":basemap_lib",
+        ":forensics",
+        ":geodesy",
+        ":replay",
+        ":run_log",
+        ":sources",
+    ],
+)
+
+py_library(
+    name = "viewer_lib",
+    srcs = ["viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":viewer_payload",
+    ],
+)
+
+py_binary(
     name = "viewer",
     srcs = ["viewer.py"],
     deps = [
         requirement("numpy"),
+        ":viewer_payload",
+    ],
+)
+
+py_library(
+    name = "replay",
+    srcs = ["replay.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        "//common/python:serialization",
+        ":catalog",
         ":filter",
         ":geodesy",
         ":run_log",
+        ":structs",
+    ],
+)
+
+py_library(
+    name = "attribution",
+    srcs = ["attribution.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("scipy"),
+        "//common/python:serialization",
+        ":filter",
+        ":replay",
+    ],
+)
+
+py_library(
+    name = "forensics",
+    srcs = ["forensics.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":geodesy",
+    ],
+)
+
+py_library(
+    name = "sources",
+    srcs = ["sources.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_library(
+    name = "basemap_lib",
+    srcs = ["basemap.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        "//experimental/overhead_matching/swag/data:landmark_schema",
+        ":geodesy",
+    ],
+)
+
+py_binary(
+    name = "basemap",
+    srcs = ["basemap.py"],
+    deps = [
+        requirement("geopandas"),
+        requirement("numpy"),
+        requirement("pyarrow"),
+        "//experimental/overhead_matching/swag/data:landmark_schema",
+        ":geodesy",
+    ],
+)
+
+py_test(
+    name = "forensics_test",
+    srcs = ["forensics_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":catalog",
+        ":filter",
+        ":forensics",
+        ":run_log",
+        ":scenario",
+        ":sources",
+        ":structs",
+    ],
+)
+
+py_test(
+    name = "replay_test",
+    size = "large",
+    srcs = ["replay_test.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":attribution",
+        ":filter",
+        ":replay",
+        ":run_log",
+        ":scenario",
+        ":structs",
     ],
 )
 

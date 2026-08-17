@@ -33,7 +33,7 @@ known focal length and decompose it; the unit translation gives
 β = atan2(t_x, t_z) directly.
 
     bazel run //experimental/overhead_matching/swag/scripts:calibrate_mount_offset -- \
-        --dataset_path /data/farfield_matching/boston_harbor_dataset/processed/leg1
+        --dataset_path /data/farfield_matching/datasets/boston_harbor_leg1
 """
 
 import argparse
@@ -263,12 +263,17 @@ def build_vehicle_mask(dataset: Path):
     return mask if mask.mean() > 0.01 else None
 
 
-def drop_masked_points(matched, mask, work_w, work_h):
-    """Keep only correspondences whose first-frame point is outside the mask."""
+def drop_masked_points(matched, mask, work_w, work_h, row_offset=0):
+    """Keep only correspondences whose first-frame point is outside the mask.
+
+    `row_offset` maps a cropped band's y coordinates back to the full frame the
+    mask was built in; the equirect path matches inside HORIZON_BAND, so its
+    points start `lo` rows down.
+    """
     pa, pb = matched
     mh, mw = mask.shape
     cols = np.clip((pa[:, 0] / work_w * mw).astype(int), 0, mw - 1)
-    rows_ = np.clip((pa[:, 1] / work_h * mh).astype(int), 0, mh - 1)
+    rows_ = np.clip(((pa[:, 1] + row_offset) / work_h * mh).astype(int), 0, mh - 1)
     keep = ~mask[rows_, cols]
     if keep.sum() < 25:
         return None
@@ -306,7 +311,7 @@ def calibrate(dataset: Path, args):
             return None
 
     vehicle_mask = None
-    if args.mask_vehicle and not is_equirect:
+    if args.mask_vehicle:
         vehicle_mask = build_vehicle_mask(dataset)
         if vehicle_mask is not None:
             print(f"{dataset.name:24s} masking {100 * vehicle_mask.mean():.1f}% "
@@ -336,6 +341,13 @@ def calibrate(dataset: Path, args):
             matched = match_features(band_a, band_b, orb)
             if matched is None:
                 continue
+            if vehicle_mask is not None:
+                # Band coordinates are offset by `lo` from the full frame the
+                # mask was built in.
+                matched = drop_masked_points(matched, vehicle_mask, work_w,
+                                            work_h, row_offset=lo)
+                if matched is None:
+                    continue
             pa, pb = matched
             theta = (pa[:, 0] / work_w) * 360.0
             dtheta = (((pb[:, 0] - pa[:, 0]) / work_w) * 360.0 + 180.0) % 360.0 - 180.0
@@ -401,28 +413,134 @@ def calibrate(dataset: Path, args):
             round(float(np.median([q[0] for q in quality])), 3)
             if is_equirect and quality else None),
         "per_pair_offsets_deg": [round(b, 2) for b in betas],
+        "vehicle_mask_frac": (round(float(vehicle_mask.mean()), 4)
+                              if vehicle_mask is not None else None),
         "status": "ok",
     }
+
+
+def summarize_runs(dataset: Path, runs, args, agree_deg=15.0):
+    """Merge the masked and unmasked fits and judge whether the answer holds up.
+
+    Masking out the vehicle removes every correspondence that has zero parallax
+    because it is bolted to the camera. An estimate driven by real scene motion
+    barely notices; an estimate that was really fitting the boat collapses. So
+    the *difference between the two runs* is a per-dataset accuracy test, and it
+    needs no map, no tracklets and no external reference -- which matters,
+    because boston_harbor_leg1 is the only leg that has one.
+
+    It is a sharp test in practice. `fukuoka_yumechan_a` and `folkestone_dover`
+    both fit at axis MAD 0.0 deg over ~60 pairs unmasked; masked, the first
+    yields *zero* usable pairs at any baseline and the second degrades to MAD
+    23.5 deg over 8. Those two "perfect" numbers were the vessel. Meanwhile
+    `kumamoto_yumechan_b` holds its angle (282 -> 281 deg) and tightens from MAD
+    35 to 8 deg, which is what a real answer looks like under the same treatment.
+
+    Neither run is silently preferred. The masked fit is the primary when it has
+    enough pairs to stand on, because it is the one not contaminated by the
+    vehicle; otherwise the unmasked fit is reported with `survives_vehicle_mask`
+    false so nobody reads it as confirmed.
+    """
+    off, on = runs.get("off"), runs.get("on")
+    ok = lambda r: r is not None and r.get("status") == "ok"
+
+    survives = None
+    axis_shift = None
+    # A dataset with no vehicle structure in frame gets no mask, so both runs are
+    # the same fit and the comparison is vacuous. Saying "survives" there would
+    # be a gate that passes because it never ran -- exactly the failure mode this
+    # test exists to catch. Report it as not-applicable instead.
+    mask_applied = ok(on) and on.get("vehicle_mask_frac") is not None
+    # Support and angle fail independently and must be reported separately.
+    # folkestone_dover keeps its axis to 6 deg under the mask while its pair
+    # count falls 59 -> 8: the angle is corroborated, the evidence behind it is
+    # thin, and collapsing those into one boolean would misreport whichever one
+    # the reader cared about.
+    retention = None
+    if ok(off) and ok(on) and off["usable_pairs"]:
+        retention = round(on["usable_pairs"] / off["usable_pairs"], 2)
+    elif ok(off) and not ok(on):
+        retention = 0.0
+    if ok(off) and ok(on) and mask_applied:
+        # Compare axes, not directions: the direction choice is a separate,
+        # weaker inference and folding it in here would conflate two failures.
+        axis_shift = abs(((on["mount_offset_deg"] - off["mount_offset_deg"])
+                          + 90.0) % 180.0 - 90.0)
+        survives = bool(axis_shift <= agree_deg
+                        and on["usable_pairs"] >= args.min_pairs)
+    elif ok(off) and not ok(on) and runs.get("on") is not None:
+        # The masked fit was attempted and failed outright.
+        survives = False
+
+    primary = on if (ok(on) and on["usable_pairs"] >= args.min_pairs) else off
+    combined = dict(primary) if primary else {"dataset": dataset.name,
+                                              "status": "insufficient"}
+    combined["dataset"] = dataset.name
+    combined["mask_runs"] = {
+        k: {kk: v[kk] for kk in ("status", "mount_offset_deg", "axis_mad_deg",
+                                 "aligned_fraction", "reversal_fraction",
+                                 "usable_pairs") if kk in v}
+        for k, v in runs.items()}
+    combined["primary_run"] = "masked" if primary is on else "unmasked"
+    combined["survives_vehicle_mask"] = survives
+    combined["mask_axis_shift_deg"] = (round(axis_shift, 1)
+                                       if axis_shift is not None else None)
+    combined["mask_pair_retention"] = retention if mask_applied else None
+    combined["vehicle_mask_frac"] = (on.get("vehicle_mask_frac")
+                                     if ok(on) else None)
+    thin = retention is not None and retention < 0.5
+    if survives is None and "on" in runs:
+        print(f"{dataset.name:24s} vehicle mask N/A — no structure fixed in the "
+              f"camera frame to remove, so the test does not apply")
+    if survives is False:
+        print(f"{dataset.name:24s} DOES NOT SURVIVE the vehicle mask — the "
+              f"unmasked fit was driven by structure fixed to the camera")
+    elif survives:
+        note = (f", but support falls to {100 * retention:.0f}% of pairs"
+                if thin else "")
+        print(f"{dataset.name:24s} survives the vehicle mask "
+              f"(axis moves {axis_shift:.1f}°{note})")
+    return combined
+
+
+CONVENTION = (
+    "mount_offset_deg is the azimuth, IN THE CAMERA FRAME, of the vehicle's "
+    "DIRECTION OF TRAVEL -- not the bow. Applied as "
+    "bearing_body_deg = (bearing_camera_deg - mount_offset_deg) mod 360. This "
+    "is the same quantity bearing_matcher.estimate_mount_offset solves for, "
+    "since it relates camera azimuth to world bearing through the GPS course: "
+    "bearing_world = course + (bearing_camera - offset). It differs from the "
+    "bow by the crab angle, so a bow reading is NOT a substitute."
+)
 
 
 def write_metadata(dataset: Path, result, args):
     """Put the calibration where a consumer will look for it, gates applied.
 
-    Only a calibration that passes both gates carries a number a caller may
-    apply. The axis MAD says whether a single offset exists at all; the reversal
-    fraction says whether its *direction* is resolved, and near 50% that is a
-    coin flip even when the axis is perfect. Publishing the angle with
-    `usable: false` and the reason beside it is safer than publishing nothing --
-    the next person re-derives it otherwise -- but it must never be readable as
-    an answer.
+    `self_consistent` deliberately does NOT mean "correct". These gates test
+    whether the per-pair estimates agree with each other -- whether a single
+    offset exists and whether its direction is resolved -- which is precision,
+    not accuracy. boston_harbor_leg1 is the proof that the two come apart: it
+    reports an axis MAD of 2.0 deg, which passes comfortably, while sitting 14
+    deg off the triangulation-verified 214 deg and selecting the opposite
+    direction of the axis by an 85/15 majority. A confident wrong answer looks
+    exactly like this. So the block carries `accuracy_validated`, which no
+    dataset can set until it has been checked against an external reference.
+
+    Publishing the angle with the gates failed is still better than publishing
+    nothing -- otherwise the next person re-derives it -- but it must never be
+    readable as an answer.
     """
     meta_path = dataset / "pipeline_metadata.json"
     if not meta_path.exists():
         return
     meta = json.loads(meta_path.read_text())
     if result.get("status") != "ok":
-        meta["mount_offset"] = {"usable": False, "status": result.get("status"),
-                                "baseline_m": args.baseline_m}
+        meta["mount_offset"] = {"self_consistent": False,
+                                "accuracy_validated": False,
+                                "status": result.get("status"),
+                                "baseline_m": args.baseline_m,
+                                "convention": CONVENTION}
         meta_path.write_text(json.dumps(meta, indent=2))
         return
     axis_ok = (result["axis_mad_deg"] <= args.constant_mad_deg
@@ -435,11 +553,23 @@ def write_metadata(dataset: Path, result, args):
         "reversal_fraction": result["reversal_fraction"],
         "axis_constant": axis_ok,
         "direction_ambiguous": not direction_ok,
-        "usable": bool(axis_ok and direction_ok),
+        "self_consistent": bool(axis_ok and direction_ok),
+        "survives_vehicle_mask": result.get("survives_vehicle_mask"),
+        "vehicle_mask_frac": result.get("vehicle_mask_frac"),
+        "mask_axis_shift_deg": result.get("mask_axis_shift_deg"),
+        "mask_pair_retention": result.get("mask_pair_retention"),
+        "primary_run": result.get("primary_run"),
+        "mask_runs": result.get("mask_runs"),
+        "accuracy_validated": False,
+        "accuracy_note": ("Not checked against any external reference. On the "
+                          "one dataset that has one (boston_harbor_leg1) this "
+                          "estimator is 14 deg off in axis and inverted in "
+                          "direction, at an axis MAD of 2.0 deg. Treat the "
+                          "angle as a hypothesis until a triangulation-residual "
+                          "sweep confirms it."),
         "method": ("focus-of-expansion from image flow "
-                   "(calibrate_mount_offset.py); measures the direction of "
-                   "travel in the camera frame, which is the body x-axis "
-                   "gps_to_odometry declares by setting left_m=0"),
+                   "(calibrate_mount_offset.py)"),
+        "convention": CONVENTION,
         "baseline_m": args.baseline_m,
         "pairs_used": result["usable_pairs"],
         "projection": result["projection"],
@@ -474,8 +604,15 @@ def main():
                         help="Circular MAD at or below which the offset counts "
                              "as constant over the leg (default: 15)")
     parser.add_argument("--mask_vehicle", action="store_true",
-                        help="Drop features on vehicle-fixed structure "
-                             "before the essential matrix (perspective only)")
+                        help="Drop features on vehicle-fixed structure before "
+                             "fitting. Prefer --mask_mode both, which runs it "
+                             "each way and reports whether the answer survives")
+    parser.add_argument("--mask_mode", choices=["off", "on", "both"],
+                        default=None,
+                        help="off/on force a single run; 'both' runs each way "
+                             "and records survives_vehicle_mask. Default: "
+                             "'both' when --write_metadata, else follows "
+                             "--mask_vehicle")
     parser.add_argument("--output_json", type=Path)
     parser.add_argument("--write_metadata", action="store_true",
                         help="Also write the result into each dataset's "
@@ -483,28 +620,40 @@ def main():
                              "replacing any earlier block")
     args = parser.parse_args()
 
+    mode = args.mask_mode or ("both" if args.write_metadata
+                              else ("on" if args.mask_vehicle else "off"))
+
     results = []
     for dataset in args.dataset_path:
-        try:
-            result = calibrate(dataset, args)
-            # A short track cannot yield enough pairs at a long baseline --
-            # baltimore_a covers 1.1 km total, so 200 m leaves 5 pairs and it
-            # reported INSUFFICIENT despite being one of the cleanest datasets
-            # at 50 m. Halve and retry rather than making the caller guess.
-            requested = args.baseline_m
-            while (result is not None and result.get("status") == "insufficient"
-                   and args.baseline_m > args.min_baseline_m):
-                args.baseline_m = max(args.min_baseline_m, args.baseline_m / 2.0)
-                print(f"{'':24s} retrying at {args.baseline_m:.0f} m baseline")
+        runs = {}
+        for setting in (["off", "on"] if mode == "both" else [mode]):
+            args.mask_vehicle = (setting == "on")
+            try:
                 result = calibrate(dataset, args)
-            args.baseline_m = requested
-        except Exception as exc:  # keep a batch alive past one bad dataset
-            print(f"{dataset.name:24s} ERROR: {type(exc).__name__}: {exc}")
-            result = {"dataset": dataset.name, "status": "error", "error": str(exc)}
-        if result:
-            results.append(result)
-            if args.write_metadata:
-                write_metadata(dataset, result, args)
+                # A short track cannot yield enough pairs at a long baseline --
+                # baltimore_a covers 1.1 km total, so 200 m leaves 5 pairs and it
+                # reported INSUFFICIENT despite being one of the cleanest datasets
+                # at 50 m. Halve and retry rather than making the caller guess.
+                requested = args.baseline_m
+                while (result is not None and result.get("status") == "insufficient"
+                       and args.baseline_m > args.min_baseline_m):
+                    args.baseline_m = max(args.min_baseline_m, args.baseline_m / 2.0)
+                    print(f"{'':24s} retrying at {args.baseline_m:.0f} m baseline")
+                    result = calibrate(dataset, args)
+                args.baseline_m = requested
+            except Exception as exc:  # keep a batch alive past one bad dataset
+                print(f"{dataset.name:24s} ERROR: {type(exc).__name__}: {exc}")
+                result = {"dataset": dataset.name, "status": "error",
+                          "error": str(exc)}
+            if result:
+                runs[setting] = result
+
+        if not runs:
+            continue
+        combined = summarize_runs(dataset, runs, args)
+        results.append(combined)
+        if args.write_metadata:
+            write_metadata(dataset, combined, args)
 
     if args.output_json:
         args.output_json.write_text(json.dumps(results, indent=2) + "\n")

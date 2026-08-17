@@ -12,11 +12,11 @@ Set these once per shell:
 
 ```bash
 export RUN=r004_full_leg1                     # new run name; never reuse
-export DS=/data/farfield_matching/boston_harbor_dataset/processed/leg1
-export LM=/data/farfield_matching/boston_harbor_dataset/panorama_landmarks/boston_harbor_leg1
-export RUNS=/data/farfield_matching/boston_harbor_dataset/object_track_runs/m3_tracks/runs
+export DS=/data/farfield_matching/datasets/boston_harbor_leg1
+export LM=/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1
+export RUNS=/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m3_tracks/runs
 export RD=$RUNS/$RUN
-export FEATHER=/data/farfield_matching/boston_harbor_dataset/landmarks/harbor_osm_enc_v1.feather
+export FEATHER=/data/farfield_matching/datasets/boston_harbor_leg1/landmarks/v1.feather
 
 export GOOGLE_CLOUD_PROJECT=rrg-dcist
 export GOOGLE_CLOUD_LOCATION=global
@@ -282,7 +282,7 @@ stage so the counts stay current.
 Serve the tree:
 
 ```bash
-cd /data/farfield_matching/boston_harbor_dataset/object_track_runs && \
+cd /data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1 && \
     python3 -m http.server 8935
 ```
 

@@ -16,8 +16,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PINHOLE_BASE = Path("/data/overhead_matching/datasets/pinhole_images")
-FACES = ("yaw_000.jpg", "yaw_090.jpg", "yaw_180.jpg", "yaw_270.jpg")
 # Above this implied speed a consecutive-frame jump is not a boat.
 MAX_SPEED_MPS = 30.0
 
@@ -388,39 +386,10 @@ def audit(ds: Path) -> Audit:
         else:
             a.warn("landmarks/PROVENANCE.json missing")
 
-    # ── pinhole faces (equirect only) ────────────────────────────────────────
-    pin = PINHOLE_BASE / ds.name
-    if is_equirect:
-        if not pin.exists():
-            a.warn("no pinhole faces rendered yet (stage 5)")
-        else:
-            dirs = {d.name for d in pin.iterdir() if d.is_dir()}
-            stems = {p.stem for p in imgs}
-            if dirs != stems:
-                a.fail(f"pinhole dirs != panorama stems "
-                       f"(missing {len(stems - dirs)}, extra {len(dirs - stems)})")
-            else:
-                incomplete = [d for d in dirs if not all((pin / d / f).exists() for f in FACES)]
-                if incomplete:
-                    a.fail(f"{len(incomplete)} pinhole dir(s) missing faces")
-                else:
-                    a.ok(f"pinhole: {len(dirs)} dirs x 4 faces, stems match exactly")
-                # Stale faces are the dangerous case: filenames do not change
-                # when a panorama is re-rendered, so a name-only check passes
-                # while the faces still encode the old pixels.
-                stale = []
-                for p_img in imgs:
-                    face = pin / p_img.stem / FACES[0]
-                    if face.exists() and face.stat().st_mtime < p_img.stat().st_mtime:
-                        stale.append(p_img.stem)
-                if stale:
-                    a.fail(f"{len(stale)} pinhole face set(s) older than their source "
-                           f"panorama — stale, re-render stage 5")
-                else:
-                    a.ok("pinhole faces newer than their source panoramas")
-    elif pin.exists():
-        a.warn(f"pinhole dir exists for a perspective dataset ({pin}); "
-               f"these need no faces")
+    # Pinhole faces are audited no longer: they are an artifact
+    # (artifacts/pinhole_images/<dataset>/v<N>/ with a manifest), not part of
+    # the dataset contract. Their stem-match and staleness checks belong to
+    # the extraction workflow that consumes them.
 
     return a
 
