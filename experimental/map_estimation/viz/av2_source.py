@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+from av2.geometry.camera.pinhole_camera import PinholeCamera
 from av2.geometry.se3 import SE3
 from av2.map.map_api import ArgoverseStaticMap
 from av2.structures.sweep import Sweep
@@ -186,3 +187,39 @@ class LogSource:
                 ego_SE3_up_lidar=sensor_poses["up_lidar"],
                 ego_SE3_down_lidar=sensor_poses["down_lidar"],
             )
+
+    def cameras(self) -> tuple[al._Item, ...]:
+        """Every camera of this dataset that is on disk, in enum order.
+
+        Empty rather than an error when there are none, which is the common case: cameras are
+        downloaded per-camera, ``LidarItem`` declares none at all, and a log with no imagery is
+        still worth drawing. Callers iterate this instead of asking for a camera by name.
+        """
+        return tuple(item for item in self.present_items() if item.is_camera)
+
+    def camera_frames(self, item: al._Item) -> Iterator[tuple[int, Path]]:
+        """``(timestamp_ns, jpeg path)`` for one camera, in timestamp order.
+
+        Paths, not decoded images: rerun stores the jpeg bytes verbatim and decodes in the
+        viewer, so nothing here should pay to decompress a frame nobody looks at.
+
+        Sorted explicitly for the same reason :meth:`lidar_sweeps` is -- the timestamp lives in
+        the filename and ``glob`` order is arbitrary.
+        """
+        camera_dir = self._require_named(item.name)
+        for frame_path in sorted(camera_dir.glob("*.jpg")):
+            yield int(frame_path.stem), frame_path
+
+    def camera_model(self, item: al._Item) -> PinholeCamera:
+        """Intrinsics and ``ego_SE3_cam`` for one camera.
+
+        The devkit's loader is used as-is here, unlike for sweeps: it reads two *log-level*
+        calibration files rather than one file per frame, so there is nothing to hoist out of a
+        loop and no dataset it chokes on.
+
+        ``intrinsics.feather`` also carries ``k1``, ``k2``, ``k3``, which this drops along with
+        the devkit -- the released imagery is already undistorted, and nothing in ``av2`` reads
+        those columns.
+        """
+        self._require_named("CALIBRATION")
+        return PinholeCamera.from_feather(self.log_dir, item.token)

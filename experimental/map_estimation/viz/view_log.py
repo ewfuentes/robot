@@ -1,4 +1,4 @@
-"""View an Argoverse 2 log in rerun: the HD map, the vehicle, the path it drove, and the lidar.
+"""View an AV2 log in rerun: the HD map, the vehicle, its path, the lidar, and the cameras.
 
     V="bazel run //experimental/map_estimation/viz:view_log --"
 
@@ -128,7 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     # logged, so a sink chosen afterwards still receives it, but --save wants the file opened up
     # front rather than flushed at exit.
     rr.init(APPLICATION_ID, recording_id=args.log_id)
-    blueprint = av2_scene.default_blueprint()
+    # Takes the source because the camera grid depends on which cameras are on disk. That is a
+    # directory check, not a read, so it stays on this side of the sink.
+    blueprint = av2_scene.default_blueprint(source)
     if args.save is not None:
         rr.save(args.save, default_blueprint=blueprint)
     elif args.serve:
@@ -147,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  map:   {summary.lane_segments} lane segments, {summary.crosswalks} crosswalks, "
           f"{summary.drivable_areas} drivable areas")
     print(f"  lidar: {summary.lidar_sweeps} sweeps, {summary.lidar_points:,} points")
+    print(f"  cams:  {summary.cameras} cameras, {summary.camera_frames:,} frames")
 
     if args.save is not None:
         print(f"wrote {args.save}")

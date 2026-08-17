@@ -1,8 +1,8 @@
 # Argoverse 2 viewer
 
 Renders an AV2 log in [rerun](https://rerun.io). Right now that means the **HD map, the
-egovehicle, the path it drove, and the lidar**; imagery, annotations, and model output are the
-next layers on top.
+egovehicle, the path it drove, the lidar, and the camera imagery**; annotations and model output
+are the next layers on top.
 
 ```bash
 V="bazel run //experimental/map_estimation/viz:view_log --"
@@ -24,7 +24,7 @@ sits on a remote box: same logging code, viewer in a browser.
 | file | role |
 |---|---|
 | `av2_source.py` | finds a log on disk, reports which streams it has, loads them via `av2`. No rerun import. |
-| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, the lidar coloring, and the vehicle outline. |
+| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, the lidar coloring, the camera grid, and the vehicle outline. |
 | `view_log.py` | CLI. |
 
 The split exists so the loader stays testable without a renderer, and so prediction tooling can
@@ -43,19 +43,24 @@ world/map/crosswalks                    pedestrian crossings
 world/map/drivable_areas                drivable-area outlines
 world/path                              the whole drive as one static polyline
 world/lidar                             the returns, one Points3D per sweep (10 Hz)
-world/ego               city_SE3_egovehicle, one per pose timestamp (~170 Hz)
-world/ego/wireframe     the vehicle outline, logged ONCE as static data
+world/ego                  city_SE3_egovehicle, one per pose timestamp (~170 Hz)
+world/ego/wireframe        the vehicle outline, logged ONCE as static data
+world/ego/cameras/<name>   ego_SE3_cam + Pinhole, static; one EncodedImage per frame (20 Hz)
 ```
 
 Everything above `world/ego` is in city coordinates. The map and the path are also *static* —
-no timestamps, valid wherever you scrub; the lidar and the ego transform are the two timestamped
-streams. The wireframe is logged once and moves because its parent moves. Nothing re-logs
-geometry per frame. That is the habit to carry into everything added later.
+no timestamps, valid wherever you scrub; the lidar, the imagery, and the ego transform are the
+timestamped streams. The wireframe is logged once and moves because its parent moves. Nothing
+re-logs geometry per frame. That is the habit to carry into everything added later.
 
-**Everything but the wireframe is a sibling of the ego, not a child.** That is not stylistic: a
-child inherits its parent's transform, so hanging the map under `world/ego` would make the road
-drive along with the car. It would not error — it would just render physics that is quietly
-wrong, which is the characteristic failure mode of this data model.
+**The map, the path, and the lidar are siblings of the ego, not children.** That is not
+stylistic: a child inherits its parent's transform, so hanging the map under `world/ego` would
+make the road drive along with the car. It would not error — it would just render physics that
+is quietly wrong, which is the characteristic failure mode of this data model.
+
+The cameras are the counterexample, and the only place two transforms compose: a static
+`ego_SE3_cam` under a per-timestamp ego pose. Nothing in the camera code reads a pose — an image
+is placed entirely by its parent.
 
 Two consequences worth knowing before extending this:
 
@@ -154,15 +159,79 @@ returns versus the map's own ground-height surface come out at a **median +0.035
 *painted* boundaries is a much weaker test than it sounds — the sensor log annotates only 39
 painted boundaries out of 184, so that statistic mostly measures paint scarcity.
 
+### Cameras
+
+Every camera present is logged; there is no flag and nothing is dropped. A `tbv` log has seven
+ring cameras at 20 Hz, a `sensor` log has nine (seven ring plus two stereo), and the `lidar`
+dataset declares none, so `log_cameras` returning `(0, 0)` is ordinary and draws no warning.
+
+|  | one camera | all 7 (`tbv`) |
+|---|---|---|
+| frames | ~1150 @ 20 Hz | 8048 |
+| jpegs on disk | 82–95 MB | 611 MB |
+| added to the `.rrd` | ~88 MB | 654 MB |
+| added wall clock, warm | 0.08 s | **0.8 s** |
+| added wall clock, cold cache | 0.8 s | **5.4 s** |
+| added peak RSS while writing | — | **none measurable** |
+
+**The imagery is nearly free to log and expensive to hold.** `EncodedImage(path=...)` reads the
+jpeg and hands the bytes to Arrow; nothing is ever decoded on the logging side, so seven cameras
+add under a second and no measurable memory to a process already peaking at 638 MB for the
+lidar. What they do add is 654 MB of recording, taking the `tbv` log to **1408 MB on disk and
+~1.9 GB resident** once a viewer holds it. If that ceiling ever bites, a `--cameras` selector is
+the obvious lever and was deliberately left out until it does.
+
+For the whole pipeline including cameras: **`tbv` 4.7 s warm / 12.3 s cold, `sensor/val` 1.8 s /
+2.6 s**, measured against the binary directly rather than through `bazel run`.
+
+**Why not video.** rerun 0.23.1 has `AssetVideo`, and transcoding the jpegs to H.264 is 4×
+smaller (154 MB for all seven) and would play back more smoothly. It is not used because the
+native viewer **decodes H.264 by shelling out to an `ffmpeg` binary it looks up on `$PATH`** —
+`ffmpeg-sidecar` is linked into the viewer, and there is a `video_decoder_ffmpeg_path` setting
+for when the lookup fails. Having already had to work around Bazel not putting the bundled
+viewer on `$PATH`, buying a second and heavier `$PATH` dependency in exchange for file size is a
+bad trade: without a system ffmpeg the video does not play at all, whereas jpegs always do. If
+someone revisits it, one trap is already known — AV2 ring images are **1024×775**, H.264 4:2:0
+rejects odd heights, and ffmpeg fails with `height not divisible by 2` unless you pass
+`-vf pad=ceil(iw/2)*2:ceil(ih/2)*2`.
+
+**The images are undistorted, so `Pinhole` is exact.** `intrinsics.feather` carries `k1`, `k2`,
+`k3` (≈ −0.26, −0.12, 0.20 for the ring cameras) and they are ignored here — because the devkit
+ignores them too. Grepping the whole installed `av2` package for `distort|rectif|fisheye`
+returns nothing at all; `project_ego_to_img` multiplies by bare `K`. Were the released imagery
+actually distorted, those coefficients would put a corner pixel ~15% of the radius out of place,
+so this is worth knowing rather than assuming.
+
+Two more facts that cost nothing to record:
+
+- **The AV2 camera frame is RDF** — x right, y down, z forward, same as OpenCV. Readable
+  straight off `ego_SE3_cam`, whose rotation columns are ego −y, −z, +x. That is also rerun's
+  default, but `camera_xyz` is passed explicitly anyway: left unset, no component is logged and
+  the orientation quietly follows whatever the viewer defaults to.
+- **Every camera timestamp is a pose timestamp** — 8048/8048 across all seven `tbv` cameras,
+  same as the lidar's 157/157.
+
+`tbv` ships six of its seven cameras at **1024×775**, half the `sensor` dataset's resolution,
+with `ring_front_center` alone at **1550×2048** portrait. Nothing here depends on that, but a
+model consuming these frames does.
+
 ### The view follows the vehicle
 
 The default 3D view is anchored to `world/ego`, so the car holds still and the city sweeps past
 it. A view's **origin** is the frame it renders in, and that is the entire mechanism — rerun has
 no separate follow toggle.
 
+Beside it, when the log has imagery, is a **grid of one 2D view per camera**, ordered front →
+side → rear so the layout reads like where the cameras point (sorting the names would file the
+rear pair between the front and the side ones). It is three columns wide, which leaves the
+seventh ring camera alone on the last row — the price of not being able to leave a hole in the
+middle. A log with no cameras gets the bare 3D view rather than an empty pane, which is why
+`default_blueprint` takes the source: deciding *which* cameras exist is a directory check on an
+already-built `LogSource`, cheap enough to stay ahead of the sink and of any logging.
+
 Its **contents** are `/**` rather than the default `$origin/**`, and that override is load
-bearing. `$origin/**` under `world/ego` is the wireframe alone: `world/path` is a *sibling* of
-the ego, not a descendant. That placement is deliberate — the path is in city coordinates and
+bearing. `$origin/**` under `world/ego` is the wireframe and the cameras: `world/path` is a
+*sibling* of the ego, not a descendant. That placement is deliberate — the path is in city coordinates and
 must not inherit the ego transform, or it would drag along with the car instead of staying fixed
 to the map — so the view has to reach outside its own origin to draw it. Narrow `contents` back
 to `$origin/**` and the path silently disappears.
@@ -187,16 +256,18 @@ are **reserved** — rerun stamps every `rr.log` call with them, so naming your 
 
 Every stream is optional and independently downloaded: a `sensor/val` log often has lidar and
 annotations but no imagery, while a `tbv` log has seven cameras and no annotations. Ask
-`LogSource.present_items()` rather than assuming. The natural next entities are
+`LogSource.present_items()` rather than assuming. The natural next entity is
 
 ```
 world/ego/annotations      ground-truth cuboids; AV2 stores these in the ego frame too
-world/ego/cameras/<name>   ego_SE3_cam + Pinhole (static), EncodedImage per timestamp
 ```
 
-Log images as `rr.EncodedImage(path=...)` rather than decoding: it stores the jpeg bytes and
-lets the viewer decode on demand, which is the difference between 91 MB and gigabytes for one
-camera.
+which makes it a `Boxes3D` child of `world/ego`, like the cameras and unlike the map.
+
+Nothing on disk exercises the `sensor` dataset's nine-camera layout — the two stereo cameras and
+the full 2048×1550 resolution — because none of the `sensor/val` logs here downloaded their
+`cameras/` directory. The code paths are shared with the ring cameras, but that is an argument,
+not a test.
 
 ## Model output
 

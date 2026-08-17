@@ -1,29 +1,32 @@
-"""Logs an Argoverse 2 log into rerun: the HD map, the vehicle, the path it drove, and the lidar.
+"""Logs an Argoverse 2 log into rerun: the HD map, the vehicle, its path, the lidar, the cameras.
 
 The entity tree *is* the transform hierarchy -- a child inherits its parent's ``Transform3D`` --
 so the layout below is the whole coordinate story:
 
-    world                 city frame, right-handed z-up
-    world/map/...         the log's vector HD map, static, in city coordinates
-    world/path            the whole drive as one polyline, static, in city coordinates
-    world/lidar           the returns, one Points3D per sweep, in city coordinates
-    world/ego             city_SE3_egovehicle, one per pose timestamp
-    world/ego/wireframe   the vehicle outline, logged once and carried by the ego transform
+    world                    city frame, right-handed z-up
+    world/map/...            the log's vector HD map, static, in city coordinates
+    world/path               the whole drive as one polyline, static, in city coordinates
+    world/lidar              the returns, one Points3D per sweep, in city coordinates
+    world/ego                city_SE3_egovehicle, one per pose timestamp
+    world/ego/wireframe      the vehicle outline, logged once and carried by the ego transform
+    world/ego/cameras/<name> ego_SE3_cam + Pinhole, both static; one EncodedImage per frame
 
 The wireframe line is the part worth internalizing: it is logged **once**, as static data, and
-it moves because its parent moves. Nothing re-logs geometry per frame.
+it moves because its parent moves. Nothing re-logs geometry per frame. The cameras go one level
+further and compose two transforms, a static ``ego_SE3_cam`` under a per-timestamp ego pose, so
+an image logged with no pose information at all still lands in the right place in the city.
 
-Everything else is a **sibling** of the ego rather than a child, and that is load bearing: all
-of it is expressed in city coordinates, so inheriting the ego transform would drag the road
-along with the car instead of letting the car drive through it.
+The map, the path, and the lidar are **siblings** of the ego rather than children, and that is
+load bearing: all three are expressed in city coordinates, so inheriting the ego transform would
+drag the road along with the car instead of letting the car drive through it.
 
 The lidar is the one entity that had a genuine choice of frame, since AV2 hands the sweeps over
 already egomotion-compensated into the *ego* frame -- see :func:`log_lidar` for why they are
-transformed into city coordinates anyway.
+transformed into city coordinates anyway, and :func:`log_cameras` for why the imagery, which had
+the same choice, went the other way.
 
-Cameras, when they arrive, do hang off ``world/ego`` (each with its own ``ego_SE3_cam`` child),
-and model output belongs under :data:`PREDICTION_CITY` or :data:`PREDICTION_EGO`, siblings of
-the ground-truth paths under the same transforms, so the two can be toggled and compared without
+Model output belongs under :data:`PREDICTION_CITY` or :data:`PREDICTION_EGO`, siblings of the
+ground-truth paths under the same transforms, so the two can be toggled and compared without
 either code path knowing about the other.
 """
 
@@ -46,6 +49,7 @@ PATH = f"{WORLD}/path"
 LIDAR = f"{WORLD}/lidar"
 EGO = f"{WORLD}/ego"
 WIREFRAME = f"{EGO}/wireframe"
+CAMERAS = f"{EGO}/cameras"
 
 PREDICTION_CITY = f"{WORLD}/prediction"
 """Where to log model output expressed in city coordinates."""
@@ -108,6 +112,28 @@ _LIDAR_RADIUS_UI = 1.0
 # surface, little enough that the current sweep is still distinguishable inside it.
 _LIDAR_DECAY_S = 1.0
 
+# How far out a camera's image plane is drawn in the 3D view. Purely cosmetic -- it scales the
+# frustum and nothing else. The viewer's own default is 1 m, which next to lidar reaching 100 m
+# is a speck; 8 m is about two car lengths, big enough to read the picture and see which way the
+# camera points without the seven of them swallowing the vehicle.
+_FRUSTUM_DISTANCE_M = 8.0
+
+# Reading order for the 2D camera grid: left to right, front to back. Sorting the names instead
+# would file the rear cameras between the front and the side ones, which is exactly wrong for a
+# layout whose whole job is to look like where the cameras point. Anything absent is skipped and
+# anything unrecognized is appended, so this never decides *whether* a camera is drawn.
+_CAMERA_GRID_ORDER = (
+    "ring_front_left", "ring_front_center", "ring_front_right",
+    "ring_side_left", "ring_side_right",
+    "ring_rear_left", "ring_rear_right",
+    "stereo_front_left", "stereo_front_right",
+)
+
+# Columns in that grid. Three makes the first row the forward-facing trio; the seven ring
+# cameras then leave one view alone on the last row, which is the price of not being able to
+# leave a hole in the middle.
+_CAMERA_GRID_COLUMNS = 3
+
 # Nominal Ford Fusion Hybrid dimensions, in meters. AV2 ships no vehicle model, so these are
 # stated here rather than read from anywhere -- they are for orientation, not measurement.
 #
@@ -140,6 +166,8 @@ class SceneSummary:
     drivable_areas: int = 0
     lidar_sweeps: int = 0
     lidar_points: int = 0
+    cameras: int = 0
+    camera_frames: int = 0
 
 
 def _rect(corners: list[tuple[float, float, float]]) -> np.ndarray:
@@ -423,22 +451,84 @@ def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
     return sweeps, points
 
 
-def default_blueprint() -> rrb.Blueprint:
-    """A single 3D view, anchored to the vehicle.
+def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
+    """Log every camera on disk: its calibration once, then one frame per timestamp.
+
+    **These stay in the sensor frame**, which is the opposite of what :func:`log_lidar` does with
+    data that arrived in the same egovehicle frame. The reason the lidar had to leave is that a
+    decay window only trails correctly in a frame that does not move; an image has no trail to
+    leave, so there is nothing to trade away, and staying puts the whole placement in the
+    transform tree where the viewer can show it: pick a camera in the Selection panel and the
+    composition ``city_SE3_ego @ ego_SE3_cam`` is right there.
+
+    Nothing here reads a pose. The images are placed by their *parent*, and a camera timestamp
+    that had no pose would simply inherit the nearest earlier one instead of being dropped --
+    which is moot in practice, since all 8048 camera timestamps across the tbv log's seven
+    cameras are exact pose timestamps.
+
+    The jpegs are logged **by path and never decoded**: ``EncodedImage`` stores the compressed
+    bytes and the viewer decompresses only the frames it draws. That is what keeps 611 MB of
+    imagery to a flat 178 MB of logger memory, and it is why cameras cost less to log than the
+    lidar does despite being four times the bytes on disk.
+
+    Returns:
+        counts of (cameras, frames) logged.
+    """
+    poses = source.city_SE3_ego()
+    if not poses:
+        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+    # The first pose, matching log_ego_path and log_lidar, so every stream shares one origin on
+    # the elapsed timeline.
+    t0_ns = min(poses)
+
+    cameras = frames = 0
+    for item in source.cameras():
+        camera = source.camera_model(item)
+        entity = f"{CAMERAS}/{item.token}"
+
+        # Both static: the rig does not move relative to the vehicle over a log. Transform3D is
+        # the parent->entity transform and Pinhole is the projection at the entity, and rerun is
+        # happy to take them in one call on the same path.
+        rr.log(entity,
+               rr.Transform3D(translation=camera.ego_SE3_cam.translation,
+                              mat3x3=camera.ego_SE3_cam.rotation),
+               rr.Pinhole(image_from_camera=camera.intrinsics.K,
+                          resolution=[camera.width_px, camera.height_px],
+                          # AV2's camera frame is x right, y down, z forward -- readable
+                          # straight off ego_SE3_cam, whose rotation columns are ego -y, -z, +x.
+                          # That is also rerun's default, but an unset camera_xyz logs no
+                          # component at all, so the orientation would quietly follow whatever
+                          # the viewer defaults to next.
+                          camera_xyz=rr.ViewCoordinates.RDF,
+                          image_plane_distance=_FRUSTUM_DISTANCE_M),
+               static=True)
+
+        for timestamp_ns, frame_path in source.camera_frames(item):
+            rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
+            rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
+            rr.log(entity, rr.EncodedImage(path=frame_path))
+            frames += 1
+        cameras += 1
+
+    return cameras, frames
+
+
+def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
+    """A 3D view anchored to the vehicle, beside a grid of the log's camera images.
 
     A view's ``origin`` is the frame it renders in, and that is the whole of "follow the
     vehicle" -- rerun applies the inverse ego transform to everything else, so the car holds
     still and the city sweeps past it. There is no separate follow toggle.
 
     ``contents`` has to be widened at the same time, and forgetting is the trap. It defaults to
-    ``$origin/**``, which under ``world/ego`` resolves to the vehicle wireframe alone: PATH is a
-    *sibling* of EGO, not a descendant. That placement is deliberate -- the path is in city
+    ``$origin/**``, which under ``world/ego`` resolves to the vehicle and its cameras alone: PATH
+    is a *sibling* of EGO, not a descendant. That placement is deliberate -- the path is in city
     coordinates and must not inherit the ego transform, or it would drag along with the car
     instead of staying fixed to the map -- so the view has to reach outside its own origin to
     show it.
 
     ``/**`` rather than an explicit include list, so the streams that land under ``world/``
-    later (annotations, cameras) appear without anyone editing this.
+    later (annotations) appear without anyone editing this.
 
     The lidar gets a **decay window**: instead of the newest sweep alone, the view shows every
     sweep from one second back up to the cursor, which is what turns a ring of returns into a
@@ -446,6 +536,16 @@ def default_blueprint() -> rrb.Blueprint:
     ``time_ranges``, because a view-level range would also range-query ``world/ego`` -- whose
     transform is logged with ``axis_length=2.0`` and therefore draws visible axes, ten of them.
     It is also just a starting point: **Visible time range** in the Selection panel edits it.
+
+    The camera grid is built from what is **on disk**, so it needs the source. That costs
+    nothing in ordering: deciding which cameras exist is a directory check on an already-built
+    :class:`~av2_source.LogSource`, not a read of the imagery, so this still runs before the
+    sink is chosen and before anything is logged. A log with no cameras -- every ``sensor/val``
+    log on hand, and the whole ``lidar`` dataset -- gets the bare 3D view rather than an empty
+    pane.
+
+    Args:
+        source: the log about to be logged, consulted only for which cameras are present.
     """
     decay = rrb.VisibleTimeRanges([
         rrb.VisibleTimeRange(
@@ -454,12 +554,27 @@ def default_blueprint() -> rrb.Blueprint:
             end=rrb.TimeRangeBoundary.cursor_relative(),
         )
     ])
-    return rrb.Blueprint(rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
-                                           overrides={LIDAR: decay}))
+    scene = rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
+                              overrides={LIDAR: decay})
+
+    present = [item.token for item in source.cameras()]
+    if not present:
+        return rrb.Blueprint(scene)
+
+    ordered = sorted(present, key=lambda name: (_CAMERA_GRID_ORDER.index(name)
+                                                if name in _CAMERA_GRID_ORDER
+                                                else len(_CAMERA_GRID_ORDER)))
+    grid = rrb.Grid(
+        contents=[rrb.Spatial2DView(origin=f"{CAMERAS}/{name}", name=name) for name in ordered],
+        grid_columns=_CAMERA_GRID_COLUMNS,
+    )
+    # The 3D view is the one you scrub in and the one that needs room; the grid is for glancing
+    # at. Two thirds to one third rather than an even split.
+    return rrb.Blueprint(rrb.Horizontal(scene, grid, column_shares=[2, 1]))
 
 
 def log_scene(source: av2_source.LogSource) -> SceneSummary:
-    """Log the coordinate frame, the map, the vehicle, the path it drove, and the lidar."""
+    """Log the coordinate frame, the map, the vehicle, its path, the lidar, and the cameras."""
     log_coordinate_frames()
     log_vehicle()
     summary = log_ego_path(source)
@@ -478,5 +593,14 @@ def log_scene(source: av2_source.LogSource) -> SceneSummary:
         summary.lidar_sweeps, summary.lidar_points = log_lidar(source)
     except av2_source.MissingStreamError as error:
         logging.warning("drawing %s without lidar: %s", source.log_id, error)
+
+    # No warning when a log simply has no cameras -- unlike the map and the lidar, which every
+    # readable log ships, imagery is genuinely optional and the lidar dataset has none by
+    # definition. log_cameras returns (0, 0) for that; the error it can still raise is a log
+    # that has cameras but no calibration to place them with.
+    try:
+        summary.cameras, summary.camera_frames = log_cameras(source)
+    except av2_source.MissingStreamError as error:
+        logging.warning("drawing %s without cameras: %s", source.log_id, error)
 
     return summary
