@@ -49,8 +49,7 @@ z3-solver==4.15.4.0
 watchdog==6.0.0
 pymgl==0.5.0
 av2==0.3.6
-# 0.23.1 is the last release that accepts numpy 1.x; 0.23.2+ require numpy>=2.
-rerun-sdk==0.23.1
+rerun-sdk==0.36.0
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
 dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
@@ -62,4 +61,3 @@ cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb462
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
 hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd; platform_machine == "x86_64"
 clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
-crosstext2loc @ git+https://github.com/ewfuentes/CVG-Text.git@c3b5727fd8380c35c4f3886b590b8734131db34e

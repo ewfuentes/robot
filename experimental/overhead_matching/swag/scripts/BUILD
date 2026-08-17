@@ -8,20 +8,6 @@ py_binary(
 )
 
 py_binary(
-  name="evaluate_cvgtext_crosstext2loc",
-  srcs=["evaluate_cvgtext_crosstext2loc.py"],
-  deps=[
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
-    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
-    requirement("torch"),
-    requirement("Pillow"),
-    requirement("tqdm"),
-    requirement("crosstext2loc"),
-  ],
-)
-
-py_binary(
   name="bootstrap_cvgtext_metrics",
   srcs=["bootstrap_cvgtext_metrics.py"],
   deps=[
