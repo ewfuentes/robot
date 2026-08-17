@@ -61,3 +61,8 @@ cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb462
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
 hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd; platform_machine == "x86_64"
 clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+# TopoGPT. The distribution is named MapPrior. The fork declares its dependencies by name only,
+# without versions, so the pins above stay authoritative. Its dataset-generation devkits are
+# extras and are left uninstalled -- waymo-open-dataset pins tensorflow and nuplan-devkit pins
+# its own torch, so neither co-resolves with this lock.
+MapPrior @ git+https://github.com/ewfuentes/TopoGPT.git@1a60753cc43652efe295ab0f7bb06b74d7916a9a
