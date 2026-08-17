@@ -112,11 +112,26 @@ _LIDAR_RADIUS_UI = 1.0
 # surface, little enough that the current sweep is still distinguishable inside it.
 _LIDAR_DECAY_S = 1.0
 
-# How far out a camera's image plane is drawn in the 3D view. Purely cosmetic -- it scales the
-# frustum and nothing else. The viewer's own default is 1 m, which next to lidar reaching 100 m
-# is a speck; 8 m is about two car lengths, big enough to read the picture and see which way the
-# camera points without the seven of them swallowing the vehicle.
-_FRUSTUM_DISTANCE_M = 8.0
+# Axis lengths for the two Transform3D entities that draw arrows. Both are deliberately short:
+# seven camera frames and an ego frame at the scale of the vehicle turn the car into a pincushion
+# and hide the thing the axes are there to help you look at.
+_EGO_AXIS_M = 0.5
+_CAMERA_AXIS_M = 0.25
+
+# Visualizers kept for a camera inside the 3D view. Naming any at all is how the frustum gets
+# dropped: the list REPLACES the visualizers the viewer would otherwise pick, so leaving out
+# `Cameras` removes the wireframe pyramid and leaving out `EncodedImage` removes the picture that
+# would otherwise hang in space at the end of it. What survives is a short set of axes marking
+# where the camera sits and which way it looks -- the whole of what the frustum was worth here,
+# at none of the size.
+#
+# The imagery is untouched in the 2D views, which run their own visualizers.
+#
+# `VisualizerOverrides` calls itself "a stop-gap mechanism based on the current implementation
+# details of the visualizer system", unstable and subject to change. If a rerun bump ever brings
+# the frustums back, this is what stopped working, and it will not say so -- see the note on
+# silent degradation in the README.
+_CAMERA_VISUALIZERS_3D = ["Transform3DArrows"]
 
 # Reading order for the 2D camera grid: left to right, front to back. Sorting the names instead
 # would file the rear cameras between the front and the side ones, which is exactly wrong for a
@@ -367,7 +382,7 @@ def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
         rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
         rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
         rr.log(EGO, rr.Transform3D(translation=pose.translation, mat3x3=pose.rotation,
-                                   axis_length=2.0))
+                                   axis_length=_EGO_AXIS_M))
         translations.append(pose.translation)
 
     track = np.asarray(translations)
@@ -491,7 +506,13 @@ def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
         # happy to take them in one call on the same path.
         rr.log(entity,
                rr.Transform3D(translation=camera.ego_SE3_cam.translation,
-                              mat3x3=camera.ego_SE3_cam.rotation),
+                              mat3x3=camera.ego_SE3_cam.rotation,
+                              axis_length=_CAMERA_AXIS_M),
+               # Logged even though the default view draws no frustum from it. Pinhole is what
+               # makes this entity a *camera* rather than a place images are filed: it gives the
+               # 2D view its projection, and it is what any later 3D-into-image overlay would
+               # need. Which of its visualizers run is a view decision, made in
+               # default_blueprint, and not this function's business.
                rr.Pinhole(image_from_camera=camera.intrinsics.K,
                           resolution=[camera.width_px, camera.height_px],
                           # AV2's camera frame is x right, y down, z forward -- readable
@@ -499,8 +520,7 @@ def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
                           # That is also rerun's default, but an unset camera_xyz logs no
                           # component at all, so the orientation would quietly follow whatever
                           # the viewer defaults to next.
-                          camera_xyz=rr.ViewCoordinates.RDF,
-                          image_plane_distance=_FRUSTUM_DISTANCE_M),
+                          camera_xyz=rr.ViewCoordinates.RDF),
                static=True)
 
         for timestamp_ns, frame_path in source.camera_frames(item):
@@ -534,8 +554,11 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     sweep from one second back up to the cursor, which is what turns a ring of returns into a
     stretch of road. It is scoped to the lidar entity rather than passed as the view's own
     ``time_ranges``, because a view-level range would also range-query ``world/ego`` -- whose
-    transform is logged with ``axis_length=2.0`` and therefore draws visible axes, ten of them.
-    It is also just a starting point: **Visible time range** in the Selection panel edits it.
+    transform draws axes, and would draw ten of them. It is also just a starting point:
+    **Visible time range** in the Selection panel edits it.
+
+    **The cameras draw no frustums here**, only their axes -- see :data:`_CAMERA_VISUALIZERS_3D`
+    for how and why. Their imagery lives in the 2D grid instead.
 
     The camera grid is built from what is **on disk**, so it needs the source. That costs
     nothing in ordering: deciding which cameras exist is a directory check on an already-built
@@ -554,16 +577,21 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
             end=rrb.TimeRangeBoundary.cursor_relative(),
         )
     ])
-    scene = rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
-                              overrides={LIDAR: decay})
-
     present = [item.token for item in source.cameras()]
-    if not present:
-        return rrb.Blueprint(scene)
-
     ordered = sorted(present, key=lambda name: (_CAMERA_GRID_ORDER.index(name)
                                                 if name in _CAMERA_GRID_ORDER
                                                 else len(_CAMERA_GRID_ORDER)))
+
+    # Cameras appear in the 3D view as axes only. See _CAMERA_VISUALIZERS_3D.
+    overrides = {LIDAR: decay}
+    for name in ordered:
+        overrides[f"{CAMERAS}/{name}"] = rrb.VisualizerOverrides(_CAMERA_VISUALIZERS_3D)
+
+    scene = rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
+                              overrides=overrides)
+    if not present:
+        return rrb.Blueprint(scene)
+
     grid = rrb.Grid(
         contents=[rrb.Spatial2DView(origin=f"{CAMERAS}/{name}", name=name) for name in ordered],
         grid_columns=_CAMERA_GRID_COLUMNS,

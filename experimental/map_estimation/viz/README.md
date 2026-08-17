@@ -229,6 +229,23 @@ middle. A log with no cameras gets the bare 3D view rather than an empty pane, w
 `default_blueprint` takes the source: deciding *which* cameras exist is a directory check on an
 already-built `LogSource`, cheap enough to stay ahead of the sink and of any logging.
 
+**Cameras draw no frustums in the 3D view** — seven wireframe pyramids with pictures hanging off
+them bury the scene they are supposed to sit in. Each camera is a short set of axes instead,
+0.25 m, which still shows where it is and which way it looks. The ego frame's axes are 0.5 m for
+the same reason.
+
+That is a *view* decision, not a data one: `Pinhole` is still logged, because it is what makes
+the entity a camera rather than a place images are filed, it gives the 2D view its projection,
+and any later overlay of 3D geometry into an image needs it. What suppresses the frustum is a
+`VisualizerOverrides` on each camera entity, naming `Transform3DArrows` alone — the list
+*replaces* what the viewer would otherwise run, so omitting `Cameras` drops the pyramid and
+omitting `EncodedImage` drops the picture that would float at the end of it.
+
+Two things to know about that override. It is scoped to the 3D view, so the 2D grid is
+unaffected. And rerun documents `VisualizerOverrides` as *"a stop-gap mechanism based on the
+current implementation details of the visualizer system"*, unstable by its own admission — if a
+version bump ever brings the frustums back, that is what broke, and it will not say so.
+
 Its **contents** are `/**` rather than the default `$origin/**`, and that override is load
 bearing. `$origin/**` under `world/ego` is the wireframe and the cameras: `world/path` is a
 *sibling* of the ego, not a descendant. That placement is deliberate — the path is in city coordinates and
