@@ -274,6 +274,15 @@ actually live.
 smear a bright line across the bottom of every frame. The ego frame's axes are 0.5 m, short
 enough not to dominate a scene at vehicle scale.
 
+**The overlays are not baked in.** `contents` only decides which entities are *in* a view;
+visibility is a separate per-entity blueprint property. Expand a camera view in the Blueprint
+panel and `world/map` and `world/lidar` are there with their own toggles — under *Projections*,
+since they sit outside the view's origin subtree — or edit **Entity path filter** in the
+Selection panel to drop a line outright. The catch is that visibility is **per view** and rerun
+links nothing across views, so hiding the map everywhere is seven clicks, eight with the 3D
+view. If that grates, the fix in code is to split the map into separate entities per layer, or
+to reach out to it from only the front camera.
+
 Its **contents** are `/**` rather than the default `$origin/**`, and that override is load
 bearing. `$origin/**` under `world/ego` is the wireframe and the cameras: `world/path` is a
 *sibling* of the ego, not a descendant. That placement is deliberate — the path is in city coordinates and
