@@ -112,26 +112,29 @@ _LIDAR_RADIUS_UI = 1.0
 # surface, little enough that the current sweep is still distinguishable inside it.
 _LIDAR_DECAY_S = 1.0
 
-# Axis lengths for the two Transform3D entities that draw arrows. Both are deliberately short:
-# seven camera frames and an ego frame at the scale of the vehicle turn the car into a pincushion
-# and hide the thing the axes are there to help you look at.
+# Axis lengths for the two Transform3D entities that can draw arrows. Both are deliberately
+# short: at the scale of the vehicle, an ego frame plus seven camera frames turn the car into a
+# pincushion and hide the thing the axes are there to help you look at.
+#
+# The camera one has no effect on the default layout, which keeps cameras out of the 3D view
+# altogether. It is set anyway so that adding one back -- dragging it into a 3D view in the GUI,
+# or widening the contents filter -- gets a tick mark rather than whatever the viewer picks.
 _EGO_AXIS_M = 0.5
 _CAMERA_AXIS_M = 0.25
 
-# Visualizers kept for a camera inside the 3D view. Naming any at all is how the frustum gets
-# dropped: the list REPLACES the visualizers the viewer would otherwise pick, so leaving out
-# `Cameras` removes the wireframe pyramid and leaving out `EncodedImage` removes the picture that
-# would otherwise hang in space at the end of it. What survives is a short set of axes marking
-# where the camera sits and which way it looks -- the whole of what the frustum was worth here,
-# at none of the size.
+# What a camera's 2D view draws, beyond its own image. Reaching out to the lidar and the map is
+# the entire mechanism behind the overlay: a 2D view anchored at a pinhole projects any 3D entity
+# in its contents down through that pinhole, including entities from a completely different
+# branch of the tree. Nothing is re-logged and nothing is projected by hand -- `world/lidar` is
+# the same city-frame cloud the 3D view draws, seen through `city_SE3_ego @ ego_SE3_cam`.
 #
-# The imagery is untouched in the 2D views, which run their own visualizers.
+# Which makes this the real extrinsics-and-pose check the frustums never were: returns that do
+# not land on the objects they came from, or lane paint that floats off the road, is a
+# calibration or pose error you can see without measuring anything.
 #
-# `VisualizerOverrides` calls itself "a stop-gap mechanism based on the current implementation
-# details of the visualizer system", unstable and subject to change. If a rerun bump ever brings
-# the frustums back, this is what stopped working, and it will not say so -- see the note on
-# silent degradation in the README.
-_CAMERA_VISUALIZERS_3D = ["Transform3DArrows"]
+# The path is deliberately excluded -- it runs through the car, so it would smear a bright line
+# across the bottom of every frame.
+_CAMERA_2D_CONTENTS = ("$origin/**", LIDAR, f"{MAP}/**")
 
 # Reading order for the 2D camera grid: left to right, front to back. Sorting the names instead
 # would file the rear cameras between the front and the side ones, which is exactly wrong for a
@@ -547,8 +550,8 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     instead of staying fixed to the map -- so the view has to reach outside its own origin to
     show it.
 
-    ``/**`` rather than an explicit include list, so the streams that land under ``world/``
-    later (annotations) appear without anyone editing this.
+    ``/**`` minus the cameras, so the streams that land under ``world/`` later (annotations)
+    appear without anyone editing this, while the camera frustums stay out of the way.
 
     The lidar gets a **decay window**: instead of the newest sweep alone, the view shows every
     sweep from one second back up to the cursor, which is what turns a ring of returns into a
@@ -557,8 +560,10 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     transform draws axes, and would draw ten of them. It is also just a starting point:
     **Visible time range** in the Selection panel edits it.
 
-    **The cameras draw no frustums here**, only their axes -- see :data:`_CAMERA_VISUALIZERS_3D`
-    for how and why. Their imagery lives in the 2D grid instead.
+    **The cameras are not in the 3D view at all**, and each 2D view instead reaches back out to
+    the lidar and the map, which the pinhole projects into the image -- see
+    :data:`_CAMERA_2D_CONTENTS`. The world goes into the cameras rather than the cameras into
+    the world, which is both less cluttered and a far better check on the calibration.
 
     The camera grid is built from what is **on disk**, so it needs the source. That costs
     nothing in ordering: deciding which cameras exist is a directory check on an already-built
@@ -582,18 +587,25 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
                                                 if name in _CAMERA_GRID_ORDER
                                                 else len(_CAMERA_GRID_ORDER)))
 
-    # Cameras appear in the 3D view as axes only. See _CAMERA_VISUALIZERS_3D.
-    overrides = {LIDAR: decay}
-    for name in ordered:
-        overrides[f"{CAMERAS}/{name}"] = rrb.VisualizerOverrides(_CAMERA_VISUALIZERS_3D)
-
-    scene = rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
-                              overrides=overrides)
+    # Cameras are excluded rather than merely shrunk: a frustum is a wireframe pyramid with the
+    # picture hanging off the end of it, and seven of them bury the scene they sit in. The
+    # exclusion has to name both the subtree and the entity itself -- `- .../**` does not cover
+    # the entity the images and the Pinhole are actually logged at.
+    #
+    # Dropping them here costs nothing, because everything the frustum was for now happens the
+    # other way round: instead of putting cameras in the world, the 2D views put the world in
+    # the cameras. See _CAMERA_2D_CONTENTS.
+    scene = rrb.Spatial3DView(
+        origin=EGO, name="follow vehicle", overrides={LIDAR: decay},
+        contents=["/**", f"- {CAMERAS}/**"] + [f"- {CAMERAS}/{name}" for name in ordered],
+    )
     if not present:
         return rrb.Blueprint(scene)
 
     grid = rrb.Grid(
-        contents=[rrb.Spatial2DView(origin=f"{CAMERAS}/{name}", name=name) for name in ordered],
+        contents=[rrb.Spatial2DView(origin=f"{CAMERAS}/{name}", name=name,
+                                    contents=list(_CAMERA_2D_CONTENTS))
+                  for name in ordered],
         grid_columns=_CAMERA_GRID_COLUMNS,
     )
     # The 3D view is the one you scrub in and the one that needs room; the grid is for glancing

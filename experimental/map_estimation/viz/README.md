@@ -229,22 +229,38 @@ middle. A log with no cameras gets the bare 3D view rather than an empty pane, w
 `default_blueprint` takes the source: deciding *which* cameras exist is a directory check on an
 already-built `LogSource`, cheap enough to stay ahead of the sink and of any logging.
 
-**Cameras draw no frustums in the 3D view** — seven wireframe pyramids with pictures hanging off
-them bury the scene they are supposed to sit in. Each camera is a short set of axes instead,
-0.25 m, which still shows where it is and which way it looks. The ego frame's axes are 0.5 m for
-the same reason.
+**The world goes into the cameras, not the cameras into the world.** Each 2D view reaches back
+out to `world/lidar` and `world/map/**`, and the pinhole projects them onto the image; the
+cameras are excluded from the 3D view entirely, frustums and all.
 
-That is a *view* decision, not a data one: `Pinhole` is still logged, because it is what makes
-the entity a camera rather than a place images are filed, it gives the 2D view its projection,
-and any later overlay of 3D geometry into an image needs it. What suppresses the frustum is a
-`VisualizerOverrides` on each camera entity, naming `Transform3DArrows` alone — the list
-*replaces* what the viewer would otherwise run, so omitting `Cameras` drops the pyramid and
-omitting `EncodedImage` drops the picture that would float at the end of it.
+```python
+rrb.Spatial2DView(origin=f"{CAMERAS}/{name}",
+                  contents=["$origin/**", LIDAR, f"{MAP}/**"])   # lidar + map, projected
+rrb.Spatial3DView(origin=EGO, contents=["/**", f"- {CAMERAS}/**", ...])  # no frustums
+```
 
-Two things to know about that override. It is scoped to the 3D view, so the 2D grid is
-unaffected. And rerun documents `VisualizerOverrides` as *"a stop-gap mechanism based on the
-current implementation details of the visualizer system"*, unstable by its own admission — if a
-version bump ever brings the frustums back, that is what broke, and it will not say so.
+This is the useful direction, and it is nearly free — **nothing is re-logged and nothing is
+projected by hand.** `world/lidar` is the same city-frame cloud the 3D view draws, seen through
+`city_SE3_ego @ ego_SE3_cam`. It is also a far better check than a frustum ever was: returns
+that miss the objects they came from, or lane paint that floats off the road, is a calibration
+or pose error you can see without measuring anything.
+
+The rule that makes it work is worth stating exactly, because it is easy to get backwards:
+
+- **A 2D view anchored at a pinhole projects any 3D entity in its `contents`, including entities
+  from a completely different branch of the tree.** Siblings are fine. Verified by rendering.
+- **`Points3D` logged as a *child* of the camera renders nothing.** A pinhole splits the tree:
+  above it is 3D, at and below it is 2D. Transforming a cloud into camera coordinates and
+  logging it under the camera is the obvious-looking move and it silently draws nothing.
+- Hand-projecting to `Points2D` works, and is redundant.
+
+The exclusion in the 3D view has to name **both** the subtree and each entity: `- .../cameras/**`
+does not cover `.../cameras/ring_front_left` itself, which is where the `Pinhole` and the images
+actually live.
+
+`world/path` is deliberately left out of the camera views — it runs through the car, so it would
+smear a bright line across the bottom of every frame. The ego frame's axes are 0.5 m, short
+enough not to dominate a scene at vehicle scale.
 
 Its **contents** are `/**` rather than the default `$origin/**`, and that override is load
 bearing. `$origin/**` under `world/ego` is the wireframe and the cameras: `world/path` is a
