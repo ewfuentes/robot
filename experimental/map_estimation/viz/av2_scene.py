@@ -64,7 +64,16 @@ NOT named ``log_time``: that one is reserved. Rerun stamps every ``rr.log`` call
 the SDK complain that the timeline changed type and then interleaves our values with its own.
 """
 TIMELINE_TIMESTAMP = "timestamp_ns"
-"""Raw AV2 nanosecond timestamps, for cross-referencing a frame against files on disk."""
+"""Raw AV2 nanosecond timestamps, for cross-referencing a frame against files on disk.
+
+A **sequence** rather than a duration or a timestamp, because that is what these numbers are:
+integers naming files, whose epoch AV2 never documents. Reading them as time since the Unix
+epoch would date the tbv log to January 1980.
+
+The cost is that scrubbing it is nearly useless -- one step is one nanosecond -- which is why
+:func:`default_blueprint` opens on :data:`TIMELINE_ELAPSED` instead of letting the viewer
+choose. Switch to this one to read a frame's filename off the timeline, not to play the log.
+"""
 
 _PATH_COLOR = (80, 170, 255)
 _BODY_COLOR = (235, 235, 235)
@@ -603,6 +612,13 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
             end=rrb.TimeRangeBoundary.cursor_relative(),
         )
     ])
+    # Open on `elapsed`, and say so rather than hoping. The viewer otherwise picks
+    # `timestamp_ns`, which is a *sequence* timeline of raw AV2 nanoseconds -- 18-digit tick
+    # labels, and playback that steps one nanosecond at a time, so pressing play advances the
+    # scene by 30 ns per second and the recording looks frozen. `elapsed` is a duration
+    # timeline, so it scrubs and plays in real seconds.
+    time_panel = rrb.TimePanel(timeline=TIMELINE_ELAPSED)
+
     present = [item.token for item in source.cameras()]
     ordered = sorted(present, key=lambda name: (_CAMERA_GRID_ORDER.index(name)
                                                 if name in _CAMERA_GRID_ORDER
@@ -627,7 +643,7 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
                                        eye_up=(0.0, 0.0, 1.0)),
     )
     if not present:
-        return rrb.Blueprint(scene)
+        return rrb.Blueprint(scene, time_panel)
 
     grid = rrb.Grid(
         contents=[rrb.Spatial2DView(origin=f"{CAMERAS}/{name}", name=name,
@@ -637,7 +653,7 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     )
     # The 3D view is the one you scrub in and the one that needs room; the grid is for glancing
     # at. Two thirds to one third rather than an even split.
-    return rrb.Blueprint(rrb.Horizontal(scene, grid, column_shares=[2, 1]))
+    return rrb.Blueprint(rrb.Horizontal(scene, grid, column_shares=[2, 1]), time_panel)
 
 
 def log_scene(source: av2_source.LogSource) -> SceneSummary:

@@ -297,6 +297,21 @@ AV2 nanoseconds for cross-referencing against files on disk. Note that `log_time
 are **reserved** — rerun stamps every `rr.log` call with them, so naming your own timeline
 `log_time` makes the SDK complain the timeline changed type.
 
+**The blueprint pins the active timeline to `elapsed`,** via `rrb.TimePanel(timeline=...)`, and
+that is not cosmetic. Left to choose, the viewer opens on `timestamp_ns` — which is a *sequence*
+timeline, because that is what those numbers are: integers naming files, with an epoch AV2 never
+documents (read as Unix time they would date the `tbv` log to January 1980). A sequence timeline
+steps one unit at a time, so the ruler shows 18-digit ticks and pressing play advances the scene
+by **30 nanoseconds per second**. The recording looks frozen and the timestamps look broken. On
+`elapsed`, a duration timeline, playback is real-time and the FPS control disappears.
+
+Switch to `timestamp_ns` to read a frame's filename off the timeline — not to play the log.
+
+One consequence of honest timestamps worth expecting: in the `tbv` log the pose stream starts
+**2.4 s before the first lidar sweep or camera frame** (in `sensor/val` the gap is 2 ms). So the
+first couple of seconds legitimately show the vehicle and map with no sensor data. That is the
+data, not a bug.
+
 ## Adding streams
 
 Every stream is optional and independently downloaded: a `sensor/val` log often has lidar and
