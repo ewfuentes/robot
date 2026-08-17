@@ -1,4 +1,4 @@
-"""View an Argoverse 2 log in rerun: the HD map, the vehicle, and the path it drove.
+"""View an Argoverse 2 log in rerun: the HD map, the vehicle, the path it drove, and the lidar.
 
     V="bazel run //experimental/map_estimation/viz:view_log --"
 
@@ -141,12 +141,12 @@ def main(argv: list[str] | None = None) -> int:
     except av2_source.MissingStreamError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    print(
-        f"{summary.log_id}: {summary.poses} poses, "
-        f"{summary.path_length_m:.1f} m over {summary.duration_s:.1f} s; "
-        f"map: {summary.lane_segments} lane segments, {summary.crosswalks} crosswalks, "
-        f"{summary.drivable_areas} drivable areas"
-    )
+    print(f"{summary.log_id}")
+    print(f"  poses: {summary.poses}, {summary.path_length_m:.1f} m over "
+          f"{summary.duration_s:.1f} s")
+    print(f"  map:   {summary.lane_segments} lane segments, {summary.crosswalks} crosswalks, "
+          f"{summary.drivable_areas} drivable areas")
+    print(f"  lidar: {summary.lidar_sweeps} sweeps, {summary.lidar_points:,} points")
 
     if args.save is not None:
         print(f"wrote {args.save}")

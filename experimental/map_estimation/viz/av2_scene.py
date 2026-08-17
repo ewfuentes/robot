@@ -1,4 +1,4 @@
-"""Logs an Argoverse 2 log into rerun: the HD map, the vehicle, and the path it drove.
+"""Logs an Argoverse 2 log into rerun: the HD map, the vehicle, the path it drove, and the lidar.
 
 The entity tree *is* the transform hierarchy -- a child inherits its parent's ``Transform3D`` --
 so the layout below is the whole coordinate story:
@@ -6,21 +6,25 @@ so the layout below is the whole coordinate story:
     world                 city frame, right-handed z-up
     world/map/...         the log's vector HD map, static, in city coordinates
     world/path            the whole drive as one polyline, static, in city coordinates
+    world/lidar           the returns, one Points3D per sweep, in city coordinates
     world/ego             city_SE3_egovehicle, one per pose timestamp
     world/ego/wireframe   the vehicle outline, logged once and carried by the ego transform
 
-That last line is the part worth internalizing: the wireframe is logged **once**, as static
-data, and it moves because its parent moves. Nothing re-logs geometry per frame.
+The wireframe line is the part worth internalizing: it is logged **once**, as static data, and
+it moves because its parent moves. Nothing re-logs geometry per frame.
 
-The map and the path are **siblings** of the ego rather than children, and that is load bearing:
-both are expressed in city coordinates, so inheriting the ego transform would drag the road
+Everything else is a **sibling** of the ego rather than a child, and that is load bearing: all
+of it is expressed in city coordinates, so inheriting the ego transform would drag the road
 along with the car instead of letting the car drive through it.
 
-Sensor streams are deliberately absent for now. When they arrive they hang off ``world/ego``
-alongside the wireframe -- lidar and annotations are already in the ego frame, cameras get their
-own ``ego_SE3_cam`` child -- and model output belongs under :data:`PREDICTION_CITY` or
-:data:`PREDICTION_EGO`, siblings of the ground-truth paths under the same transforms, so the two
-can be toggled and compared without either code path knowing about the other.
+The lidar is the one entity that had a genuine choice of frame, since AV2 hands the sweeps over
+already egomotion-compensated into the *ego* frame -- see :func:`log_lidar` for why they are
+transformed into city coordinates anyway.
+
+Cameras, when they arrive, do hang off ``world/ego`` (each with its own ``ego_SE3_cam`` child),
+and model output belongs under :data:`PREDICTION_CITY` or :data:`PREDICTION_EGO`, siblings of
+the ground-truth paths under the same transforms, so the two can be toggled and compared without
+either code path knowing about the other.
 """
 
 import dataclasses
@@ -39,6 +43,7 @@ CENTERLINES = f"{MAP}/centerlines"
 CROSSWALKS = f"{MAP}/crosswalks"
 DRIVABLE_AREAS = f"{MAP}/drivable_areas"
 PATH = f"{WORLD}/path"
+LIDAR = f"{WORLD}/lidar"
 EGO = f"{WORLD}/ego"
 WIREFRAME = f"{EGO}/wireframe"
 
@@ -80,6 +85,29 @@ _LANE_RADIUS_M = 0.08
 _CENTERLINE_RADIUS_M = 0.06
 _MAP_RADIUS_M = 0.10
 
+# Viridis, as five stops interpolated per channel. Spelled out here rather than imported:
+# rerun 0.23.1 ships no colormap, matplotlib is only a transitive dependency of av2, and
+# av2.rendering.color.create_range_map does not do what its name says (it colors by z, rounds to
+# integers, and indexes negatively for anything below ground).
+_VIRIDIS = np.array([(68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)],
+                    dtype=np.float64)
+_VIRIDIS_STOPS = np.linspace(0.0, 1.0, len(_VIRIDIS))
+
+# Intensity is uint8 but nothing like uniform over it: measured across a sweep, the median is 30
+# and the 99th percentile 108, so scaling by the full 255 leaves the whole cloud in the dark end
+# of the ramp. Clipping here puts road surface around blue-teal and retroreflective paint and
+# signs up in the yellow, which is the contrast worth having next to the drawn lane boundaries.
+_INTENSITY_CLIP = 110.0
+
+# Screen-space, not meters: rerun encodes a ui-point radius as a negative value, and a point
+# cloud wants constant apparent size so distant returns thin out rather than disappear.
+_LIDAR_RADIUS_UI = 1.0
+
+# How much lidar history the default view shows behind the cursor. One second is ten sweeps,
+# roughly 900k points and ~7 m of road at city speed -- enough for the ground to read as a
+# surface, little enough that the current sweep is still distinguishable inside it.
+_LIDAR_DECAY_S = 1.0
+
 # Nominal Ford Fusion Hybrid dimensions, in meters. AV2 ships no vehicle model, so these are
 # stated here rather than read from anywhere -- they are for orientation, not measurement.
 #
@@ -110,6 +138,8 @@ class SceneSummary:
     lane_segments: int = 0
     crosswalks: int = 0
     drivable_areas: int = 0
+    lidar_sweeps: int = 0
+    lidar_points: int = 0
 
 
 def _rect(corners: list[tuple[float, float, float]]) -> np.ndarray:
@@ -321,6 +351,78 @@ def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
     return summary
 
 
+def intensity_colors(intensity: np.ndarray) -> np.ndarray:
+    """Map lidar intensity onto viridis, clipped at :data:`_INTENSITY_CLIP`.
+
+    Args:
+        intensity: (N,) uint8 returns.
+
+    Returns:
+        (N,3) uint8 RGB.
+    """
+    fraction = np.clip(np.asarray(intensity, dtype=np.float64) / _INTENSITY_CLIP, 0.0, 1.0)
+    channels = [np.interp(fraction, _VIRIDIS_STOPS, _VIRIDIS[:, c]) for c in range(3)]
+    return np.stack(channels, axis=-1).astype(np.uint8)
+
+
+def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
+    """Log every lidar sweep, in city coordinates, on its own timestamps.
+
+    **The points are transformed into the city frame before being logged**, which is a deliberate
+    departure from the usual rerun idiom of logging at the sensor and letting the transform
+    hierarchy compose. AV2 hands the sweep over already in the ego frame, so ``world/ego/lidar``
+    would have been the free option. Two reasons not to take it:
+
+    * A decay window -- ``VisibleTimeRanges``, which is what :func:`default_blueprint` sets and
+      what makes a trail behind the vehicle possible at all -- only draws a *correct* trail in a
+      frame that does not move. The viewer resolves an entity's transform chain once, at the
+      cursor time, while the visible-time-range query is per-visualizer; so ten sweeps under a
+      moving ``world/ego`` would all be drawn at the *current* pose, piling onto the car instead
+      of laying down road behind it.
+    * The smear is the diagnostic. Accumulated returns doubling a wall or blurring the ground is
+      the most direct read on pose quality this viewer can offer, and it only shows up in a
+      fixed frame.
+
+    Precision is not a concern: rerun stores positions as float32, whose ulp at a city-frame
+    coordinate of ~6700 m is 0.8 mm. The returns themselves are float16 on disk, some 80x
+    coarser than that.
+
+    Returns:
+        counts of (sweeps, points) logged.
+    """
+    poses = source.city_SE3_ego()
+    if not poses:
+        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+    # The first *pose*, matching log_ego_path -- not the first sweep, which trails it by ~0.1 s
+    # and would put the two streams on offset elapsed timelines.
+    t0_ns = min(poses)
+
+    sweeps = points = unposed = 0
+    for sweep in source.lidar_sweeps():
+        pose = poses.get(sweep.timestamp_ns)
+        if pose is None:
+            # Every sweep timestamp is a pose timestamp in the logs on hand (157/157), the pose
+            # stream being ~17x denser. Skip rather than KeyError if that ever fails to hold:
+            # one unplaceable sweep should not cost the other 156.
+            unposed += 1
+            continue
+
+        rr.set_time(TIMELINE_ELAPSED, duration=(sweep.timestamp_ns - t0_ns) / 1e9)
+        rr.set_time(TIMELINE_TIMESTAMP, sequence=sweep.timestamp_ns)
+        rr.log(LIDAR, rr.Points3D(
+            pose.transform_point_cloud(sweep.xyz).astype(np.float32),
+            colors=intensity_colors(sweep.intensity),
+            radii=rr.Radius.ui_points(_LIDAR_RADIUS_UI),
+        ))
+        sweeps += 1
+        points += len(sweep.xyz)
+
+    if unposed:
+        logging.warning("%s: skipped %d sweep(s) with no pose at their timestamp",
+                        source.log_id, unposed)
+    return sweeps, points
+
+
 def default_blueprint() -> rrb.Blueprint:
     """A single 3D view, anchored to the vehicle.
 
@@ -336,23 +438,45 @@ def default_blueprint() -> rrb.Blueprint:
     show it.
 
     ``/**`` rather than an explicit include list, so the streams that land under ``world/``
-    later (map, lidar, annotations, cameras) appear without anyone editing this.
+    later (annotations, cameras) appear without anyone editing this.
+
+    The lidar gets a **decay window**: instead of the newest sweep alone, the view shows every
+    sweep from one second back up to the cursor, which is what turns a ring of returns into a
+    stretch of road. It is scoped to the lidar entity rather than passed as the view's own
+    ``time_ranges``, because a view-level range would also range-query ``world/ego`` -- whose
+    transform is logged with ``axis_length=2.0`` and therefore draws visible axes, ten of them.
+    It is also just a starting point: **Visible time range** in the Selection panel edits it.
     """
-    return rrb.Blueprint(rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle"))
+    decay = rrb.VisibleTimeRanges([
+        rrb.VisibleTimeRange(
+            TIMELINE_ELAPSED,
+            start=rrb.TimeRangeBoundary.cursor_relative(seconds=-_LIDAR_DECAY_S),
+            end=rrb.TimeRangeBoundary.cursor_relative(),
+        )
+    ])
+    return rrb.Blueprint(rrb.Spatial3DView(origin=EGO, contents="/**", name="follow vehicle",
+                                           overrides={LIDAR: decay}))
 
 
 def log_scene(source: av2_source.LogSource) -> SceneSummary:
-    """Log the coordinate frame, the map, the vehicle, and the path it drove."""
+    """Log the coordinate frame, the map, the vehicle, the path it drove, and the lidar."""
     log_coordinate_frames()
     log_vehicle()
     summary = log_ego_path(source)
 
-    # A missing or unreadable map is not fatal: the path is still worth looking at, and every
-    # stream here is downloaded independently. An empty *pose* stream stays fatal -- there is
-    # nothing to show without it -- and log_ego_path raises for that above.
+    # Each optional stream gets its own guard. They are downloaded independently -- two of the
+    # three sensor/val logs on hand have no sensors/ directory at all -- so a log missing one is
+    # ordinary, and the layers that did arrive are still worth looking at. An empty *pose* stream
+    # stays fatal, since nothing can be placed without it, and log_ego_path raises for that
+    # above.
     try:
         summary.lane_segments, summary.crosswalks, summary.drivable_areas = log_map(source)
     except av2_source.MissingStreamError as error:
         logging.warning("drawing %s without a map: %s", source.log_id, error)
+
+    try:
+        summary.lidar_sweeps, summary.lidar_points = log_lidar(source)
+    except av2_source.MissingStreamError as error:
+        logging.warning("drawing %s without lidar: %s", source.log_id, error)
 
     return summary

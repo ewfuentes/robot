@@ -1,7 +1,8 @@
 # Argoverse 2 viewer
 
 Renders an AV2 log in [rerun](https://rerun.io). Right now that means the **HD map, the
-egovehicle, and the path it drove**; sensor streams and model output are the next layers on top.
+egovehicle, the path it drove, and the lidar**; imagery, annotations, and model output are the
+next layers on top.
 
 ```bash
 V="bazel run //experimental/map_estimation/viz:view_log --"
@@ -23,7 +24,7 @@ sits on a remote box: same logging code, viewer in a browser.
 | file | role |
 |---|---|
 | `av2_source.py` | finds a log on disk, reports which streams it has, loads them via `av2`. No rerun import. |
-| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, and the vehicle outline. |
+| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, the lidar coloring, and the vehicle outline. |
 | `view_log.py` | CLI. |
 
 The split exists so the loader stays testable without a renderer, and so prediction tooling can
@@ -41,18 +42,20 @@ world/map/centerlines                   derived lane centers, 10 points per segm
 world/map/crosswalks                    pedestrian crossings
 world/map/drivable_areas                drivable-area outlines
 world/path                              the whole drive as one static polyline
+world/lidar                             the returns, one Points3D per sweep (10 Hz)
 world/ego               city_SE3_egovehicle, one per pose timestamp (~170 Hz)
 world/ego/wireframe     the vehicle outline, logged ONCE as static data
 ```
 
-Everything above `world/ego` is in city coordinates and static; only the ego transform is
-timestamped. The wireframe is logged once and moves because its parent moves. Nothing re-logs
+Everything above `world/ego` is in city coordinates. The map and the path are also *static* —
+no timestamps, valid wherever you scrub; the lidar and the ego transform are the two timestamped
+streams. The wireframe is logged once and moves because its parent moves. Nothing re-logs
 geometry per frame. That is the habit to carry into everything added later.
 
-**The map and the path are siblings of the ego, not children.** That is not stylistic: a child
-inherits its parent's transform, so hanging the map under `world/ego` would make the road drive
-along with the car. It would not error — it would just render physics that is quietly wrong,
-which is the characteristic failure mode of this data model.
+**Everything but the wireframe is a sibling of the ego, not a child.** That is not stylistic: a
+child inherits its parent's transform, so hanging the map under `world/ego` would make the road
+drive along with the car. It would not error — it would just render physics that is quietly
+wrong, which is the characteristic failure mode of this data model.
 
 Two consequences worth knowing before extending this:
 
@@ -98,6 +101,59 @@ at lanes outside the clipped local map, so traversals have to guard the lookup.
 A log with no map, or with a `map/` directory that a partial download left without its archive
 JSON, logs a warning and renders the path anyway. Only an empty *pose* stream is fatal.
 
+### Lidar
+
+AV2 stacks two 32-beam Velodynes with overlapping fields of view and ships the sweeps **already
+egomotion-compensated into the egovehicle frame** at each sweep's reference timestamp, so
+`sweep.xyz` needs no transform to sit on the car and `offset_ns` (which spans the full 106 ms
+revolution) has already been applied. Sweep timestamps are a strict subset of pose timestamps —
+157/157 exact hits — so placing a sweep in the city frame is a dict lookup with no interpolation.
+
+|  | `sensor/val/02678d04…` | `tbv/07YOTz…_Spring_2020` |
+|---|---|---|
+| sweeps | 157 @ 10 Hz | 575 |
+| points | 14,284,998 | 56,520,865 |
+| on disk / as `.rrd` | 145 MB / 192 MB | 396 MB / 754 MB |
+| wall clock, whole log | 1.8 s | 3.9 s |
+| peak RSS while writing | 543 MB | 638 MB |
+
+Nothing is decimated. What the **viewer** can change afterwards: toggle the entity off, override
+radius and color in the Selection panel, and adjust the decay window. What it cannot do is thin
+the points — the store already holds all of them — so that is the one lever that would have to
+become code.
+
+Two traps, in the order they will cost you time.
+
+**1. The points are in the city frame, not at the sensor.** This inverts the usual rerun advice
+(log in the natural frame, let transforms compose), and it is deliberate. A decay window only
+draws a correct trail in a frame that does not move — the viewer resolves an entity's transform
+chain once at the cursor time, while visible-time-range is a per-visualizer query, so ten sweeps
+under a moving `world/ego` would all be drawn at the *current* pose and pile onto the car
+instead of laying down road behind it. The second reason is better: accumulated returns that
+double a wall or blur the ground are the most direct read on pose quality this viewer offers,
+and that only shows up in a fixed frame. Precision is not the tradeoff — float32 at a 6700 m
+city coordinate has an ulp of 0.8 mm, some 80× finer than the float16 the returns are stored in.
+
+**2. `Sweep.from_feather` cannot read a tbv log.** TBV sweeps ship without the `offset_ns`
+column — theirs are `x, y, z, intensity, laser_number` — and the devkit loader indexes it
+unconditionally, so it raises `KeyError` across the whole dataset. `av2_source.lidar_sweeps`
+reads the feather itself and substitutes zeros, which also hoists the sensor extrinsics out of
+the loop (the devkit re-reads that file once per sweep).
+
+Points are colored by **intensity**, clipped at 110 and run through a five-stop viridis ramp
+built in numpy — rerun 0.23.1 ships no colormap, matplotlib is only a transitive dependency of
+`av2`, and `av2.rendering.color.create_range_map` does not do what its name says (it colors by
+`z`, rounds to integers, and indexes negatively below ground). The clip matters: intensity is
+`uint8` but nowhere near uniform over it — median 30, p90 73, p99 108 — so scaling by 255 leaves
+the entire cloud in the dark end. At 110 the road surface reads blue-teal and retroreflective
+paint and signs land in the yellow.
+
+Registration is checkable without eyes, and worth rerunning if any of this changes: near-ground
+returns versus the map's own ground-height surface come out at a **median +0.035 m (sensor) and
++0.002 m (tbv), MAD 0.077 / 0.044 m** across 1.4 M sampled points. Note that proximity to
+*painted* boundaries is a much weaker test than it sounds — the sensor log annotates only 39
+painted boundaries out of 184, so that statistic mostly measures paint scarcity.
+
 ### The view follows the vehicle
 
 The default 3D view is anchored to `world/ego`, so the car holds still and the city sweeps past
@@ -134,7 +190,6 @@ annotations but no imagery, while a `tbv` log has seven cameras and no annotatio
 `LogSource.present_items()` rather than assuming. The natural next entities are
 
 ```
-world/ego/lidar            sweeps; already egomotion-compensated into the ego frame
 world/ego/annotations      ground-truth cuboids; AV2 stores these in the ego frame too
 world/ego/cameras/<name>   ego_SE3_cam + Pinhole (static), EncodedImage per timestamp
 ```
@@ -160,11 +215,15 @@ spike in an error curve jumps the scene to that frame.
 
 `rerun-sdk==0.23.1`, in `third_party/python/requirements_3_12.in`.
 
-**It cannot be bumped without moving numpy first.** 0.23.2 and every later release require
-`numpy>=2`; this repo pins `numpy==1.26.4`. 0.23.1 is the last version that accepts numpy 1.x.
-What that costs is the `GridMap` and `VoxelGridMap` archetypes (added in 0.31 and 0.34), which
-would otherwise be the natural fit for occupancy grids — until then, a grid is `Points3D` or a
-batched `Boxes3D`.
+**Nothing blocks bumping it.** The pin is inertia, not a constraint. What staying here costs is
+the `GridMap` and `VoxelGridMap` archetypes (added in 0.31 and 0.34), which would be the natural
+fit for occupancy grids — until someone does the bump, a grid is `Points3D` or a batched
+`Boxes3D`.
+
+One thing to know about debugging any of it: rerun degrades the *recording* rather than crashing
+the *logger*, so a component it failed to serialize and one it accepted look identical from the
+outside — you get an `.rrd`, an exit code of 0, and a missing feature. When a setting appears to
+be ignored, check stderr for `RerunWarning` before suspecting your own code.
 
 The wheel also needs `extra_requirement("rerun-sdk", "rerun")` in BUILD files rather than the
 usual `requirement("rerun-sdk")`; see `third_party/python/extra_rerun_targets.bzl` for why.

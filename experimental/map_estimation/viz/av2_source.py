@@ -15,10 +15,13 @@ tooling can reuse it for ego poses without pulling in a viewer.
 """
 
 from pathlib import Path
+from typing import Iterator
 
+import numpy as np
 from av2.geometry.se3 import SE3
 from av2.map.map_api import ArgoverseStaticMap
-from av2.utils.io import read_city_SE3_ego
+from av2.structures.sweep import Sweep
+from av2.utils.io import read_city_SE3_ego, read_ego_SE3_sensor, read_feather
 
 from experimental.map_estimation.data import argoverse_layout as al
 
@@ -141,3 +144,45 @@ class LogSource:
             # reports that as a bare RuntimeError; make it the same error every other stream
             # raises so callers have one thing to catch.
             raise MissingStreamError(f"{self.log_id} has an unreadable map: {error}") from error
+
+    def lidar_sweeps(self) -> Iterator[Sweep]:
+        """The log's lidar sweeps in timestamp order, in the **egovehicle** frame.
+
+        AV2 stacks two 32-beam Velodynes with overlapping fields of view, and the release has
+        already egomotion-compensated both into the egovehicle frame at the sweep's reference
+        timestamp -- so ``sweep.xyz`` needs no transform to be drawn on the vehicle, and
+        ``offset_ns`` (which spans the full 106 ms revolution) has already been accounted for.
+
+        A generator rather than a list: a 157-sweep log is 14.3 million points, and a caller that
+        logs each sweep and drops it never has to hold more than one.
+
+        NOT ``Sweep.from_feather``, which cannot read a tbv log: **tbv sweeps ship without the
+        ``offset_ns`` column** -- their columns are x, y, z, intensity, laser_number -- and that
+        loader indexes it unconditionally, so it raises KeyError on the entire dataset. Zeros
+        stand in, which is what the column would say if the release had bothered to write it for
+        data it has already motion-compensated. Reading here also hoists the sensor extrinsics
+        out of the loop; the devkit re-reads that file once per sweep.
+
+        Sorted explicitly, because the timestamp comes from the filename and ``glob`` order is
+        arbitrary.
+        """
+        lidar_dir = self._require_named("LIDAR")
+        # Required because Sweep carries the lidar extrinsics, not because anything drawing a
+        # sweep needs them -- the points are already in the ego frame.
+        self._require_named("CALIBRATION")
+        sensor_poses = read_ego_SE3_sensor(self.log_dir)
+
+        for sweep_path in sorted(lidar_dir.glob("*.feather")):
+            table = read_feather(sweep_path)
+            columns = {name: table[name].to_numpy() for name in table.columns}
+            count = len(table)
+            yield Sweep(
+                # float16 on disk; widened to match what the devkit's own loader returns.
+                xyz=np.stack([columns["x"], columns["y"], columns["z"]], axis=-1).astype(float),
+                intensity=columns["intensity"],
+                laser_number=columns["laser_number"],
+                offset_ns=columns.get("offset_ns", np.zeros(count, dtype=np.int32)),
+                timestamp_ns=int(sweep_path.stem),
+                ego_SE3_up_lidar=sensor_poses["up_lidar"],
+                ego_SE3_down_lidar=sensor_poses["down_lidar"],
+            )
