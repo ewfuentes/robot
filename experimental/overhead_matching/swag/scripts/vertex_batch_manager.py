@@ -32,13 +32,18 @@ Example usage:
 """
 
 import argparse
+import json
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import List
 
 from google import genai
 from google.genai.types import CreateBatchJobConfig, JobState, HttpOptions
+
+from experimental.overhead_matching.swag.scripts import llm_cost
 
 try:
     from google.cloud import storage
@@ -528,6 +533,236 @@ def cmd_run_online(args):
     print(f"Output: {args.output}")
 
 
+def _batch_stage_uri(gcs_prefix: str, tag: str) -> tuple[str, str]:
+    """(requests_uri, results_prefix) for one batch run under a staging prefix."""
+    prefix = gcs_prefix.rstrip('/')
+    return f"{prefix}/{tag}/requests.jsonl", f"{prefix}/{tag}/results/"
+
+
+def _upload_to_gcs(local_path: str, uri: str):
+    bucket_name, blob_name = parse_gcs_uri(uri)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    bucket.blob(blob_name).upload_from_filename(local_path)
+    print(f"  uploaded {local_path} -> {uri}")
+
+
+def _download_batch_results(results_prefix: str) -> List[dict]:
+    """Read every predictions JSONL the job wrote under a results prefix."""
+    bucket_name, prefix = parse_gcs_uri(results_prefix)
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    records = []
+    for blob in bucket.list_blobs(prefix=prefix):
+        if not blob.name.endswith('.jsonl'):
+            continue
+        print(f"  reading gs://{bucket_name}/{blob.name}")
+        for line in blob.download_as_text().splitlines():
+            if line.strip():
+                records.append(json.loads(line))
+    return records
+
+
+def _normalize_batch_record(record: dict) -> dict:
+    """Batch output -> the shape the aggregators read.
+
+    Batch emits {key, status, response, processed_time} where a non-empty
+    `status` means the request failed and `response` is the string "{}". The
+    online path emits {key, request, response} and both aggregators
+    (`semantic_audit.parse_result_line`, `m9.aggregate`) branch on an `error`
+    key, so the two paths are made to produce the same records rather than
+    teaching every consumer about two formats.
+    """
+    status = record.get('status')
+    response = record.get('response')
+    out = {'key': record.get('key')}
+    failed = bool(status) or not isinstance(response, dict)
+    if failed:
+        out['error'] = status or f"no response object: {response!r}"
+    else:
+        out['response'] = response
+    return out
+
+
+def _usable_keys(path: Path) -> set:
+    """Keys in an existing results file that already have a usable response."""
+    if not path.exists():
+        return set()
+    keys = set()
+    with open(path) as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get('error') or 'response' not in record:
+                continue
+            keys.add(record.get('key'))
+    return keys
+
+
+def cmd_run_batch(args):
+    """Run requests through the Vertex Batch API end to end.
+
+    Same contract as `run-online` -- local requests JSONL in, local results
+    JSONL out, resumable -- but at the batch price, which is half of on-demand.
+    That discount is the reason this exists: matching a single leg is ~3.6M
+    tokens, and the audit another ~1.2M, so the two online stages were most of
+    the per-leg bill.
+
+    Upload -> submit -> poll -> download -> normalize, so callers do not have to
+    care that GCS is involved. Requests whose key already has a usable response
+    in `--output` are skipped, which makes a rerun retry only the failures.
+    """
+    check_environment()
+    if not HAS_GCS:
+        sys.exit("google-cloud-storage is required for run-batch")
+    if not args.gcs_prefix:
+        sys.exit("--gcs_prefix is required for run-batch (a gs:// staging path)")
+
+    records = []
+    with open(args.input) as handle:
+        for line in handle:
+            if line.strip():
+                records.append(json.loads(line))
+    print(f"Loaded {len(records)} requests from {args.input}")
+
+    output_path = Path(args.output)
+    done = _usable_keys(output_path)
+    pending = [r for r in records if r.get('key') not in done]
+    if done:
+        print(f"  {len(done)} already have a usable response; "
+              f"{len(pending)} to run")
+    if not pending:
+        print("Nothing to do.")
+        return
+
+    tag = args.tag or f"{output_path.parent.name}_{int(time.time())}"
+    requests_uri, results_prefix = _batch_stage_uri(args.gcs_prefix, tag)
+
+    with tempfile.NamedTemporaryFile('w', suffix='.jsonl',
+                                     delete=False) as staged:
+        for record in pending:
+            staged.write(json.dumps(record) + "\n")
+        staged_path = staged.name
+    try:
+        _upload_to_gcs(staged_path, requests_uri)
+    finally:
+        os.unlink(staged_path)
+
+    client = genai.Client(http_options=HttpOptions(api_version="v1"))
+    print(f"submitting batch job: model={args.model}")
+    job = client.batches.create(
+        model=args.model,
+        src=requests_uri,
+        config=CreateBatchJobConfig(dest=results_prefix),
+    )
+    print(f"  job: {job.name}")
+    print(f"  results: {results_prefix}")
+
+    start = time.time()
+    while True:
+        job = client.batches.get(name=job.name)
+        elapsed = time.strftime('%H:%M:%S', time.gmtime(time.time() - start))
+        if job.state not in ACTIVE_STATES:
+            print(f"  {job.state} after {elapsed}")
+            break
+        print(f"  {job.state} ({elapsed} elapsed); next check in "
+              f"{args.poll_interval}s")
+        time.sleep(args.poll_interval)
+
+    if job.state != JobState.JOB_STATE_SUCCEEDED:
+        detail = getattr(job, 'error', None)
+        sys.exit(f"batch job did not succeed: {job.state} {detail or ''}")
+
+    downloaded = _download_batch_results(results_prefix)
+    print(f"  {len(downloaded)} result record(s)")
+
+    n_ok = 0
+    n_err = 0
+    prompt = output = thinking = 0
+    with open(output_path, 'a') as handle:
+        for record in downloaded:
+            normalized = _normalize_batch_record(record)
+            if 'error' in normalized:
+                n_err += 1
+            else:
+                n_ok += 1
+                usage = (normalized['response'].get('usageMetadata') or {})
+                prompt += usage.get('promptTokenCount', 0) or 0
+                output += usage.get('candidatesTokenCount', 0) or 0
+                thinking += usage.get('thoughtsTokenCount', 0) or 0
+            handle.write(json.dumps(normalized) + "\n")
+
+    print(f"\nCompleted: {n_ok} ok, {n_err} error(s) -> {output_path}")
+    print(f"Token usage:\n  Prompt:   {prompt:,}\n  Output:   {output:,}\n"
+          f"  Thinking: {thinking:,}\n  Total:    {prompt + output + thinking:,}")
+    if n_err:
+        print(f"\n{n_err} request(s) failed. Rerun the same command to retry "
+              f"only those.")
+
+
+def add_execution_arguments(parser, *, default_model='gemini-3-flash-preview'):
+    """Flags for a stage that turns a requests JSONL into a results JSONL.
+
+    Batch is the default because it is half the price of on-demand for
+    identical output, and the stages that use this are the expensive ones. The
+    trade is latency -- minutes becomes up to a day -- so `--online` swaps back
+    when a fast turnaround matters more than the discount.
+    """
+    group = parser.add_argument_group('model execution')
+    group.add_argument('--model', default=default_model)
+    group.add_argument('--online', action='store_true',
+                       help='Use on-demand (synchronous) calls instead of the '
+                            'Batch API. Faster to return, twice the price.')
+    group.add_argument('--gcs_bucket', default='crossview',
+                       help='Bucket for batch staging (default: crossview)')
+    group.add_argument('--gcs_prefix', default=None,
+                       help='Full gs:// staging prefix; overrides --gcs_bucket')
+    group.add_argument('--parallel', type=int, default=8,
+                       help='Concurrent requests when --online')
+    group.add_argument('--poll_interval', type=int, default=120,
+                       help='Seconds between batch job state checks')
+    group.add_argument('--cost_limit', type=float, default=50.0,
+                       help='Refuse a single step estimated to cost more than '
+                            'this many USD until a human approves it '
+                            '(default: 50)')
+    group.add_argument('--approve_cost', action='store_true',
+                       help='Approve a step that exceeds --cost_limit')
+
+
+def run_requests(args, input_path, output_path, *, tag):
+    """Execute a requests JSONL through whichever path `args` selects.
+
+    One entry point so a caller does not branch on transport: both paths write
+    the same records to `output_path` and both are resumable, so the caller's
+    aggregation step is identical either way.
+    """
+    input_path, output_path = str(input_path), str(output_path)
+
+    # Before either transport spends anything: estimate, and stop if the step is
+    # over the ceiling. Placed here rather than in each caller so no stage can
+    # forget it.
+    estimate = llm_cost.estimate_jsonl(input_path)
+    llm_cost.enforce_limit(
+        estimate, limit_usd=getattr(args, 'cost_limit', 50.0), label=tag,
+        online=args.online, approved=getattr(args, 'approve_cost', False))
+
+    if args.online:
+        print(f"executing {tag} on-demand (--online)")
+        return cmd_run_online(argparse.Namespace(
+            input=input_path, output=output_path,
+            model=args.model, parallel=args.parallel))
+    prefix = args.gcs_prefix or f"gs://{args.gcs_bucket}/batch_stages"
+    print(f"executing {tag} through the Batch API (half price; use --online "
+          f"for a faster, dearer run)")
+    return cmd_run_batch(argparse.Namespace(
+        input=input_path, output=output_path, model=args.model,
+        gcs_prefix=prefix, tag=tag, poll_interval=args.poll_interval))
+
+
 def cmd_cancel(args):
     """Cancel a batch job."""
     check_environment()
@@ -646,6 +881,26 @@ def main():
                                help='Number of concurrent requests (default: 5)')
 
     # CANCEL command
+    batch_parser = subparsers.add_parser(
+        'run-batch',
+        help='Run a local requests JSONL through the Batch API (half price) '
+             'and write the same results JSONL run-online would'
+    )
+    batch_parser.add_argument('--input', type=str, required=True,
+                              help='Local requests JSONL')
+    batch_parser.add_argument('--output', type=str, required=True,
+                              help='Local results JSONL (appended; keys that '
+                                   'already have a usable response are skipped)')
+    batch_parser.add_argument('--model', type=str,
+                              default='gemini-3-flash-preview')
+    batch_parser.add_argument('--gcs_prefix', type=str, required=True,
+                              help='gs:// staging path for requests + results')
+    batch_parser.add_argument('--tag', type=str, default=None,
+                              help='Subdirectory under --gcs_prefix for this '
+                                   'run (default: output dir name + timestamp)')
+    batch_parser.add_argument('--poll_interval', type=int, default=120,
+                              help='Seconds between job state checks')
+
     cancel_parser = subparsers.add_parser(
         'cancel',
         help='Cancel a batch job'
@@ -677,6 +932,8 @@ def main():
         cmd_status(args)
     elif args.command == 'run-online':
         cmd_run_online(args)
+    elif args.command == 'run-batch':
+        cmd_run_batch(args)
     elif args.command == 'cancel':
         cmd_cancel(args)
     else:

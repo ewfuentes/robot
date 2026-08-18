@@ -24,6 +24,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     semantic_audit as sa,
@@ -32,10 +33,6 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
 from experimental.overhead_matching.swag.landmark_filtering.pipeline_config import (
     IngestConfig,
 )
-
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 
 def load_audits(run_dir: Path) -> dict:
@@ -58,9 +55,8 @@ def load_audits(run_dir: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
     parser.add_argument("--min_supports", type=int, default=2,
                         help="Tracks below this never enter consolidation. "
                              "Matches the audit bar on purpose: a track that "
@@ -71,13 +67,16 @@ def main():
                         help="Keyframes fused into one bearing measurement")
     parser.add_argument("--bearing_sigma_deg", type=float, default=1.0)
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "frame_landmarks"))
 
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_id = {o.obs_id: o for o in result.observations}
-    probe = Image.open(args.dataset_base / "panorama"
+    probe = Image.open(paths.dataset_base / "panorama"
                        / f"{result.frames[0].pano_stem}.jpg")
     pano_w = probe.size[0]
 

@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
@@ -55,11 +56,6 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_RUN = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m3_tracks/runs/r002_full_leg1")
 
 CHIP_H = 170
 DRIFT_TAIL_KF = 5
@@ -210,23 +206,25 @@ def render_chip(pano, pano_box, mask_pano_box, out_path, color):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--run_dir", type=Path, default=DEFAULT_RUN)
+    farfield_paths.add_arguments(parser)
+    parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--n_tracks", type=int, default=20)
     parser.add_argument("--findings", type=Path, default=None,
                         help="JSON: {'global': str, 'tracks': {track_id: str}}"
                              " commentary merged into the page")
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "frame_landmarks"))
 
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_id = {o.obs_id: o for o in result.observations}
     frames_by_idx = {f.frame_idx: f for f in result.frames}
     probe = Image.open(
-        args.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
+        paths.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
     pano_w, pano_h = probe.size
 
     findings = {"global": "", "tracks": {}}
@@ -284,7 +282,7 @@ def main():
         if frame is None:
             continue
         pano = np.asarray(Image.open(
-            args.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
+            paths.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
         for track_id, rec, s, eff, obs, verdict in tasks[keyframe]:
             pano_box = pg.pano_bbox_for_observation(obs.boxes, pano_w, pano_h)
             mask_pano = None

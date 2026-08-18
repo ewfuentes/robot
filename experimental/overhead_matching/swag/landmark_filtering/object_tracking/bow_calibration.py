@@ -54,11 +54,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
 )
-
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
 
 
 def temporal_stats(pano_paths, max_frames: int, band: tuple[float, float],
@@ -135,7 +134,7 @@ def azimuth_ruler(draw, width, height, pano_w, every_deg=10):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
+    farfield_paths.add_arguments(parser)
     parser.add_argument("--out_dir", type=Path, required=True)
     parser.add_argument("--max_frames", type=int, default=150,
                         help="Panoramas sampled evenly across the leg")
@@ -152,10 +151,12 @@ def main():
                         help="If given, draw this azimuth on the strip to "
                              "check a candidate reading")
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, require=("dataset_base", "panorama_dir"))
 
-    pano_paths = sorted((args.dataset_base / "panorama").glob("*.jpg"))
+    pano_paths = sorted(paths.panorama_dir.glob("*.jpg"))
     if not pano_paths:
-        raise SystemExit(f"no panoramas under {args.dataset_base}/panorama")
+        raise SystemExit(f"no panoramas under {paths.panorama_dir}")
     print(f"{len(pano_paths)} panoramas; sampling {args.max_frames}")
 
     median, spread, (y0, y1), (h, w), n_used = temporal_stats(

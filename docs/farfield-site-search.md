@@ -66,14 +66,20 @@ exactly backwards. Doubled, it scores 0.
 
 ## The pipeline
 
-Three tools. Discovery holds the API token so it lives in `~/scratch/mappilary`;
-scoring needs no token and is a bazel target here.
+Four tools, all bazel targets: discovery and QC in
+`//experimental/overhead_matching/swag/mapillary_tools`, scoring in
+`swag/scripts`. Discovery and QC need the Graph API token; it is a secret and
+never lives in the repo — `MapillaryClient` reads `$MLY_TOKEN`, then
+`~/.config/mapillary/token` (chmod 600). Tile blobs cache to
+`~/.cache/mapillary_tiles` (`$MLY_TILE_CACHE` overrides). Scoring needs no
+token.
 
 ```bash
+MT=//experimental/overhead_matching/swag/mapillary_tools
+
 # 1. what tracks exist? (seconds)
-cd ~/scratch/mappilary
-python3 discover_tracks.py --list_regions
-python3 discover_tracks.py --region geneva_lakeshore --output /tmp/tracks.json
+bazel run $MT:discover_tracks -- --list_regions
+bazel run $MT:discover_tracks -- --region geneva_lakeshore --output /tmp/tracks.json
 
 # 2. what is there to see? (Overpass, minutes)
 bazel run //experimental/overhead_matching/swag/scripts:farfield_landmarks -- \
@@ -84,8 +90,15 @@ bazel run //experimental/overhead_matching/swag/scripts:farfield_viewshed -- \
     --tracks /tmp/tracks.json --landmarks /tmp/landmarks.json \
     --output /tmp/scored.json --n_samples 8
 
-# 4. registry stanzas for the winners
-python3 discover_tracks.py --region geneva_lakeshore --scored /tmp/scored.json \
+# 4. is the capture usable? GPS consistency + frame density, one metadata
+#    fetch per seed, no downloads. Fail = backtracking / oscillating GPS or
+#    >20 m between frames; occasional jumps are excluded by design.
+#    Thresholds calibrated on collected sets with known verdicts.
+bazel run $MT:qc_candidates -- --seeds <pKey>,<pKey> --output /tmp/qc.json
+bazel run $MT:qc_candidates -- --local /data/farfield_matching/datasets/seattle
+
+# 5. registry stanzas for the winners
+bazel run $MT:discover_tracks -- --region geneva_lakeshore --scored /tmp/scored.json \
     --emit_registry --top 5
 ```
 
@@ -255,8 +268,11 @@ similar for a different reason: 2,883 sequences, almost all perspective dashcam.
 ## Related
 
 * `docs/mapillary-dataset-creation.md` — what to do with a seed once you have one
-* `~/scratch/mappilary/discover_tracks.py` — region → candidate tracks
-* `~/scratch/mappilary/farfield_regions.py` — the candidate region registry
-* `~/scratch/mappilary/mapillary_lib/vector_tiles.py` — MVT decoder + tile client
-* `~/scratch/mappilary/vector_tiles_test.py` — `python3 vector_tiles_test.py`,
-  plus a live API check under `MLY_LIVE=1`
+* `swag/mapillary_tools/discover_tracks.py` — region → candidate tracks,
+  grouped into probable single outings (same creator + endpoints ≤ 3 km +
+  start times ≤ 2 h; mass-duplicated timestamps = broken clock, never merge)
+* `swag/mapillary_tools/qc_candidates.py` — GPS-consistency + density QC per seed
+* `swag/mapillary_tools/farfield_regions.py` — the candidate region registry
+* `swag/mapillary_tools/vector_tiles.py` — MVT decoder + tile client
+* tests: `bazel test //experimental/overhead_matching/swag/mapillary_tools/...`
+  (the live API check in vector_tiles_test still gates on `MLY_LIVE=1`)

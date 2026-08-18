@@ -38,13 +38,10 @@ from experimental.overhead_matching.swag.bearing_only_localization import (
     geodesy,
     structs,
 )
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     harbor_catalog,
 )
-
-DEFAULT_FEATHER = Path(
-    "/data/farfield_matching/datasets/boston_harbor_leg1/landmarks/"
-    "v1_trimmed.feather")
 
 # Coarse display type for the viewer's glyphs; the filter itself only uses
 # ids and positions.
@@ -94,11 +91,14 @@ def _alias_tables(tables: dict, measured_ids: set) -> tuple[dict, dict]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser, feather=True)
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--base_export", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
-    parser.add_argument("--feather", type=Path, default=DEFAULT_FEATHER)
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "feather"))
 
     base_meta = json.loads((args.base_export / "export_meta.json").read_text())
     if base_meta["schema_version"] != structs.SCHEMA_VERSION:
@@ -120,7 +120,7 @@ def main():
     # The whole trimmed map is the candidate universe (no shortlist).
     anchor_lat = base_meta["anchor_lat_deg"]
     anchor_lon = base_meta["anchor_lon_deg"]
-    entries = harbor_catalog.load_catalog(args.feather, anchor_lat,
+    entries = harbor_catalog.load_catalog(paths.feather, anchor_lat,
                                           anchor_lon, keep_hulls=False)
     frame = geodesy.RegionFrame(anchor_lat, anchor_lon)
     landmarks = []

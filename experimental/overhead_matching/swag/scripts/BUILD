@@ -633,11 +633,27 @@ py_library(
   ]
 )
 
+py_test(
+  name="llm_cost_test",
+  srcs=["llm_cost_test.py"],
+  deps=[
+    ":llm_cost",
+  ]
+)
+
+py_library(
+  name="llm_cost",
+  srcs=["llm_cost.py"],
+  visibility=["//experimental/overhead_matching:__subpackages__"],
+  deps=[],
+)
+
 py_binary(
   name="vertex_batch_manager",
   srcs=["vertex_batch_manager.py"],
   visibility=["//experimental/overhead_matching/swag:__subpackages__"],
-  deps=[":vertex_batch_manager_lib"],
+  deps=[
+    ":llm_cost",":vertex_batch_manager_lib"],
 )
 
 py_binary(
@@ -767,7 +783,11 @@ py_binary(
 py_binary(
   name="extract_gemini_landmarks_from_panoramas",
   srcs=["extract_gemini_landmarks_from_panoramas.py"],
-  deps=[],
+  deps=[
+    ":llm_cost",
+    requirement("Pillow"),
+    "//experimental/overhead_matching/swag/data:farfield_paths",
+  ],
 )
 
 py_library(
@@ -1303,6 +1323,14 @@ py_binary(
     requirement("numpy"),
     requirement("pillow"),
   ]
+)
+
+py_test(
+  name = "trim_dataset_test",
+  srcs = ["trim_dataset_test.py"],
+  # The selection rules and the table rewrite are pure; make_dataset_timelapse
+  # is only reached by regenerate_views, which the test does not call.
+  deps = [":trim_dataset"],
 )
 
 py_library(

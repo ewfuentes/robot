@@ -30,6 +30,7 @@ import torch
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     heading as heading_mod,
@@ -41,15 +42,7 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_VIDEO = Path(
-    "/data/farfield_matching/raw_material/boston_harbor_20260712/videos/long_wharf_to_hull_wharf.mp4")
-DEFAULT_OUTPUT = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m2_sam2")
-DEFAULT_CHECKPOINT = Path(
-    "/data/farfield_matching/models/sam2/sam2.1_hiera_large.pt")
+STAGE_DIR = "m2_sam2"
 
 TEST_CASES = [
     ("f0000_lm0_custom_house_tower", "f0000__lm0__box0"),
@@ -220,22 +213,24 @@ def _count_components(mask: np.ndarray) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
-    parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    farfield_paths.add_arguments(parser, video=True, checkpoint=True)
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help=f"default: <object_tracks artifact>/{STAGE_DIR}")
     parser.add_argument("--probe", action="store_true",
                         help="only verify SAM2 imports and checkpoint load")
     args = parser.parse_args()
 
-    predictor = build_predictor(args.checkpoint)
+    paths = farfield_paths.resolve(
+        parser, args,
+        require=("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"))
+
+    predictor = build_predictor(paths.sam2_checkpoint)
     print(f"SAM2 predictor ready on cuda "
           f"({torch.cuda.get_device_name(0)})")
     if args.probe:
         return
 
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     frames_by_idx = {f.frame_idx: f for f in result.frames}
     obs_by_frame = {}
@@ -247,22 +242,30 @@ def main():
     model = heading_mod.heading_model_from_positions(
         [f.x_m for f in result.frames], [f.y_m for f in result.frames],
         [f.time_s for f in result.frames])
-    provider = video_frames.VideoFrameProvider(args.video)
+    provider = video_frames.VideoFrameProvider(paths.video)
     probe = Image.open(
-        args.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
+        paths.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
     pano_w, pano_h = probe.size
     font = vc.load_font(13)
 
+    # TEST_CASES are boston_harbor_leg1 observation ids; on another dataset they
+    # resolve to nothing, so missing anchors are skipped rather than raising.
     anchors = []
     for case_name, anchor_id in TEST_CASES:
         if anchor_id.endswith("__*"):
             frame_idx = int(anchor_id.split("__")[0][1:])
-            anchors.extend(sorted(obs_by_frame[frame_idx],
+            anchors.extend(sorted(obs_by_frame.get(frame_idx, []),
                                   key=lambda o: o.obs_id))
-        else:
+        elif anchor_id in obs_by_id:
             anchors.append(obs_by_id[anchor_id])
+        else:
+            print(f"WARNING: anchor {anchor_id} not in this dataset, skipping")
+    if not anchors:
+        parser.error(
+            f"none of TEST_CASES exist in {paths.dataset}; this spike tool "
+            f"needs anchor observation ids from the dataset it is run on")
 
-    out = args.output_dir
+    out = args.output_dir or paths.tracks_stage(STAGE_DIR)
     out.mkdir(parents=True, exist_ok=True)
     reports = []
     for anchor in anchors:

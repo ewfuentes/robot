@@ -1,11 +1,20 @@
-"""Cut frame ranges out of a collected dataset, keeping every file consistent.
+"""Cut frames out of a collected dataset, keeping every file consistent.
 
-Visual review of `gps_timelapse.mp4` is what actually decides whether a
-trajectory is usable, and it usually condemns a *part* of one: the operator
-swings the camera after the first minute, a recording restarts pointing the
-other way, the last few frames come from a different day. This trims those
-ranges out and leaves a dataset that still satisfies the contract
-`audit_dataset.py` enforces.
+Two things condemn frames, and this handles both.
+
+*Range* trims come out of visual review of `gps_timelapse.mp4`, which usually
+objects to a *part* of a trajectory: the operator swings the camera after the
+first minute, a recording restarts pointing the other way, the last few frames
+come from a different day.
+
+*Density* trims (`--spacing_m`) thin a trajectory that was sampled far
+denser than the work needs. Nothing is wrong with the dropped frames; there are
+simply too many of them. A collect on a 3 m grid costs ~10x what the same
+trajectory costs on a 30 m grid at every per-frame stage, and for far-field
+landmark work consecutive frames 3 m apart are near-identical: a landmark
+several kilometres away does not move measurably between them.
+
+Either way the result still satisfies the contract `audit_dataset.py` enforces.
 
 Trimming is not just dropping CSV rows. The audit requires `frames_gps.idx` to
 be 0..N-1 contiguous *and* `pano_id[1:] == idx`, because that equality is the
@@ -23,13 +32,23 @@ semantics), read off the timelapse via `--video_fps` if that is easier:
         --dataset_path /data/farfield_matching/mapillary_datasets/fukuoka_yumechan_a \
         --keep 0:165 --reason "operator swings the camera after t=11 s" --dry_run
 
-Dropped images and the original CSVs move to `trimmed_frames/` inside the
-dataset, so a trim is reversible and costs no extra disk.
+    # thin a 3 m collect to a 10 m grid, into its own trim directory
+    bazel run //experimental/overhead_matching/swag/scripts:trim_dataset -- \
+        --dataset_path /data/farfield_matching/datasets/charles_river_20260727 \
+        --spacing_m 10 --trim_dir trimmed_frames_for_density \
+        --reason "3.1 m/frame is ~10x denser than far-field extraction needs"
+
+Dropped images and the original CSVs move to `--trim_dir` inside the dataset,
+so a trim is reversible and costs no extra disk. Give each *kind* of trim its
+own directory: the dropped frames then say why they were dropped by where they
+sit, and `dropped_frames.csv` in each directory records the same thing per file
+for anyone who merges them back together.
 """
 
 import argparse
 import csv
 import datetime
+import hashlib
 import json
 import math
 import shutil
@@ -39,6 +58,11 @@ from pathlib import Path
 R_EARTH_M = 6371000.0
 CSV_NAMES = ["frames_gps.csv", "extraction_log.csv", "intrinsics.csv",
              "pano_id_mapping.csv"]
+CHECKSUM_FILE = "checksums.sha256"
+CACHE_DIRS = {"catalog_cache", "__pycache__"}
+# Above this many kept runs, inlining them in pipeline_metadata.json hides
+# everything else in the file instead of documenting the trim.
+MAX_RECORDED_RANGES = 12
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
@@ -75,6 +99,49 @@ def parse_ranges(specs, n):
             raise ValueError(f"range {spec!r} outside 0:{n}")
         out.append((lo, hi))
     return sorted(out)
+
+
+def keep_by_spacing(gps_rows, spacing_m):
+    """Indices on a `spacing_m` along-track grid, greedy from frame 0.
+
+    Walks the recorded cumulative `dist_m` rather than re-integrating positions,
+    so the grid follows the same track the dataset was built on and a stationary
+    stretch collapses to a single frame instead of surviving as a cluster.
+
+    Each step takes the frame whose distance is *closest* to the target, not the
+    first one at or past it. Taking the first one past overshoots by up to a
+    source interval every step and never undershoots, which on a 3 m collect
+    turns a 10 m request into a 12-13 m result; picking the nearest frame
+    centres the realized spacing on what was asked for.
+
+    The last frame is kept when it sits at least half a spacing past the
+    previous keeper: the endpoint of a trajectory is worth more than the
+    uniformity of the final interval, but not worth a near-duplicate.
+    """
+    dists = [float(r["dist_m"]) for r in gps_rows]
+    if any(b < a for a, b in zip(dists, dists[1:])):
+        raise ValueError("dist_m is not monotonic; fix the dataset before "
+                         "thinning by distance")
+    last = len(dists) - 1
+    keep = [0]
+    while dists[last] >= dists[keep[-1]] + spacing_m:
+        target = dists[keep[-1]] + spacing_m
+        j = keep[-1] + 1
+        while dists[j] < target:      # terminates: dists[last] >= target
+            j += 1
+        # j is the first frame at or past the target, j-1 the last one before
+        # it. Prefer whichever is nearer, but never step backwards.
+        if j - 1 > keep[-1] and abs(dists[j - 1] - target) < abs(dists[j] - target):
+            j -= 1
+        keep.append(j)
+    if keep[-1] != last and dists[last] - dists[keep[-1]] >= spacing_m / 2:
+        keep.append(last)
+    if len(keep) < 2:
+        raise ValueError(
+            f"--spacing_m {spacing_m} keeps {len(keep)} frame(s) of "
+            f"{len(dists)}; the track is only "
+            f"{dists[-1] - dists[0]:.0f} m long")
+    return keep
 
 
 def keep_indices(keep_specs, drop_specs, n):
@@ -125,13 +192,24 @@ def summarize(gps_rows, log_rows, keep):
     }
 
 
-def rebuild_gps_rows(gps_rows, log_rows, keep):
+def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
     """frames_gps for the kept subset, rebased exactly as the converter builds it.
 
-    video_t_s restarts at the new first frame and dist_m re-accumulates, so the
+    video_t_s restarts at the new first frame and dist_m rebases to zero, so the
     trimmed dataset is indistinguishable from one collected over that range.
-    Across a cut the cumulative distance still adds the straight-line jump,
-    which is the same thing the converter does at a stitch seam.
+
+    Where dist_m comes from depends on what was cut. A *range* trim removes
+    stretches of track, so the distance must be re-derived from the surviving
+    positions -- carrying the original column forward would keep charging for
+    the removed stretch. Across a cut that adds the straight-line jump, which is
+    what the converter does at a stitch seam.
+
+    A *density* trim removes no track at all, so the original column is still
+    the right answer and is re-used rebased. It matters: `dist_m` is normally
+    accumulated along the dataset's smoothed/bridged track, while re-deriving it
+    walks the raw reported positions and picks up their noise instead. On the
+    charles collect the two differ by 6.7%, so re-deriving would make a trim
+    that removes nothing report a *longer* trajectory than before it ran.
     """
     out = []
     t0 = int(log_rows[keep[0]]["captured_at"])
@@ -140,8 +218,12 @@ def rebuild_gps_rows(gps_rows, log_rows, keep):
         row = dict(gps_rows[old])
         if new_idx > 0:
             prev = gps_rows[keep[new_idx - 1]]
-            step = haversine_m(float(prev["latitude"]), float(prev["longitude"]),
-                               float(row["latitude"]), float(row["longitude"]))
+            if kind == "density":
+                step = float(row["dist_m"]) - float(prev["dist_m"])
+            else:
+                step = haversine_m(
+                    float(prev["latitude"]), float(prev["longitude"]),
+                    float(row["latitude"]), float(row["longitude"]))
             cumulative_m += step
             dt = (int(log_rows[old]["captured_at"])
                   - int(log_rows[keep[new_idx - 1]]["captured_at"])) / 1000.0
@@ -159,18 +241,88 @@ def rebuild_gps_rows(gps_rows, log_rows, keep):
     return out
 
 
-def apply_trim(ds: Path, keep, reason: str, video_fps: float | None):
+def write_dropped_csv(backup_dir: Path, gps_rows, log_rows, dropped, kind,
+                      reason: str, stamp: str):
+    """Per-file record of what left and why, alongside the files themselves.
+
+    The directory a dropped frame sits in already says which trim took it, but
+    only while the directories stay separate. This survives them being merged,
+    and carries the original index so a frame can be put back.
+    """
+    quality_keys = [k for k in ("gps_quality", "gps_valid", "course_deg")
+                    if log_rows and k in log_rows[0]]
+    fields = (["original_idx", "frame_file", "trim_kind", "reason", "trimmed_at",
+               "video_t_s", "dist_m", "latitude", "longitude"] + quality_keys)
+    rows = []
+    for i in dropped:
+        row = {"original_idx": i,
+               "frame_file": gps_rows[i]["frame_file"],
+               "trim_kind": kind,
+               "reason": reason,
+               "trimmed_at": stamp}
+        for key in ("video_t_s", "dist_m", "latitude", "longitude"):
+            row[key] = gps_rows[i].get(key, "")
+        for key in quality_keys:
+            row[key] = log_rows[i].get(key, "")
+        rows.append(row)
+    path = backup_dir / "dropped_frames.csv"
+    existing, _ = read_csv(path) if path.exists() else ([], None)
+    write_csv(path, existing + rows, fields)
+    return path
+
+
+def regenerate_checksums(ds: Path):
+    """Rewrite `checksums.sha256` over every real file in the dataset.
+
+    A trim renames nearly every image, so leaving the old manifest in place
+    turns a working integrity check into one that reports the dataset as
+    corrupt. Format matches `sha256sum` output with `./`-relative paths sorted
+    as bytes (C locale), covering everything except the manifest itself, the
+    `panorama/` symlink and derived caches -- verified byte-identical against a
+    stored manifest on an untrimmed dataset.
+    """
+    target = ds / CHECKSUM_FILE
+    if not target.exists():
+        return None
+    entries = []
+    for path in ds.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(ds)
+        if rel.parts[0] == "panorama" or rel.name == CHECKSUM_FILE:
+            continue
+        # Rebuildable from the dataset and rewritten whenever a consumer runs;
+        # checksumming these would report every read as a modification.
+        if set(rel.parts) & CACHE_DIRS:
+            continue
+        entries.append(("./" + rel.as_posix(), path))
+    lines = []
+    for rel, path in sorted(entries, key=lambda e: e[0].encode()):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        lines.append(f"{digest.hexdigest()}  {rel}\n")
+    target.write_text("".join(lines))
+    return len(lines)
+
+
+def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
+               trim_dir: str = "trimmed_frames", kind: str = "range"):
     tables = {name: read_csv(ds / name) for name in CSV_NAMES}
     gps_rows, gps_fields = tables["frames_gps.csv"]
     log_rows, log_fields = tables["extraction_log.csv"]
     n = len(gps_rows)
     keep_set = set(keep)
 
-    backup_dir = ds / "trimmed_frames"
+    backup_dir = ds / trim_dir
     backup_dir.mkdir(exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     for name in CSV_NAMES:
         shutil.copy2(ds / name, backup_dir / f"{stamp}.{name}")
+    dropped = [i for i in range(n) if i not in keep_set]
+    write_dropped_csv(backup_dir, gps_rows, log_rows, dropped, kind, reason,
+                      stamp)
 
     # Images first: move every dropped file out, THEN renumber. A kept frame's
     # new index is always <= its old one, so an ascending rename can only ever
@@ -197,7 +349,7 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None):
         src.rename(dst)
         renamed += 1
 
-    new_gps = rebuild_gps_rows(gps_rows, log_rows, keep)
+    new_gps = rebuild_gps_rows(gps_rows, log_rows, keep, kind)
     write_csv(ds / "frames_gps.csv", new_gps, gps_fields)
 
     new_log = []
@@ -243,6 +395,18 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None):
         counts[r["geometry_source"]] = counts.get(r["geometry_source"], 0) + 1
     meta["geometry_source_counts"] = counts
 
+    # The trimmed track is a coarser polyline through the same points, so its
+    # length is slightly under the original. Report what the frames now say and
+    # keep the pre-trim figure beside it rather than leaving a number that no
+    # table in the dataset agrees with.
+    # trajectory_km is the dist_m *span*, not its final value: the source
+    # dataset can start mid-track with a non-zero dist_m, and rebuild_gps_rows
+    # rebases to zero. Taking the span holds either way.
+    new_dists = [float(r["dist_m"]) for r in new_gps]
+    if "trajectory_km" in meta:
+        meta.setdefault("trajectory_km_before_trim", meta["trajectory_km"])
+    meta["trajectory_km"] = round((new_dists[-1] - new_dists[0]) / 1000.0, 3)
+
     ranges = []
     start = keep[0]
     for a, b in zip(keep, keep[1:]):
@@ -251,28 +415,57 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None):
             start = b
     ranges.append([start, keep[-1] + 1])
     record = {
-        "kept_original_ranges": ranges,
+        "trim_kind": kind,
         "n_before": n,
         "n_after": len(keep),
         "reason": reason,
         "trimmed_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "csv_backup_prefix": f"trimmed_frames/{stamp}.",
+        "trim_dir": trim_dir,
+        "csv_backup_prefix": f"{trim_dir}/{stamp}.",
+        "dropped_frames_csv": f"{trim_dir}/dropped_frames.csv",
     }
+    # A density trim keeps a frame every few dropped ones, so the run-length
+    # encoding that describes a range trim in a line or two would run to
+    # hundreds of one-element ranges here and bury the rest of the metadata.
+    # dropped_frames.csv already holds every original index; point at it.
+    if len(ranges) > MAX_RECORDED_RANGES:
+        record["kept_original_ranges"] = (
+            f"{len(ranges)} runs — too many to inline; every dropped index is "
+            f"in {trim_dir}/dropped_frames.csv, and extraction_log's "
+            f"sequence_position still carries each kept frame's original index")
+    else:
+        record["kept_original_ranges"] = ranges
     if video_fps:
         record["video_fps_used_for_review"] = video_fps
     meta.setdefault("trims", []).append(record)
 
     # A mount offset measured on the untrimmed track no longer describes this
-    # one -- the trim exists precisely because part of the track behaved
+    # one -- a range trim exists precisely because part of the track behaved
     # differently. Keep the number for reference but make it unusable until it
     # is re-measured, rather than silently handing a stale angle downstream.
-    if isinstance(meta.get("mount_offset"), dict):
+    #
+    # A density trim is the exception: it drops no stretch of track and changes
+    # no geometry, and the offset is an angle between the camera and the
+    # direction of travel that does not depend on how often that travel was
+    # sampled. Invalidating it here would be a false alarm, and one that costs a
+    # re-calibration.
+    if isinstance(meta.get("mount_offset"), dict) and kind != "density":
         meta["mount_offset"]["self_consistent"] = False
         meta["mount_offset"]["stale_after_trim"] = True
 
     json.dump(meta, open(meta_path, "w"), indent=2)
+    (backup_dir / "trim_note.json").write_text(json.dumps({
+        "dropped": len(dropped),
+        "trim_kind": kind,
+        "reason": reason,
+        "generator": "trim_dataset.py",
+        "trimmed_at": record["trimmed_at"],
+        "restore": "dropped_frames.csv maps every file here back to its "
+                   "original index; the pre-trim CSVs are the "
+                   f"{stamp}.*.csv copies in this directory",
+    }, indent=1))
     return {"moved": moved, "renamed": renamed, "backup": str(backup_dir),
-            "kept_ranges": ranges}
+            "kept_ranges": ranges, "n_dropped": len(dropped)}
 
 
 def regenerate_views(ds: Path, fps: int, max_frames: int):
@@ -306,6 +499,14 @@ def main():
                    help="original index ranges to KEEP, e.g. 0:165 400:")
     p.add_argument("--drop", nargs="*", default=[],
                    help="original index ranges to DROP (complement of --keep)")
+    p.add_argument("--spacing_m", type=float, default=None,
+                   help="thin the trajectory to this along-track spacing "
+                        "instead of cutting ranges")
+    p.add_argument("--trim_dir", default=None,
+                   help="directory inside the dataset for dropped frames and "
+                        "pre-trim CSVs (default: trimmed_frames, or "
+                        "trimmed_frames_for_density with --spacing_m). Give "
+                        "each kind of trim its own so the reason survives")
     p.add_argument("--reason", default="", help="recorded in pipeline_metadata.json")
     p.add_argument("--video_fps", type=float, default=None,
                    help="fps of the reviewed timelapse, recorded for provenance")
@@ -324,16 +525,36 @@ def main():
         print(f"ERROR: frames_gps has {n} rows, extraction_log has {len(log_rows)}")
         return 1
 
-    keep = keep_indices(args.keep, args.drop, n)
+    if args.spacing_m is not None:
+        if args.keep or args.drop:
+            print("ERROR: --spacing_m selects frames by distance; it cannot "
+                  "be combined with --keep/--drop. Run them as separate trims.")
+            return 1
+        kind = "density"
+        keep = keep_by_spacing(gps_rows, args.spacing_m)
+    else:
+        kind = "range"
+        keep = keep_indices(args.keep, args.drop, n)
+    trim_dir = args.trim_dir or (
+        "trimmed_frames_for_density" if kind == "density" else "trimmed_frames")
+
     before = summarize(gps_rows, log_rows, list(range(n)))
     after = summarize(gps_rows, log_rows, keep)
 
     print(f"{ds.name}: {before['n']} -> {after['n']} frames "
-          f"({before['n'] - after['n']} dropped)")
+          f"({before['n'] - after['n']} dropped, {kind} trim -> {trim_dir}/)")
     print(f"  distance  {before['dist_km']:.2f} km -> {after['dist_km']:.2f} km")
+    print(f"  spacing   {before['dist_km'] * 1000 / before['n']:.1f} -> "
+          f"{after['dist_km'] * 1000 / after['n']:.1f} m/frame")
     print(f"  duration  {before['dur_min']:.1f} min -> {after['dur_min']:.1f} min")
     print(f"  sequences {before['n_sequences']} -> {after['n_sequences']}")
     print(f"  window    {after['start_utc']} .. {after['end_utc']} UTC")
+    if kind == "density":
+        steps = [float(gps_rows[b]["dist_m"]) - float(gps_rows[a]["dist_m"])
+                 for a, b in zip(keep, keep[1:])]
+        steps.sort()
+        print(f"  gaps      min {steps[0]:.1f} m, median "
+              f"{steps[len(steps) // 2]:.1f} m, max {steps[-1]:.1f} m")
     if args.video_fps:
         print(f"  kept video window: "
               f"{keep[0] / args.video_fps:.1f} s .. {keep[-1] / args.video_fps:.1f} s")
@@ -342,13 +563,27 @@ def main():
         print("DRY RUN — nothing written")
         return 0
 
-    info = apply_trim(ds, keep, args.reason, args.video_fps)
-    print(f"  kept original ranges {info['kept_ranges']}")
+    info = apply_trim(ds, keep, args.reason, args.video_fps,
+                      trim_dir=trim_dir, kind=kind)
+    ranges = info["kept_ranges"]
+    if len(ranges) > MAX_RECORDED_RANGES:
+        print(f"  kept {len(ranges)} original runs (listed per frame in "
+              f"{trim_dir}/dropped_frames.csv)")
+    else:
+        print(f"  kept original ranges {ranges}")
     print(f"  moved {info['moved']} images and renamed {info['renamed']} "
           f"(backups in {info['backup']})")
     if not args.no_regenerate:
         regenerate_views(ds, args.timelapse_fps, args.timelapse_max_frames)
-    print("  NOTE: mount_offset is now marked stale — rerun calibrate_mount_offset.")
+    n_sums = regenerate_checksums(ds)
+    if n_sums:
+        print(f"  regenerated {CHECKSUM_FILE} over {n_sums} files")
+    if kind == "density":
+        print("  NOTE: mount_offset left as-is — a density trim does not "
+              "change the geometry it was measured from.")
+    else:
+        print("  NOTE: mount_offset is now marked stale — rerun "
+              "calibrate_mount_offset.")
     meta = json.load(open(ds / "pipeline_metadata.json"))
     if meta.get("projection") == "equirectangular":
         print("  NOTE: equirectangular dataset — pinhole faces reference the old "

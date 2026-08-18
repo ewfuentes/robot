@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
@@ -36,11 +37,7 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_OUTPUT = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m0_boxes")
+STAGE_DIR = "m0_boxes"
 
 # (case_name, anchor_obs_id). "f0149__*" expands to one case per landmark
 # in that frame.
@@ -87,15 +84,20 @@ def render_full_pano(pano: np.ndarray, frame, observations, font,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT)
+    farfield_paths.add_arguments(parser)
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help=f"default: <object_tracks artifact>/{STAGE_DIR}")
     parser.add_argument("--frames_before", type=int, default=8)
     parser.add_argument("--frames_after", type=int, default=12)
     parser.add_argument("--window_deg", type=float, default=60.0)
     args = parser.parse_args()
 
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    paths = farfield_paths.resolve(
+        parser, args, require=("dataset_base", "frame_landmarks"))
+    dataset_base = paths.dataset_base
+    out = args.output_dir or paths.tracks_stage(STAGE_DIR)
+
+    result = ingest.run_ingest(dataset_base, paths.frame_landmarks,
                                IngestConfig())
     frames_by_idx = {f.frame_idx: f for f in result.frames}
     obs_by_frame = defaultdict(list)
@@ -120,7 +122,7 @@ def main():
 
     # Resolve anchors and per-case frame ranges / windows.
     probe_stem = result.frames[0].pano_stem
-    probe = Image.open(args.dataset_base / "panorama" / f"{probe_stem}.jpg")
+    probe = Image.open(dataset_base / "panorama" / f"{probe_stem}.jpg")
     pano_w, pano_h = probe.size
     win_w = int(round(args.window_deg / 360.0 * pano_w))
     win_h = int(round(win_w * 9 / 16))
@@ -147,7 +149,6 @@ def main():
             needed[frame_idx].append(i)
 
     font = vc.load_font(14)
-    out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
     case_images = defaultdict(list)
     anchor_sheets = {}
@@ -155,7 +156,7 @@ def main():
         frame = frames_by_idx.get(frame_idx)
         if frame is None:
             continue
-        pano_path = args.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"
+        pano_path = dataset_base / "panorama" / f"{frame.pano_stem}.jpg"
         pano = np.asarray(Image.open(pano_path))
         observations = obs_by_frame[frame_idx]
         for case_idx in needed[frame_idx]:

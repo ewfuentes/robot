@@ -27,6 +27,7 @@ Run:
 """
 
 import argparse
+import hashlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -34,15 +35,16 @@ from pathlib import Path
 
 import pandas as pd
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.data import landmark_schema
+from experimental.overhead_matching.swag.scripts import (
+    vertex_batch_manager as vbm,
+)
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     bearing_matcher as bm,
     harbor_catalog as hc,
     semantic_audit as sa,
 )
-
-DEFAULT_FEATHER = Path(
-    "/data/farfield_matching/datasets/boston_harbor_leg1/landmarks/v1_trimmed.feather")
 
 SYSTEM_PROMPT = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
 bundles, identify which landmarks in Set 1 (observed in images) are the same physical object as a
@@ -352,10 +354,47 @@ def to_log_lr(confidence, clip=4.0):
     return max(-clip, min(clip, math.log(c / (1 - c))))
 
 
+def write_settings(out: Path, args, paths, records, sigs):
+    """Everything needed to reproduce this matching run, beside its outputs.
+
+    Without this the artifact was unreproducible: `request_meta.json` holds only
+    a key-to-chunk mapping, and the model was never recorded anywhere at all
+    (`results.jsonl` carries request and response but no model field), so
+    "which model produced these matches" had no answer from the artifact. The
+    prompt is hashed rather than named for the same reason the extraction's is:
+    `SYSTEM_PROMPT` is a module constant that can be edited in place.
+    """
+    settings = {
+        "generator": ("//experimental/overhead_matching/swag/landmark_filtering/"
+                      "object_tracking:m9_match_landmarks"),
+        "git_commit": farfield_paths.git_commit(),
+        "dataset": paths.dataset,
+        "run": out.parent.name,
+        "feather": str(paths.feather),
+        "model": args.model,
+        "submitted_by_m9": bool(args.submit),
+        "transport": "online" if args.online else "batch",
+        "system_prompt_sha256": hashlib.sha256(
+            SYSTEM_PROMPT.encode()).hexdigest(),
+        "thinking_level": args.thinking_level,
+        "min_supports": args.min_supports,
+        "query_batch": args.query_batch,
+        "chunk_size": args.chunk_size,
+        "confidence_floor": args.confidence_floor,
+        "instance_max_rows": args.instance_max_rows,
+        "n_requests": len(records),
+        "n_signatures": len(sigs),
+        "spatial_gating": ("none - set 2 is the whole catalog, so the catalog's "
+                           "extent bounds what can match"),
+    }
+    (out / "settings.json").write_text(json.dumps(settings, indent=1) + "\n")
+    print(f"wrote {out}/settings.json")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser, feather=True)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--feather", type=Path, default=DEFAULT_FEATHER)
     parser.add_argument("--min_supports", type=int, default=1)
     parser.add_argument("--query_batch", type=int, default=10)
     parser.add_argument("--chunk_size", type=int, default=500)
@@ -368,14 +407,24 @@ def main():
                              "definition - the tags do not identify one "
                              "object - so the label is downgraded to "
                              "'category' in code rather than trusted.")
+    vbm.add_execution_arguments(parser)
+    parser.add_argument("--submit", action="store_true",
+                        help="Execute the requests and carry straight on to "
+                             "aggregation, instead of stopping so "
+                             "vertex_batch_manager can be invoked by hand. "
+                             "Batch by default; --online for on-demand. "
+                             "Resumable: reruns retry only failures.")
     parser.add_argument("--build_only", action="store_true")
     parser.add_argument("--aggregate_only", action="store_true")
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "feather"))
 
     out = args.run_dir / "matching"
     out.mkdir(parents=True, exist_ok=True)
 
-    sig_to_ids = build_map_signatures(args.feather)
+    sig_to_ids = build_map_signatures(paths.feather)
     sigs = sorted(sig_to_ids)
     sig_chunks = [sigs[i:i + args.chunk_size]
                   for i in range(0, len(sigs), args.chunk_size)]
@@ -397,6 +446,7 @@ def main():
             {r["key"]: {"batch_keys": r["batch_keys"],
                         "chunk_index": r["chunk_index"]} for r in records}))
         (out / "signatures.json").write_text(json.dumps(sig_to_ids))
+        write_settings(out, args, paths, records, sigs)
         est = sum(len(r["request"]["contents"][0]["parts"][0]["text"])
                   for r in records) // 4
         print(f"estimated input: ~{est / 1e6:.2f}M tokens "
@@ -406,8 +456,13 @@ def main():
         return
 
     results_path = out / "results.jsonl"
+    if args.submit:
+        vbm.run_requests(args, out / "requests.jsonl", results_path,
+                         tag=f"{paths.dataset}_matching_{args.run_dir.name}")
     if not results_path.exists():
-        raise SystemExit(f"no results at {results_path}; run the batch first")
+        raise SystemExit(
+            f"no results at {results_path}; submit the batch first (--submit, "
+            f"or vertex_batch_manager run-online)")
     meta = {r["key"]: {"batch_keys": r["batch_keys"],
                        "chunk_index": r["chunk_index"]} for r in records}
     per_tracklet, no_match, errors = aggregate(

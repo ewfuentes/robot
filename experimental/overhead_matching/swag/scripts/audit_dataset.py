@@ -343,7 +343,7 @@ def audit(ds: Path) -> Audit:
     lm_dir = ds / "landmarks"
     version = f"{lm_dir}/v1.feather"
     if not lm_dir.exists():
-        a.fail("no landmarks/ (stage 4 not run)")
+        a.fail("no landmarks/ (landmark stage not run)")
     else:
         link = lm_dir / "v1.feather"
         if not link.exists():

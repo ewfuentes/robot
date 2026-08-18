@@ -8,7 +8,8 @@ correspondence pipeline exactly like an OSM landmark feather.
 
 Class mapping summary (fixed structures are the core far-field targets; floating
 buoys are included by default but carry seamark:type + object_class so they can
-be filtered downstream — the osm_tags_farfield pano prompt currently excludes them):
+be filtered downstream — the osm_tags_farfield pano prompt reports them too, so
+the two sides meet on man_made=buoy + seamark:type + colour/shape):
     LNDMRK          -> man_made/historic per CATLMK + seamark:type=landmark
     LIGHTS (named)  -> man_made=lighthouse (suppressed when riding on a buoy)
     BCN*/DAYMAR     -> man_made=beacon + seamark:type=beacon_*/daymark

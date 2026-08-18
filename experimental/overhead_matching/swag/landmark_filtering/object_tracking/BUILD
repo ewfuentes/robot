@@ -68,6 +68,7 @@ py_binary(
         ":pano_geometry",
         ":video_frames",
         ":viz_common",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -129,6 +130,7 @@ py_binary(
     srcs = ["m3_build_tracks.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         ":range_runner",
         ":track_builder",
         ":viz_common",
@@ -145,6 +147,7 @@ py_binary(
         ":pano_geometry",
         ":track_builder",
         ":viz_common",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -179,6 +182,7 @@ py_binary(
         requirement("numpy"),
         requirement("pillow"),
         ":semantic_audit",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
         "//experimental/overhead_matching/swag/scripts:vertex_batch_manager_lib",
@@ -193,6 +197,7 @@ py_binary(
         requirement("numpy"),
         requirement("pillow"),
         ":semantic_audit",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -264,6 +269,8 @@ py_binary(
     srcs = ["m9_match_landmarks.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/scripts:vertex_batch_manager",
         requirement("pandas"),
         requirement("pyarrow"),
         "//experimental/overhead_matching/swag/data:landmark_schema",
@@ -280,10 +287,62 @@ py_binary(
 )
 
 py_binary(
+    name = "mount_offset_sweep",
+    srcs = ["mount_offset_sweep.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":bearing_matcher",
+        ":heading",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/landmark_filtering:ingest",
+        "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+    ],
+)
+
+py_test(
+    name = "mount_offset_sweep_test",
+    srcs = ["mount_offset_sweep_test.py"],
+    deps = [
+        ":mount_offset_sweep",
+    ],
+)
+
+py_binary(
+    name = "pipeline_status",
+    srcs = ["pipeline_status.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("Pillow"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/data:landmark_schema",
+    ],
+)
+
+py_binary(
+    name = "run_pipeline",
+    srcs = ["run_pipeline.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+    ],
+)
+
+py_test(
+    name = "run_pipeline_test",
+    srcs = ["run_pipeline_test.py"],
+    deps = [
+        ":run_pipeline",
+    ],
+)
+
+py_binary(
     name = "bow_calibration",
     srcs = ["bow_calibration.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         requirement("numpy"),
         requirement("pillow"),
         ":pano_geometry",
@@ -298,6 +357,7 @@ py_binary(
         requirement("pillow"),
         ":semantic_audit",
         ":track_merge",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -314,6 +374,7 @@ py_binary(
         ":semantic_audit",
         ":track_builder",
         ":viz_common",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -330,6 +391,7 @@ py_binary(
     srcs = ["m3_track_viewer.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         requirement("numpy"),
         requirement("pillow"),
         ":pano_geometry",
@@ -354,6 +416,7 @@ py_binary(
         ":video_frames",
         ":viz_common",
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -368,6 +431,7 @@ py_binary(
         requirement("pillow"),
         ":pano_geometry",
         ":viz_common",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
     ],
@@ -377,6 +441,7 @@ py_binary(
     name = "m11_localization_export",
     srcs = ["m11_localization_export.py"],
     deps = [
+        "//experimental/overhead_matching/swag/data:farfield_paths",
         requirement("msgspec"),
         requirement("numpy"),
         "//common/python:serialization",

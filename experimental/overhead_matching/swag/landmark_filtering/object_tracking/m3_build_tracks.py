@@ -10,45 +10,62 @@ import argparse
 import html
 from pathlib import Path
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     range_runner as rr,
     track_builder as tb,
     viz_common as vc,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_VIDEO = Path(
-    "/data/farfield_matching/raw_material/boston_harbor_20260712/videos/long_wharf_to_hull_wharf.mp4")
-DEFAULT_OUTPUT = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m3_tracks")
-DEFAULT_CHECKPOINT = Path(
-    "/data/farfield_matching/models/sam2/sam2.1_hiera_large.pt")
+STAGE_DIR = "m3_tracks"
 
-DEFAULT_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
-                  ("f0149_fort", 141, 171)]
+# Short dev ranges chosen on boston_harbor_leg1 for iteration speed. They are
+# keyframe indices, so they mean nothing in particular on another leg; without
+# --range they are clamped to whatever that dataset actually has.
+LEG1_DEV_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
+                   ("f0149_fort", 141, 171)]
+
+
+def clamp_ranges(ranges, last_keyframe):
+    """Drop or shorten dev ranges that run past the end of a dataset."""
+    kept = []
+    for name, k_start, k_end in ranges:
+        if k_start > last_keyframe:
+            print(f"skipping range {name}: starts past f{last_keyframe:04d}")
+            continue
+        if k_end > last_keyframe:
+            print(f"clamping range {name} to f{last_keyframe:04d}")
+            k_end = last_keyframe
+        kept.append((name, k_start, k_end))
+    return kept
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
-    parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    farfield_paths.add_arguments(parser, video=True, checkpoint=True)
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help=f"default: <object_tracks artifact>/{STAGE_DIR}")
     parser.add_argument("--range", nargs=3, action="append", default=None,
                         metavar=("NAME", "K_START", "K_END"),
                         help="override default keyframe ranges")
     args = parser.parse_args()
 
-    ranges = ([(n, int(a), int(b)) for n, a, b in args.range]
-              if args.range else DEFAULT_RANGES)
-    ctx = rr.load_context(args.dataset_base, args.landmark_base, args.video,
-                          args.checkpoint)
+    paths = farfield_paths.resolve(
+        parser, args,
+        require=("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"))
+    ctx = rr.load_context(paths.dataset_base, paths.frame_landmarks,
+                          paths.video, paths.sam2_checkpoint)
+    if args.range:
+        ranges = [(n, int(a), int(b)) for n, a, b in args.range]
+    else:
+        ranges = clamp_ranges(LEG1_DEV_RANGES,
+                              max(f.frame_idx for f in ctx["result"].frames))
+        if not ranges:
+            parser.error("no default range fits this dataset; pass --range "
+                         "NAME K_START K_END")
     font = vc.load_font(13)
     builder_cfg = tb.TrackBuilderConfig()
-    out = args.output_dir
+    out = args.output_dir or paths.tracks_stage(STAGE_DIR)
     out.mkdir(parents=True, exist_ok=True)
 
     html_parts = [
@@ -66,7 +83,7 @@ def main():
             range_name, k_start, k_end, builder_cfg, ctx["backend"],
             ctx["provider"], ctx["model"], ctx["result"], ctx["obs_by_frame"],
             ctx["det_pano_boxes"], ctx["pano_w"], ctx["pano_h"],
-            args.dataset_base, renderer=renderer)
+            paths.dataset_base, renderer=renderer)
         board = renderer.compose(builder, k_start, k_end, font)
         board_rel = f"board_{range_name}.jpg"
         board.save(out / board_rel, quality=88)

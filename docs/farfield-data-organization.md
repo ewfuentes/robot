@@ -195,8 +195,11 @@ between versions. Current kinds:
 Deliberately **not** kinds: description embeddings (`embeddings.pkl` feeds
 only the cosine-similarity matcher in `semantic_similarity.py`; it becomes a
 kind only if that matcher survives the LLM-chunked one), and batch-API
-intermediates like `sentence_requests/` (nothing reads them back — that is
-scratch, drop or archive it). The one existing extraction
+intermediates like `sentence_requests/` — no stage reads those back, but they
+are **not** deletable scratch: every request line carries the system prompt
+verbatim, so they are the artifact's only record of the prompt text it was
+built with, and the only thing `request_sha256` can be recomputed against.
+Keep them with the artifact; archive rather than drop. The one existing extraction
 (`panorama_landmarks/boston_harbor_leg1`, in the old overhead_matching
 batch-job layout that `ingest.py` globs through) migrates as
 `frame_landmarks/v1/` with a manifest noting the legacy layout; when
@@ -218,6 +221,53 @@ Every `v<N>/` contains a `manifest.json`:
   "notes": "legacy batch-job layout; ingest.py globs sentences/results/*/prediction-*/predictions.jsonl"
 }
 ```
+
+### Required: an output records everything needed to recreate it
+
+**Every artifact and every run must carry, with its outputs, the complete set of
+inputs and settings needed to reproduce it.** Not "most of", and not "whatever
+the producer happened to find convenient to print". If a number changed the
+output, it belongs in the record. This is a hard requirement, not a
+best-practice aspiration: an artifact that cannot be traced back to how it was
+made is not releasable, and it cannot be compared against a later version.
+
+The record must pin all of:
+
+| what | why it is not optional |
+|---|---|
+| **generator** — bazel target, not a prose description | so the producer can actually be re-run |
+| **git commit** of the workspace | the code is a setting |
+| **every input path**, dataset and artifact versions included | `v1` vs `v2` of an input silently changes the output |
+| **every knob that affects the output** — thresholds, resolutions, batch sizes, gates | anything a flag can change |
+| **model identity** for every model involved, including secondary ones | an extraction has both a VLM *and* an embedding model; naming only the first hides half the pipeline |
+| **prompt content, by digest** — not just its name | prompt names are lookup keys whose text can be edited in place, so two artifacts can claim identical provenance from different prompts |
+| **coverage / completeness** — how many inputs produced usable output | see below |
+
+Two failure modes this exists to prevent, both observed in this project:
+
+- **A name is not a version.** `"prompt": "osm_tags_farfield"` names a key in
+  `SYSTEM_PROMPTS`. Editing that key's text changes every future extraction
+  while the manifest keeps saying the same thing. Record a digest over what was
+  actually sent (`request_sha256` over the request JSONL), which pins prompt,
+  resolution and input set together.
+- **Partial success is indistinguishable from a quiet environment.** A Vertex
+  batch job reports success at the job level while individual requests fail;
+  `boston_harbor_leg2` lost 23 of 236 frames to transient TPU errors. Nothing
+  downstream objects — `ingest` skips a frame with no prediction with a bare
+  `continue` — so tracking simply sees 10% of the leg as containing no objects.
+  A manifest that records only settings would look identical for a complete and
+  a 90%-complete artifact. So the count of inputs that produced usable output is
+  part of the record, and an incomplete artifact says so in its own manifest.
+
+Corollary for reproducibility: when a producer's provenance lives in an
+intermediate, that intermediate is part of the artifact and the manifest must
+say so. `request_sha256` is computed over `sentence_requests/`, and those
+request lines also carry the prompt text verbatim — which is what makes the
+extraction reproducible at all, since `"prompt": "osm_tags_farfield"` names a
+key whose text is edited in place and `git_commit` pins the tree rather than
+the working copy that ran. Delete the requests and the artifact can no longer
+say what it asked the model, nor be checked against its own digest. A record
+that silently becomes uncheckable is worse than one that admits its limits.
 
 The manifest, not the filename, is the record of how something was generated —
 kinds need it because nothing in their path says which prompt/model/config
@@ -312,8 +362,9 @@ Ordered cheapest-first; 1–4 are mechanical, 5 is the only invasive one.
    `datasets/boston_harbor_legN/` meeting the full contract (add
    `intrinsics.csv` + `pipeline_metadata.json`; copy the harbor catalog into
    each leg's `landmarks/`); `panorama_landmarks/boston_harbor_leg1` →
-   `artifacts/frame_landmarks/boston_harbor_leg1/v1/` (+ manifest; drop or
-   archive `sentence_requests/`, 449 MB nothing reads); `object_track_runs/` →
+   `artifacts/frame_landmarks/boston_harbor_leg1/v1/` (+ manifest; keep
+   `sentence_requests/`, 449 MB — no stage reads it, but it holds the prompt
+   text and backs `request_sha256`); `object_track_runs/` →
    `artifacts/object_tracks/<dataset>/v1/` (the whole working tree — products
    and boards together); `filter_runs/` → `artifacts/landmark_matching/<dataset>/v1/`;
    `evaluations/` → `runs/`.

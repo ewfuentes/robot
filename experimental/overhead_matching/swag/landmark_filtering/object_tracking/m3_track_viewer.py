@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
     range_runner as rr,
@@ -38,18 +39,58 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
     viz_common as vc,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_VIDEO = Path(
-    "/data/farfield_matching/raw_material/boston_harbor_20260712/videos/long_wharf_to_hull_wharf.mp4")
-DEFAULT_RUNS_ROOT = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m3_tracks/runs")
-DEFAULT_CHECKPOINT = Path(
-    "/data/farfield_matching/models/sam2/sam2.1_hiera_large.pt")
+STAGE_DIR = "m3_tracks"
 
-DEFAULT_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
-                  ("f0149_fort", 141, 171)]
+
+def refresh_artifact_manifest(paths, runs_root: Path, run_name: str):
+    """Write/refresh `manifest.json` for the object_tracks artifact.
+
+    No stage used to write one: leg1's was authored by hand during the disk
+    reorganisation, so a second dataset's artifact would have had none at all.
+    Refreshed on every run because this artifact is a *working tree* -- its
+    version bumps only when the pipeline changes shape, while runs accumulate
+    inside it -- so the manifest's job is to name the producer and point at the
+    per-run records that carry the settings.
+    """
+    if paths is None:
+        return
+    runs = sorted(p.name for p in runs_root.glob("*")
+                  if p.is_dir() and (p / "run_meta.json").exists())
+    root = paths.root
+    paths.write_manifest(
+        farfield_paths.OBJECT_TRACKS,
+        generator=("//experimental/overhead_matching/swag/landmark_filtering/"
+                   "object_tracking (m0-m3 + audit/merge/matching stages)"),
+        config={
+            "per_run": "m3_tracks/runs/<run>/run_meta.json records the resolved "
+                       "dataset, frame_landmarks and video, plus the ranges and "
+                       "notes; tracks_<range>.json carries the full "
+                       "TrackBuilderConfig it was built with",
+            "per_stage": {
+                "semantic_audit": "<run>/semantic_audit/audit_meta.json",
+                "merge": "<run>/merged/",
+                "matching": "<run>/matching/settings.json",
+                "mount_offset": "<run>/mount_offset_sweep.json",
+            },
+            "runs": runs,
+            "latest_run": run_name,
+        },
+        inputs=[
+            farfield_paths.relative_to_root(paths.dataset_base, root),
+            farfield_paths.relative_to_root(paths.frame_landmarks, root),
+            farfield_paths.relative_to_root(paths.video, root),
+        ],
+        notes=("Working tree of the tracking pipeline: products and their debug "
+               "boards travel together, and the internal layout is the "
+               "producer's. Immutability lives on the run ids - never "
+               "regenerate an rNNN in place with different settings, mint the "
+               "next one. Mint v<N+1> if the pipeline changes shape."),
+    )
+
+# Short dev ranges from boston_harbor_leg1. A real run passes --range covering
+# the whole leg; these exist so an iteration on a rule change is cheap.
+LEG1_DEV_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
+                   ("f0149_fort", 141, 171)]
 
 CLASS_COLORS = {
     "continue_clean": (60, 220, 60),
@@ -403,16 +444,14 @@ def timeline_svg(range_name, artifact):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
-    parser.add_argument("--runs_root", type=Path, default=DEFAULT_RUNS_ROOT)
+    farfield_paths.add_arguments(parser, video=True, checkpoint=True)
+    parser.add_argument("--runs_root", type=Path, default=None,
+                        help=f"default: <object_tracks artifact>/{STAGE_DIR}/runs")
     parser.add_argument("--run_name", required=True,
                         help="results land in <runs_root>/<run_name>/")
     parser.add_argument("--notes", default="",
                         help="what changed in this run and why (shown in "
                              "run_meta.json and the diff viewer)")
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--range", nargs=3, action="append", default=None,
                         metavar=("NAME", "K_START", "K_END"))
     parser.add_argument("--skip_existing_ranges", action="store_true",
@@ -421,20 +460,43 @@ def main():
                              "(resume after a crash / partial iteration)")
     args = parser.parse_args()
 
-    ranges = ([(n, int(a), int(b)) for n, a, b in args.range]
-              if args.range else DEFAULT_RANGES)
-    ctx = rr.load_context(args.dataset_base, args.landmark_base, args.video,
-                          args.checkpoint)
+    paths = farfield_paths.resolve(
+        parser, args,
+        require=("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"))
+    ctx = rr.load_context(paths.dataset_base, paths.frame_landmarks,
+                          paths.video, paths.sam2_checkpoint)
+    last_keyframe = max(f.frame_idx for f in ctx["result"].frames)
+    if args.range:
+        ranges = [(n, int(a), int(b)) for n, a, b in args.range]
+        past_end = [n for n, _, b in ranges if b > last_keyframe]
+        if past_end:
+            parser.error(
+                f"range(s) {', '.join(past_end)} end past this dataset's last "
+                f"keyframe f{last_keyframe:04d} ({paths.dataset} has "
+                f"{len(ctx['result'].frames)} frames)")
+    else:
+        ranges = [(n, a, min(b, last_keyframe)) for n, a, b in LEG1_DEV_RANGES
+                  if a <= last_keyframe]
+        if not ranges:
+            parser.error("no default range fits this dataset; pass --range "
+                         "NAME K_START K_END")
     font = vc.load_font(13)
     builder_cfg = tb.TrackBuilderConfig()
-    out = args.runs_root / args.run_name
+    runs_root = args.runs_root or paths.tracks_runs_root
+    out = runs_root / args.run_name
     out.mkdir(parents=True, exist_ok=True)
     import datetime
     (out / "run_meta.json").write_text(json.dumps({
         "run_name": args.run_name,
+        "dataset": paths.dataset,
         "notes": args.notes,
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
         "viewer_rel": ".",
+        "inputs": {
+            "dataset_base": str(paths.dataset_base),
+            "frame_landmarks": str(paths.frame_landmarks),
+            "video": str(paths.video),
+        },
         "ranges": [{"name": n, "k_start": a, "k_end": b}
                    for n, a, b in ranges],
     }, indent=1))
@@ -455,7 +517,7 @@ def main():
             range_name, k_start, k_end, builder_cfg, ctx["backend"],
             ctx["provider"], ctx["model"], ctx["result"], ctx["obs_by_frame"],
             ctx["det_pano_boxes"], ctx["pano_w"], ctx["pano_h"],
-            args.dataset_base, on_interval=sink.on_interval)
+            paths.dataset_base, on_interval=sink.on_interval)
         rr.write_artifact(artifact, out, range_name)
         artifacts[range_name] = artifact
         print("  encoding videos ...")
@@ -553,6 +615,12 @@ def main():
     (out / "index.html").write_text("\n".join(parts))
     print(f"wrote {out}/index.html ({len(keys)} track pages, "
           f"{len(videos)} videos)")
+
+    # Only when writing into the artifact lane; a --runs_root pointed elsewhere
+    # is scratch and should not claim to be an artifact version.
+    if runs_root == paths.tracks_runs_root:
+        refresh_artifact_manifest(paths, runs_root, args.run_name)
+        print(f"refreshed {paths.object_tracks}/manifest.json")
 
 
 if __name__ == "__main__":

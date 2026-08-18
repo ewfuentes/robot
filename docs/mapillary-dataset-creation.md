@@ -4,23 +4,25 @@ How to turn a Mapillary app link into a dataset the farfield/landmark-filtering
 pipeline can consume. Written so an agent can follow it without rediscovering the
 traps; the "Things that will bite you" section is the part that matters most.
 
-The collection scripts live outside this repo, in `~/scratch/mappilary`, because
-they carry a Mapillary API token. Everything they call for landmarks, figures and
-auditing is a bazel target in here.
+Everything is a bazel target in
+`//experimental/overhead_matching/swag/mapillary_tools` (moved from
+`~/scratch/mappilary` 2026-08-17). The API token is a secret and never lives in
+the repo: `MapillaryClient` reads `$MLY_TOKEN`, then `~/.config/mapillary/token`
+(chmod 600).
 
 ## The short version
 
 ```bash
-cd ~/scratch/mappilary
+MT=//experimental/overhead_matching/swag/mapillary_tools
 
-# 1. Is this seed worth collecting? Metadata only, no downloads.
-python screen_seeds.py --names folkestone_dover
+# 1. Is this capture usable? GPS consistency + density, metadata only.
+bazel run $MT:qc_candidates -- --seeds <pKey>
 
 # 2. Everything, for one trajectory.
-python run_farfield_collection.py --trajectories folkestone_dover
+bazel run $MT:run_farfield_collection -- --trajectories folkestone_dover
 
 # 3. Or the whole registry, pruning staged originals as it goes.
-python run_farfield_collection.py --trajectories all --prune_raw
+bazel run $MT:run_farfield_collection -- --trajectories all --prune_raw
 ```
 
 `--trajectories` is one **comma-separated** value (or `all`/`pilot`/`pano`/`perspective`),
@@ -30,16 +32,21 @@ Running several lanes concurrently is how the batch was done:
 
 ```bash
 for lane in "nagasaki_tometome,tokyo_bay,harima_a" "london_thames,sf_bay_pano"; do
-    nohup python run_farfield_collection.py --prune_raw --trajectories "$lane" &
+    bazel run $MT:run_farfield_collection -- --prune_raw --trajectories "$lane" \
+        > /tmp/lane_${lane%%,*}.log 2>&1 &
 done
 ```
 
-Three lanes is a safe default: stage 4 measures ~3 GB per extraction against its
+Three lanes is a safe default: stage 5 measures ~3 GB per extraction against its
 24 GB cap, and Python block-buffers stdout when redirected, so a lane's log stays
-empty for minutes before flushing. Watch `_raw/<name>/` growing rather than the log
-to confirm a lane is alive.
+empty for minutes before flushing. Watch the raw staging dir growing rather than
+the log to confirm a lane is alive.
 
-Output lands in `/data/farfield_matching/mapillary_datasets/<name>/`.
+Output follows the lifecycle lanes (`docs/farfield-data-organization.md`):
+datasets in `/data/farfield_matching/datasets/<name>/`, stage-1 manifests in
+`raw_material/mapillary_manifests/`, staged originals in
+`raw_material/mapillary_raw/` (removed by `--prune_raw`), pinhole faces as a
+versioned artifact `artifacts/pinhole_images/<name>/v1/` with a manifest.json.
 
 ## Adding a trajectory
 
@@ -53,13 +60,13 @@ Output lands in `/data/farfield_matching/mapillary_datasets/<name>/`.
    registry. Resolve the pKey against the API first:
 
    ```bash
-   python -c "from mapillary_lib.api import MapillaryClient as C; \
-       d=C().get_image_detail('<pKey>'); \
-       print(d['computed_geometry']['coordinates'], d['sequence'], d['creator'])"
+   bazel run $MT:qc_candidates -- --seeds <pKey>   # usability verdict + true km
    ```
 
-   Getting this wrong picks the wrong OSM extract for the whole trajectory.
-2. Add an entry to `~/scratch/mappilary/farfield_trajectories.py`:
+   Getting this wrong picks the wrong OSM extract for the whole trajectory —
+   verify the *true* position from the stage-1 manifest's bbox (or the QC
+   JSON's sequence) before choosing `osm`, and let step 3 confirm it.
+2. Add an entry to `swag/mapillary_tools/farfield_trajectories.py`:
 
 ```python
 "my_harbour": {
@@ -79,7 +86,7 @@ bazel run //experimental/overhead_matching/swag/scripts:pbf_coverage -- \
     --suggest --bbox <west> <south> <east> <north>
 ```
 
-   Stage 4 refuses to build a partial catalog, so a wrong `osm` list fails loudly
+   Stage 5 refuses to build a partial catalog, so a wrong `osm` list fails loudly
    with the uncovered bounds instead of quietly producing a thin dataset.
 
 4. Download the extracts it names into `~/scratch/osm_downloads/`.
@@ -91,14 +98,20 @@ bazel run //experimental/overhead_matching/swag/scripts:pbf_coverage -- \
 | 1 | RESOLVE | seed pKey → whole-trip stitched manifest |
 | 2 | DOWNLOAD | ordered, resume-safe image download |
 | 3 | CONVERT | images + metadata → dataset directory |
-| 4 | OSM | landmark feather (+ NOAA ENC in US waters), merged |
-| 5 | PINHOLE | four 90° faces — **equirectangular datasets only** |
-| 6 | TRIM | observable-from-water subset (`trim_landmark_feather`) |
-| 7 | PLOT | landmark coverage figure + gap checks |
-| 8 | TIMELAPSE | `trajectory.png` + `gps_timelapse.mp4` |
+| 4 | TIMELAPSE | `trajectory.png` + `gps_timelapse.mp4` |
+| 5 | OSM | landmark feather (+ NOAA ENC in US waters), merged |
+| 6 | PINHOLE | four 90° faces — **equirectangular datasets only** |
+| 7 | TRIM | observable-from-water subset (`trim_landmark_feather`) |
+| 8 | PLOT | landmark coverage figure + gap checks |
 | 9 | AUDIT | dataset contract audit, non-zero exit on failure |
 
-Run a subset with `--stages 4,7`. Stage 1 skips if a manifest exists (`--force`
+TIMELAPSE moved from 8 to 4 (2026-08-17): it feeds the human triage pass, and
+triage is the cheapest gate — 7 of the first 21 trajectories were rejected on
+the timelapse for faults no audit sees. **Eyeball the timelapse before running
+stage 5+**; a rejected trajectory then costs one mp4, not an Overpass catalog
+and a pinhole render.
+
+Run a subset with `--stages 5,8`. Stage 1 skips if a manifest exists (`--force`
 to redo).
 
 ## What a finished dataset looks like
@@ -126,17 +139,31 @@ to redo).
 ```
 
 Pinhole faces live at
-`/data/farfield_matching/artifacts/pinhole_images/<name>/v1/` (moved
-2026-08-16; the orchestrator's stage-5 output root in `~/scratch/mappilary`
-still writes to the old `/data/overhead_matching/datasets/pinhole_images/`
-path — update it before the next collection run).
+`/data/farfield_matching/artifacts/pinhole_images/<name>/v1/` with a
+`manifest.json`. (The pinhole stage wrote to the old
+`/data/overhead_matching/datasets/pinhole_images/` path until 2026-08-17,
+when the orchestrator moved into this repo and the default was fixed.)
 
 ## Things that will bite you
 
-**Images are stored unrotated.** Panoramas are *not* north-aligned. Orientation
-lives in `intrinsics.csv:heading_deg`, and `heading_reference` says what that
-bearing is *of* — `column_0` for equirectangular frames, `optical_axis` for
-perspective. The formula is in `pipeline_metadata.json:azimuth_convention`:
+**Images are stored as captured — except world-locked captures, which get
+their pixels unwound.** Orientation lives in `intrinsics.csv:heading_deg`, and
+`heading_reference` says what that bearing is *of* — `column_0` for
+equirectangular frames, `optical_axis` for perspective.
+
+The old blanket rule ("never rotate pixels") was deleted by ekf 2026-08-17
+after innsbruck: some 360 apps ship *world-locked* frames — in-camera IMU
+stabilization pins yaw to a world reference that drifts (no compass
+correction) and re-initializes between recordings, producing a yaw jump at
+every recording seam. Those pixels already contain a stabilizer's heading
+estimate, and a broken one; "as captured" is not a well-defined frame there.
+Re-rolling such frames to true north-at-center (the VIGOR house convention)
+is therefore sanctioned; sun-ephemeris yaw is the ground truth for it (see
+the sun method in the azimuth-convention notes). No unwind tool is built yet
+— innsbruck, the first such capture, was resolved by trimming away the
+recording whose yaw reference was unrecoverable and keeping the other.
+Ordinary body-fixed captures are still stored exactly as captured. The
+azimuth formula is in `pipeline_metadata.json:azimuth_convention`:
 
 ```
 equirect:    azimuth = (heading_deg + (col/width)*360) mod 360
@@ -346,7 +373,7 @@ Two independent causes, both fixed:
   `--node_margin_deg` (0.1 by default in the orchestrator) bounds it to
   bbox + margin, taking whole France from 28 GB and climbing to 3.0 GB / 1:37.
 
-Stage 4 also runs inside `systemd-run --scope -p MemoryMax=24G -p
+The OSM stage also runs inside `systemd-run --scope -p MemoryMax=24G -p
 MemorySwapMax=0`, so a surprise dies in its own cgroup instead of taking the
 machine down — which it did once, before these fixes.
 

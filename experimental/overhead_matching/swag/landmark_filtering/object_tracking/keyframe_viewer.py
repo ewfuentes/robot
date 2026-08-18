@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
@@ -37,9 +38,6 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 MASK_COLOR = (255, 60, 60)
 CHIP_H = 200
@@ -112,18 +110,20 @@ def track_associations(artifact, classifier_cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
     parser.add_argument("--pano_width", type=int, default=3072)
     parser.add_argument("--kf_start", type=int, default=None)
     parser.add_argument("--kf_end", type=int, default=None)
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "frame_landmarks"))
 
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
     range_name = artifact.get("range", {}).get("name", "full_leg1")
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_frame = defaultdict(list)
     for o in result.observations:
@@ -151,7 +151,7 @@ def main():
         obs_list = sorted(obs_by_frame.get(kf, []), key=lambda o: o.obs_id)
         masks = sorted(masks_by_kf.get(kf, []))
         pano = np.asarray(Image.open(
-            args.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
+            paths.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
         pano_h, pano_w = pano.shape[:2]
         scale = args.pano_width / pano_w
 

@@ -287,16 +287,19 @@ alone — the detection was a misidentified seawall.
 | flag | default | meaning |
 |---|---|---|
 | `--run_dir` | required | tracking run to audit |
-| `--dataset_base` / `--landmark_base` | boston leg1 | panoramas / VLM predictions |
+| `--dataset_base` / `--landmark_base` | inferred from `--run_dir` | panoramas / VLM predictions; override only for ad-hoc inputs |
 | `--min_supports` | 3 | overrides `AuditConfig.min_supports` |
 | `--max_tracks` | none | cap the number of requests (debugging) |
 | `--model` | `gemini-3-flash-preview` | used only with `--submit` |
 | `--submit` | off | run the requests through Vertex immediately instead of only writing `requests.jsonl` |
 | `--parallel` | 8 | concurrent online requests |
 
-`m5_audit_results_viewer` takes `--run_dir`, `--dataset_base`,
-`--landmark_base`, and `--no_extra_chips` (skip re-rendering strike/secondary
-chips).
+`m5_audit_results_viewer` takes `--run_dir`, the same resolution flags, and
+`--no_extra_chips` (skip re-rendering strike/secondary chips).
+
+Paths in every stage come from `swag/data/farfield_paths.py`, keyed on the
+dataset name; stages that take `--run_dir` read the dataset out of the run's own
+path, so there is no second place for it to disagree.
 
 #### Output schema (`semantic_audit.TrackAudit`)
 

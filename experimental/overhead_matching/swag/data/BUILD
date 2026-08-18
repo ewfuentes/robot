@@ -2,6 +2,23 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+  name = "farfield_paths",
+  srcs = ["farfield_paths.py"],
+  visibility = [
+    "//experimental/overhead_matching:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+)
+
+py_test(
+  name = "farfield_paths_test",
+  srcs = ["farfield_paths_test.py"],
+  deps = [
+    ":farfield_paths",
+  ]
+)
+
+py_library(
   name = "landmark_schema",
   srcs = ["landmark_schema.py"],
   visibility = [

@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     semantic_audit as sa,
@@ -39,10 +40,6 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 from experimental.overhead_matching.swag.scripts import vertex_batch_manager as vbm
-
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 
 def render_all_chips(dossiers, frames_by_idx, dataset_base, chips_dir,
@@ -113,9 +110,8 @@ def write_preview(out_dir, dossiers, chip_paths, texts):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
     parser.add_argument("--min_supports", type=int, default=2,
                         help="Supports required to audit a track. 2 means "
                              "3 detections counting the birth. Tracks below "
@@ -123,15 +119,17 @@ def main():
                              "un-audited tracks are not carried forward.")
     parser.add_argument("--max_tracks", type=int, default=None,
                         help="Cap request count (debugging)")
-    parser.add_argument("--model", default="gemini-3-flash-preview")
+    vbm.add_execution_arguments(parser)
     parser.add_argument("--submit", action="store_true",
                         help="Run the requests through Vertex now (online)")
-    parser.add_argument("--parallel", type=int, default=8)
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "frame_landmarks"))
 
     cfg = sa.AuditConfig(min_supports=args.min_supports)
     artifact = json.loads(next(args.run_dir.glob("tracks_*.json")).read_text())
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_id = {o.obs_id: o for o in result.observations}
     frames_by_idx = {f.frame_idx: f for f in result.frames}
@@ -152,7 +150,7 @@ def main():
 
     out_dir = args.run_dir / "semantic_audit"
     out_dir.mkdir(exist_ok=True)
-    chip_paths = render_all_chips(dossiers, frames_by_idx, args.dataset_base,
+    chip_paths = render_all_chips(dossiers, frames_by_idx, paths.dataset_base,
                                   out_dir / "chips", cfg)
     print(f"rendered {len(chip_paths)} chips")
 
@@ -192,17 +190,16 @@ def main():
     print(f"preview: {preview_path}")
 
     if args.submit:
-        vbm.cmd_run_online(argparse.Namespace(
-            input=str(requests_path),
-            output=str(out_dir / "results.jsonl"),
-            model=args.model, parallel=args.parallel))
+        vbm.run_requests(args, requests_path, out_dir / "results.jsonl",
+                         tag=f"{paths.dataset}_audit_{args.run_dir.name}")
     else:
-        print("\nto submit:")
+        transport = "run-online" if args.online else "run-batch"
+        print(f"\nto submit ({transport}):")
         print("  bazel run //experimental/overhead_matching/swag/scripts:"
-              "vertex_batch_manager -- run-online \\")
+              f"vertex_batch_manager -- {transport} \\")
         print(f"      --input {requests_path} \\")
         print(f"      --output {out_dir / 'results.jsonl'} \\")
-        print(f"      --model {args.model} --parallel {args.parallel}")
+        print(f"      --model {args.model}")
 
 
 if __name__ == "__main__":

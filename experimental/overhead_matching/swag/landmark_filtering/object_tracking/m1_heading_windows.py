@@ -27,6 +27,7 @@ from PIL import Image, ImageDraw
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     heading as heading_mod,
@@ -38,19 +39,17 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
-DEFAULT_VIDEO = Path(
-    "/data/farfield_matching/raw_material/boston_harbor_20260712/videos/long_wharf_to_hull_wharf.mp4")
-DEFAULT_OUTPUT = Path(
-    "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v1/m1_heading")
+STAGE_DIR = "m1_heading"
 
 # (name, anchor_obs_id, n_keyframe_intervals, video-frame stride).
 # The departure case spans the boat's ~50 deg rotation away from the dock:
 # nearly pure yaw with little translation, so it isolates the heading-
 # compensation sign from parallax.
-TEST_CASES = [
+#
+# These ids are boston_harbor_leg1's. Observation ids are per-dataset, so on any
+# other leg they resolve to nothing and `--auto_cases` picks comparable anchors
+# instead; see `auto_test_cases`.
+LEG1_TEST_CASES = [
     ("f0000_custom_house_tower", "f0000__lm0__box0", 2, 2),
     ("f0000_cht_departure", "f0000__lm0__box0", 12, 8),
     ("f0122_crane_group", "f0122__lm2__box0", 2, 2),
@@ -61,7 +60,52 @@ WIN_W, WIN_H = 1024, 576
 THUMB_W, THUMB_H = 384, 216
 
 
-def plot_heading(model, frames, anchor_frames, out_path):
+def auto_test_cases(model, frames_by_idx, obs_by_frame, n_cases=4,
+                    spans=(2, 12), min_separation=20):
+    """Choose anchors from the dataset itself, for legs with no curated ids.
+
+    The strip only discriminates where the boat actually turns: when `dh` is near
+    zero all three rows agree and the compensation sign is unidentifiable, so a
+    case picked at random is likely to prove nothing. Candidates are therefore
+    ranked by the heading change across their span, and within a chosen keyframe
+    the largest observation wins because a big object is what makes the drift
+    legible by eye.
+
+    `min_separation` keeps the cases from clustering on a single turn, which
+    would show the same evidence four times.
+    """
+    last_k = max(frames_by_idx)
+
+    def box_area(obs):
+        return sum(max(0.0, b.xmax - b.xmin) * max(0.0, b.ymax - b.ymin)
+                   for b in obs.boxes)
+
+    candidates = []
+    for k, observations in obs_by_frame.items():
+        if k not in frames_by_idx or not observations:
+            continue
+        for span in spans:
+            end = min(k + span, last_k)
+            if end <= k:
+                continue
+            t0, t1 = frames_by_idx[k].time_s, frames_by_idx[end].time_s
+            dh = abs(model.delta(t1, t0))
+            candidates.append((dh, k, span, max(observations, key=box_area)))
+
+    cases = []
+    chosen = []
+    for dh, k, span, obs in sorted(candidates, key=lambda c: -c[0]):
+        if any(abs(k - other) < min_separation for other in chosen):
+            continue
+        cases.append((f"f{k:04d}_auto_dh{dh:.0f}", obs.obs_id, span,
+                      2 if span <= 4 else 8))
+        chosen.append(k)
+        if len(cases) >= n_cases:
+            break
+    return cases
+
+
+def plot_heading(model, frames, anchor_frames, out_path, dataset=""):
     times = np.array([f.time_s for f in frames])
     xs = np.array([f.x_m for f in frames])
     ys = np.array([f.y_m for f in frames])
@@ -81,7 +125,8 @@ def plot_heading(model, frames, anchor_frames, out_path):
             ax.axvline(frame.time_s, color="tab:red", alpha=0.5, ls="--")
         ax1.annotate(name, (frame.time_s, ax1.get_ylim()[1]), rotation=90,
                      fontsize=8, va="top")
-    fig.suptitle("GPS-course heading model (leg1)")
+    fig.suptitle(f"GPS-course heading model ({dataset})" if dataset
+                 else "GPS-course heading model")
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
@@ -162,15 +207,20 @@ def render_alignment_check(provider, dataset_base, frame, out_path, font):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
-    parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
-    parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT)
+    farfield_paths.add_arguments(parser, video=True)
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help=f"default: <object_tracks artifact>/{STAGE_DIR}")
+    parser.add_argument("--auto_cases", action="store_true",
+                        help="pick anchors from the data instead of the "
+                             "curated leg1 ids (implied when none resolve)")
     args = parser.parse_args()
 
-    out = args.output_dir
+    paths = farfield_paths.resolve(
+        parser, args,
+        require=("dataset_base", "frame_landmarks", "video"))
+    out = args.output_dir or paths.tracks_stage(STAGE_DIR)
     out.mkdir(parents=True, exist_ok=True)
-    result = ingest.run_ingest(args.dataset_base, args.landmark_base,
+    result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     frames_by_idx = {f.frame_idx: f for f in result.frames}
     obs_by_frame = {}
@@ -183,17 +233,33 @@ def main():
         [f.x_m for f in result.frames], [f.y_m for f in result.frames],
         [f.time_s for f in result.frames])
 
+    # Observation ids are per-dataset, so leg1's curated anchors simply do not
+    # exist on another leg. Falling back rather than raising keeps this a
+    # one-command spot-check on a new leg, which is the only time it is run.
+    cases = [] if args.auto_cases else [c for c in LEG1_TEST_CASES
+                                        if c[1] in obs_by_id]
+    if not cases:
+        cases = auto_test_cases(model, frames_by_idx, obs_by_frame)
+        print(f"using {len(cases)} auto-selected anchor(s): "
+              f"{', '.join(c[0] for c in cases)}")
+    elif len(cases) < len(LEG1_TEST_CASES):
+        print(f"WARNING: only {len(cases)} of {len(LEG1_TEST_CASES)} curated "
+              f"anchors exist in this dataset")
+    if not cases:
+        parser.error("no anchor observations available; does "
+                     f"{paths.frame_landmarks} hold any detections?")
+
     anchors = [(name, obs_by_id[oid], n_int, stride)
-               for name, oid, n_int, stride in TEST_CASES]
+               for name, oid, n_int, stride in cases]
     plot_heading(model, result.frames,
                  [(n, frames_by_idx[a.frame_idx]) for n, a, _, _ in anchors],
-                 out / "heading.png")
+                 out / "heading.png", dataset=paths.dataset)
     print("wrote heading.png")
 
-    provider = video_frames.VideoFrameProvider(args.video)
+    provider = video_frames.VideoFrameProvider(paths.video)
     print(f"video: {provider.n_frames} frames @ {provider.fps:.3f} fps")
     probe = Image.open(
-        args.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
+        paths.dataset_base / "panorama" / f"{result.frames[0].pano_stem}.jpg")
     pano_w, pano_h = probe.size
     font = vc.load_font(14)
 
@@ -208,7 +274,7 @@ def main():
     for name, anchor, _, _ in anchors:
         frame = frames_by_idx[anchor.frame_idx]
         rel = f"align_{frame.pano_id}.jpg"
-        diff = render_alignment_check(provider, args.dataset_base, frame,
+        diff = render_alignment_check(provider, paths.dataset_base, frame,
                                       out / rel, font)
         print(f"alignment {frame.pano_id}: mean|diff|={diff:.2f}")
         html_parts.append(f"<img src='{rel}' loading='lazy'>")

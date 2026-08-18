@@ -35,6 +35,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     semantic_audit as sa,
@@ -43,9 +44,6 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
     IngestConfig,
 )
 
-DEFAULT_DATASET = Path("/data/farfield_matching/datasets/boston_harbor_leg1")
-DEFAULT_LANDMARKS = Path(
-    "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v1")
 
 VERDICT_CSS = {"keep": "#3c3", "keep_partial": "#fa2", "drop": "#e55"}
 
@@ -315,12 +313,14 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    farfield_paths.add_arguments(parser)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--dataset_base", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--landmark_base", type=Path, default=DEFAULT_LANDMARKS)
     parser.add_argument("--no_extra_chips", action="store_true",
                         help="Skip rendering chips for strikes/secondaries")
     args = parser.parse_args()
+    paths = farfield_paths.resolve(
+        parser, args, infer_from=args.run_dir,
+        require=("dataset_base", "frame_landmarks"))
 
     audit_dir = args.run_dir / "semantic_audit"
     audits, errors = load_results(audit_dir)
@@ -343,7 +343,7 @@ def main():
         print(f"rendering {n_wanted} extra chips "
               f"(strikes/secondaries) for {len(wants)} tracks")
         extra_chips = render_extra_chips(
-            wants, artifact, meta, args.dataset_base, args.landmark_base,
+            wants, artifact, meta, paths.dataset_base, paths.frame_landmarks,
             audit_dir / "chips", cfg)
         print(f"rendered {len(extra_chips)}")
 
