@@ -66,15 +66,14 @@ def _load_tables(path: Path) -> dict:
 
 def _alias_tables(tables: dict, measured_ids: set) -> tuple[dict, dict]:
     """Cover measured tracklets whose merge name postdates matching."""
-    aliases = {}
+    aliases, orphans, ambiguous = {}, [], {}
     for tid in sorted(measured_ids - set(tables)):
         ancestors = [known for known in tables
                      if tid.startswith(known + "_T")]
         if len(ancestors) != 1:
-            raise ValueError(
-                f"measured tracklet {tid!r} has no table and "
-                f"{len(ancestors)} merge ancestors {ancestors!r}; cannot "
-                f"alias unambiguously")
+            (orphans.append(tid) if not ancestors
+             else ambiguous.__setitem__(tid, ancestors))
+            continue
         source = tables[ancestors[0]]
         aliases[tid] = ancestors[0]
         tables = dict(tables)
@@ -86,6 +85,23 @@ def _alias_tables(tables: dict, measured_ids: set) -> tuple[dict, dict]:
             clip_lo=source.clip_lo,
             clip_hi=source.clip_hi,
             status=source.status)
+    # Report the whole mismatch at once, and name its usual cause: dying on the
+    # first orphan leaves you guessing whether one tracklet is odd or the
+    # matching run is simply older than the merge it is being joined to.
+    if orphans or ambiguous:
+        detail = []
+        if orphans:
+            detail.append(
+                f"{len(orphans)} of {len(measured_ids)} measured tracklets "
+                f"have no compatibility table and no merge ancestor "
+                f"(e.g. {orphans[:5]}). Matching that predates the current "
+                f"merge does this: re-run m9_match_landmarks against this "
+                f"run's merged/ output.")
+        if ambiguous:
+            detail.append(
+                f"{len(ambiguous)} cannot be aliased unambiguously, e.g. "
+                f"{list(ambiguous.items())[:3]}.")
+        raise ValueError(" ".join(detail))
     return tables, aliases
 
 

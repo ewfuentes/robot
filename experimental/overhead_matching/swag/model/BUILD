@@ -100,6 +100,15 @@ py_test(
   ]
 )
 
+py_test(
+  name = "semantic_landmark_extractor_request_stems_test",
+  srcs = ["semantic_landmark_extractor_request_stems_test.py"],
+  deps = [
+    requirement("pillow"),
+    ":semantic_landmark_extractor",
+  ]
+)
+
 py_library(
   name = "swag_patch_embedding",
   srcs = ["swag_patch_embedding.py"],

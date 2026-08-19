@@ -1195,6 +1195,26 @@ def create_panorama_description_requests(args):
         panorama_folders = all_panorama_folders
         print(f"Found {len(panorama_folders)} panorama folders")
 
+    # Restrict to the stems the dataset currently contains. The pinhole render
+    # is an artifact that can outlive a dataset trim (folkestone_dover
+    # 2026-08-17: 399 rendered stems vs 105 kept panoramas), and every extra
+    # stem here is a paid model call for a frame nothing downstream reads.
+    if getattr(args, 'panorama_dir', None):
+        panorama_dir = Path(args.panorama_dir)
+        wanted = {p.stem for p in panorama_dir.iterdir()
+                  if p.suffix.lower() in ('.jpg', '.jpeg', '.png')}
+        rendered = {f.name for f in panorama_folders}
+        missing = wanted - rendered
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} panorama(s) in {panorama_dir} have no pinhole "
+                f"render, e.g. {sorted(missing)[:3]}; re-run the pinhole stage")
+        n_stale = len(panorama_folders) - len(wanted)
+        if n_stale:
+            print(f"Excluding {n_stale} rendered stem(s) not in {panorama_dir} "
+                  f"(stale pinhole render)")
+        panorama_folders = [f for f in panorama_folders if f.name in wanted]
+
     if not panorama_folders:
         print(f"No panorama folders found to process")
         return
@@ -1457,6 +1477,10 @@ if __name__ == "__main__":
                                             help='Create batch requests for panorama landmark extraction (Gemini format)')
     panorama_parser.add_argument('--pinhole_dir', type=str, required=True,
                                  help='Directory containing panorama subfolders with pinhole images')
+    panorama_parser.add_argument('--panorama_dir', type=str, default=None,
+                                 help='Dataset panorama dir; requests are restricted to stems '
+                                      'present here, guarding against paying for stems a stale '
+                                      'pinhole render kept after a dataset trim')
     panorama_parser.add_argument('--output_base', type=str, default="/tmp/",
                                  help='Base path for output batch request files')
     panorama_parser.add_argument('--prompt_type', type=str, default='panorama',

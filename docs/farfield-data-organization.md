@@ -29,12 +29,25 @@ belongs in a cache — the hash is its manifest.
 
 Release = `datasets/ + artifacts/ + selected runs/` (and `raw_material/` if we
 choose to ship raw), minus every `cache/`. Third-party checkpoints ship as a
-downloader script, not bytes. Everything currently on the disk is
-redistributable with attribution (self-collects are ours; Mapillary imagery is
-CC-BY-SA; OSM is ODbL; NOAA ENC is public domain). If a non-redistributable
-input ever lands (e.g. satellite tiles for a baseline), quarantine it in its
-own clearly-named top-level directory at that point — don't mix it into these
-lanes.
+downloader script, not bytes.
+
+**Release terms are per-dataset, not a property of the disk.** Much of what is
+here is redistributable with attribution (self-collects are ours; Mapillary
+imagery is CC-BY-SA; OSM is ODbL; NOAA ENC is public domain), but some of it is
+not, and the restricted material sits in the normal lanes rather than in
+quarantine. So a release is assembled by checking each dataset's terms, never by
+taking a lane wholesale. Each dataset records its own terms in
+`pipeline_metadata.json` — `upstream.license` where it comes from a third party,
+`anonymization` where the constraint is about people in frame — and
+`/data/farfield_matching/ORGANIZATION.md` lists the current restrictions.
+**Anything derived from a restricted dataset inherits its restriction**,
+including artifacts that carry pixels (pinhole faces, tracking crops, debug
+boards) and any run output that embeds them.
+
+Quarantine in a clearly-named top-level directory is still the right move for an
+input that cannot be redistributed *at all* (e.g. satellite tiles for a
+baseline). It is the wrong move for material that is redistributable under
+conditions — that belongs in the lanes, labelled.
 
 ## Top-level target layout
 

@@ -27,6 +27,7 @@ output already exists is skipped unless `--force`):
     extract   pinhole_images + frame_landmarks artifacts (Gemini, batch)
     boxes     m0 detection-box viewer  (geometry spot-check)
     tracks    m3 tracking + per-track viewer  (GPU, the long pole)
+    keyframes per-keyframe detection viewer  (the pages track pages link into)
     audit     m5 semantic audit requests + execution
     review    m5 audit results viewer
     merge     m6 duplicate merge -> merged/measurements.json
@@ -55,13 +56,15 @@ SCRIPTS = "//experimental/overhead_matching/swag/scripts"
 # bazel run must be invoked from the source workspace, not the runfiles tree.
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 
-STAGES = ("extract", "boxes", "tracks", "audit", "review", "merge", "offset",
-          "match", "matchview", "index")
+STAGES = ("extract", "boxes", "tracks", "keyframes", "audit", "review", "merge",
+          "offset", "match", "matchview", "index")
 
-# On-demand list price for gemini-3.x pro at prompts <= 200k tokens. Batch is
-# half. Used only to report what a run cost, never to decide anything.
-USD_PER_INPUT_TOKEN = 1.00 / 1e6
-USD_PER_OUTPUT_TOKEN = 6.00 / 1e6
+# On-demand list price for gemini-3.x pro at prompts <= 200k tokens, verified
+# against the 2026-08-17 Vertex bill (whose batch SKUs charged exactly half:
+# $1/M in, $6/M out — the values previously here, mislabeled as on-demand).
+# Batch is half. Used only to report what a run cost, never to decide anything.
+USD_PER_INPUT_TOKEN = 2.00 / 1e6
+USD_PER_OUTPUT_TOKEN = 12.00 / 1e6
 
 
 def run(cmd, description, dry_run=False, check=True):
@@ -124,6 +127,7 @@ STAGE_REQUIRES = {
     "extract":   ("dataset_base", "panorama_dir"),
     "boxes":     ("dataset_base", "frame_landmarks"),
     "tracks":    ("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"),
+    "keyframes": ("dataset_base", "frame_landmarks"),
     "audit":     ("dataset_base", "frame_landmarks"),
     "review":    ("dataset_base",),
     "merge":     ("dataset_base",),
@@ -140,6 +144,7 @@ def stage_outputs(paths, run_dir: Path) -> dict:
         "extract": paths.frame_landmarks / "manifest.json",
         "boxes": paths.tracks_stage("m0_boxes") / "index.html",
         "tracks": run_dir / "run_meta.json",
+        "keyframes": run_dir / "keyframes" / "index.html",
         "audit": run_dir / "semantic_audit" / "results.jsonl",
         "review": run_dir / "semantic_audit" / "review" / "index.html",
         "merge": run_dir / "merged" / "measurements.json",
@@ -252,7 +257,18 @@ def main():
     needed = set()
     for stage in selected:
         needed |= set(STAGE_REQUIRES[stage])
+    # A dataset with no source video can still be tracked: m3 falls back to
+    # propagating across the keyframes themselves (KeyframeProvider), so the
+    # video is best-effort rather than required.
+    want_video = "video" in needed
+    needed.discard("video")
     paths = farfield_paths.resolve(parser, args, require=tuple(sorted(needed)))
+    keyframe_only = False
+    if want_video:
+        try:
+            paths.video
+        except farfield_paths.MissingInput:
+            keyframe_only = True
     run_name = args.run_name or f"r001_{paths.dataset}"
     run_dir = paths.tracks_runs_root / run_name
 
@@ -272,6 +288,9 @@ def main():
     print(f"run:       {run_dir}")
     print(f"stages:    {' -> '.join(selected)}")
     print(f"transport: {'on-demand (--online)' if args.online else 'Batch API'}")
+    if keyframe_only:
+        print("substrate: no source video - tracking propagates across "
+              "keyframes only")
 
     outputs = stage_outputs(paths, run_dir)
     commands = {
@@ -288,6 +307,11 @@ def main():
                    "--dataset", paths.dataset, "--run_name", run_name,
                    "--notes", args.notes or f"run_pipeline {run_name}"]
                   + version + [a for r in ranges for a in ("--range", *r)],
+        # Ground level of the viewer hierarchy: track pages and the audit
+        # review link into keyframes/f####.html, so a run without this stage
+        # ships dead links.
+        "keyframes": ["bazel", "run", f"{OT}:keyframe_viewer", "--",
+                      "--run_dir", run_dir],
         "audit": ["bazel", "run", f"{OT}:m5_build_audit_requests", "--",
                   "--run_dir", run_dir, "--submit", "--model", args.model]
                  + transport + guard,
@@ -344,6 +368,7 @@ def main():
         for label, page in (
                 ("m0 boxes", paths.tracks_stage("m0_boxes") / "index.html"),
                 ("m3 tracks", run_dir / "index.html"),
+                ("keyframes", run_dir / "keyframes" / "index.html"),
                 ("audit review",
                  run_dir / "semantic_audit" / "review" / "index.html"),
                 ("merge", run_dir / "merged" / "index.html"),

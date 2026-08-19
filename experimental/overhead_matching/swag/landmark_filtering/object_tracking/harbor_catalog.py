@@ -48,8 +48,12 @@ import shapely
 import shapely.wkb
 
 # ---------------------------------------------------------------------------
-# Harbor tag vocabulary
+# Far-field tag vocabulary
 # ---------------------------------------------------------------------------
+# Named for what it selects -- tags a distant observer could judge -- not for the
+# environment it was first written in. It is a superset vocabulary: the maritime
+# families below stay because a harbour table carries them, and they cost nothing
+# to keep where a table has none.
 # Deliberately NOT `semantic_landmark_utils.prune_landmark`. That keep-list was
 # built for street-level VIGOR panoramas, where a shopfront's opening hours and
 # housenumber are legible; here the nearest landmark is hundreds of metres away
@@ -68,7 +72,7 @@ import shapely.wkb
 # slot is free for something that matters far-field - angular-size agreement or
 # a seamark-category match.
 
-HARBOR_KEEP_KEYS = frozenset({
+FAR_FIELD_KEEP_KEYS = frozenset({
     # what the thing IS
     "man_made", "historic", "place", "natural", "building", "landuse",
     "leisure", "amenity", "tourism", "power", "bridge", "aeroway", "railway",
@@ -87,27 +91,27 @@ HARBOR_KEEP_KEYS = frozenset({
 
 # Prefix families kept wholesale: every seamark:*/light:*/beacon:* subtag is
 # identity-bearing for a navigation aid (character, colour, period, range).
-HARBOR_KEEP_PREFIXES = (
+FAR_FIELD_KEEP_PREFIXES = (
     "seamark:", "light:", "beacon:", "tower:", "building:", "roof:",
     "bridge:", "man_made:", "historic:", "generator:", "wreck:",
 )
 
 # Explicitly dropped even if a prefix above would admit them.
-HARBOR_DROP_PREFIXES = (
+FAR_FIELD_DROP_PREFIXES = (
     "addr:", "payment:", "massgis:", "mass", "contact:", "survey:",
     "source:", "ref:", "name:",   # name:xx are language variants, not identity
     "building:levels:", "check_date",
 )
 
 
-def prune_harbor_tags(props: dict) -> dict:
+def prune_far_field_tags(props: dict) -> dict:
     """key -> str value, keeping only far-field-identifying tags."""
     out = {}
     for key, value in props.items():
-        if any(key.startswith(p) for p in HARBOR_DROP_PREFIXES):
+        if any(key.startswith(p) for p in FAR_FIELD_DROP_PREFIXES):
             continue
-        if (key not in HARBOR_KEEP_KEYS
-                and not any(key.startswith(p) for p in HARBOR_KEEP_PREFIXES)):
+        if (key not in FAR_FIELD_KEEP_KEYS
+                and not any(key.startswith(p) for p in FAR_FIELD_KEEP_PREFIXES)):
             continue
         if value is None or (isinstance(value, float) and math.isnan(value)):
             continue
@@ -247,7 +251,7 @@ def load_catalog(feather_path, anchor_lat_deg, anchor_lon_deg,
     entries = []
     for i in range(len(frame)):
         source = "enc" if sources[i] == "enc" else "osm"
-        tags = prune_harbor_tags(tag_records[i])
+        tags = prune_far_field_tags(tag_records[i])
         hull_e = hull_n = np.zeros(0)
         if keep_hulls:
             geom = geoms[i]

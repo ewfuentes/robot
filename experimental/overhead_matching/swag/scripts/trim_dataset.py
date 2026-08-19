@@ -193,10 +193,24 @@ def summarize(gps_rows, log_rows, keep):
 
 
 def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
-    """frames_gps for the kept subset, rebased exactly as the converter builds it.
+    """frames_gps for the kept subset: renumbered, with dist_m rebased to zero.
 
-    video_t_s restarts at the new first frame and dist_m rebases to zero, so the
-    trimmed dataset is indistinguishable from one collected over that range.
+    `dist_m` rebases because it describes the trimmed trajectory. `video_t_s`
+    and `sensor_elapsed_s` do NOT: they are addresses into the source video and
+    the sensor log, neither of which the trim touches. An earlier version
+    rebased them to zero at the new first frame, reasoning that the result
+    should be "indistinguishable from one collected over that range" -- but the
+    mp4 still starts where it always started, so every kept frame then addressed
+    content earlier than itself by the first kept frame's original `video_t_s`.
+
+    Note that a head cut is not required to trigger this: on
+    charles_river_20260727 the trim was a *density* thin that kept frame 0, and
+    the damage was still 510 s, because the dataset's frames were exported
+    starting at video t=510 (`video.export_start_video_t_s`) and zeroing the
+    column threw that offset away. Tracking then cropped every window from a
+    different part of the sail (verified 2026-08-18 by cross-correlating frames
+    against their panoramas: 0.49-0.74 as stored, 0.999-1.000 once restored).
+    Carry both columns through verbatim.
 
     Where dist_m comes from depends on what was cut. A *range* trim removes
     stretches of track, so the distance must be re-derived from the surviving
@@ -212,7 +226,6 @@ def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
     that removes nothing report a *longer* trajectory than before it ran.
     """
     out = []
-    t0 = int(log_rows[keep[0]]["captured_at"])
     cumulative_m = 0.0
     for new_idx, old in enumerate(keep):
         row = dict(gps_rows[old])
@@ -230,10 +243,7 @@ def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
             speed = round(step / dt, 3) if dt > 0 else -1.0
         else:
             speed = -1.0
-        t_s = round((int(log_rows[old]["captured_at"]) - t0) / 1000.0, 3)
         row["idx"] = new_idx
-        row["video_t_s"] = t_s
-        row["sensor_elapsed_s"] = t_s
         row["dist_m"] = round(cumulative_m, 1)
         row["speed_mps"] = speed
         row["frame_file"] = new_frame_file(row["frame_file"], new_idx)

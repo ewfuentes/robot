@@ -19,9 +19,14 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
 
 STAGE_DIR = "m3_tracks"
 
-# Short dev ranges chosen on boston_harbor_leg1 for iteration speed. They are
-# keyframe indices, so they mean nothing in particular on another leg; without
-# --range they are clamped to whatever that dataset actually has.
+# Short dev ranges chosen on boston_harbor_leg1 for iteration speed. This
+# board tool is their only home: the production stage (m3_track_viewer)
+# defaults to the full leg, and run_pipeline always passes --range full.
+# Each fixture exercises a known-hard case (departure = pure rotation,
+# port = association ambiguity in a crane cluster, fort = a huge object
+# outgrowing its window). They are keyframe indices, so they mean nothing in
+# particular on another leg; without --range they are clamped to whatever
+# that dataset actually has.
 LEG1_DEV_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
                    ("f0149_fort", 141, 171)]
 
@@ -52,12 +57,21 @@ def main():
 
     paths = farfield_paths.resolve(
         parser, args,
-        require=("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"))
+        require=("dataset_base", "frame_landmarks", "sam2_checkpoint"))
+    # No source video is a mode, not an error (see m3_track_viewer).
+    try:
+        video = paths.video
+    except farfield_paths.MissingInput:
+        video = None
+        print(f"{paths.dataset}: no source video in metadata; tracking "
+              f"across keyframes only")
     ctx = rr.load_context(paths.dataset_base, paths.frame_landmarks,
-                          paths.video, paths.sam2_checkpoint)
+                          video, paths.sam2_checkpoint)
     if args.range:
         ranges = [(n, int(a), int(b)) for n, a, b in args.range]
     else:
+        print("no --range given: running the boston_harbor_leg1 dev fixtures "
+              "(clamped to this dataset); pass --range for real coverage")
         ranges = clamp_ranges(LEG1_DEV_RANGES,
                               max(f.frame_idx for f in ctx["result"].frames))
         if not ranges:

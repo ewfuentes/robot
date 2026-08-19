@@ -189,7 +189,7 @@ What the retraction argued, and how the trim respects it:
   cutoff for everything inside the trimmed set.
 
 Rules, each voting independently so "only-this" is a real ablation:
-`no_harbor_tags`, `unobservable_only`, `generic_small_building`. Unobservable
+`no_far_field_tags`, `unobservable_only`, `generic_small_building`. Unobservable
 tags are two-tier — HARD (`highway=*`, benches, bus stops: a name does not
 rescue them) and SOFT (`tourism=information`: a proper noun outranks a weak
 tag). Bridges are deliberately exempt from the highway block, named or not.

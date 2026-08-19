@@ -1,6 +1,13 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+    name = "perf_profile",
+    srcs = ["perf_profile.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = ["//common/torch:load_torch_deps"],
+)
+
+py_library(
     name = "pano_geometry",
     srcs = ["pano_geometry.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -79,6 +86,7 @@ py_library(
     srcs = ["track_builder.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":perf_profile",
         requirement("numpy"),
         requirement("scipy"),
         ":pano_geometry",
@@ -99,6 +107,7 @@ py_library(
     srcs = ["sam_backend.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":perf_profile",
         requirement("numpy"),
         requirement("pillow"),
         requirement("sam-2"),
@@ -112,6 +121,7 @@ py_library(
     srcs = ["range_runner.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":perf_profile",
         requirement("numpy"),
         requirement("pillow"),
         ":heading",
@@ -368,6 +378,7 @@ py_binary(
     srcs = ["keyframe_viewer.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":perf_profile",
         requirement("numpy"),
         requirement("pillow"),
         ":pano_geometry",
@@ -391,11 +402,14 @@ py_binary(
     srcs = ["m3_track_viewer.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        requirement("opencv-python"),
+        ":perf_profile",
         "//experimental/overhead_matching/swag/data:farfield_paths",
         requirement("numpy"),
         requirement("pillow"),
         ":pano_geometry",
         ":range_runner",
+        ":semantic_audit",
         ":track_builder",
         ":viz_common",
     ],
@@ -434,6 +448,54 @@ py_binary(
         "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+    ],
+)
+
+py_binary(
+    name = "heading_check_viewer",
+    srcs = ["heading_check_viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":heading",
+        ":pano_geometry",
+        ":viz_common",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/landmark_filtering:ingest",
+        "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+        requirement("matplotlib"),
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_binary(
+    name = "m11_base_export",
+    srcs = ["m11_base_export.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":harbor_catalog",
+        ":heading",
+        "//common/python:serialization",
+        "//experimental/overhead_matching/swag/bearing_only_localization:export_ingest",
+        "//experimental/overhead_matching/swag/bearing_only_localization:geodesy",
+        "//experimental/overhead_matching/swag/bearing_only_localization:gps_to_odometry_lib",
+        "//experimental/overhead_matching/swag/bearing_only_localization:structs",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/landmark_filtering:ingest",
+        "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+        requirement("msgspec"),
+        requirement("numpy"),
+    ],
+)
+
+py_test(
+    name = "m11_base_export_test",
+    srcs = ["m11_base_export_test.py"],
+    deps = [
+        ":m11_base_export",
+        "//experimental/overhead_matching/swag/bearing_only_localization:export_ingest",
+        "//experimental/overhead_matching/swag/bearing_only_localization:gps_to_odometry_lib",
+        "//experimental/overhead_matching/swag/bearing_only_localization:structs",
     ],
 )
 

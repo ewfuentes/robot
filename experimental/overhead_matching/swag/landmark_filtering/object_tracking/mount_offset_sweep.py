@@ -77,6 +77,15 @@ CONVENTION = (
 # A minimum this shallow relative to the rest of the curve is not a minimum.
 MIN_CONTRAST = 1.5
 
+# An offset is a claim about the mount, and one tracklet cannot support it: a
+# single tracklet's residual is a smooth function of the offset by construction,
+# so the curve looks textbook-unimodal while saying nothing. Observed on
+# mount_washington_20260815_leg1, whose 1-tracklet sweep returned "SMOOTH
+# UNIMODAL, 0.95 deg" at 211 deg while the same leg with less bearing fusion
+# (7 tracklets) said 23 deg. The other three gates are all relative, so none of
+# them can catch this.
+MIN_TRACKLETS = 5
+
 
 def hc_delta(a_deg, b_deg):
     """Signed smallest angular difference a - b, in (-180, 180]."""
@@ -183,8 +192,14 @@ def local_minima(curve, tolerance=1e-9):
     return found
 
 
-def assess(curve, best_residual):
+def assess(curve, best_residual, n_used, min_tracklets=MIN_TRACKLETS):
     """Is this curve's minimum trustworthy? Returns (verdict, detail, ok)."""
+    if n_used < min_tracklets:
+        return ("UNDER-SUPPORTED",
+                f"the winning offset triangulates only {n_used} "
+                f"well-conditioned tracklet(s) (want >={min_tracklets}); with "
+                f"so few, the curve's shape is a property of those tracklets "
+                f"rather than of the mount", False)
     residuals = sorted(r for _, r, _ in curve)
     median = residuals[len(residuals) // 2]
     contrast = median / best_residual if best_residual > 0 else float("inf")
@@ -326,6 +341,10 @@ def main():
     parser.add_argument("--stop", type=float, default=360.0)
     parser.add_argument("--min_observations", type=int, default=4)
     parser.add_argument("--max_condition", type=float, default=500.0)
+    parser.add_argument("--min_tracklets", type=int, default=MIN_TRACKLETS,
+                        help="refuse an offset supported by fewer than this "
+                             "many well-conditioned tracklets (default: "
+                             f"{MIN_TRACKLETS})")
     parser.add_argument("--min_support_frac", type=float, default=0.5,
                         help="A candidate offset must keep at least this "
                              "fraction of the best-supported candidate's "
@@ -381,7 +400,8 @@ def main():
 
     print_curve(coarse, coarse_best[0], support_floor)
     verdict, detail, ok = assess(coarse_eligible,
-                                 min(r for _, r, _ in coarse_eligible))
+                                 min(r for _, r, _ in coarse_eligible),
+                                 n_used, args.min_tracklets)
 
     print(f"\n  mount_offset_deg  {best_offset:.1f}")
     print(f"  median residual   {best_residual:.2f} deg over {n_used} "
@@ -400,6 +420,7 @@ def main():
         "min_observations": args.min_observations,
         "max_condition": args.max_condition,
         "min_support_frac": args.min_support_frac,
+        "min_tracklets": args.min_tracklets,
         "support_floor": support_floor,
         "verdict": verdict,
         "detail": detail,

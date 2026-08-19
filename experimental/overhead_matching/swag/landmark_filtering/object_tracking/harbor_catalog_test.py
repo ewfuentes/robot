@@ -93,7 +93,7 @@ class TagsToTextTest(unittest.TestCase):
 
 class HarborTagPruningTest(unittest.TestCase):
     def test_keeps_maritime_vocabulary_the_street_list_drops(self):
-        tags = hc.prune_harbor_tags({
+        tags = hc.prune_far_field_tags({
             "seamark:type": "light_major",
             "seamark:light:character": "Fl",
             "object_class": "LNDMRK",
@@ -105,7 +105,7 @@ class HarborTagPruningTest(unittest.TestCase):
             "man_made", "name"})
 
     def test_drops_street_furniture_unobservable_at_range(self):
-        tags = hc.prune_harbor_tags({
+        tags = hc.prune_far_field_tags({
             "addr:housenumber": "42", "addr:street": "Atlantic Ave",
             "opening_hours": "24/7", "payment:cash": "yes",
             "massgis:way_id": "1234", "name:fr": "Phare",
@@ -114,13 +114,13 @@ class HarborTagPruningTest(unittest.TestCase):
         self.assertEqual(set(tags), {"building"})
 
     def test_skips_missing_and_placeholder_values(self):
-        tags = hc.prune_harbor_tags(
+        tags = hc.prune_far_field_tags(
             {"name": float("nan"), "man_made": "  ", "building": "none",
              "historic": "fort"})
         self.assertEqual(set(tags), {"historic"})
 
     def test_values_are_strings(self):
-        tags = hc.prune_harbor_tags({"height": 42.5, "building:levels": 3})
+        tags = hc.prune_far_field_tags({"height": 42.5, "building:levels": 3})
         self.assertEqual(tags, {"height": "42.5", "building:levels": "3"})
 
 

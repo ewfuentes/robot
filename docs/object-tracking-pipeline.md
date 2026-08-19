@@ -450,7 +450,7 @@ decided by **which feather you point it at**: the full table or the trimmed one.
   (`"('node', 31419650)"`), not a tuple, and all parts must be kept: node 123
   and way 123 are different features.
 
-Tag pruning is `prune_harbor_tags`, **deliberately not**
+Tag pruning is `prune_far_field_tags`, **deliberately not**
 `semantic_landmark_utils.prune_landmark`. See §3.4.
 
 ### M9 — `m9_match_landmarks`
@@ -639,7 +639,7 @@ weighting**, not exclusion: LOCI's labeller assigns a 1–5 uniqueness score and
 yet implemented in the filter.**
 
 #### Harbor tag vocabulary
-`prune_harbor_tags` replaces the street-level keep-list because that list was
+`prune_far_field_tags` replaces the street-level keep-list because that list was
 built for VIGOR panoramas where a shopfront's opening hours and housenumber are
 legible. Here the nearest landmark is hundreds of metres away.
 

@@ -139,7 +139,7 @@ def build_map_signatures(feather_path: Path):
     sources = frame["landmark_type"].values
     table = defaultdict(list)
     for i in range(len(frame)):
-        tags = hc.prune_harbor_tags(records[i])
+        tags = hc.prune_far_field_tags(records[i])
         if not tags:
             continue
         source = "enc" if sources[i] == "enc" else "osm"

@@ -27,6 +27,9 @@ import numpy as np
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
 )
+from experimental.overhead_matching.swag.landmark_filtering.object_tracking.perf_profile import (
+    PROFILE,
+)
 
 
 @dataclass
@@ -270,6 +273,14 @@ class TrackBuilder:
         unwrapped pano bbox.
         """
         cfg = self.cfg
+        # Plan every track's prompt first, propagate them together, then apply
+        # the outcomes in the same order a per-track loop would have. Nothing in
+        # the planning phase reads another track's post-propagation state, and
+        # cross-track bookkeeping (`_record_track_overlaps`) already runs after
+        # the loop, so the split is behaviour-preserving -- what it buys is one
+        # batched image-encoder pass per frame instead of one per track (see
+        # sam_backend.propagate_batch).
+        plans = []
         for track in self.alive_tracks():
             if track.birth_keyframe > keyframe:
                 continue  # seeded at a future keyframe (shouldn't happen)
@@ -278,9 +289,38 @@ class TrackBuilder:
             if is_birth:
                 track.prompt_box = self._box_in_window(
                     track._birth_pano_box, origins[0])
-                masks = self.backend.propagate(crops,
-                                               prompt_box=track.prompt_box)
-                health = mask_health(masks[0], track.prompt_box, cfg)
+                plans.append((track, crops, origins, True,
+                              track.prompt_box, None))
+            elif track.prompt_box is not None:
+                box = self._box_in_window(track._reanchor_pano_box, origins[0])
+                plans.append((track, crops, origins, False, box, None))
+            else:
+                mask = self._mask_in_window(track, origins[0],
+                                            crops[0].shape[0])
+                if mask.sum() < cfg.min_mask_area_px:
+                    self._close(track, keyframe, "mask_lost_in_window")
+                    continue
+                plans.append((track, crops, origins, False, None, mask))
+
+        if not plans:
+            with PROFILE.phase("track_overlaps"):
+                self._record_track_overlaps(keyframe + 1)
+            return
+
+        with PROFILE.phase("propagate_batch", items=len(plans)):
+            batched = self.backend.propagate_batch(
+                [(crops, box, mask) for _, crops, _, _, box, mask in plans])
+        # Small per-frame copies the backend made on the GPU while it was
+        # preparing encoder input; the media hook uses them instead of walking
+        # the full-size crops again on the CPU.
+        previews = getattr(self.backend, "last_previews", None) or []
+
+        for index, ((track, crops, origins, is_birth, prompt_box, _),
+                    masks) in enumerate(zip(plans, batched)):
+            frame_previews = previews[index] if index < len(previews) else None
+            if is_birth:
+                with PROFILE.phase("apply_mask_health", items=1):
+                    health = mask_health(masks[0], prompt_box, cfg)
                 track.birth_mask = masks[0]
                 track.birth_origin = origins[0]
                 track.records.append({
@@ -295,19 +335,11 @@ class TrackBuilder:
                         "obs_id": track.birth_obs_id, "keyframe": keyframe,
                         "health": health})
                     if self.on_interval:
-                        self.on_interval(track, keyframe, crops, origins, masks)
+                        with PROFILE.phase("media_on_interval", items=1):
+                            self.on_interval(track, keyframe, crops, origins,
+                                             masks, frame_previews)
                     continue
                 track.end_keyframe = keyframe
-            elif track.prompt_box is not None:
-                box = self._box_in_window(track._reanchor_pano_box, origins[0])
-                masks = self.backend.propagate(crops, prompt_box=box)
-            else:
-                mask = self._mask_in_window(track, origins[0],
-                                            crops[0].shape[0])
-                if mask.sum() < cfg.min_mask_area_px:
-                    self._close(track, keyframe, "mask_lost_in_window")
-                    continue
-                masks = self.backend.propagate(crops, prompt_mask=mask)
 
             final = masks[-1]
             origin_last = origins[-1]
@@ -319,17 +351,24 @@ class TrackBuilder:
                                   [], "mask_dead")
                 self._close(track, keyframe + 1, "mask_dead")
                 if self.on_interval:
-                    self.on_interval(track, keyframe, crops, origins, masks)
+                    with PROFILE.phase("media_on_interval", items=1):
+                        self.on_interval(track, keyframe, crops, origins, masks,
+                                     frame_previews)
                 continue
 
-            supports = self._score_detections(final, origin_last, detections,
-                                              det_pano_boxes)
-            self._update_track(track, keyframe + 1, final, origin_last,
-                               supports, detections)
+            with PROFILE.phase("score_detections", items=len(detections)):
+                supports = self._score_detections(final, origin_last,
+                                                  detections, det_pano_boxes)
+            with PROFILE.phase("update_track", items=1):
+                self._update_track(track, keyframe + 1, final, origin_last,
+                                   supports, detections)
             if self.on_interval:
-                self.on_interval(track, keyframe, crops, origins, masks)
+                with PROFILE.phase("media_on_interval", items=1):
+                    self.on_interval(track, keyframe, crops, origins, masks,
+                                     frame_previews)
 
-        self._record_track_overlaps(keyframe + 1)
+        with PROFILE.phase("track_overlaps"):
+            self._record_track_overlaps(keyframe + 1)
         self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
 
     def seed_unassigned(self, keyframe, detections, det_pano_boxes):

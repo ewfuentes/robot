@@ -9,9 +9,32 @@ correspond to. This drops those rows and writes a smaller feather.
 stays as the fallback to consult whenever a landmark turns out to be missing.
 
 **Rules are judged by the recall guard, not by taste.** Every rule reports how
-many rows only it removes and what it costs against the pairing-run positive
-set (see landmark_positive_set.py). A rule that drops a labelled match is a bug
-in the rule, and the run says so.
+many rows only it removes and what it costs against two references: the
+pairing-run positive set (`--positive_set`, see landmark_positive_set.py) and,
+stronger, the signatures a real matching run already chose
+(`--matched_from <m9 run dir>`, read from `matching/matches.json`). A rule that
+drops either is a bug in the rule, and `--matched_from` refuses to write rather
+than report it. That guard has earned its place: it killed two proposed rules
+that looked obviously right -- dropping signatures that span many map rows
+(boston_harbor_leg1 matched `man_made=pier` across 375 of them) and dropping by
+physical extent (matched features include islands ~1 km across).
+
+**A catalog is versioned, never overwritten.** Every number anyone has quoted was
+computed against the file that is already there, so writing over it silently
+changes the past; the tool refuses and asks for a new version instead
+(`--force` if you truly mean to replace it). Each output gets a
+`<name>.provenance.json` beside it recording the input and its sha256, every
+argument, a fingerprint of the rule sets themselves (they live in code, so the
+arguments alone would not pin them down) and a `reproduce` command line. That
+file exists because "is this catalog stale?" cost an afternoon to answer: the
+shipped `v1_trimmed` tables looked stale against the current rules and were in
+fact an exact match -- the analysis had passed building thresholds by hand.
+
+**`--clip_km` bounds the prior's extent**, for regional extracts that reach far
+past anything a vehicle could see. It is a prior, not a corridor: charles_river's
+1 km sail sits inside a 25 x 25 km box, which is still larger than the
+22.9 x 20.9 km harbour prior the method was validated on. The centre must be
+given explicitly, because an implicit one cannot be reproduced.
 
 Note the scope this deliberately does not have: `harbor_catalog.py` argues
 against class filtering for the *filter's* catalog, because spatial gating plus
@@ -19,7 +42,7 @@ uniqueness weighting already handle catalog size there. This produces a
 separate artifact for consumers that want a smaller table; point the catalog at
 whichever file is appropriate.
 
-Tag vocabulary is `harbor_catalog.prune_harbor_tags`, so a landmark's surviving
+Tag vocabulary is `harbor_catalog.prune_far_field_tags`, so a landmark's surviving
 tags here are exactly the ones the matcher would see.
 
 Example:
@@ -30,7 +53,9 @@ Example:
 """
 
 import argparse
+import hashlib
 import json
+import math
 import warnings
 from collections import Counter
 from pathlib import Path
@@ -185,8 +210,8 @@ METERS_PER_DEG_LAT = 110574.0
 METERS_PER_DEG_LON_EQUATOR = 111320.0
 
 
-def harbor_tag_columns(columns) -> list[str]:
-    """Columns `prune_harbor_tags` would keep, decided by key name alone.
+def far_field_tag_columns(columns) -> list[str]:
+    """Columns `prune_far_field_tags` would keep, decided by key name alone.
 
     Pre-selecting columns keeps the row dicts ~50 wide instead of ~1470, which
     is the difference between a 0.5 GB working set and a 5.5 GB one. Only needed
@@ -196,25 +221,25 @@ def harbor_tag_columns(columns) -> list[str]:
     for column in columns:
         if column in hc.NON_TAG_COLUMNS:
             continue
-        if any(column.startswith(p) for p in hc.HARBOR_DROP_PREFIXES):
+        if any(column.startswith(p) for p in hc.FAR_FIELD_DROP_PREFIXES):
             continue
-        if (column in hc.HARBOR_KEEP_KEYS
-                or any(column.startswith(p) for p in hc.HARBOR_KEEP_PREFIXES)):
+        if (column in hc.FAR_FIELD_KEEP_KEYS
+                or any(column.startswith(p) for p in hc.FAR_FIELD_KEEP_PREFIXES)):
             keep.append(column)
     return keep
 
 
-def harbor_tag_records(gdf: gpd.GeoDataFrame) -> list[dict]:
+def far_field_tag_records(gdf: gpd.GeoDataFrame) -> list[dict]:
     """Per-row pruned harbor tags, matching harbor_catalog.load_catalog.
 
     Under the dict schema there are no tag columns to pre-select, and none is
     needed: the row dicts are already only as wide as the tags that exist.
     """
     if landmark_schema.is_dict_schema(gdf):
-        return [hc.prune_harbor_tags(record)
+        return [hc.prune_far_field_tags(record)
                 for record in landmark_schema.tag_dicts(gdf)]
-    columns = harbor_tag_columns(gdf.columns)
-    return [hc.prune_harbor_tags(record)
+    columns = far_field_tag_columns(gdf.columns)
+    return [hc.prune_far_field_tags(record)
             for record in gdf[columns].to_dict(orient="records")]
 
 
@@ -292,20 +317,170 @@ def evaluate_rules(tags: list[dict], areas: np.ndarray,
             continue
         generic_building[i] = areas[i] < min_building_area_m2
 
-    return {"no_harbor_tags": no_tags,
+    return {"no_far_field_tags": no_tags,
             "unobservable_only": unobservable,
             "generic_small_building": generic_building}
 
 
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def reproduce_command(arguments: dict) -> str:
+    """The exact command line that rebuilds this catalog."""
+    parts = ["bazel run //experimental/overhead_matching/swag/scripts:"
+             "trim_landmark_feather --"]
+    for key, value in arguments.items():
+        if value is None or value is False or value == []:
+            continue
+        if value is True:
+            parts.append(f"--{key}")
+        elif isinstance(value, list):
+            parts.extend(f"--{key} {item}" for item in value)
+        else:
+            parts.append(f"--{key} {value}")
+    return " ".join(parts)
+
+
+def clip_mask(gdf: gpd.GeoDataFrame, center_lat: float, center_lon: float,
+              box_km: float) -> np.ndarray:
+    """True where a row lies inside a `box_km` square centred on the point.
+
+    Deliberately a *prior extent*, not a corridor: the whole-map experiment
+    needs a prior far larger than the trajectory (charles's sail spans 0.8 x 1.1
+    km inside a 25 x 25 km box, which is itself larger than the 22.9 x 20.9 km
+    harbour prior the method was validated on). Its only job is to stop a
+    regional OSM extract from reaching tens of kilometres past anything the
+    vehicle could see.
+    """
+    point = gdf.geometry.representative_point()
+    half = box_km * 1000.0 / 2.0
+    meters_per_deg_lon = METERS_PER_DEG_LON_EQUATOR * math.cos(
+        math.radians(center_lat))
+    east = (np.asarray(point.x) - center_lon) * meters_per_deg_lon
+    north = (np.asarray(point.y) - center_lat) * METERS_PER_DEG_LAT
+    return (np.abs(east) <= half) & (np.abs(north) <= half)
+
+
+def rule_fingerprint(min_building_area_m2: float,
+                     min_building_levels: float) -> str:
+    """Short hash of everything that decides what this trimmer keeps.
+
+    Recorded next to each output so "which rules built this catalog?" is
+    answerable from the file. Worth having: `v1_trimmed` files that looked stale
+    against the current rules turned out to match them exactly -- the analysis
+    had passed thresholds by hand -- and this is what would have settled it in
+    one line instead of an afternoon.
+    """
+    payload = json.dumps({
+        "hard_keys": sorted(HARD_UNOBSERVABLE_KEYS),
+        "hard_tags": sorted(map(list, HARD_UNOBSERVABLE_TAGS)),
+        "soft_tags": sorted(map(list, SOFT_UNOBSERVABLE_TAGS)),
+        "structural_keys": sorted(STRUCTURAL_KEYS),
+        "name_keys": sorted(NAME_KEYS),
+        "landmark_building_values": sorted(LANDMARK_BUILDING_VALUES),
+        "keep_keys": sorted(hc.FAR_FIELD_KEEP_KEYS),
+        "keep_prefixes": sorted(hc.FAR_FIELD_KEEP_PREFIXES),
+        "drop_prefixes": sorted(hc.FAR_FIELD_DROP_PREFIXES),
+        "min_building_area_m2": min_building_area_m2,
+        "min_building_levels": min_building_levels,
+    }, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def matched_signatures(sources: list[Path], confidence_floor: float) -> dict:
+    """signature -> [(run, tracklet, confidence, match_type)] from M9 output.
+
+    The positive-set guard asks whether a rule drops a *labelled* match. This
+    asks the stronger question -- whether it drops something a matcher already
+    chose on a real run -- which is the check that caught two proposed rules
+    that looked obviously right: dropping signatures that span many rows (leg1
+    matched `man_made=pier` across 375 of them) and dropping by physical extent
+    (matched features include islands ~1 km across).
+    """
+    found = {}
+    for source in sources:
+        path = source if source.is_file() else source / "matching" / "matches.json"
+        if not path.exists():
+            raise SystemExit(f"no matches.json at {path}; pass a run dir that "
+                             f"has been through m9, or the file itself")
+        label = path.parent.parent.name
+        for tracklet, record in json.loads(path.read_text()).items():
+            for match in record.get("matches", []):
+                if match.get("confidence", 0.0) < confidence_floor:
+                    continue
+                found.setdefault(match["signature"], []).append(
+                    (label, tracklet, match["confidence"],
+                     match.get("match_type", "?")))
+    return found
+
+
+def report_matched_recall(matched: dict, tags: list[dict], kept: np.ndarray,
+                          masks: dict) -> list[str]:
+    """Print how the rules treat already-matched signatures; return the lost.
+
+    Only signatures this table actually contains can be *lost by a rule*. A
+    signature the matcher chose on some other region is simply not here, which
+    is not this tool's business -- counting it as a loss would make the guard
+    unusable with any run but one, so those are reported separately and do not
+    block a write.
+    """
+    by_signature = {}
+    for i, tag in enumerate(tags):
+        by_signature.setdefault(format_signature(tag), []).append(i)
+    surviving = {format_signature(tags[i]) for i in np.flatnonzero(kept)}
+    absent = sorted(s for s in matched if s not in by_signature)
+    lost = sorted(set(matched) - surviving - set(absent))
+    print(f"\nRECALL on {len(matched)} signatures matched by real runs: "
+          f"{len(matched) - len(lost) - len(absent)}/"
+          f"{len(matched) - len(absent)} of the ones this table holds survive"
+          + (f"; {len(absent)} are not in this table at all (different region "
+             f"or catalog vintage)" if absent else ""))
+    if not lost:
+        return lost
+    print("LOST signatures a matcher already chose -- fix the rule:")
+    for signature in lost[:15]:
+        # Which rule is responsible: the rules that fired on the rows carrying
+        # this signature.
+        blame = sorted({name for name, mask in masks.items()
+                        for i in by_signature[signature] if mask[i]})
+        run, tracklet, confidence, kind = matched[signature][0]
+        print(f"  [{','.join(blame)}] {run}/{tracklet} {kind} "
+              f"{confidence:.2f}: {signature[:70]}")
+    return lost
+
+
 def main(input_path: Path, output_path: Path, positive_set_path: Path | None,
          min_building_area_m2: float, min_building_levels: float,
-         dry_run: bool) -> gpd.GeoDataFrame:
+         dry_run: bool, matched_from: list[Path] | None = None,
+         confidence_floor: float = 0.5, allow_recall_loss: bool = False,
+         force: bool = False, clip_km: float | None = None,
+         clip_center_lat: float | None = None,
+         clip_center_lon: float | None = None) -> gpd.GeoDataFrame:
+    output_path = output_path.with_suffix(".feather")
+    if output_path.exists() and not (dry_run or force):
+        raise SystemExit(
+            f"{output_path} already exists. A catalog is part of the problem "
+            f"definition -- every past number was computed against it -- so it "
+            f"is versioned, not overwritten. Write a new version (v2_trimmed, "
+            f"v3_trimmed) or pass --force if you really mean to replace it.")
     gdf = gpd.read_feather(input_path)
     print(f"{input_path.name}: {len(gdf)} landmarks, {len(gdf.columns)} columns")
 
-    tags = harbor_tag_records(gdf)
+    tags = far_field_tag_records(gdf)
     areas = footprint_area_m2(gdf)
     masks = evaluate_rules(tags, areas, min_building_area_m2, min_building_levels)
+    if clip_km is not None:
+        if clip_center_lat is None or clip_center_lon is None:
+            raise SystemExit("--clip_km needs --clip_center_lat and "
+                             "--clip_center_lon; an implicit centre would make "
+                             "the catalog impossible to reproduce")
+        masks["outside_clip_box"] = ~clip_mask(gdf, clip_center_lat,
+                                               clip_center_lon, clip_km)
 
     dropped = np.zeros(len(gdf), dtype=bool)
     for mask in masks.values():
@@ -341,15 +516,59 @@ def main(input_path: Path, output_path: Path, positive_set_path: Path | None,
                 print(f"  {record['tracklet']} [{record['match_type']}] "
                       f"{record['signature'][:88]}")
 
+    lost_matches = []
+    if matched_from:
+        matched = matched_signatures(matched_from, confidence_floor)
+        lost_matches = report_matched_recall(matched, tags, kept, masks)
+        if lost_matches and not allow_recall_loss:
+            raise SystemExit(
+                f"\nrefusing to write: {len(lost_matches)} signature(s) that a "
+                f"real matching run chose would be dropped. Fix the rule, or "
+                f"pass --allow_recall_loss if the loss is intended.")
+
     if dry_run:
         print("\n(dry run: nothing written)")
         return gdf
 
     out = gdf[kept].reset_index(drop=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path = output_path.with_suffix(".feather")
     out.to_feather(output_path)
+    provenance = output_path.with_suffix(".provenance.json")
+    arguments = {
+        "input": str(input_path),
+        "output": str(output_path),
+        "positive_set": str(positive_set_path) if positive_set_path else None,
+        "min_building_area_m2": min_building_area_m2,
+        "min_building_levels": min_building_levels,
+        "clip_km": clip_km,
+        "clip_center_lat": clip_center_lat,
+        "clip_center_lon": clip_center_lon,
+        "matched_from": [str(p) for p in (matched_from or [])],
+        "confidence_floor": confidence_floor,
+        "allow_recall_loss": allow_recall_loss,
+    }
+    # Everything needed to rebuild this file byte for byte: the arguments, the
+    # exact input, and a fingerprint of the rules themselves (which live in
+    # code, so the arguments alone would not pin them down).
+    provenance.write_text(json.dumps({
+        "tool": "swag/scripts/trim_landmark_feather.py",
+        "arguments": arguments,
+        "reproduce": reproduce_command(arguments),
+        "input_sha256": sha256_of(input_path),
+        "rows_in": int(len(gdf)),
+        "rows_out": int(kept.sum()),
+        "rule_fingerprint": rule_fingerprint(min_building_area_m2,
+                                             min_building_levels),
+        "drops_per_rule": {name: int(mask.sum())
+                           for name, mask in masks.items()},
+        "recall_guard": {
+            "matched_from": [str(p) for p in (matched_from or [])],
+            "confidence_floor": confidence_floor,
+            "lost_signatures": lost_matches,
+        },
+    }, indent=1))
     print(f"\nWrote {output_path}")
+    print(f"       {provenance}")
     print(f"Full table left untouched at {input_path}")
     return out
 
@@ -365,7 +584,29 @@ if __name__ == "__main__":
                         help="untagged buildings smaller than this are dropped")
     parser.add_argument("--min_building_levels", type=float, default=6.0,
                         help="untagged buildings shorter than this are dropped")
+    parser.add_argument("--matched_from", type=Path, action="append",
+                        default=[], metavar="RUN_DIR_OR_MATCHES_JSON",
+                        help="an m9 run to guard against (repeatable): no "
+                             "signature it already matched may be dropped")
+    parser.add_argument("--confidence_floor", type=float, default=0.5,
+                        help="ignore matches below this confidence (0.5)")
+    parser.add_argument("--allow_recall_loss", action="store_true",
+                        help="write anyway when the guard finds losses")
+    parser.add_argument("--force", action="store_true",
+                        help="replace an existing catalog instead of "
+                             "versioning alongside it")
+    parser.add_argument("--clip_km", type=float, default=None,
+                        help="keep only rows inside a square box this many km "
+                             "on a side (a prior extent, not a corridor); "
+                             "needs --clip_center_lat/lon")
+    parser.add_argument("--clip_center_lat", type=float, default=None)
+    parser.add_argument("--clip_center_lon", type=float, default=None)
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
     main(args.input, args.output, args.positive_set,
-         args.min_building_area_m2, args.min_building_levels, args.dry_run)
+         args.min_building_area_m2, args.min_building_levels, args.dry_run,
+         matched_from=args.matched_from,
+         confidence_floor=args.confidence_floor,
+         allow_recall_loss=args.allow_recall_loss, force=args.force,
+         clip_km=args.clip_km, clip_center_lat=args.clip_center_lat,
+         clip_center_lon=args.clip_center_lon)

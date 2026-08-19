@@ -51,6 +51,14 @@ class FakeBackend:
             mask = mask(frames[0].shape[0])
         return [mask.copy() for _ in frames]
 
+    def propagate_batch(self, clips):
+        """What the builder actually calls. Batching is a GPU-occupancy
+        optimization in the real backend, not a semantic one, so the fake
+        simply serves each clip in order -- which is also what keeps
+        `masks_per_call` scripted per track, as these tests expect."""
+        return [self.propagate(frames, prompt_box=box, prompt_mask=mask)
+                for frames, box, mask in clips]
+
 
 def crops_fn_factory(builder):
     def crops_fn(track, size):

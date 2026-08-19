@@ -20,14 +20,17 @@ Run:
 """
 
 import argparse
+import concurrent.futures as cf
 import html
 import json
 import math
+import os
 import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -35,11 +38,23 @@ from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     pano_geometry as pg,
     range_runner as rr,
+    semantic_audit as sa,
     track_builder as tb,
     viz_common as vc,
 )
+from experimental.overhead_matching.swag.landmark_filtering.object_tracking.perf_profile import (
+    PROFILE,
+)
 
 STAGE_DIR = "m3_tracks"
+
+
+def _video_input(paths, root):
+    """The video as a manifest input list — empty for keyframe-only datasets."""
+    try:
+        return [farfield_paths.relative_to_root(paths.video, root)]
+    except farfield_paths.MissingInput:
+        return []
 
 
 def refresh_artifact_manifest(paths, runs_root: Path, run_name: str):
@@ -78,19 +93,13 @@ def refresh_artifact_manifest(paths, runs_root: Path, run_name: str):
         inputs=[
             farfield_paths.relative_to_root(paths.dataset_base, root),
             farfield_paths.relative_to_root(paths.frame_landmarks, root),
-            farfield_paths.relative_to_root(paths.video, root),
-        ],
+        ] + _video_input(paths, root),
         notes=("Working tree of the tracking pipeline: products and their debug "
                "boards travel together, and the internal layout is the "
                "producer's. Immutability lives on the run ids - never "
                "regenerate an rNNN in place with different settings, mint the "
                "next one. Mint v<N+1> if the pipeline changes shape."),
     )
-
-# Short dev ranges from boston_harbor_leg1. A real run passes --range covering
-# the whole leg; these exist so an iteration on a rule change is cheap.
-LEG1_DEV_RANGES = [("f0000_departure", 0, 30), ("f0122_port", 114, 144),
-                   ("f0149_fort", 141, 171)]
 
 CLASS_COLORS = {
     "continue_clean": (60, 220, 60),
@@ -105,6 +114,8 @@ STATUS_CSS = {"alive": "#3c3", "starved": "#fa2", "drift_alarm": "#c7d",
               "mask_dead": "#e44", "mask_lost_in_window": "#e44"}
 SUPPORT_SCORE = {"continue_clean": 3, "merge_superset": 2, "split_child": 2,
                  "weak": 1, "context": 0, "none": 0}
+MASK_TINT = (255, 60, 60)
+ENCODE_WORKERS = 8
 VIDEO_SIZE = 512
 VIDEO_FPS = 6
 
@@ -128,7 +139,8 @@ class MediaSink:
     def key(self, track):
         return f"{self.range_name}_T{track.track_id}"
 
-    def on_interval(self, track, keyframe, crops, origins, masks):
+    def on_interval(self, track, keyframe, crops, origins, masks,
+                    previews=None):
         rec = track.records[-1] if track.records else None
         first_interval = (track.records
                           and track.records[0]["keyframe"] == keyframe)
@@ -140,31 +152,62 @@ class MediaSink:
         for i, (crop, mask) in enumerate(zip(crops, masks)):
             if i == 0 and not first_interval:
                 continue  # frame 0 duplicates the previous interval's end
-            img = crop.copy()
-            if mask is not None and mask.any():
-                overlay = np.zeros_like(img)
-                overlay[mask] = (255, 60, 60)
-                img = (0.65 * img + 0.35 * overlay).astype(np.uint8)
-            pil = Image.fromarray(img)
-            draw = ImageDraw.Draw(pil)
-            if i == 0 and first_interval and hasattr(track, "_birth_pano_box"):
-                box = self._window_box(track._birth_pano_box, origins[0])
-                draw.rectangle(box, outline=(60, 255, 60), width=4)
-            if i == n - 1 and rec is not None:
-                for s in rec.get("supports", []):
-                    color = CLASS_COLORS.get(s["class"], (200, 200, 200))
-                    draw.rectangle(s["box_window"], outline=color, width=3)
-                    draw.text((s["box_window"][0], s["box_window"][1] - 16),
-                              f"{s['class']} iou={s['iou']:.2f}",
-                              fill=color, font=self.font)
-            vc.draw_caption(
-                draw, f"f{keyframe:04d}->f{keyframe + 1:04d}  {action}",
-                self.font)
-            pil = pil.resize((VIDEO_SIZE, VIDEO_SIZE), Image.BILINEAR)
-            pil.save(track_dir / f"{self.counters[key]:06d}.jpg", quality=88)
+            # Downscale before doing anything else. Every frame here ends up at
+            # VIDEO_SIZE, so blending and annotating at the window's native size
+            # (up to 3072px) copies and rewrites ~25x more pixels than survive:
+            # measured 11.9 s of full-size `crop.copy()` plus blend and 7.9 s of
+            # PIL resize per 20 intervals, for debug media.
+            #
+            # The backend hands back a GPU-made thumbnail per frame, because any
+            # CPU pass over the full crop costs ~4.4 ms whatever the filter --
+            # it is memory traffic, not interpolation. Falling back to cv2 keeps
+            # this hook usable with a backend that supplies no previews.
+            with PROFILE.phase("media_downscale", items=1):
+                scale = VIDEO_SIZE / crop.shape[0]
+                preview = previews[i] if previews else None
+                small = (preview if preview is not None
+                         else cv2.resize(crop, (VIDEO_SIZE, VIDEO_SIZE),
+                                         interpolation=cv2.INTER_LINEAR))
+                if small.shape[0] != VIDEO_SIZE:
+                    scale = small.shape[0] / crop.shape[0]
+            with PROFILE.phase("media_blend", items=1):
+                if mask is not None and mask.any():
+                    small_mask = cv2.resize(
+                        mask.astype(np.uint8), (VIDEO_SIZE, VIDEO_SIZE),
+                        interpolation=cv2.INTER_NEAREST).astype(bool)
+                    if small_mask.any():
+                        selected = small[small_mask].astype(np.float32)
+                        small[small_mask] = (
+                            selected * 0.65
+                            + np.asarray(MASK_TINT, np.float32) * 0.35
+                        ).astype(np.uint8)
+            with PROFILE.phase("media_annotate", items=1):
+                pil = Image.fromarray(small)
+                draw = ImageDraw.Draw(pil)
+                if (i == 0 and first_interval
+                        and hasattr(track, "_birth_pano_box")):
+                    box = self._window_box(track._birth_pano_box, origins[0])
+                    draw.rectangle([v * scale for v in box],
+                                   outline=(60, 255, 60), width=2)
+                if i == n - 1 and rec is not None:
+                    for support in rec.get("supports", []):
+                        color = CLASS_COLORS.get(support["class"],
+                                                 (200, 200, 200))
+                        box = [v * scale for v in support["box_window"]]
+                        draw.rectangle(box, outline=color, width=2)
+                        draw.text((box[0], max(box[1] - 14, 0)),
+                                  f"{support['class']} iou={support['iou']:.2f}",
+                                  fill=color, font=self.font)
+                vc.draw_caption(
+                    draw, f"f{keyframe:04d}->f{keyframe + 1:04d}  {action}",
+                    self.font)
+            with PROFILE.phase("media_save_jpeg", items=1):
+                pil.save(track_dir / f"{self.counters[key]:06d}.jpg",
+                         quality=88)
             self.counters[key] += 1
             if i == n - 1 or (i == 0 and first_interval):
-                self._maybe_thumb(key, pil, rec)
+                with PROFILE.phase("media_thumb", items=1):
+                    self._maybe_thumb(key, pil, rec)
 
     def _window_box(self, pano_box, origin):
         rel = pg.signed_x_offset(pano_box[0], origin[0], self.pano_w)
@@ -183,20 +226,52 @@ class MediaSink:
                 self.thumbs_dir / f"{key}.jpg", quality=85)
 
     def finalize(self):
-        encoded = {}
+        """Encode one mp4 per track, several at a time.
+
+        Serially this was 883 s of charles' 84 min run -- 423 tracks x ~2.1 s,
+        each a process launch plus a single-stream x264 encode of ~40 tiny
+        512px frames, with the GPU idle and 31 of 32 cores unused. The encodes
+        are independent (own input directory, own output file), so they pool
+        cleanly; threads suffice because each worker is blocked in `ffmpeg`.
+        """
+        jobs = []
         for track_dir in sorted(self.frames_root.iterdir()):
             key = track_dir.name
             n = self.counters.get(key, 0)
             if n == 0:
                 continue
-            out = self.videos_dir / f"{key}.mp4"
-            subprocess.run(
+            jobs.append((key, track_dir, n))
+        if not jobs:
+            shutil.rmtree(self.frames_root, ignore_errors=True)
+            return {}
+
+        def encode(job):
+            key, track_dir, _ = job
+            result = subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error",
                  "-framerate", str(VIDEO_FPS),
                  "-i", str(track_dir / "%06d.jpg"),
                  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26",
-                 str(out)], check=True)
-            encoded[key] = n
+                 str(self.videos_dir / f"{key}.mp4")],
+                capture_output=True, text=True)
+            return key, result.returncode, result.stderr.strip()
+
+        encoded, failures = {}, []
+        # Each ffmpeg already spreads over ~3 cores, so a handful saturates the
+        # machine; more would only add contention.
+        workers = max(1, min(ENCODE_WORKERS, (os.cpu_count() or 4) // 4))
+        with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            for key, code, stderr in pool.map(encode, jobs):
+                if code == 0:
+                    encoded[key] = self.counters.get(key, 0)
+                else:
+                    failures.append((key, code, stderr[:200]))
+        if failures:
+            # Loud: a missing video is a dead link in the viewer, and the old
+            # `check=True` at least stopped the run rather than hiding it.
+            print(f"  WARNING: {len(failures)} track video(s) failed to encode")
+            for key, code, stderr in failures[:5]:
+                print(f"    {key}: ffmpeg exit {code}: {stderr}")
         shutil.rmtree(self.frames_root, ignore_errors=True)
         return encoded
 
@@ -320,11 +395,13 @@ function applyFilters(){
   const range=document.getElementById('f_range').value;
   const status=document.getElementById('f_status').value;
   const minsup=parseInt(document.getElementById('f_minsup').value||'0');
+  const audit=document.getElementById('f_audit').value;
   document.querySelectorAll('.card').forEach(c=>{
     const ok=(range=='all'||c.dataset.range==range)
       &&(status=='all'||(status=='alive'?c.dataset.status=='alive'
                          :c.dataset.status!='alive'))
-      &&parseInt(c.dataset.sup)>=minsup;
+      &&parseInt(c.dataset.sup)>=minsup
+      &&(audit=='all'||c.dataset.audit==audit);
     c.style.display=ok?'':'none';});
 }
 """
@@ -462,9 +539,18 @@ def main():
 
     paths = farfield_paths.resolve(
         parser, args,
-        require=("dataset_base", "frame_landmarks", "video", "sam2_checkpoint"))
+        require=("dataset_base", "frame_landmarks", "sam2_checkpoint"))
+    # No source video is a mode, not an error: Mapillary datasets retain only
+    # the posted keyframes, so the tracker propagates across those directly.
+    try:
+        video = paths.video
+    except farfield_paths.MissingInput:
+        video = None
+        print(f"{paths.dataset}: no source video in metadata; tracking "
+              f"across keyframes only")
     ctx = rr.load_context(paths.dataset_base, paths.frame_landmarks,
-                          paths.video, paths.sam2_checkpoint)
+                          video, paths.sam2_checkpoint,
+                          preview_size=VIDEO_SIZE)
     last_keyframe = max(f.frame_idx for f in ctx["result"].frames)
     if args.range:
         ranges = [(n, int(a), int(b)) for n, a, b in args.range]
@@ -475,11 +561,12 @@ def main():
                 f"keyframe f{last_keyframe:04d} ({paths.dataset} has "
                 f"{len(ctx['result'].frames)} frames)")
     else:
-        ranges = [(n, a, min(b, last_keyframe)) for n, a, b in LEG1_DEV_RANGES
-                  if a <= last_keyframe]
-        if not ranges:
-            parser.error("no default range fits this dataset; pass --range "
-                         "NAME K_START K_END")
+        # The whole leg. Short iteration fixtures live in m3_build_tracks,
+        # the dev board tool -- a production viewer defaulting to anything
+        # less than the full leg silently truncates the run (and m5 globs
+        # the first tracks_*.json, so a stray partial range would also
+        # mis-aim the audit).
+        ranges = [("full", 0, last_keyframe)]
     font = vc.load_font(13)
     builder_cfg = tb.TrackBuilderConfig()
     runs_root = args.runs_root or paths.tracks_runs_root
@@ -495,7 +582,9 @@ def main():
         "inputs": {
             "dataset_base": str(paths.dataset_base),
             "frame_landmarks": str(paths.frame_landmarks),
-            "video": str(paths.video),
+            # Omitted when absent: recorded_run_inputs skips falsy entries, so
+            # later stages fall back to normal resolution rather than Path(None).
+            **({"video": str(video)} if video else {}),
         },
         "ranges": [{"name": n, "k_start": a, "k_end": b}
                    for n, a, b in ranges],
@@ -562,27 +651,47 @@ def main():
                  "<option value='alive'>alive</option>"
                  "<option value='closed'>closed</option></select>"
                  " min supported <input id='f_minsup' type='number' value='0'"
-                 " style='width:60px' oninput='applyFilters()'></div>")
+                 " style='width:60px' oninput='applyFilters()'>"
+                 " next stage <select id='f_audit' onchange='applyFilters()'>"
+                 "<option value='all'>all</option>"
+                 "<option value='advances'>advances to audit</option>"
+                 "<option value='dropped'>dropped after M3</option>"
+                 "</select></div>"
+                 f"<p><small>\"advances\" = what m5_build_audit_requests "
+                 f"selects at its default bar (&ge;{sa.AuditConfig().min_supports} "
+                 f"supports, reclassified under the current classifier); "
+                 f"everything else is not carried past M3.</small></p>")
     parts.append("<div class='cards'>")
+    audit_cfg = sa.AuditConfig()
     cards = []
     for range_name, artifact in artifacts.items():
         for t in artifact["tracks"]:
             if not t["records"]:
                 continue
-            cards.append((t["n_supported_keyframes"], range_name, t))
+            n_audit = len(sa.collect_evidence(t, obs_by_id, audit_cfg)[0])
+            cards.append((t["n_supported_keyframes"], range_name, t, n_audit))
     cards.sort(key=lambda c: -c[0])
-    for sup, range_name, t in cards:
+    n_advancing = sum(1 for c in cards if c[3] >= audit_cfg.min_supports)
+    parts.append(f"<p><small>{n_advancing} of {len(cards)} tracks advance "
+                 f"to the audit.</small></p>")
+    for sup, range_name, t, n_audit in cards:
         key = track_key(range_name, t["track_id"])
         status = t["close_reason"] if t["status"] == "closed" else "alive"
         thumb = f"thumbs/{key}.jpg"
+        advances = n_audit >= audit_cfg.min_supports
+        audit_attr = "advances" if advances else "dropped"
+        audit_chip = (
+            f"<span class='chip' style='color:{'#6c6' if advances else '#888'}'>"
+            f"{'&rarr; audit' if advances else 'dropped'} ({n_audit})</span>")
         cards_html = (
             f"<div class='card' data-range='{range_name}' "
-            f"data-status='{status}' data-sup='{sup}'>"
+            f"data-status='{status}' data-sup='{sup}' "
+            f"data-audit='{audit_attr}'>"
             f"<a href='track_{key}.html'><img src='{thumb}' loading='lazy'>"
             f"</a><br><b>T{t['track_id']}</b> "
             f"{html.escape(t['modal_label'][:40])}<br>"
             f"<small>{range_name} | b=f{t['birth_keyframe']:04d} | "
-            f"sup={sup}</small><br>{status_chip(t)}</div>")
+            f"sup={sup}</small><br>{status_chip(t)} {audit_chip}</div>")
         parts.append(cards_html)
     parts.append("</div>")
 
@@ -605,7 +714,8 @@ def main():
             label = vc.obs_semantic_label(obs) if obs else t["birth_obs_id"]
             parts.append(
                 f"<div class='card' data-range='{range_name}' "
-                f"data-status='{t['close_reason']}' data-sup='0'>"
+                f"data-status='{t['close_reason']}' data-sup='0' "
+                f"data-audit='dropped'>"
                 f"<a href='track_{key}.html'>"
                 f"<img src='thumbs/{key}.jpg' loading='lazy'></a><br>"
                 f"{html.escape(label[:48])}<br>"

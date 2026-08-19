@@ -15,6 +15,9 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
     track_builder as tb,
     viz_common as vc,
 )
+from experimental.overhead_matching.swag.landmark_filtering.object_tracking.perf_profile import (
+    PROFILE,
+)
 
 CELL = 168
 ACTION_COLORS = {
@@ -139,12 +142,15 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
     for k in range(k_start, k_end):
         t0 = frames_by_idx[k].time_s
         t1 = frames_by_idx[k + 1].time_s
-        frames = list(provider.frames_between(t0, t1))
+        with PROFILE.phase("video_decode"):
+            frames = list(provider.frames_between(t0, t1))
+        PROFILE.items["video_decode"] += len(frames)
         track_crops = {}
 
         def crops_fn(track, size, _frames=frames, _t0=t0, _cache=track_crops):
             key = (track.track_id, size)
             if key not in _cache:
+              with PROFILE.phase("window_crops", items=len(_frames)):
                 crops, origins = [], []
                 for _, t, frame_rgb in _frames:
                     az0, _el = pg.direction_from_pano_px(
@@ -161,9 +167,11 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
 
         dets_next = obs_by_frame.get(k + 1, [])
         n_alive = len(builder.alive_tracks())
-        builder.step(k, crops_fn, dets_next, det_pano_boxes)
+        with PROFILE.phase("builder_step_total", items=max(n_alive, 1)):
+            builder.step(k, crops_fn, dets_next, det_pano_boxes)
 
         if renderer is not None:
+          with PROFILE.phase("board_render"):
             if k == k_start:
                 pano0 = np.asarray(Image.open(
                     dataset_base / "panorama"
@@ -177,11 +185,18 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
             f"{len(dets_next)} dets, {len(builder.tracks)} total tracks")
 
     artifact = track_artifact(builder, builder_cfg, range_name, k_start, k_end)
+    PROFILE.report(log=log, label=f"range {range_name}")
     return builder, artifact
 
 
-def load_context(dataset_base, landmark_base, video_path, checkpoint):
-    """Load everything a range run needs. Returns a dict of shared state."""
+def load_context(dataset_base, landmark_base, video_path, checkpoint,
+                 preview_size=None):
+    """Load everything a range run needs. Returns a dict of shared state.
+
+    `video_path=None` means the dataset has no source video; the keyframe
+    panoramas themselves become the tracking substrate (KeyframeProvider), so
+    SAM2 propagates across the keyframe baseline with no intermediates.
+    """
     from experimental.overhead_matching.swag.landmark_filtering import ingest
     from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
         heading as heading_mod,
@@ -204,12 +219,20 @@ def load_context(dataset_base, landmark_base, video_path, checkpoint):
     model = heading_mod.heading_model_from_positions(
         [f.x_m for f in result.frames], [f.y_m for f in result.frames],
         [f.time_s for f in result.frames])
+    if video_path is None:
+        provider = video_frames.KeyframeProvider(
+            [f.time_s for f in result.frames],
+            [dataset_base / "panorama" / f"{f.pano_stem}.jpg"
+             for f in result.frames])
+    else:
+        provider = video_frames.VideoFrameProvider(video_path)
     return {
         "result": result, "pano_w": pano_w, "pano_h": pano_h,
         "obs_by_frame": obs_by_frame, "obs_by_id": obs_by_id,
         "det_pano_boxes": det_pano_boxes, "model": model,
-        "provider": video_frames.VideoFrameProvider(video_path),
-        "backend": sam_backend.Sam2Backend(checkpoint),
+        "provider": provider,
+        "backend": sam_backend.Sam2Backend(checkpoint,
+                                          preview_size=preview_size),
     }
 
 

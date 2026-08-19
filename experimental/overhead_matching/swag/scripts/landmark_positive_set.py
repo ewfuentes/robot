@@ -10,7 +10,7 @@ to, so a trim that removes one has demonstrably destroyed a match we had.
 that tracklet's Set 2 list, not a landmark id, and recovering the id needs the
 wedge that produced the list. What survives the round trip unambiguously is the
 Set 2 *line*: `format_tags(sorted(entry.tags.items()))` over
-`harbor_catalog.prune_harbor_tags`. So a positive is a **tag signature**, and
+`harbor_catalog.prune_far_field_tags`. So a positive is a **tag signature**, and
 the guard asks "does at least one landmark with this signature survive?".
 That is weaker than pinning the exact row - 394 unnamed piers share one
 signature - but it is honest, cheap, and catches exactly the failure that

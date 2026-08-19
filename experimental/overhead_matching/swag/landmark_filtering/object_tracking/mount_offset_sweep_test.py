@@ -95,14 +95,14 @@ class AssessTest(unittest.TestCase):
         # Smooth V with a clear floor.
         curve = [(float(a), 1.0 + abs(a - 200) * 0.1, 30)
                  for a in range(0, 360, 10)]
-        verdict, _, ok = mos.assess(curve, min(r for _, r, _ in curve))
+        verdict, _, ok = mos.assess(curve, min(r for _, r, _ in curve), n_used=30)
         self.assertEqual(verdict, "SMOOTH UNIMODAL")
         self.assertTrue(ok)
 
     def test_flat_curve_is_rejected(self):
         curve = [(float(a), 4.0 + 0.01 * (a % 3), 30)
                  for a in range(0, 360, 10)]
-        verdict, detail, ok = mos.assess(curve, min(r for _, r, _ in curve))
+        verdict, detail, ok = mos.assess(curve, min(r for _, r, _ in curve), n_used=30)
         self.assertEqual(verdict, "FLAT")
         self.assertFalse(ok)
         self.assertIn("noise", detail)
@@ -112,7 +112,7 @@ class AssessTest(unittest.TestCase):
         for a in range(0, 360, 10):
             d = min(abs(a - 90), abs(a - 270))
             curve.append((float(a), 1.0 + d * 0.1, 30))
-        verdict, detail, ok = mos.assess(curve, min(r for _, r, _ in curve))
+        verdict, detail, ok = mos.assess(curve, min(r for _, r, _ in curve), n_used=30)
         self.assertEqual(verdict, "MULTIMODAL")
         self.assertFalse(ok)
         self.assertIn("90", detail)
@@ -122,10 +122,30 @@ class AssessTest(unittest.TestCase):
         # Two adjacent grid points tie at the floor: still one minimum.
         curve = [(0.0, 5.0, 30), (10.0, 1.0, 30), (20.0, 1.0, 30),
                  (30.0, 5.0, 30), (40.0, 6.0, 30), (50.0, 7.0, 30)]
-        verdict, _, ok = mos.assess(curve, 1.0)
+        verdict, _, ok = mos.assess(curve, 1.0, n_used=30)
         self.assertEqual(verdict, "SMOOTH UNIMODAL")
         self.assertTrue(ok)
 
+
+class UnderSupportTest(unittest.TestCase):
+
+    def test_one_tracklet_is_refused_however_clean_the_curve(self):
+        # mount_washington_20260815_leg1 shape: a single tracklet traces a
+        # perfectly smooth bowl, and every relative gate passes it.
+        curve = [(float(o), 1.0 + abs(o - 210) / 40.0, 1)
+                 for o in range(0, 360, 5)]
+        verdict, detail, ok = mos.assess(curve, min(r for _, r, _ in curve),
+                                         n_used=1)
+        self.assertEqual(verdict, "UNDER-SUPPORTED")
+        self.assertFalse(ok)
+        self.assertIn("1 well-conditioned tracklet", detail)
+
+    def test_the_floor_is_adjustable(self):
+        curve = [(float(o), 1.0 + abs(o - 210) / 40.0, 3)
+                 for o in range(0, 360, 5)]
+        _, _, ok = mos.assess(curve, min(r for _, r, _ in curve), n_used=3,
+                              min_tracklets=2)
+        self.assertTrue(ok)
 
 if __name__ == "__main__":
     unittest.main()

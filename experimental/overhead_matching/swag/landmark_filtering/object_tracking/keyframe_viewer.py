@@ -18,8 +18,11 @@ Run:
 """
 
 import argparse
+import concurrent.futures as cf
 import html
 import json
+import os
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -34,12 +37,16 @@ from experimental.overhead_matching.swag.landmark_filtering.object_tracking impo
     track_builder as tb,
     viz_common as vc,
 )
+from experimental.overhead_matching.swag.landmark_filtering.object_tracking.perf_profile import (
+    PROFILE,
+)
 from experimental.overhead_matching.swag.landmark_filtering.pipeline_config import (
     IngestConfig,
 )
 
 
 MASK_COLOR = (255, 60, 60)
+IMAGE_WORKERS = 12
 CHIP_H = 200
 
 STYLE = """
@@ -108,6 +115,71 @@ def track_associations(artifact, classifier_cfg):
     return by_obs, masks, seeded, rejected
 
 
+def kf_name(idx):
+    """Page/file stem for a keyframe. Module scope because the pooled image
+    renderer names its outputs with it too."""
+    return f"f{idx:04d}"
+
+
+_THREAD_LOCAL = threading.local()
+
+
+def _worker_font():
+    """A font per thread. PIL's FreeTypeFont is not documented thread-safe, and
+    a shared one is the kind of thing that corrupts glyphs under load rather
+    than failing outright."""
+    font = getattr(_THREAD_LOCAL, "font", None)
+    if font is None:
+        font = _THREAD_LOCAL.font = vc.load_font(14)
+    return font
+
+
+def _render_task(task):
+    """Pool entry point. Top-level (not a lambda) so it can be pickled to a
+    worker process."""
+    return render_keyframe_images(*task)
+
+
+def render_keyframe_images(frame, obs_list, masks, dataset_base, out,
+                           pano_width):
+    """Everything image-shaped for one keyframe: the annotated panorama and one
+    chip per detection.
+
+    Split out of the page loop so it can run in a pool. Serially this stage was
+    631 s for charles' 514 keyframes (1.23 s each), nearly all of it decoding a
+    7680x3840 JPEG and writing derived images -- work that is per-keyframe
+    independent and releases the GIL inside PIL, while 31 of 32 cores idled.
+    The HTML that follows needs only the counts, so it stays serial and cheap.
+    """
+    kf = frame.frame_idx
+    font = _worker_font()
+    with PROFILE.phase("kf_pano_decode", items=1):
+        pano = np.asarray(Image.open(
+            dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
+    pano_h, pano_w = pano.shape[:2]
+    scale = pano_width / pano_w
+    with PROFILE.phase("kf_pano_annotate", items=1):
+        anno = Image.fromarray(pano).resize(
+            (pano_width, int(pano_h * scale)), Image.BILINEAR)
+        draw = ImageDraw.Draw(anno)
+        for o in obs_list:
+            box = pg.pano_bbox_for_observation(o.boxes, pano_w, pano_h)
+            draw_wrapped_rect(draw, box, scale, pano_width,
+                              vc.obs_color(o), 2, vc.obs_semantic_label(o),
+                              font)
+        for track_id, _action, box in masks:
+            draw_wrapped_rect(draw, box, scale, pano_width, MASK_COLOR,
+                              2, f"T{track_id}", font)
+    with PROFILE.phase("kf_pano_save", items=1):
+        anno.save(out / "img" / f"{kf_name(kf)}_pano.jpg", quality=85)
+    with PROFILE.phase("kf_chips", items=len(obs_list)):
+        for o in obs_list:
+            box = pg.pano_bbox_for_observation(o.boxes, pano_w, pano_h)
+            sa.render_chip(pano, box, None,
+                           out / "img" / f"{kf_name(kf)}_{o.obs_id}.jpg",
+                           CHIP_H)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     farfield_paths.add_arguments(parser)
@@ -115,6 +187,9 @@ def main():
     parser.add_argument("--pano_width", type=int, default=3072)
     parser.add_argument("--kf_start", type=int, default=None)
     parser.add_argument("--kf_end", type=int, default=None)
+    parser.add_argument("--image_workers", type=int, default=IMAGE_WORKERS,
+                        help="threads rendering keyframe images (default: "
+                             f"{IMAGE_WORKERS}); 1 to render serially")
     args = parser.parse_args()
     paths = farfield_paths.resolve(
         parser, args, infer_from=args.run_dir,
@@ -142,40 +217,31 @@ def main():
     (out / "img").mkdir(parents=True, exist_ok=True)
     font = vc.load_font(14)
 
-    def kf_name(idx):
-        return f"f{idx:04d}"
-
     index_rows = []
-    for n, frame in enumerate(frames):
+    per_kf = [(frame,
+               sorted(obs_by_frame.get(frame.frame_idx, []),
+                      key=lambda o: o.obs_id),
+               sorted(masks_by_kf.get(frame.frame_idx, [])))
+              for frame in frames]
+    workers = max(1, min(args.image_workers, os.cpu_count() or 4))
+    tasks = [(frame, obs_list, masks, paths.dataset_base, out, args.pano_width)
+             for frame, obs_list, masks in per_kf]
+    print(f"rendering {len(tasks)} keyframe image sets over {workers} "
+          f"process(es)")
+    if workers == 1:
+        for task in tasks:
+            _render_task(task)
+    else:
+        # Processes, not threads: PIL holds the GIL enough that 4 and 12 threads
+        # both measured 1.9x (2026-08-18), while each keyframe is an independent
+        # 8K JPEG decode plus derived writes -- embarrassingly parallel given
+        # separate interpreters.
+        with cf.ProcessPoolExecutor(max_workers=workers) as pool:
+            for _ in pool.map(_render_task, tasks, chunksize=4):
+                pass
+
+    for n, (frame, obs_list, masks) in enumerate(per_kf):
         kf = frame.frame_idx
-        obs_list = sorted(obs_by_frame.get(kf, []), key=lambda o: o.obs_id)
-        masks = sorted(masks_by_kf.get(kf, []))
-        pano = np.asarray(Image.open(
-            paths.dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
-        pano_h, pano_w = pano.shape[:2]
-        scale = args.pano_width / pano_w
-
-        # annotated pano
-        anno = Image.fromarray(pano).resize(
-            (args.pano_width, int(pano_h * scale)), Image.BILINEAR)
-        draw = ImageDraw.Draw(anno)
-        for o in obs_list:
-            box = pg.pano_bbox_for_observation(o.boxes, pano_w, pano_h)
-            draw_wrapped_rect(draw, box, scale, args.pano_width,
-                              vc.obs_color(o), 2, vc.obs_semantic_label(o),
-                              font)
-        for track_id, action, box in masks:
-            draw_wrapped_rect(draw, box, scale, args.pano_width, MASK_COLOR,
-                              2, f"T{track_id}", font)
-        anno.save(out / "img" / f"{kf_name(kf)}_pano.jpg", quality=85)
-
-        # detection chips
-        for o in obs_list:
-            box = pg.pano_bbox_for_observation(o.boxes, pano_w, pano_h)
-            sa.render_chip(pano, box, None,
-                           out / "img" / f"{kf_name(kf)}_{o.obs_id}.jpg",
-                           CHIP_H)
-
         prev_kf = kf_name(frames[n - 1].frame_idx) if n else None
         next_kf = kf_name(frames[n + 1].frame_idx) if n + 1 < len(frames) \
             else None

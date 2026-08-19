@@ -628,6 +628,7 @@ py_library(
   srcs=["vertex_batch_manager.py"],
   visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
+    ":llm_cost",
     requirement("google-genai"),
     requirement("google-cloud-storage"),
   ]
@@ -1293,6 +1294,8 @@ py_binary(
     requirement("pandas"),
     requirement("pyarrow"),
     requirement("pillow"),
+    requirement("numpy"),
+    requirement("opencv-python"),
   ]
 )
 

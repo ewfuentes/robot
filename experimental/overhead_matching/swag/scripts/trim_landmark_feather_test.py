@@ -5,7 +5,10 @@ are written as those judgements: a container crane survives without a height
 tag, a bench does not, and a bare shed does not while a grain terminal does.
 """
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -35,7 +38,7 @@ def drops(tags: list[dict], areas=None, min_area=2000.0, min_levels=6.0):
 
 class RuleTest(unittest.TestCase):
     def test_untagged_row_dropped(self):
-        self.assertEqual(drops([{}])["no_harbor_tags"], [True])
+        self.assertEqual(drops([{}])["no_far_field_tags"], [True])
 
     def test_street_furniture_dropped(self):
         for tag in [{"amenity": "bench"}, {"natural": "tree"},
@@ -201,22 +204,22 @@ class RuleTest(unittest.TestCase):
         tags = [{}, {"amenity": "bench"}, {"building": "yes"},
                 {"man_made": "lighthouse"}]
         masks = tlf.evaluate_rules(tags, np.zeros(4), 2000.0, 6.0)
-        self.assertEqual(set(masks), {"no_harbor_tags", "unobservable_only",
+        self.assertEqual(set(masks), {"no_far_field_tags", "unobservable_only",
                                       "generic_small_building"})
         for mask in masks.values():
             self.assertEqual(len(mask), 4)
 
 
 class ColumnSelectionTest(unittest.TestCase):
-    def test_harbor_columns_match_prune_harbor_tags(self):
-        """Pre-selecting columns must not change what prune_harbor_tags keeps."""
+    def test_far_field_columns_match_prune_far_field_tags(self):
+        """Pre-selecting columns must not change what prune_far_field_tags keeps."""
         columns = ["id", "geometry", "landmark_type", "name", "man_made",
                    "addr:housenumber", "seamark:type", "payment:cash",
                    "building:levels", "name:fr", "opening_hours", "height"]
-        selected = set(tlf.harbor_tag_columns(columns))
+        selected = set(tlf.far_field_tag_columns(columns))
         row = {c: "x" for c in columns if c not in ("id", "geometry",
                                                     "landmark_type")}
-        direct = set(tlf.hc.prune_harbor_tags(row))
+        direct = set(tlf.hc.prune_far_field_tags(row))
         self.assertEqual(selected, direct)
 
     def test_footprint_area_of_polygon(self):
@@ -230,6 +233,247 @@ class ColumnSelectionTest(unittest.TestCase):
         self.assertEqual(areas[1], 0.0)
         self.assertEqual(areas[2], 0.0)
 
+
+def catalog(rows) -> gpd.GeoDataFrame:
+    """Tiny dict-schema catalog: [(id, tags, geometry), ...]."""
+    return gpd.GeoDataFrame(
+        {"id": [r[0] for r in rows],
+         "landmark_type": ["osm"] * len(rows),
+         "tags": [json.dumps(r[1]) for r in rows]},
+        geometry=[r[2] for r in rows], crs="EPSG:4326")
+
+
+def write_matches(path: Path, entries) -> Path:
+    """m9's matches.json shape: [(tracklet, signature, confidence)]."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        tracklet: {"matches": [{"landmark_id": f"osm:way:{i}",
+                                "signature": signature,
+                                "confidence": confidence,
+                                "match_type": "instance"}]}
+        for i, (tracklet, signature, confidence) in enumerate(entries)}))
+    return path
+
+
+class MatchedRecallGuardTest(unittest.TestCase):
+    """The guard that asks a stronger question than the positive set: would a
+    rule drop something a matcher already chose on a real run?"""
+
+    def test_reads_matches_and_honours_the_confidence_floor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_matches(Path(tmp) / "run" / "matching" / "matches.json",
+                                 [("LT0", "man_made=lighthouse", 0.9),
+                                  ("LT1", "amenity=bench", 0.2)])
+            found = tlf.matched_signatures([path.parent.parent], 0.5)
+        self.assertEqual(sorted(found), ["man_made=lighthouse"])
+        self.assertEqual(found["man_made=lighthouse"][0][1], "LT0")
+
+    def test_accepts_the_matches_file_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_matches(Path(tmp) / "matches.json",
+                                 [("LT0", "man_made=pier", 0.6)])
+            self.assertEqual(sorted(tlf.matched_signatures([path], 0.5)),
+                             ["man_made=pier"])
+
+    def test_missing_matches_file_is_an_error_not_a_silent_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit):
+                tlf.matched_signatures([Path(tmp)], 0.5)
+
+    def test_refuses_to_write_when_a_matched_signature_is_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("osm:node:1", {"amenity": "bench"}, Point(-71.0, 42.3))]
+                    ).to_feather(source)
+            matches = write_matches(tmp / "matches.json",
+                                    [("LT0", "amenity=bench", 0.9)])
+            with self.assertRaises(SystemExit) as caught:
+                tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                         matched_from=[matches])
+            self.assertIn("refusing to write", str(caught.exception))
+            self.assertFalse((tmp / "v2_trimmed.feather").exists())
+
+    def test_allow_recall_loss_is_the_explicit_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("osm:node:1", {"amenity": "bench"}, Point(-71.0, 42.3))]
+                    ).to_feather(source)
+            matches = write_matches(tmp / "matches.json",
+                                    [("LT0", "amenity=bench", 0.9)])
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                     matched_from=[matches], allow_recall_loss=True)
+            record = json.loads((tmp / "v2_trimmed.provenance.json").read_text())
+        self.assertEqual(record["recall_guard"]["lost_signatures"],
+                         ["amenity=bench"])
+
+    def test_signatures_from_another_region_do_not_block_a_write(self):
+        """A run from a different dataset matches signatures this table never
+        held; that is not a rule dropping something."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("osm:node:1", {"man_made": "lighthouse"},
+                      Point(-70.89, 42.32))]).to_feather(source)
+            matches = write_matches(tmp / "matches.json",
+                                    [("LT0", "natural=peak; name=Mt Adams", 0.9)])
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                     matched_from=[matches])
+            record = json.loads((tmp / "v2_trimmed.provenance.json").read_text())
+        self.assertEqual(record["recall_guard"]["lost_signatures"], [])
+
+    def test_passes_when_the_matched_signature_survives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("osm:node:1", {"man_made": "lighthouse",
+                                     "name": "Boston Light"},
+                      Point(-70.89, 42.32))]).to_feather(source)
+            matches = write_matches(tmp / "matches.json",
+                                    [("LT0", "man_made=lighthouse; "
+                                             "name=Boston Light", 0.9)])
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                     matched_from=[matches])
+            record = json.loads((tmp / "v2_trimmed.provenance.json").read_text())
+        self.assertEqual(record["recall_guard"]["lost_signatures"], [])
+        self.assertEqual(record["rows_out"], 1)
+
+
+class WriteProtectionTest(unittest.TestCase):
+    """A catalog is part of the problem definition, so it is versioned rather
+    than overwritten -- every past number was computed against the old one."""
+
+    def build(self, tmp: Path) -> Path:
+        source = tmp / "v1.feather"
+        catalog([("osm:node:1", {"man_made": "lighthouse"},
+                  Point(-70.89, 42.32))]).to_feather(source)
+        return source
+
+    def test_existing_catalog_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = self.build(tmp)
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
+            with self.assertRaises(SystemExit) as caught:
+                tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
+        self.assertIn("versioned, not overwritten", str(caught.exception))
+
+    def test_force_replaces_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = self.build(tmp)
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                     force=True)
+
+    def test_dry_run_never_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = self.build(tmp)
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, True)
+            self.assertFalse((tmp / "v2_trimmed.feather").exists())
+
+
+class RuleFingerprintTest(unittest.TestCase):
+
+    def test_stable_for_the_same_rules(self):
+        self.assertEqual(tlf.rule_fingerprint(2000.0, 6.0),
+                         tlf.rule_fingerprint(2000.0, 6.0))
+
+    def test_changes_when_a_threshold_changes(self):
+        self.assertNotEqual(tlf.rule_fingerprint(2000.0, 6.0),
+                            tlf.rule_fingerprint(400.0, 6.0))
+
+    def test_changes_when_a_rule_set_changes(self):
+        original = tlf.HARD_UNOBSERVABLE_TAGS
+        try:
+            tlf.HARD_UNOBSERVABLE_TAGS = frozenset(original | {("amenity", "zzz")})
+            changed = tlf.rule_fingerprint(2000.0, 6.0)
+        finally:
+            tlf.HARD_UNOBSERVABLE_TAGS = original
+        self.assertNotEqual(changed, tlf.rule_fingerprint(2000.0, 6.0))
+
+
+class ClipBoxTest(unittest.TestCase):
+
+    def test_keeps_inside_and_drops_outside(self):
+        inside = Point(-71.08, 42.36)
+        outside = Point(-71.08, 42.56)          # ~22 km north
+        gdf = catalog([("a", {"man_made": "tower"}, inside),
+                       ("b", {"man_made": "tower"}, outside)])
+        mask = tlf.clip_mask(gdf, 42.36, -71.08, 25.0)
+        self.assertEqual(mask.tolist(), [True, False])
+
+    def test_box_is_square_in_metres_not_degrees(self):
+        """A degree of longitude is only ~82 km at Boston against ~111 km for a
+        degree of latitude, so equal degree offsets are unequal distances: 0.1
+        deg is 8.2 km east but 11.1 km north. A box measured in degrees would
+        admit or reject the pair together; measured in metres it splits them."""
+        east = Point(-71.08 + 0.10, 42.36)     # 8.2 km east
+        north = Point(-71.08, 42.36 + 0.10)    # 11.1 km north
+        gdf = catalog([("e", {"man_made": "tower"}, east),
+                       ("n", {"man_made": "tower"}, north)])
+        self.assertEqual(tlf.clip_mask(gdf, 42.36, -71.08, 25.0).tolist(),
+                         [True, True])       # half-box 12.5 km: both inside
+        self.assertEqual(tlf.clip_mask(gdf, 42.36, -71.08, 20.0).tolist(),
+                         [True, False])      # half-box 10 km: only the east one
+
+    def test_clip_without_a_centre_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("a", {"man_made": "tower"}, Point(-71.0, 42.3))]
+                    ).to_feather(source)
+            with self.assertRaises(SystemExit) as caught:
+                tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                         clip_km=25.0)
+        self.assertIn("impossible to reproduce", str(caught.exception))
+
+    def test_clip_is_reported_as_its_own_rule_and_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = tmp / "v1.feather"
+            catalog([("a", {"man_made": "tower"}, Point(-71.08, 42.36)),
+                     ("b", {"man_made": "tower"}, Point(-71.08, 42.56))]
+                    ).to_feather(source)
+            tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                     clip_km=25.0, clip_center_lat=42.36,
+                     clip_center_lon=-71.08)
+            record = json.loads((tmp / "v2_trimmed.provenance.json").read_text())
+        self.assertEqual(record["drops_per_rule"]["outside_clip_box"], 1)
+        self.assertEqual(record["rows_out"], 1)
+        self.assertEqual(record["arguments"]["clip_km"], 25.0)
+
+
+class ProvenanceTest(unittest.TestCase):
+    """The provenance file has one job: make the catalog reproducible."""
+
+    def run_once(self, tmp: Path):
+        source = tmp / "v1.feather"
+        catalog([("a", {"man_made": "lighthouse", "name": "Boston Light"},
+                  Point(-70.89, 42.32))]).to_feather(source)
+        tlf.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                 clip_km=25.0, clip_center_lat=42.32, clip_center_lon=-70.89)
+        return json.loads((tmp / "v2_trimmed.provenance.json").read_text()), source
+
+    def test_records_every_argument_and_the_input_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record, source = self.run_once(Path(tmp))
+            self.assertEqual(record["input_sha256"], tlf.sha256_of(source))
+        for key in ("input", "output", "min_building_area_m2",
+                    "min_building_levels", "clip_km", "clip_center_lat",
+                    "clip_center_lon", "confidence_floor"):
+            self.assertIn(key, record["arguments"])
+
+    def test_reproduce_command_carries_the_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record, _ = self.run_once(Path(tmp))
+        command = record["reproduce"]
+        self.assertIn("trim_landmark_feather", command)
+        self.assertIn("--clip_km 25.0", command)
+        self.assertIn("--min_building_area_m2 2000.0", command)
+        self.assertNotIn("None", command)
 
 if __name__ == "__main__":
     unittest.main()

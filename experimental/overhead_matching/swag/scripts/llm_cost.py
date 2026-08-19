@@ -27,16 +27,89 @@ No third-party imports, so the extraction orchestrator can use it without
 pulling in the genai SDK it otherwise only shells out to.
 """
 
+import datetime
 import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Gemini 3.x pro, on-demand, USD per token. The higher band applies per request
-# when that request's prompt exceeds the threshold.
+# On-demand list price, USD per token, per model. The `large` band applies per
+# request when that request's prompt exceeds LARGE_PROMPT_TOKENS.
+#
+# Rates are per model because the price spread across the family is larger than
+# any modelling error in this file: pricing a Flash run at Pro rates over-reports
+# by ~5x, which is not a safety margin but a wrong number, and it will refuse a
+# run that is comfortably inside its ceiling.
+#
+# gemini-3.x pro: the small band is verified against the 2026-08-17 Vertex bill,
+#   whose batch SKUs charged exactly half of these ($1/M in, $6/M out); the values
+#   once here were those batch rates mislabeled as on-demand, so every reported
+#   cost was 2x low. The large band carries the same 2x correction but is not
+#   bill-verified (no request has crossed 200k prompt tokens yet).
+# gemini-3.7-flash: published pricing, not yet bill-verified here. Google's table
+#   lists a single input price with no context-length tier, so the large band
+#   repeats the small one rather than inventing a premium. It also carries a
+#   promotional rate that doubles on 2027-01-01, which `rates_for` resolves by
+#   date -- a hardcoded promo rate would silently halve every estimate the moment
+#   it lapsed, and under-predicting is the one failure this module must not have.
 LARGE_PROMPT_TOKENS = 200_000
-INPUT_USD = {"small": 1.00 / 1e6, "large": 2.00 / 1e6}
-OUTPUT_USD = {"small": 6.00 / 1e6, "large": 9.00 / 1e6}
+
+PROMO_LAST_DAY = "2026-12-31"
+
+MODEL_RATES = {
+    "gemini-3.1-pro": {
+        "input": {"small": 2.00 / 1e6, "large": 4.00 / 1e6},
+        "output": {"small": 12.00 / 1e6, "large": 18.00 / 1e6},
+    },
+    "gemini-3.7-flash": {
+        "input": {"small": 0.375 / 1e6, "large": 0.375 / 1e6},
+        "output": {"small": 1.875 / 1e6, "large": 1.875 / 1e6},
+        "promo_last_day": PROMO_LAST_DAY,
+        "after_promo": {
+            "input": {"small": 0.75 / 1e6, "large": 0.75 / 1e6},
+            "output": {"small": 3.75 / 1e6, "large": 3.75 / 1e6},
+        },
+    },
+}
+
+# Every other model -- gemini-3-flash-preview above all, which runs the audit and
+# matching stages -- prices at pro rates. That is deliberate and conservative,
+# NOT a verified price for those models: it is the rate the published cost tables
+# in docs/object-tracking-runbook.md were computed at, so leaving it in place
+# keeps those numbers reproducible instead of silently restating history.
+DEFAULT_RATE_MODEL = "gemini-3.1-pro"
+
+INPUT_USD = MODEL_RATES[DEFAULT_RATE_MODEL]["input"]
+OUTPUT_USD = MODEL_RATES[DEFAULT_RATE_MODEL]["output"]
+
+
+def rates_for(model: str | None, *, today: str | None = None) -> tuple:
+    """(input_usd, output_usd, label) for a model id.
+
+    Matches the longest configured key the id starts with, so
+    `gemini-3.1-pro-preview` resolves to the `gemini-3.1-pro` entry and anything
+    unrecognised falls back to `DEFAULT_RATE_MODEL`. `today` (an ISO date, for
+    tests) selects between promotional and standing rates.
+    """
+    key = DEFAULT_RATE_MODEL
+    if model:
+        matches = [k for k in MODEL_RATES if model.startswith(k)]
+        if matches:
+            key = max(matches, key=len)
+    entry = MODEL_RATES[key]
+    label = key
+    last_day = entry.get("promo_last_day")
+    if last_day:
+        if today is None:
+            today = datetime.date.today().isoformat()
+        if today > last_day:
+            entry = entry["after_promo"]
+            label = f"{key} (standing rate; promo ended {last_day})"
+        else:
+            label = f"{key} (promotional rate through {last_day})"
+    if model and not any(model.startswith(k) for k in MODEL_RATES):
+        label = f"{key} rates (no table entry for {model})"
+    return entry["input"], entry["output"], label
 
 # Batch is half of on-demand for identical output.
 BATCH_MULTIPLIER = 0.5
@@ -71,6 +144,10 @@ class Estimate:
     usd_batch: float = 0.0
     safety_factor: float = SAFETY_FACTOR
     per_request_output_tokens: int = DEFAULT_OUTPUT_TOKENS_PER_REQUEST
+    # Which price list produced the dollars above. Recorded rather than assumed
+    # so a number can be attributed to a model after the fact.
+    model: str | None = None
+    rate_label: str = DEFAULT_RATE_MODEL
     notes: list = field(default_factory=list)
 
     @property
@@ -94,6 +171,8 @@ class Estimate:
             f"  prompt tokens:  ~{self.prompt_tokens:,}",
             f"  output tokens:  ~{self.output_tokens:,} "
             f"({self.per_request_output_tokens:,}/request assumed)",
+            f"  priced at:      {self.rate_label}"
+            + (f", model {self.model}" if self.model else ""),
             f"  estimated cost: ${self.usd(online=online):.2f} ({transport})",
             f"  guard compares: ${self.guarded_usd(online=online):.2f} "
             f"(x{self.safety_factor} safety factor)",
@@ -102,9 +181,14 @@ class Estimate:
             lines.append(f"                  ${self.usd_on_demand:.2f} if run "
                          f"--online instead")
         if self.n_large_prompts:
-            lines.append(f"  {self.n_large_prompts} request(s) exceed "
-                         f"{LARGE_PROMPT_TOKENS:,} prompt tokens and bill at "
-                         f"the higher band")
+            input_usd, output_usd, _ = rates_for(self.model)
+            banded = (input_usd["small"] != input_usd["large"]
+                      or output_usd["small"] != output_usd["large"])
+            lines.append(
+                f"  {self.n_large_prompts} request(s) exceed "
+                f"{LARGE_PROMPT_TOKENS:,} prompt tokens and bill at "
+                + ("the higher band" if banded else
+                   "the same rate (this model has no context-length tier)"))
         lines += [f"  {note}" for note in self.notes]
         return "\n".join(lines)
 
@@ -135,9 +219,17 @@ def estimate_request(request: dict) -> tuple[int, int, int]:
 
 def estimate_jsonl(path, *,
                    output_tokens_per_request: int =
-                   DEFAULT_OUTPUT_TOKENS_PER_REQUEST) -> Estimate:
-    """Estimate a requests JSONL, one `{key, request}` record per line."""
-    estimate = Estimate(per_request_output_tokens=output_tokens_per_request)
+                   DEFAULT_OUTPUT_TOKENS_PER_REQUEST,
+                   model: str | None = None) -> Estimate:
+    """Estimate a requests JSONL, one `{key, request}` record per line.
+
+    `model` selects the price list (see `rates_for`); omitting it prices at
+    `DEFAULT_RATE_MODEL`, which is what every caller did before rates became
+    per-model.
+    """
+    input_usd, output_usd, rate_label = rates_for(model)
+    estimate = Estimate(per_request_output_tokens=output_tokens_per_request,
+                        model=model, rate_label=rate_label)
     path = Path(path)
     if not path.exists():
         estimate.notes.append(f"{path} does not exist; nothing to estimate")
@@ -160,9 +252,9 @@ def estimate_jsonl(path, *,
             band = "large" if prompt > LARGE_PROMPT_TOKENS else "small"
             if band == "large":
                 estimate.n_large_prompts += 1
-            estimate.usd_on_demand += (prompt * INPUT_USD[band]
+            estimate.usd_on_demand += (prompt * input_usd[band]
                                        + output_tokens_per_request
-                                       * OUTPUT_USD[band])
+                                       * output_usd[band])
     estimate.usd_batch = estimate.usd_on_demand * BATCH_MULTIPLIER
     return estimate
 

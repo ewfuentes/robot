@@ -444,6 +444,7 @@ def stage_requests(config: PipelineConfig):
             "--",
             "create_panorama_sentences",
             "--pinhole_dir", str(config.pinhole_dir),
+            "--panorama_dir", str(config.panorama_dir),
             "--output_base", str(config.sentence_requests_dir),
             "--prompt_type", config.prompt_type,
             "--num_workers", "8",
@@ -518,9 +519,10 @@ def stage_submit(config: PipelineConfig):
     vertex_env = {"GOOGLE_GENAI_USE_VERTEXAI": "True"}
 
     if not config.dry_run:
-        estimate = llm_cost.Estimate()
+        _, _, rate_label = llm_cost.rates_for(config.model)
+        estimate = llm_cost.Estimate(model=config.model, rate_label=rate_label)
         for path in sorted(config.sentence_requests_jsonl_dir.glob("*.jsonl")):
-            part = llm_cost.estimate_jsonl(path)
+            part = llm_cost.estimate_jsonl(path, model=config.model)
             for field in ("n_requests", "prompt_tokens", "output_tokens",
                           "n_images", "text_chars", "n_large_prompts",
                           "usd_on_demand"):

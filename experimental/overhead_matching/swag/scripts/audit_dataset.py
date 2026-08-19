@@ -47,6 +47,106 @@ class Audit:
             print(f"{mark}  {msg}")
 
 
+# Correctly-addressed frames cross-correlate 0.98-0.9999 against their
+# panorama; charles_river_20260727's 510 s-offset frames scored 0.31-0.56.
+MIN_VIDEO_NCC = 0.90
+
+
+def _gray(array, size=(640, 320)):
+    from PIL import Image
+    import numpy as np
+    im = Image.fromarray(array) if not isinstance(array, Image.Image) else array
+    return np.asarray(im.convert("L").resize(size), dtype=float)
+
+
+def _ncc(a, b):
+    import numpy as np
+    if a.std() < 1e-6 or b.std() < 1e-6:
+        return 0.0
+    return float((((a - a.mean()) / a.std()) * ((b - b.mean()) / b.std())).mean())
+
+
+def check_video_addressing(a, ds, meta, gps, imgs):
+    """Does `video_t_s` actually address the frame it claims?
+
+    `video_t_s` is the address the tracking stages seek to in the source video
+    (`video_frames.VideoFrameProvider`), and nothing downstream can tell a wrong
+    address from a right one: a seek lands on a real frame either way, SAM2
+    happily tracks whatever is there, and the run completes. charles_river's
+    trim rebased the column to zero, so every window came from 510 s earlier in
+    the sail; the only visible symptom was tracks that made no sense. Every
+    other check in this file passed on that dataset, which is why this one
+    exists: decode what the column points at and compare it to the panorama it
+    is supposed to be.
+    """
+    raw = ((meta.get("video") or {}).get("source_video") or "").split(" (")[0].strip()
+    if not raw:
+        a.ok("no source video declared (nothing to address)")
+        return
+    path = Path(raw)
+    if not path.is_absolute():
+        # <root>/datasets/<name> -> <root>; resolve() so a compat symlink shell
+        # does not send the search off to the wrong root.
+        path = ds.resolve().parent.parent / path
+    if not path.exists():
+        a.warn(f"declared source video is absent on disk ({path}); tracking "
+               f"stages will fail until it is restored")
+        return
+    try:
+        import cv2
+        import numpy as np  # noqa: F401
+        from PIL import Image
+    except ImportError as exc:
+        a.warn(f"{exc.name} unavailable; skipped video addressing check")
+        return
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        a.fail(f"could not open declared source video {path}")
+        return
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            a.warn(f"source video reports fps={fps}; skipped addressing check")
+            return
+        picks = [i for i in (len(gps) // 4, len(gps) // 2, 3 * len(gps) // 4)
+                 if 0 <= i < len(gps)] or [0]
+        scores, offset_scores = [], []
+        # If the address is wrong, the likeliest cause is a trim that rebased
+        # the column, and the amount cut is recorded -- so report the fix too.
+        shift = float((meta.get("video") or {}).get("export_start_video_t_s") or 0.0)
+        for i in picks:
+            t_s = float(gps[i]["video_t_s"])
+            pano = _gray(Image.open(imgs[i]))
+            for delta, sink in ((0.0, scores), (shift, offset_scores)):
+                if delta == 0.0 and sink is offset_scores:
+                    continue
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(round((t_s + delta) * fps)))
+                ok, bgr = cap.read()
+                if not ok:
+                    sink.append(0.0)
+                    continue
+                sink.append(_ncc(_gray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)), pano))
+    finally:
+        cap.release()
+    if not scores:
+        a.warn("could not decode any sampled video frame; addressing unchecked")
+        return
+    worst = min(scores)
+    if worst >= MIN_VIDEO_NCC:
+        a.ok(f"video_t_s addresses {path.name} correctly "
+             f"(frame match {worst:.3f}-{max(scores):.3f} over {len(scores)})")
+        return
+    hint = ""
+    if offset_scores and min(offset_scores) >= MIN_VIDEO_NCC:
+        hint = (f" Adding export_start_video_t_s ({shift} s) fixes it "
+                f"(match {min(offset_scores):.3f}), so the column was rebased "
+                f"by a trim: restore it with video_t_s += {shift}.")
+    a.fail(f"video_t_s does NOT address {path.name}: sampled frames match "
+           f"their panoramas at only {worst:.3f}-{max(scores):.3f} "
+           f"(want >= {MIN_VIDEO_NCC}). Tracking would crop its windows from "
+           f"the wrong part of the video.{hint}")
+
+
 def haversine_m(a, b):
     R = 6371000.0
     la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
@@ -338,6 +438,8 @@ def audit(ds: Path) -> Audit:
         cap = meta.get("resize_max_width")
         if cap and any(s[0] > cap for s in sizes):
             a.fail(f"image wider than resize cap {cap}: {sorted(sizes)}")
+
+    check_video_addressing(a, ds, meta, gps, imgs)
 
     # ── landmarks ────────────────────────────────────────────────────────────
     lm_dir = ds / "landmarks"

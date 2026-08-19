@@ -263,6 +263,23 @@ class ApplyTrimTest(unittest.TestCase):
             float(before[2]["latitude"]), float(before[2]["longitude"]))
         self.assertAlmostEqual(float(after[-1]["dist_m"]), expected, places=0)
 
+    def test_head_cut_keeps_video_t_s_addressing_the_untrimmed_video(self):
+        # The regression that produced charles_river_20260727's bad tracking:
+        # video_t_s was rebased to zero at the new first frame, but the source
+        # video is not trimmed, so every kept frame then addressed content
+        # earlier than itself by the length of the head cut.
+        before, _ = trim_dataset.read_csv(self.ds / "frames_gps.csv")
+        keep = [3, 4, 5]
+        trim_dataset.apply_trim(self.ds, keep, "head cut", None,
+                                trim_dir="trimmed_frames", kind="range")
+        after = read_rows(self.ds / "frames_gps.csv")
+        for new_idx, old in enumerate(keep):
+            for column in ("video_t_s", "sensor_elapsed_s"):
+                self.assertEqual(float(after[new_idx][column]),
+                                 float(before[old][column]),
+                                 f"{column} must survive the trim verbatim")
+        self.assertGreater(float(after[0]["video_t_s"]), 0.0)
+
     def test_pre_trim_csvs_are_preserved_for_restore(self):
         self.density_trim()
         backups = sorted((self.ds / "trimmed_frames_for_density")
