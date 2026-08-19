@@ -66,3 +66,10 @@ clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d47
 # extras and are left uninstalled -- waymo-open-dataset pins tensorflow and nuplan-devkit pins
 # its own torch, so neither co-resolves with this lock.
 MapPrior @ git+https://github.com/ewfuentes/TopoGPT.git@1a60753cc43652efe295ab0f7bb06b74d7916a9a
+# MapPrior's `flow` extra, needed by modules/flow -- configs/model/finetune.yaml resolves it as a
+# hydra _target_ at instantiation time, so no import analysis finds it. Named here rather than
+# taken as an extra because the extra is unversioned; this pins the one package and lets uv pull
+# the rest behind it. Costs nine lock entries -- torchcfm, torchdyn, torchsde, torchcde,
+# torchdiffeq, pot, poethepoet, pastel, trampoline -- and no version change to anything already
+# pinned.
+torchcfm==1.0.7
