@@ -60,6 +60,11 @@ MOUNT_OFFSET_CONVENTION = (
     "the CENTRE column of the panorama, not column 0; a prior reasoned in the "
     "column-0 convention is exactly 180 deg out.")
 
+# The machine-checkable tag for a mount-offset record that follows
+# MOUNT_OFFSET_CONVENTION. Metadata blocks carry `frame:` set to exactly this
+# string; consumers refuse anything else (dataset.mount_offset_record).
+MOUNT_OFFSET_FRAME = "camera_centre_column_direction_of_travel"
+
 
 # ---------------------------------------------------------------------------
 # Angle arithmetic
