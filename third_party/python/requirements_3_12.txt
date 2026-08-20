@@ -12,6 +12,7 @@ absl-py==2.3.1 \
     # via
     #   -c constraints.txt
     #   tensorboard
+    #   torchcfm
 affine==2.4.0 \
     --hash=sha256:8a3df80e2b2378aef598a83c1392efd47967afec4242021a0b06b4c7cbc61a92 \
     --hash=sha256:a24d818d6a836c131976d22f8c27b8d3ca32d0af64c1d8d29deb7bafa4da1eea
@@ -1651,6 +1652,7 @@ ipykernel==6.30.1 \
     # via
     #   -c constraints.txt
     #   jupyterlab
+    #   torchdyn
 ipympl==0.9.3 \
     --hash=sha256:49bab75c05673a6881d1aaec5d8ac81d4624f73d292d154c5fb7096f10236a2b \
     --hash=sha256:d113cd55891bafe9b27ef99b6dd111a87beb6bb2ae550c404292272103be8013
@@ -1678,6 +1680,7 @@ ipywidgets==8.1.7 \
     # via
     #   -c constraints.txt
     #   ipympl
+    #   torchdyn
 isoduration==20.11.0 \
     --hash=sha256:ac2f9015137935279eac671f94f89eb00584f940f5dc49462a0c4ee692ba1bd9 \
     --hash=sha256:b2904c2a4228c3d44f409c8ae8e2370eb21a26f7ac2ec5446df141dde3452042
@@ -2428,6 +2431,8 @@ matplotlib==3.9.2 \
     #   seaborn
     #   spatialmath-python
     #   supervision
+    #   torchcfm
+    #   torchdyn
 matplotlib-inline==0.1.7 \
     --hash=sha256:8423b23ec666be3d16e16b60bdd8ac4e86e840ebd1dd11a30b9f117f2fa0ab90 \
     --hash=sha256:df192d39a4ff8f21b1895d72e6a13f5fcc5099f00fa84384e0ea28c2cc0653ca
@@ -2886,6 +2891,7 @@ numpy==2.3.5 \
     #   osmnx
     #   osqp
     #   pandas
+    #   pot
     #   pycolmap
     #   pyogrio
     #   pyquaternion
@@ -2905,7 +2911,9 @@ numpy==2.3.5 \
     #   tensorboard
     #   tifffile
     #   torch-kdtree
+    #   torchcfm
     #   torchmetrics
+    #   torchsde
     #   torchvision
     #   transformers
 nvidia-cublas-cu12==12.8.3.14 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
@@ -3188,6 +3196,7 @@ pandas==2.2.3 \
     #   geopandas
     #   osmnx
     #   seaborn
+    #   torchcfm
 pandocfilters==1.5.1 \
     --hash=sha256:002b4a555ee4ebc03f8b66307e287fa492e4a77b4ea14d3f934328297bb4939e \
     --hash=sha256:93be382804a9cdb0a7267585f157e5d1731bbe5545a85b268d6f5fe6232de2bc
@@ -3206,6 +3215,12 @@ parso==0.8.4 \
     # via
     #   -c constraints.txt
     #   jedi
+pastel==0.2.1 \
+    --hash=sha256:4349225fcdf6c2bb34d483e523475de5bb04a5c10ef711263452cb37d7dd4364 \
+    --hash=sha256:e6581ac04e973cac858828c6202c1e1e81fee1dc7de7683f3e1ffe0bfd8a573d
+    # via
+    #   -c constraints.txt
+    #   poethepoet
 pathlib-abc==0.5.2 \
     --hash=sha256:4c9d94cf1b23af417ce7c0417b43333b06a106c01000b286c99de230d95eefbb \
     --hash=sha256:fcd56f147234645e2c59c7ae22808b34c364bb231f685ddd9f96885aed78a94c
@@ -3330,6 +3345,12 @@ plotly==6.3.0 \
     #   cert-tools
     #   dash
     #   hloc
+poethepoet==0.10.0 \
+    --hash=sha256:6fb3021603d4421c6fcc40072bbcf150a6c52ef70ff4d3be089b8b04e015ef5a \
+    --hash=sha256:70b97cb194b978dc464c70793e85e6f746cddf82b84a38bfb135946ad71ae19c
+    # via
+    #   -c constraints.txt
+    #   torchdyn
 polars==1.27.1 \
     --hash=sha256:339e3948748ad6fa7a42e613c3fb165b497ed797e93fce1aa2cddf00fbc16cac \
     --hash=sha256:4d18a29c65222451818b63cd397b2e95c20412ea0065d735a20a4a79a7b26e8a \
@@ -3353,6 +3374,53 @@ portalocker==3.2.0 \
     # via
     #   -c constraints.txt
     #   iopath
+pot==0.9.7.post1 \
+    --hash=sha256:00631ab4254a9c95ea36077219b3a1c74e05f3138ab20bdd862a4aa3e0e66dad \
+    --hash=sha256:052eafe9702d513053252928f546372bbd2ad832b6ed88f0c3e9ecf531d4b220 \
+    --hash=sha256:0a435f00b7b1a4d5f8f133c4412f1ff08134dea52c9e514fbdcfff600d0c5247 \
+    --hash=sha256:130e58407efd718858ba5e4b16a1a2f15dff57438072f57438cb42dcdc818596 \
+    --hash=sha256:147195d598727736c04bd0d0599cde42d3c917ed4336891559e7362fdc1f8f85 \
+    --hash=sha256:1618fe23a2ee5a27bae2c6c048a05828934fa324774720f0ea81939abd8fc2ad \
+    --hash=sha256:19767a51178fdc112f6fe2ac974e817d762854e2a52808accb7f516bc1eb139d \
+    --hash=sha256:1c131c77b8d00650a2055bf8ff506d3bf0b58a3c4da61bd5e938923d0f31ccf9 \
+    --hash=sha256:25987352b09ed5a78a88e477911d4fcabad0511e78285024697633cdaac8bad5 \
+    --hash=sha256:2edd70845047ac2d378487b980a2bffb5ff58e9b92b7133896ff5753f6300cec \
+    --hash=sha256:3aa55921c7cec5e2691c23046e3561613b3f62f914360b718670332848c7e969 \
+    --hash=sha256:3bbe5c434b90551040c39ac11f052ab7fa15ecdd0f8df65933ffe364dcbd320e \
+    --hash=sha256:3be8edc1fce4ee74971e042acd28ea533675ad2266425fd3b94c4b31f968561d \
+    --hash=sha256:4331e7f22a85b628f5cd4078e5ddeee51471a3aaeebfe5dbbe8a0392140a275d \
+    --hash=sha256:45f0e17026331ad4d415e7925164958d07f7cc37600b08f93485d5fb35f04bd0 \
+    --hash=sha256:576322307d4e66d53ec2fcf1fb1ad6f192f5fc3949e0821f28ab50fe301dd527 \
+    --hash=sha256:65413e7b67b5d22cb30f2f1f7ef4bdfa5d1a2b4bd3fdc1d456de75e857e6578e \
+    --hash=sha256:83c0da92bc4ef3ee3c7efc7fdbe8258adf43cc06314667514b18f01209204a11 \
+    --hash=sha256:896cb65ffce1e7102e139cff11f0245ef93d5c6c483880b06d0ae6e30b133603 \
+    --hash=sha256:9b9bcb25bdecdf404020bcd68def7af5e4ad42f041161e063b365c36aecceaad \
+    --hash=sha256:a0e78ff0dfa41e3995202745476ca1f52997ed5849e3c16b83ceb99c68a54f2e \
+    --hash=sha256:a2e8b622f03ba61768dbe2e312a6acf6ec88f05515f8d0472aee7b7b99130165 \
+    --hash=sha256:a361e4df248382a101c3e23a46478c6c7943a4b4008fd8922ac465ae4c029dc9 \
+    --hash=sha256:a9612a6e9cdbecd1a29260440a370104e71a453bcde95a9f1d4f4040692969c0 \
+    --hash=sha256:a99d8fc539c9beb2da9e4026b6d832db98691d6b2c3359ddfadfdbc07d581bbb \
+    --hash=sha256:ae9edc5f1934b0d1b81fc0f6b14c312f7436df9500ebb0cd22c6e52ec41df624 \
+    --hash=sha256:b549328f8f0049afd414e3aa544f20faca25edc8b386b278f06ea08dbcd96bf0 \
+    --hash=sha256:b5b1a2c7abb3f394a4e07f0bf8b44b4f3d10412f13c614a1444a298d2de82660 \
+    --hash=sha256:c42ea37501efe98cfdb15846daa66ea7bf9e7c566c19a3e510d5bef278a51aef \
+    --hash=sha256:c7be23e9446487d43bbf46e32c84ecfa66e1bc41b864b7461a1aaf68dad4275f \
+    --hash=sha256:c8ed55ed24a1219095cb13a32849132118286dc2abe2a1135ee1a350bf2efc08 \
+    --hash=sha256:d171797de8eb8be0342a5ba027dd71f8f44b0f2be013458bd1b501f0abc8c12f \
+    --hash=sha256:d8d4f50d63b9a0794942abfb36f443680f230cf7ed39422b75574f345ab84eff \
+    --hash=sha256:daff93ca510e36513d2cd8757b1928643673e4aa427c661785b536b9f8484859 \
+    --hash=sha256:db1fb86d05e771cec2a32582ace133ab91109c31715e08fa950592aa762dab8a \
+    --hash=sha256:e490cf59febfddf3147807dd0c6033df4cf50d9d56707305d0569a2e0b7076af \
+    --hash=sha256:e98ef4f39f9d22af12759a98b354c35a4a009242971b886b933a9bf29012845f \
+    --hash=sha256:f45e5a3a33d77058257f2a6e189d185c5904c3e8fd153ee5dc78764a2961b910 \
+    --hash=sha256:f46a15affb9233ac97a6d9354b0359e3a1d7488c52a0cd5cfef16973d3a6b439 \
+    --hash=sha256:f654ba45c6c96cb2d7e69ed8f6d13f8b018574e61c212b780d1e678ab48e074b \
+    --hash=sha256:f8b239d9b96779fa5961224dded3bd50b2bddd5198210e348874b071a3a9cbf9 \
+    --hash=sha256:fc15552029f2769a57064c1eb23c60322308c5dba4b75e507b82e11de856c31f \
+    --hash=sha256:fd931e1613470a02dcc2e7d5d12e7655b074f96acd0864bcd4f0fcb686653b7f
+    # via
+    #   -c constraints.txt
+    #   torchcfm
 prometheus-client==0.22.1 \
     --hash=sha256:190f1331e783cf21eb60bca559354e0a4d4378facecf78f5428c39b675d20d28 \
     --hash=sha256:cca895342e308174341b2cbf99a56bef291fbc0ef7b9e5412a0f26d653ba7094
@@ -4139,6 +4207,7 @@ pytorch-lightning==2.6.5 \
     # via
     #   -c constraints.txt
     #   lightning
+    #   torchdyn
 pytz==2025.2 \
     --hash=sha256:360b9e3dbb49a209c21ad61809c7fb453643e048b38924c765813546746e81c3 \
     --hash=sha256:5ddf76296dd8c44c26eb8f4b6f35488f3ccbf6fbbd7adee0b7262d43f0ec2f00
@@ -4825,6 +4894,8 @@ scikit-learn==1.6.1 \
     #   dinov3
     #   mapprior
     #   sentence-transformers
+    #   torchcfm
+    #   torchdyn
 scipy==1.16.1 \
     --hash=sha256:0851f6a1e537fe9399f35986897e395a1aa61c574b178c0d456be5b1a0f5ca1f \
     --hash=sha256:0a55ffe0ba0f59666e90951971a884d1ff6f4ec3275a48f472cfb64175570f77 \
@@ -4893,6 +4964,7 @@ scipy==1.16.1 \
     #   hloc
     #   mapprior
     #   osqp
+    #   pot
     #   scikit-image
     #   scikit-learn
     #   scs
@@ -4900,6 +4972,10 @@ scipy==1.16.1 \
     #   sparseqr
     #   spatialmath-python
     #   supervision
+    #   torchcfm
+    #   torchdiffeq
+    #   torchdyn
+    #   torchsde
 scs==3.2.8 \
     --hash=sha256:015860534a38a0f797c461bdb05beef6445fc62a793ce5446ea0935e0a286019 \
     --hash=sha256:0294dfb50424be8513915734e676e2bc0af19c6cc319b10abc683cc00839973e \
@@ -5188,6 +5264,7 @@ tomlkit==0.13.3 \
     # via
     #   -c constraints.txt
     #   marimo
+    #   poethepoet
 torch==2.7.0+cu128 \
     --hash=sha256:1704e5dd66c9221e4e8b6ae2d80cbf54e129571e643f5fa9ca78cc6d2096403a \
     --hash=sha256:2f155388b1200e08f3e901bb3487ff93ca6d63cde87c29b97bb6762a8f63b373 \
@@ -5226,12 +5303,42 @@ torch==2.7.0+cu128 \
     #   sentence-transformers
     #   timm
     #   torch-kdtree
+    #   torchcde
+    #   torchcfm
+    #   torchdiffeq
+    #   torchdyn
     #   torchmetrics
+    #   torchsde
     #   torchvision
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
     # via
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
+torchcde==0.2.5 \
+    --hash=sha256:6e6081192e00476314eb0d97ce54e6c6a67134d868b97b06db7b8017e60f0de6 \
+    --hash=sha256:90ad5943d74d601400476a3cdaf6ea7aabd3967033ba6d513bc8f6a93f982ffd
+    # via
+    #   -c constraints.txt
+    #   torchdyn
+torchcfm==1.0.7 \
+    --hash=sha256:e079138d4c9d5723b2e8a220c323925df1e3367bfdfc34633d7c56970b03a375 \
+    --hash=sha256:f66d18e15c2fff93844d05aef53e1baa61eaa3aa59e4354ab40e5f17159dfb71
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
+torchdiffeq==0.2.5 \
+    --hash=sha256:aa1db4bed13bd04952f28a53cdf4336d1ab60417c1d9698d7a239fec1cf2bcf8 \
+    --hash=sha256:b50d3760d13fd138dcceac651f4b80396f44fefcebd037a033fecfeaa9cc12e7
+    # via
+    #   -c constraints.txt
+    #   torchcde
+    #   torchcfm
+torchdyn==1.0.6 \
+    --hash=sha256:1699db47296b14756172cd26b814bd49ce702420f8c4b049c8ae60b4ae6ac88d \
+    --hash=sha256:3b74d785e3d9c8a42a65dc061af11d39fb2036500ca73d32f077c9314148cdbf
+    # via
+    #   -c constraints.txt
+    #   torchcfm
 torchmetrics==1.7.4 \
     --hash=sha256:506a1a5c7c304cd77ba323ca4b009e46b814fd2be9dcf0f4ccc2e5c0f5b4b0c1 \
     --hash=sha256:9298ad0e893b0cf2956bee95b0f7eecdc65205ab84ddb4f6762eff157c240518
@@ -5242,6 +5349,13 @@ torchmetrics==1.7.4 \
     #   lightning
     #   mapprior
     #   pytorch-lightning
+torchsde==0.2.6 \
+    --hash=sha256:19bf7ff02eec7e8e46ba1cdb4aa0f9db1c51d492524a16975234b467f7fc463b \
+    --hash=sha256:81d074d3504f9d190f1694fb526395afbe4608ee43a88adb1262a639e5b4778b
+    # via
+    #   -c constraints.txt
+    #   torchcde
+    #   torchdyn
 torchvision==0.22.0+cu128 \
     --hash=sha256:03b454b867f7a0aa9861a463042141448c4f15bec784def19eed39a57fac217b \
     --hash=sha256:06c101f40e1ff94869be14487c91fd5352e376f202fdeafb8f53c58cee2fbeb5 \
@@ -5267,6 +5381,7 @@ torchvision==0.22.0+cu128 \
     #   open-clip-torch
     #   sam-2
     #   timm
+    #   torchdyn
 tornado==6.5.2 \
     --hash=sha256:06ceb1300fd70cb20e43b1ad8aaee0266e69e7ced38fa910ad2e03285009ce7c \
     --hash=sha256:2436822940d37cde62771cff8774f4f00b3c8024fe482e16ca8387b8a2724db6 \
@@ -5327,6 +5442,11 @@ traitlets==5.14.3 \
     #   nbclient
     #   nbconvert
     #   nbformat
+trampoline==0.1.2 \
+    --hash=sha256:36cc9a4ff9811843d177fc0e0740efbd7da39eadfe6e50c9e2937cbc06d899d9
+    # via
+    #   -c constraints.txt
+    #   torchsde
 transformers==4.47.1 \
     --hash=sha256:6c29c05a5f595e278481166539202bf8641281536df1c42357ee58a45d0a564a \
     --hash=sha256:d2f5d19bb6283cd66c893ec7e6d931d6370bbf1cc93633326ff1f41a40046c9c

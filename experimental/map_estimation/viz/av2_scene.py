@@ -91,11 +91,13 @@ _PAINT_COLORS = {
     "unmarked": (90, 90, 110),
 }
 _CENTERLINE_COLOR = (120, 190, 150)
+_PREDICTION_COLOR = (255, 90, 200)
 _CROSSWALK_COLOR = (200, 170, 60)
 _DRIVABLE_COLOR = (60, 80, 100)
 
 _LANE_RADIUS_M = 0.08
 _CENTERLINE_RADIUS_M = 0.06
+_PREDICTION_RADIUS_M = 0.20
 _MAP_RADIUS_M = 0.10
 
 # Viridis, as five stops interpolated per channel. Spelled out here rather than imported:
@@ -143,7 +145,15 @@ _CAMERA_AXIS_M = 0.25
 #
 # The path is deliberately excluded -- it runs through the car, so it would smear a bright line
 # across the bottom of every frame.
-_CAMERA_2D_CONTENTS = ("$origin/**", LIDAR, f"{MAP}/**")
+_CAMERA_2D_CONTENTS = ("$origin/**", LIDAR, f"{MAP}/**", PREDICTION_CITY)
+"""What each 2D camera view pulls in besides its own images.
+
+The world entities here are 3D and in city coordinates; a 2D view whose origin is a
+pinhole camera projects them through it, so naming an entity is the whole of drawing it
+over the imagery. :data:`PREDICTION_CITY` is listed for that reason and costs nothing on a
+recording that has no prediction in it -- an absent entity contributes nothing rather than
+erroring, which is why this can be a constant instead of a decision.
+"""
 
 # Reading order for the 2D camera grid: left to right, front to back. Sorting the names instead
 # would file the rear cameras between the front and the side ones, which is exactly wrong for a
@@ -423,6 +433,31 @@ def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
     return summary
 
 
+def log_prediction(lanes_city: list[np.ndarray], *, timestamp_ns: int, t0_ns: int) -> None:
+    """Log generated lane polylines at one instant, in city coordinates.
+
+    Under :data:`PREDICTION_CITY` rather than :data:`PREDICTION_EGO` even though the model works
+    in the egovehicle frame, because it does not work in *this* egovehicle frame: TopoGPT's crop
+    is yaw-only, while ``world/ego`` carries the full ``city_SE3_ego`` including roll and pitch.
+    Hanging a yaw-only prediction off that transform would tilt it with the car. The caller
+    already knows the pose it used, so it converts, and what lands here needs no parent but the
+    world.
+
+    Timestamped rather than static, and one entity rather than one per instant: rerun holds the
+    last value logged at or before the cursor, so a prediction stays on screen until the next one
+    replaces it and scrubbing shows exactly what the model said most recently.
+
+    Args:
+        lanes_city: per lane, an (N, 3) polyline in city coordinates.
+        timestamp_ns: the instant this prediction is for.
+        t0_ns: the log's first pose timestamp, defining the elapsed timeline's zero.
+    """
+    rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
+    rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
+    rr.log(PREDICTION_CITY,
+           rr.LineStrips3D(lanes_city, colors=_PREDICTION_COLOR, radii=_PREDICTION_RADIUS_M))
+
+
 def intensity_colors(intensity: np.ndarray) -> np.ndarray:
     """Map lidar intensity onto viridis, clipped at :data:`_INTENSITY_CLIP`.
 
@@ -495,8 +530,16 @@ def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
     return sweeps, points
 
 
-def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
+def log_cameras(source: av2_source.LogSource,
+                timestamps_ns: set[int] | None = None) -> tuple[int, int]:
     """Log every camera on disk: its calibration once, then one frame per timestamp.
+
+    ``timestamps_ns`` restricts which frames are logged, keeping each camera's own nearest frame
+    to each requested instant -- nearest rather than exact because the ring is phase-staggered,
+    so the seven cameras share no timestamps and an exact filter would empty six of them. The
+    calibration is logged either way, so the cameras still exist in the transform tree. Use it
+    when the imagery is context for something sparse (a model run at a handful of instants)
+    rather than the subject; a tbv log's full 8230 frames are 681 MB.
 
     **These stay in the sensor frame**, which is the opposite of what :func:`log_lidar` does with
     data that arrived in the same egovehicle frame. The reason the lidar had to leave is that a
@@ -552,7 +595,11 @@ def log_cameras(source: av2_source.LogSource) -> tuple[int, int]:
                           camera_xyz=rr.ViewCoordinates.RDF),
                static=True)
 
-        for timestamp_ns, frame_path in source.camera_frames(item):
+        frame_list = list(source.camera_frames(item))
+        if timestamps_ns is not None:
+            wanted = {min(frame_list, key=lambda f, w=w: abs(f[0] - w)) for w in timestamps_ns}
+            frame_list = sorted(wanted)
+        for timestamp_ns, frame_path in frame_list:
             rr.set_time(TIMELINE_ELAPSED, duration=(timestamp_ns - t0_ns) / 1e9)
             rr.set_time(TIMELINE_TIMESTAMP, sequence=timestamp_ns)
             rr.log(entity, rr.EncodedImage(path=frame_path))
