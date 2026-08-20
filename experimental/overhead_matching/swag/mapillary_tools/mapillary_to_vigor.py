@@ -997,7 +997,8 @@ def main():
         # unrotated, so azimuth depends on the per-frame heading in
         # intrinsics.csv. The equirect left-edge semantics were measured, not
         # assumed: verified against solar azimuth and the vessel's wake bearing
-        # on folkestone_dover (see AZIMUTH_CONVENTION.md).
+        # on folkestone_dover (see docs/azimuth-convention.md, and
+        # docs/conventions.md for the register of every frame convention).
         "azimuth_convention": ({
             "images_rotated": False,
             "frame": "camera (as captured)",

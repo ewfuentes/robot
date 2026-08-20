@@ -43,9 +43,13 @@ class FarfieldPathsTest(unittest.TestCase):
         self.assertEqual(
             paths.pinhole_images,
             self.root / "artifacts" / "pinhole_images" / "leg2" / "v1")
+        # Named through DEFAULT_CATALOG rather than spelled out, so bumping the
+        # default catalog is a one-line change instead of a test failure -- but
+        # the shape of the path still gets asserted.
         self.assertEqual(
             paths.feather,
-            self.root / "datasets" / "leg2" / "landmarks" / "v1_trimmed.feather")
+            self.root / "datasets" / "leg2" / "landmarks"
+            / f"{fp.DEFAULT_CATALOG}.feather")
         self.assertEqual(paths.sam2_checkpoint,
                          self.root / "models" / "sam2" / "sam2.1_hiera_large.pt")
 
@@ -342,3 +346,17 @@ class ArgParsingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultCatalogTest(unittest.TestCase):
+    """The default catalog is the problem definition for every matching run, so
+    changing it changes what past numbers mean. Pinned here so the change is
+    deliberate."""
+
+    def test_default_is_v2_trimmed(self):
+        self.assertEqual(fp.DEFAULT_CATALOG, "v2_trimmed")
+
+    def test_explicit_catalog_overrides_the_default(self):
+        paths = fp.FarfieldPaths(dataset="leg2", root=Path("/r"),
+                                             catalog="v1_trimmed")
+        self.assertEqual(paths.feather.name, "v1_trimmed.feather")

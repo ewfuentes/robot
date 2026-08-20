@@ -902,6 +902,41 @@ def request_fingerprint(config: PipelineConfig) -> dict:
             "n_requests": n_requests}
 
 
+def prompt_fingerprint(config: PipelineConfig) -> dict:
+    """Hash the system prompt TEXT alone, as it was actually sent.
+
+    `request_sha256` pins the whole request, images included, so two datasets
+    extracted with an identical prompt still get different digests and the
+    manifest cannot answer "did these two runs use the same prompt?". That
+    question cost a hand comparison across 4.4 GB of stored request JSONL when
+    the boston_harbor_leg1 v1 -> v4 regression was traced to a silent rewrite
+    of `osm_tags_farfield`. This digest answers it directly:
+    `grep prompt_sha256 artifacts/frame_landmarks/*/*/manifest.json`.
+
+    Read from the request file rather than from SYSTEM_PROMPTS so it records
+    what went out, not what the tree says now.
+    """
+    files = sorted(config.sentence_requests_jsonl_dir.glob("*.jsonl"))
+    if not files:
+        return {"prompt_sha256": None}
+    with open(files[0]) as handle:
+        first = handle.readline()
+    if not first.strip():
+        return {"prompt_sha256": None}
+    try:
+        request = json.loads(first).get("request", {})
+        instruction = (request.get("systemInstruction")
+                       or request.get("system_instruction") or {})
+        text = "".join(part.get("text", "")
+                       for part in instruction.get("parts", []))
+    except (json.JSONDecodeError, AttributeError):
+        return {"prompt_sha256": None}
+    if not text:
+        return {"prompt_sha256": None}
+    return {"prompt_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "prompt_chars": len(text)}
+
+
 def landmark_counts(config: PipelineConfig) -> dict:
     """How many predictions came back, for a size check against the panos."""
     files = sorted(config.sentences_dir.rglob("predictions.jsonl"))
@@ -959,6 +994,7 @@ def write_frame_landmarks_manifest(config: PipelineConfig):
             "prompt": config.prompt_type,
             # The name is a lookup key whose text can change under it; the
             # digest is what actually pins this extraction.
+            **prompt_fingerprint(config),
             **request_fingerprint(config),
             "model": config.model,
             "embedding_model": (config.embedding_model
@@ -1101,7 +1137,8 @@ def main():
     )
     parser.add_argument(
         "--prompt_type", default="osm_tags",
-        choices=["osm_tags", "panorama", "osm_tags_farfield"],
+        choices=["osm_tags", "panorama", "osm_tags_farfield",
+                 "osm_tags_farfield_v2"],
         help="Prompt type (default: osm_tags)",
     )
     parser.add_argument(

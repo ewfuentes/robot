@@ -19,6 +19,26 @@ abbreviated `//…object_tracking:<name>`.
 
 These have each cost real debugging time. Read before touching geometry.
 
+> **The project-wide register is [`conventions.md`](conventions.md), and it is the
+> authority.** This section is the object-tracking view of it. Everything below is
+> consistent with the register; if they ever disagree, the register and the
+> constants it names (`pano_geometry.CAMERA_FRAME`,
+> `pano_geometry.MOUNT_OFFSET_CONVENTION`) win.
+>
+> **Sharing one definition is mandatory, not stylistic.** The same 180° error has
+> happened three times in this project, each time because two places described one
+> frame in their own words. A frame error throws no exception and fails no test —
+> it produces a well-formed number that everything downstream accepts. Two of the
+> three were caught only because somebody rendered a picture and looked at it.
+> The register lists all three with how each was caught.
+>
+> Note that §1.1 below already said "pano x = W/2 is azimuth 0, not 180" months
+> before `pohang_canal_04` shipped a `mount_offset_deg` that assumed otherwise.
+> Documenting a convention in the consumer's doc does not reach the producer:
+> `ingest_selfcollect_dataset.py` writes the dataset metadata and had never been
+> pointed at this page. Hence a project-wide register rather than a per-pipeline
+> section.
+
 ### 1.1 Panorama ↔ direction
 
 `pano_geometry.py` is the **single source of truth**. Never restate the formula
@@ -62,6 +82,18 @@ injects the crab as a constant bearing bias that §5.2 then rotates the whole
 dead-reckoned track by. `bow_calibration.py` measures the bow and is labelled
 accordingly.
 
+**The frame this angle is quoted in is part of its definition.** Camera-frame
+azimuth 0 is the **centre** column (§1.1). A dataset's own
+`pipeline_metadata.json:azimuth_convention.formula` references **column_0**,
+because it converts a column to an *absolute* azimuth using `heading_deg` — a
+correct formula with a different zero. A `mount_offset_deg` reasoned in it is
+**exactly 180° out**. `pohang_canal_04` shipped that way (recorded 180°,
+actual 358°), and because its block carried `accuracy_validated: true`,
+`m11_base_export.resolve_mount_offset` would have preferred it *over* the run's
+own sweep and inverted every bearing while reporting the source as validated.
+Both ingest writers now carry a `mount_offset_frame` note saying which frame
+their formula is in.
+
 `mount_offset_deg` is **per rig and per leg**. For boston_harbor leg1 it is
 **214.0°** (`m9_match_landmarks.DEFAULT_MOUNT_OFFSET_DEG` if a consumer needs it; the value is recorded in
 `docs/farfield-matching-localization-plan.md` §0, which also records how it was calibrated).
@@ -76,8 +108,32 @@ curve is smooth and unimodal: 5.95° at 180°, **1.33° at 214°**, 4.34° at 27
 
 **Re-derive this for every new leg.** See the runbook's calibration step.
 
-The triangulation-residual sweep remains **the reference method**. There is also
-a purely image-based estimator, `swag/scripts/calibrate_mount_offset.py`, which
+**Superseded 2026-08-19: the sweep is no longer the reference method.** It is
+*relative* — it finds the angle that makes rays to unknown objects agree with each
+other — so it reproduces any error the poses and the heading model share, and in
+particular it fits a 180° convention slip perfectly. The reference is now
+`object_tracking/sun_offset_check.py`, which reads the sun out of the panorama and
+differences it against ephemeris:
+
+    offset = course + az_camera_sun − az_ephemeris_sun
+
+No map, no tracks, no operator. It is not circular because a yaw offset cannot
+change the sun's *elevation*, so ephemeris elevation gates which bright blob is the
+sun while ephemeris azimuth stays the quantity being compared. Validated: it
+returns **215.0° on leg1**, whose 214.0° came independently from a surveyed
+building over 72 keyframes. It abstains, loudly, on overcast.
+
+The sweep is now the corroborator, and it agreed with the sun to 1.0–3.3° on all
+four clear-sky datasets once `--min_arc_deg` was added (gating on the tracklet's
+bearing span, which is offset-invariant; without it leg2's argmin is 133° wrong
+and leg3's 159° wrong, both with excellent residuals).
+
+**Five of the seven recorded offsets were wrong**, two by exactly 180° because the
+prior had been reasoned in a "column 0 = azimuth 0" convention while
+`bearing_camera_deg` uses `pano_geometry`, where azimuth 0 is the panorama's
+**centre** column. Details and the corrected table are in the runbook's Stage 6.
+
+There is also a purely image-based estimator, `swag/scripts/calibrate_mount_offset.py`, which
 recovers the same quantity from the focus of expansion and needs no map, no
 tracklets and no heading field — but it is **not yet validated for accuracy**. On
 leg1 it reports an axis MAD of 2.0° (i.e. very self-consistent) while landing 14°
@@ -473,7 +529,82 @@ Outputs `matching/{requests,results,signatures,matches,compatibility}.json`.
 ### M10 — `m10_match_viewer`
 Observation beside matched map landmark: confidence, instance/category, how
 many map rows the signature expanded to, links back to the track page, the
-audit entry and the keyframes.
+audit entry and the keyframes — and, in the right-hand pane, a map of the run.
+
+The map is drawn in the run's ENU frame from data embedded in the page (no tile
+host, so the file stays a portable record). It carries the vessel's GPS track
+with heading ticks, an offline vector basemap from the dataset's own feather via
+`bearing_only_localization/basemap.py`, faint catalog rows for context, and for
+the selected tracklet a **bearing ray from each anchor keyframe** plus every map
+row the match expanded to. Drag pans, wheel zooms, clicking a marker selects its
+tracklet in the list, and `[show on map]` / `#LT<id>` go the other way.
+
+Bearings are the same numbers M11 exports — same `body_frame_measurements`, same
+`resolve_mount_offset` — and the world frame is
+`bearing_world = heading + bearing_body`, imported rather than restated (see
+`docs/conventions.md`; getting this wrong is the error that has already happened
+three times).
+
+**`ray Δ`** is the column that makes this a diagnostic rather than a picture:
+the angle between the bearing measured and the direction from the vessel's GPS
+position to the matched map row, median over the tracklet's anchors. The matcher
+never sees geometry, so `ray Δ` is independent evidence — a confidently named
+row that does not lie along the bearing is simply wrong. Where a signature
+expands to many rows it is the *best* row's residual and is weak (with enough
+candidates one aligns by chance), so the page marks it `best of N`. The header
+reports the median over matches naming exactly one row.
+
+Read it comparatively, not absolutely. Measured 2026-08-19 on unambiguous rows:
+
+| run | median `ray Δ` | >90° off | localization median |
+|---|--:|--:|--:|
+| `boston_harbor_leg1/r003_full_leg1` | 35° | 27/156 | 78 m |
+| `pohang_canal_04/r001_v5` | 57° | 59/198 | — |
+| `pohang_canal_04/r002_v5_seamfix` | 61° | 74/199 | 8,829 m |
+
+Both distributions peak at 0–20° and then run a long flat tail; neither has a
+spike at 180°, and no single rotation reduces pohang's spread (flat from 62° to
+118° across all 24 rotations tried), which is what rules out a frame or
+mount-offset error and leaves individually wrong matches.
+
+#### Getting out to the real map
+The map bar carries live **OSM** and **Google Maps** links. With no tracklet
+selected they follow the view centre; select one and they point at the vessel's
+true position at that observation's first anchor keyframe, at a slippy-map zoom
+matched to the canvas scale. Clicking any marker — matched row *or* faint
+catalog dot — puts the same pair of links plus a direct
+`openstreetmap.org/<kind>/<id>` link in the readout, and the per-tracklet **map
+row** table links every row it matched. The ENU inverse is the payload's own
+`enu` scale factors, so it agrees with `harbor_catalog.enu_from_latlon` rather
+than re-deriving a projection in the browser.
+
+#### What the matcher produces, and what the page shows
+Everything, as of 2026-08-19 — but three of these had to be added, and one is
+not in any aggregated artifact:
+
+| produced | where it lives | shown |
+|---|---|---|
+| `confidence`, `match_type`, `signature` | `matches.json` | yes, per signature |
+| `no_match_confidence` | `matches.json` | yes |
+| `per_slice_no_match` (n/mean/min) | `matches.json` | yes, in the observed line |
+| `n_signatures`, `n_downgraded_to_category` | `matches.json` | yes |
+| `landmark_id` per match | `matches.json` | yes, linked to OSM |
+| `log_lr` per landmark, `default_log_lr` | `compatibility.json` | yes, with the gap to the floor |
+| `uniqueness_score` (1–5) | **`results.jsonl` only** | yes, recovered by the viewer |
+
+`compatibility.json` is the file the **filter** actually reads: confidence never
+reaches it, only the log-LR m9 derived from it, with every unnamed landmark
+scoring `default_log_lr`. A match's real weight is the *gap* between the two, so
+the table shows it — LT111's wrong sculpture is `+4.00` against a `-4.00` floor,
+i.e. the filter is told e⁸ ≈ 3000:1, which is the mechanism by which one bad
+match moves a whole belief.
+
+`uniqueness_score` is a **gap in m9, not in the viewer**: m9's response schema
+*requires* it, so it is paid for on every query, and m9 then stores it in
+neither `matches.json` nor `compatibility.json`. The viewer reads it back out of
+`results.jsonl` via `request_meta[key].batch_keys[set_1_id]` and reports the
+median across slices. Persisting it in m9 would only need a re-aggregate
+(`--aggregate_only`, no LLM cost).
 
 ### Removed: M7/M8 (bearing-wedge pairing)
 M7 gated map candidates by a bearing wedge computed from the vessel's GPS

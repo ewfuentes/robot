@@ -168,3 +168,124 @@ class FuseBearingsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolveMountOffsetTest(unittest.TestCase):
+    """Priority order. The trap this guards: the sweep is relative, so it fits a
+    180 deg convention slip perfectly and cannot be used to check itself."""
+
+    def build(self, tmp, *, sweep=None, metadata=None):
+        run_dir = Path(tmp) / "run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if sweep is not None:
+            (run_dir / "mount_offset_sweep.json").write_text(
+                __import__("json").dumps(sweep))
+        meta_path = Path(tmp) / "pipeline_metadata.json"
+        meta_path.write_text(__import__("json").dumps(
+            {"mount_offset": metadata} if metadata else {}))
+        return run_dir, meta_path
+
+    def test_explicit_flag_wins_over_everything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, meta = self.build(
+                tmp, sweep={"usable": True, "mount_offset_deg": 216.0,
+                            "verdict": "SMOOTH UNIMODAL", "tracklets_used": 23},
+                metadata={"mount_offset_deg": 214.0,
+                          "accuracy_validated": True})
+            value, source = mbe.resolve_mount_offset(run_dir, meta, 99.0)
+        self.assertEqual(value, 99.0)
+        self.assertIn("--mount_offset_deg", source)
+
+    def test_validated_metadata_outranks_a_usable_sweep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, meta = self.build(
+                tmp, sweep={"usable": True, "mount_offset_deg": 216.0,
+                            "verdict": "SMOOTH UNIMODAL", "tracklets_used": 23},
+                metadata={"mount_offset_deg": 214.0, "status": "sun_verified",
+                          "accuracy_validated": True})
+            value, source = mbe.resolve_mount_offset(run_dir, meta, None)
+        self.assertEqual(value, 214.0)
+        self.assertIn("accuracy_validated", source)
+
+    def test_usable_sweep_beats_unvalidated_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, meta = self.build(
+                tmp, sweep={"usable": True, "mount_offset_deg": 4.0,
+                            "verdict": "SMOOTH UNIMODAL", "tracklets_used": 17},
+                metadata={"mount_offset_deg": 180.0, "status": "operator_prior",
+                          "accuracy_validated": False})
+            value, source = mbe.resolve_mount_offset(run_dir, meta, None)
+        self.assertEqual(value, 4.0)
+        self.assertIn("mount_offset_sweep", source)
+
+    def test_unusable_sweep_falls_through_to_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, meta = self.build(
+                tmp, sweep={"usable": False, "mount_offset_deg": 277.0,
+                            "verdict": "MULTIMODAL", "tracklets_used": 20},
+                metadata={"mount_offset_deg": 272.3, "status": "sun_verified",
+                          "accuracy_validated": True})
+            value, _ = mbe.resolve_mount_offset(run_dir, meta, None)
+        self.assertEqual(value, 272.3)
+
+    def test_nothing_available_is_refused_not_guessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, meta = self.build(tmp)
+            with self.assertRaises(SystemExit):
+                mbe.resolve_mount_offset(run_dir, meta, None)
+
+
+class AuditDroppedTrackletsTest(unittest.TestCase):
+    """The export's measurement set must not drift from the matcher's query set:
+    both honour `verdict: drop`, and a drift shows up as a measurement with no
+    compatibility table two stages later."""
+
+    def build(self, tmp, verdicts, landmarks):
+        import json as json_mod
+        run_dir = Path(tmp) / "run"
+        (run_dir / "semantic_audit").mkdir(parents=True, exist_ok=True)
+        (run_dir / "merged").mkdir(parents=True, exist_ok=True)
+        meta = {f"T{track}": {"track_id": track}
+                for track in {t for lm in landmarks for t in lm["track_ids"]}}
+        (run_dir / "semantic_audit" / "audit_meta.json").write_text(
+            json_mod.dumps(meta))
+        with open(run_dir / "semantic_audit" / "results.jsonl", "w") as handle:
+            for key, verdict in verdicts.items():
+                handle.write(json_mod.dumps({
+                    "key": key,
+                    "response": {"candidates": [{"content": {"parts": [
+                        {"text": json_mod.dumps({"verdict": verdict})}]}}]},
+                }) + "\n")
+        (run_dir / "merged" / "landmarks.json").write_text(
+            json_mod.dumps(landmarks))
+        return run_dir
+
+    def test_drop_verdict_excludes_the_tracklet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self.build(
+                tmp, {"T1": "keep", "T2": "drop", "T3": "keep_partial"},
+                [{"landmark_id": "LT1", "track_ids": [1]},
+                 {"landmark_id": "LT2", "track_ids": [2]},
+                 {"landmark_id": "LT3", "track_ids": [3]}])
+            self.assertEqual(mbe.audit_dropped_tracklets(run_dir), {"LT2"})
+
+    def test_keep_partial_is_kept(self):
+        # m9 queries keep_partial tracklets, so the export must too.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self.build(tmp, {"T7": "keep_partial"},
+                                 [{"landmark_id": "LT7", "track_ids": [7]}])
+            self.assertEqual(mbe.audit_dropped_tracklets(run_dir), set())
+
+    def test_first_audited_constituent_decides(self):
+        # Mirrors query_bundles' loop: it breaks on the first track with an
+        # audit, so a merged tracklet's verdict is that one's.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self.build(tmp, {"T5": "drop", "T6": "keep"},
+                                 [{"landmark_id": "LT5_T6",
+                                   "track_ids": [5, 6]}])
+            self.assertEqual(mbe.audit_dropped_tracklets(run_dir), {"LT5_T6"})
+
+    def test_missing_audit_drops_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                mbe.audit_dropped_tracklets(Path(tmp) / "absent"), set())

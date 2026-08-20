@@ -26,6 +26,7 @@ gives a fair draw from the posterior instead, which is what "the particle cloud"
 is supposed to show.
 """
 
+import base64
 import dataclasses
 import json
 import math
@@ -418,12 +419,66 @@ def _ghost_payload(ghost_dirs) -> tuple:
     return ghosts, notes
 
 
+def _satellite_payload(directory, notes) -> dict | None:
+    """Optional raster underlay layers, embedded as data URIs.
+
+    Expects the directory `satellite_underlay.py` writes: a `satellite.json`
+    listing layers coarse-to-fine, each naming an image and the ENU box it
+    covers in the run's own frame. Layers are returned in that order and drawn
+    in it, so a fine mosaic lands on top of a wide one.
+
+    Embedded rather than referenced, for the same reason the vector basemap is
+    built offline: the page is a record that has to survive being copied. The
+    cost is bytes, and imagery is easily the largest thing in a payload, which is
+    why it is opt-in. The licence note travels into the notes so a page built
+    with non-redistributable imagery says so.
+    """
+    if directory is None:
+        return None
+    directory = Path(directory)
+    meta = directory / "satellite.json"
+    if not meta.exists():
+        notes.append(f"satellite underlay: no {meta}; skipped")
+        return None
+    try:
+        spec = json.loads(meta.read_text())
+    except Exception as exc:  # noqa: BLE001 - a bad underlay must not be fatal
+        notes.append(f"satellite underlay unreadable ({exc}); skipped")
+        return None
+    layers, total = [], 0
+    for entry in spec.get("layers", []):
+        image = directory / entry.get("image", "")
+        if not image.exists():
+            notes.append(f"satellite underlay: {image} missing; layer skipped")
+            continue
+        blob = image.read_bytes()
+        total += len(blob)
+        layers.append({
+            "e0": float(entry["east_min"]), "e1": float(entry["east_max"]),
+            "n0": float(entry["north_min"]), "n1": float(entry["north_max"]),
+            "zoom": entry.get("zoom"),
+            "uri": "data:image/jpeg;base64," + base64.b64encode(blob).decode(
+                "ascii"),
+        })
+    if not layers:
+        notes.append("satellite underlay: no usable layers; skipped")
+        return None
+    notes.append(f"satellite underlay: {len(layers)} layer(s), "
+                 f"{total / 1e6:.1f} MB, from "
+                 f"{spec.get('source', 'unstated source')}")
+    if spec.get("licence"):
+        notes.append(f"satellite underlay licence: {spec['licence']}")
+    return {"layers": layers, "source": spec.get("source", "unstated")}
+
+
 def build(run_dir: Path, sources_dir: Path | None = None,
           feather: Path | None = None, ghost_dirs=(),
           max_particles: int = MAX_PARTICLES_PER_FRAME,
           max_visible_range_m: float | None = None,
           embed_thumbnails: bool = True,
-          with_basemap: bool = True) -> dict:
+          with_basemap: bool = True,
+          basemap_detail: float = 1.0,
+          satellite: Path | None = None) -> dict:
     """The whole payload. See the module docstring for what is optional."""
     run_dir = Path(run_dir)
     data = run_log.read_run(run_dir)
@@ -484,7 +539,8 @@ def build(run_dir: Path, sources_dir: Path | None = None,
         bounds = (float(east.min()) - margin, float(east.max()) + margin,
                   float(north.min()) - margin, float(north.max()) + margin)
     basemap = (basemap_mod.build(feather, manifest.anchor_lat_deg,
-                                 manifest.anchor_lon_deg, bounds_enu=bounds)
+                                 manifest.anchor_lon_deg, bounds_enu=bounds,
+                                 detail=basemap_detail)
                if with_basemap else basemap_mod.Basemap([], None, ()))
     notes.extend(basemap.notes)
 
@@ -534,6 +590,7 @@ def build(run_dir: Path, sources_dir: Path | None = None,
                      for lm, e, n in zip(manifest.landmarks, east, north)
                      if lm.landmark_id not in referenced],
         "basemap": basemap.to_payload(),
+        "satellite": _satellite_payload(satellite, notes),
         "truth": [[round(t.east_m, 1), round(t.north_m, 1)]
                   for t in data.truth],
         "health": _health_payload(data, truth_by_kf),

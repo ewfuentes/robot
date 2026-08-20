@@ -964,6 +964,25 @@ def _belief_window_reference(belief, window_meas,
     return float(total.max())
 
 
+def _init_window_is_observable(measurements, kf: int, first_bearing_kf,
+                               config: structs.FilterConfig) -> bool:
+    """Does this keyframe's proposal window hold enough distinct tracklets?
+
+    See `ProposalConfig.min_tracklets_for_injection` for the counting argument.
+    Returns True once the window has that many, and unconditionally once
+    `init_max_wait_keyframes` have passed since the first bearing, so a sparse
+    leg still gets an initial proposal rather than being left to brute force a
+    25 km box.
+    """
+    window_start = kf - config.proposal.window_keyframes
+    distinct = {m.tracklet_id for m in measurements
+                if window_start <= m.anchor_keyframe_idx <= kf}
+    if len(distinct) >= config.proposal.min_tracklets_for_injection:
+        return True
+    return (first_bearing_kf is not None
+            and kf - first_bearing_kf >= config.proposal.init_max_wait_keyframes)
+
+
 def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
                    rng: np.random.Generator, score_fn, belief,
                    catalog) -> tuple:
@@ -1032,16 +1051,26 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
     # multiple-comparisons bonus of several nats (measured: a 597-
     # hypothesis event cleared the margin against a converged incumbent at
     # kf 300 and displaced half of a 50 m-accurate belief 10 km).
-    # Selection across HYPOTHESES stays — one alternative being right is
-    # the point — and the margin covers that model choice.
     best = -np.inf
     offset = 0
+    n_scored = 0
     for east, _, _ in parts:
         segment = scores[offset:offset + east.size]
         offset += east.size
+        n_scored += 1
         best = max(best, float(special.logsumexp(segment))
                    - math.log(segment.size))
-    return best >= ref + config.proposal.evidence_gate_margin_nats, best, ref
+
+    # ...and, when `evidence_gate_selection_charge` is on, selection across
+    # HYPOTHESES is charged log N for the same reason. It is off by default:
+    # see ProposalConfig for the measurement that killed it and for what the
+    # real lock-in mechanism turned out to be.
+    selection_penalty = (math.log(max(1, n_scored))
+                         if config.proposal.evidence_gate_selection_charge
+                         else 0.0)
+    threshold = (ref + config.proposal.evidence_gate_margin_nats
+                 + selection_penalty)
+    return best >= threshold, best, ref
 
 
 def mean_pose(belief: ParticleBelief):
@@ -1311,6 +1340,9 @@ def run_filter(
     all_mode_events = []
     low_ess_run = 0
     last_proposal_kf = None
+    # When bearings first appear, so the init proposal's wait for an
+    # over-determined window has a deadline rather than running forever.
+    first_bearing_kf = None
 
     for kf in range(n_keyframes):
         if kf > 0:
@@ -1364,17 +1396,27 @@ def run_filter(
             low_ess_run = 0
 
         trigger = None
+        if keyframe_measurements and first_bearing_kf is None:
+            first_bearing_kf = kf
         if config.proposal.enabled and keyframe_measurements:
             refractory_ok = (
                 last_proposal_kf is None
                 or kf - last_proposal_kf >= config.proposal.refractory_keyframes)
             if (config.proposal.on_init and not proposal_events
-                    and isinstance(config.init, structs.UniformBoxInit)):
-                # The FIRST keyframe carrying bearings, not keyframe 0.
-                # Real runs start observing several keyframes in (leg1's
-                # first tracklet anchors at kf 3), and keying this to kf 0
-                # meant the initial proposal silently never fired — the
-                # uniform prior was then left to brute force.
+                    and isinstance(config.init, structs.UniformBoxInit)
+                    and _init_window_is_observable(
+                        measurements, kf, first_bearing_kf, config)):
+                # The first keyframe whose window carries enough DISTINCT
+                # tracklets to determine a pose, not keyframe 0 and not
+                # merely the first keyframe with any bearing. Keying it to
+                # kf 0 meant the initial proposal silently never fired (real
+                # runs start observing several keyframes in — leg1's first
+                # tracklet anchors at kf 3); keying it to the first bearing
+                # meant founding the belief on a one- or two-bearing family,
+                # which is under-determined (see
+                # ProposalConfig.min_tracklets_for_injection). Waiting costs
+                # a few keyframes of dead reckoning and buys an
+                # over-determined fix.
                 #
                 # And ONLY for an uninformative prior: the init proposal
                 # exists to replace a prior that says nothing. Replacing

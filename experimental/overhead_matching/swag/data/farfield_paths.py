@@ -59,7 +59,21 @@ DEFAULT_VERSION = "v1"
 
 # The trimmed catalog is the matching default: m9 does no spatial gating, so it
 # compares against every row, and the trim is what keeps that tractable.
-DEFAULT_CATALOG = "v1_trimmed"
+# v2_trimmed carries a provenance sidecar and, where the source table is far
+# larger than the prior (charles), a recorded spatial clip; on the harbour and
+# mountain tables it is row-for-row identical to v1_trimmed.
+#
+# v3_trimmed (2026-08-19) widens the far-field tag vocabulary: `religion` /
+# `denomination`, and the `name:en` / `*-Latn` name variants. Both were invisible
+# in an Anglophone harbour and load-bearing outside one -- place_of_worship is
+# ~90% christian in Boston but shinto 3,464 vs buddhist 3,328 in tokyo_bay, and
+# pohang_canal_04 had only 387 of 12,766 rows carrying a Latin-script identity
+# string against 2,341 once the variants are kept. All 20 datasets carry a
+# v3_trimmed, each replaying its own recorded arguments (charles keeps its
+# --clip_km prior). Row counts barely move -- the trim is a strict superset of
+# v2 -- because the win is in the tags, which the feather always retained and
+# only the load-time prune was discarding.
+DEFAULT_CATALOG = "v3_trimmed"
 
 DEFAULT_SAM2_CHECKPOINT = Path("models/sam2/sam2.1_hiera_large.pt")
 

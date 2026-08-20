@@ -219,6 +219,7 @@ def main():
 
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
+    range_name = artifact["range"]["name"]
     result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_id = {o.obs_id: o for o in result.observations}
@@ -336,7 +337,9 @@ def main():
 
     for t, why in picked:
         info = track_infos[t["track_id"]]
-        key = f"full_leg1_T{t['track_id']}"
+        # See m6_merge_tracks: the range name comes from the artifact, because
+        # track pages are track_<range>_T<id>.html.
+        key = f"{range_name}_T{t['track_id']}"
         status = t["close_reason"] if t["status"] == "closed" else "alive"
         parts.append(
             f"<h2 id='T{t['track_id']}'>T{t['track_id']} "

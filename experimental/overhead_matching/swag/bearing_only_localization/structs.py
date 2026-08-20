@@ -172,6 +172,77 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # modes to protect (global init, or modes disabled) the gate passes.
     evidence_gate: bool = True
     evidence_gate_margin_nats: float = 1.0
+    # Charge log(n_hypotheses) for choosing the best of N hypotheses, each of
+    # which was constructed to explain the very window it is scored on. It is the
+    # same multiple-comparisons correction already applied over poses *within* a
+    # hypothesis (`logsumexp - log S`), one level up: best-of-N beats a single
+    # fixed incumbent by roughly log N nats even when every hypothesis is wrong,
+    # so a flat margin gets *easier* to clear the more hypotheses an event
+    # generates, which is backwards.
+    #
+    # This was default-off for a while on the strength of one measurement that
+    # turned out to be misleading. Tested on boston_harbor_leg1's r004 export it
+    # made things worse -- but r004's bearings are worth only 9% over dead
+    # reckoning on that leg (7107 m floor, 6440 m with bearings), so the filter
+    # was never tracking and there was no converged belief for the charge to
+    # protect. Retested on data where the filter does track, it does exactly what
+    # it was built for:
+    #
+    #   leg1, r003 tracks + current matcher, uniform prior over 23 km
+    #     charge off:  median 79 / 86 m,  final 20132 / 24716 m
+    #     charge on:   median 78 / 79 m,  final   368 /   367 m
+    #
+    # The median is unchanged; what changes is that a marginal 45-hypothesis
+    # injection at keyframe 358, twenty-one keyframes from the end, no longer
+    # destroys a belief that had tracked for 358 keyframes. And it is not merely
+    # conservative -- on that same run it still admits a 548-hypothesis event at
+    # keyframe 368, which carries 6.3 nats of charge and cleared anyway.
+    #
+    # Regression check on the datasets that already localized (medians, see
+    # docs/object-tracking-runbook.md Stage 9): boston leg3 62/61 -> 41/30,
+    # charles 25/24 -> 23/25, mount_washington leg2 239 -> 239 (identical),
+    # mount_washington leg3 94 -> 113 (one seed). Nothing materially degraded.
+    #
+    # It does make leg1's *broken* r004 export about twice as bad, 6440 ->
+    # 12243/13734 m. Both are failures: that leg's dead-reckoning floor is
+    # 7107 m, so its r004 bearings are worth 9% and the filter is not tracking
+    # under either setting. Refusing marginal injections on a belief that has
+    # nothing to protect just leaves it where dead reckoning put it. That is the
+    # shape of the cost -- it is paid by runs that have already failed.
+    #
+    # Price: kidnapped recovery takes one extra `refractory_keyframes` cycle,
+    # 60 keyframes to 70, because the first post-kidnap event is refused and the
+    # next one carries it (proposal_test.KidnappedRecoveryTest).
+    evidence_gate_selection_charge: bool = True
+    # OBSERVABILITY, not a tuning knob. A pose is (east, north, heading) --
+    # three unknowns -- and one bearing to a known landmark is one equation.
+    # Two bearings therefore leave a one-parameter family and one bearing a
+    # two-parameter family; only three make the fix determined. An injection
+    # built from fewer is a broad smear masquerading as a fix, and it still
+    # takes `inject_fraction` of the posterior with it.
+    #
+    # Measured on boston_harbor_leg1's whole-map run: the init event at kf 3
+    # resected from **2** tracklets and took half the belief; the recovery at
+    # kf 113 resected from **1** tracklet (2 hypotheses) and took half again.
+    # Every later event was then refused by the evidence gate, which was doing
+    # its job -- defending the basin those two under-determined injections had
+    # chosen. Final error 4594 m against 420 m for the same leg from a run
+    # whose init happened to land right.
+    #
+    # Applied to the **init** trigger only, and that scope is deliberate. A
+    # recovery injection is a different situation: the belief is already known
+    # to be failing, so a broad-but-containing family beats a confident wrong
+    # point, and `proposal_test.KidnappedRecoveryTest.
+    # test_recovers_from_a_single_visible_landmark` requires exactly that (T-F6).
+    # Refusing under-determined recoveries broke it. Init has no such excuse:
+    # nothing is being rescued, and waiting is free.
+    min_tracklets_for_injection: int = 3
+    # The init trigger waits for that many tracklets rather than firing on the
+    # first bearing, but not forever: a sparse leg (mount_washington leg1 has
+    # 39 measurements over 28 tracklets) may never show three at once, and
+    # firing late beats leaving a 25 km uniform box to brute force. After this
+    # many keyframes past the first bearing, init fires with what it has.
+    init_max_wait_keyframes: int = 40
     # Poses sampled per hypothesis when scoring it against the window.
     evidence_gate_samples: int = 16
 

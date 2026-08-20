@@ -255,6 +255,15 @@ def main():
             "heading_deg_is_bearing_of": "column_0",
             "formula": "azimuth_deg = (heading_deg + (col / width) * 360) mod 360",
             "heading_per_frame": "intrinsics.csv:heading_deg",
+            "mount_offset_frame": (
+                "This formula's zero is column_0, because it converts a column "
+                "to an ABSOLUTE azimuth using heading_deg. It is NOT the frame "
+                "mount_offset_deg is quoted in: that is pano_geometry's camera "
+                "frame, whose zero is the CENTRE column (az_cw = (x/pano_w - "
+                "0.5)*360). The two differ by exactly 180 deg, so a "
+                "mount_offset_deg reasoned from this formula is half a turn out "
+                "-- which is what happened to pohang_canal_04. See "
+                "docs/conventions.md."),
         },
         "camera_type": "equirectangular",
         "image_dir": "frames",

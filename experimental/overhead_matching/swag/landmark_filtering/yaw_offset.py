@@ -9,6 +9,15 @@ drifts slowly (measured ~0.2 deg/frame on walk_along_river), so the model is
 with sign from YawOffsetConfig.bearing_sign (a mirror is an isometry that
 triangulation consistency cannot detect - verify the sign on the map view).
 
+NOTE 2026-08-19: `bearing_sign` must NOT be used to absorb a camera-frame
+convention error any more. It existed partly to soak up `bearing_geometry`'s
+pre-2026-08-19 copy of the camera frame, which was a per-face rotation of 180 deg
+on faces 90/270 - and a per-face rotation is exactly what a single global sign
+CANNOT absorb, so it was only ever hiding half the problem. That module now
+delegates to `pano_geometry`, so +1 is correct for every dataset produced by the
+current converter. If a fit wants -1, treat it as evidence of a real convention
+problem upstream and go read docs/conventions.md rather than accepting the sign.
+
 triangulation_sweep: tracking is offset-invariant (it gates camera-frame
 bearing differences), so tracks exist before the offset is known. A 2D grid
 over (offset0, drift) scores each candidate by CONSENSUS: the number of

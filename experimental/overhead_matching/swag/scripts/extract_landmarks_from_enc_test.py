@@ -283,5 +283,43 @@ class FeatherFrameTest(unittest.TestCase):
         self.assertEqual([f["lnam"] for f in kept], ["A"])
 
 
+class DesignatorTest(unittest.TestCase):
+    """A mark's board number must be published as its own `ref` tag.
+
+    91% of the named buoys in the Boston Harbor catalog share their designator
+    with another buoy, and same-designator marks sit a median 14.7 km apart, so
+    the number is a disjunctive constraint and never an identity. Leaving it
+    buried inside `name` let a detection named `16` be matched to one of three
+    "Buoy 16" rows 19.4 km apart.
+    """
+
+    def test_pulls_trailing_designator(self):
+        for name, want in [
+            ("Hingham Harbor Channel Buoy 16", "16"),
+            ("Boston Main Channel Lighted Buoy 5A", "5A"),
+            ("Squantum Channel Buoy 1SC", "1SC"),
+            ("President Roads Anchorage Buoy C", "C"),
+            ("Nantasket Roads Channel Lighted Bell Buoy 3", "3"),
+            ("Outer Seal Rock Isolated Danger Buoy DSR", "DSR"),
+        ]:
+            self.assertEqual(ele.designator_from_name(name), want, name)
+
+    def test_leaves_ordinary_names_alone(self):
+        # No trailing designator, so no ref -- never invent one.
+        for name in ["Fan Pier South Hazard Lighted Buoy", "Spectacle Island",
+                     "New England Aquarium Intake Buoy", "Boston Fish Pier",
+                     "", "Buoy"]:
+            self.assertIsNone(ele.designator_from_name(name), name)
+
+    def test_common_tags_publishes_ref_alongside_name(self):
+        tags, _ = ele._common_tags({"OBJNAM": "Weir River Buoy 11"}, None)
+        self.assertEqual(tags["name"], "Weir River Buoy 11")
+        self.assertEqual(tags["ref"], "11")
+
+    def test_common_tags_omits_ref_when_there_is_none(self):
+        tags, _ = ele._common_tags({"OBJNAM": "Boston Fish Pier"}, None)
+        self.assertNotIn("ref", tags)
+
+
 if __name__ == "__main__":
     unittest.main()

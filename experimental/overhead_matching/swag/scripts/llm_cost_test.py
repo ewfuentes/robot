@@ -93,6 +93,57 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(estimate.output_tokens, 3000)
 
 
+class ModelRatesTest(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_preview_suffix_resolves_to_the_base_entry(self):
+        # Model ids arrive with a -preview suffix; the price list is keyed on the
+        # family, so a longest-prefix match has to find it.
+        _, _, label = lc.rates_for("gemini-3.1-pro-preview")
+        self.assertTrue(label.startswith("gemini-3.1-pro"))
+
+    def test_unknown_model_falls_back_and_says_so(self):
+        input_usd, _, label = lc.rates_for("some-other-model")
+        self.assertEqual(input_usd, lc.MODEL_RATES[lc.DEFAULT_RATE_MODEL]["input"])
+        self.assertIn("no table entry", label)
+
+    def test_flash_is_cheaper_than_pro_for_identical_requests(self):
+        path = self.root / "r.jsonl"
+        write_requests(path, [image_request(4, chars=2000)] * 5)
+        pro = lc.estimate_jsonl(path, model="gemini-3.1-pro-preview")
+        flash = lc.estimate_jsonl(path, model="gemini-3.7-flash")
+        self.assertEqual(pro.prompt_tokens, flash.prompt_tokens)
+        self.assertLess(flash.usd_on_demand, pro.usd_on_demand)
+
+    def test_promotional_rate_lapses_on_its_stated_date(self):
+        during, _, during_label = lc.rates_for("gemini-3.7-flash",
+                                               today="2026-12-31")
+        after, _, after_label = lc.rates_for("gemini-3.7-flash",
+                                             today="2027-01-01")
+        self.assertLess(during["small"], after["small"])
+        self.assertIn("promotional", during_label)
+        self.assertIn("promo ended", after_label)
+
+    def test_no_model_prices_exactly_as_before(self):
+        # Every pre-existing caller omits the model; that path must not move.
+        path = self.root / "r.jsonl"
+        write_requests(path, [text_request(4000)] * 4)
+        self.assertEqual(lc.estimate_jsonl(path).usd_on_demand,
+                         lc.estimate_jsonl(
+                             path, model=lc.DEFAULT_RATE_MODEL).usd_on_demand)
+
+    def test_describe_reports_the_price_list_used(self):
+        path = self.root / "r.jsonl"
+        write_requests(path, [text_request(100)])
+        text = lc.estimate_jsonl(path, model="gemini-3.7-flash").describe(
+            online=True)
+        self.assertIn("gemini-3.7-flash", text)
+
+
 class EnforceLimitTest(unittest.TestCase):
 
     def setUp(self):

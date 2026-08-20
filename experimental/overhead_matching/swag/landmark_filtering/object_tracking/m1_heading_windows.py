@@ -49,6 +49,8 @@ STAGE_DIR = "m1_heading"
 # These ids are boston_harbor_leg1's. Observation ids are per-dataset, so on any
 # other leg they resolve to nothing and `--auto_cases` picks comparable anchors
 # instead; see `auto_test_cases`.
+LEG1_DATASET = "boston_harbor_leg1"
+
 LEG1_TEST_CASES = [
     ("f0000_custom_house_tower", "f0000__lm0__box0", 2, 2),
     ("f0000_cht_departure", "f0000__lm0__box0", 12, 8),
@@ -185,9 +187,12 @@ def render_strip(provider, model, frames_by_idx, obs_by_frame, anchor,
 
 def render_alignment_check(provider, dataset_base, frame, out_path, font):
     """Side-by-side: extracted keyframe JPEG vs video frame at its time."""
-    matches = sorted((dataset_base / "frames").glob(
-        f"f{int(frame.pano_id[1:]):04d}_*.jpg"))
-    extracted = np.asarray(Image.open(matches[0]))
+    # The stem comes from ingest, not from a reconstructed glob: dataset frames
+    # are named `f####,<lat>,<lon>,.jpg` (comma-separated, per the dataset
+    # contract), so the `f####_*.jpg` pattern this used to glob matched nothing
+    # on any dataset and raised IndexError on the empty list.
+    extracted = np.asarray(Image.open(
+        dataset_base / "panorama" / f"{frame.pano_stem}.jpg"))
     decoded = provider.frame(provider.index_at_time(frame.time_s))
     diff = float(np.mean(np.abs(extracted.astype(np.int16)
                                 - decoded.astype(np.int16))))
@@ -236,15 +241,30 @@ def main():
     # Observation ids are per-dataset, so leg1's curated anchors simply do not
     # exist on another leg. Falling back rather than raising keeps this a
     # one-command spot-check on a new leg, which is the only time it is run.
-    cases = [] if args.auto_cases else [c for c in LEG1_TEST_CASES
-                                        if c[1] in obs_by_id]
-    if not cases:
+    # Gate on the DATASET, not on whether the ids resolve. The ids are positional
+    # (`f{frame}__lm{index}__box{n}`) so all of them resolve on boston_harbor
+    # leg2/leg3 too, and those legs were silently getting leg1's landmark names
+    # on frames from a different part of the harbour. Anchors chosen for leg1 are
+    # also chosen where *leg1* turns, which is what makes them useless elsewhere:
+    # the strip only discriminates the heading-compensation sign where the boat
+    # actually changes heading.
+    if args.auto_cases or paths.dataset != LEG1_DATASET:
+        if not args.auto_cases:
+            print(f"NOTE: curated anchors name {LEG1_DATASET}'s landmarks and "
+                  f"were picked where that leg turns; choosing anchors from "
+                  f"{paths.dataset}'s own heading profile instead.")
         cases = auto_test_cases(model, frames_by_idx, obs_by_frame)
         print(f"using {len(cases)} auto-selected anchor(s): "
               f"{', '.join(c[0] for c in cases)}")
-    elif len(cases) < len(LEG1_TEST_CASES):
-        print(f"WARNING: only {len(cases)} of {len(LEG1_TEST_CASES)} curated "
-              f"anchors exist in this dataset")
+    else:
+        cases = [c for c in LEG1_TEST_CASES if c[1] in obs_by_id]
+        if not cases:
+            cases = auto_test_cases(model, frames_by_idx, obs_by_frame)
+            print(f"using {len(cases)} auto-selected anchor(s): "
+                  f"{', '.join(c[0] for c in cases)}")
+        elif len(cases) < len(LEG1_TEST_CASES):
+            print(f"WARNING: only {len(cases)} of {len(LEG1_TEST_CASES)} curated "
+                  f"anchors exist even on {LEG1_DATASET}")
     if not cases:
         parser.error("no anchor observations available; does "
                      f"{paths.frame_landmarks} hold any detections?")

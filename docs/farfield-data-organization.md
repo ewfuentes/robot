@@ -185,6 +185,21 @@ cross-dataset calibration registries (`mount_offsets.json`,
 `vehicle_anchor.json`) live in `raw_material/mapillary_manifests/` — they are
 records of collection, not of any one dataset.
 
+## Conventions are part of the contract
+
+A dataset's `pipeline_metadata.json` states frames and formulas, and those
+statements are consumed by code in a different package. **The project-wide
+register is [`conventions.md`](conventions.md); read it before writing or reading
+a frame, sign, zero point or id format here.**
+
+The equirect `azimuth_convention.formula` references **column_0**, while
+`pano_geometry` — which every bearing consumer uses — puts zero at the **centre**
+column. Both are correct; they are different zeros, exactly 180° apart. A
+`mount_offset_deg` reasoned in the wrong one is half a turn out and nothing will
+tell you: that is what happened to `pohang_canal_04`, and a near-identical error
+put north at column 0 on six earlier Mapillary datasets. Both ingest writers now
+carry a `mount_offset_frame` note stating which frame their formula is in.
+
 ## `artifacts/` — versioned derived inputs
 
 `artifacts/<kind>/<dataset_id>/v<N>/` — kind first, then dataset. A kind is
@@ -363,7 +378,8 @@ Ordered cheapest-first; 1–4 are mechanical, 5 is the only invasive one.
    `raw_material/mapillary_manifests/` and `_bad_trajectories` →
    `archive/bad_trajectories/`, then `mv mapillary_datasets datasets` and
    `ln -s datasets mapillary_datasets` so `~/scratch/mappilary` scripts and
-   existing docs keep working until their output root is updated.
+   existing docs kept working until their output root was updated. (Both since
+   done; that directory is retired.)
 3. **Mapillary drift cleanup:** converge feather names on `v1*.feather` real
    files; resolve the four inconsistent `trimmed_frames/` dirs (see Current
    state above).
@@ -390,11 +406,16 @@ Ordered cheapest-first; 1–4 are mechanical, 5 is the only invasive one.
 and all repo path constants were repointed to the new lanes (m-scripts →
 `artifacts/object_tracks/.../v1`, `artifacts/frame_landmarks/.../v1`,
 `datasets/boston_harbor_leg1`, `raw_material/.../videos`).
-`mapillary_datasets` remains a compat symlink for `~/scratch/mappilary`.
+`mapillary_datasets` was a compat symlink for `~/scratch/mappilary`; **that
+directory is retired as of 2026-08-19** — the collection code moved in-repo
+2026-08-17 and the last docs and helper script followed, so nothing in this repo
+reads from it. The symlink is now only for old recorded artifact paths.
 Pinhole faces for the five equirect datasets moved to
 `artifacts/pinhole_images/<id>/v1/` (+manifests); the audit no longer checks
 them — they are an artifact, not dataset contract — and old-pipeline scripts
 keep the old `/data/overhead_matching` base for the old-project sets that
 stayed there. Still pending: the boston leg videos
 (`raw_material/boston_harbor_20260712/videos/`, read directly by m1/m2/m3)
-and the orchestrator's stage-5 output root in `~/scratch/mappilary`.
+and the orchestrator's stage-5 output root (**done**: the orchestrator moved
+in-repo 2026-08-17 with lane-correct defaults, and `~/scratch/mappilary` is
+retired — see below).

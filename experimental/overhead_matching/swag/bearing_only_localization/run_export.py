@@ -83,6 +83,31 @@ def main():
                         choices=["numpy", "torch"],
                         help="measurement-update engine; torch uses the GPU "
                              "when available (float32, see torch_backend.py)")
+    parser.add_argument("--association_renewal_rate", type=float, default=None,
+                        help="beta: per-epoch probability a tracklet's identity "
+                             "switched. Raising it lets a wrongly committed "
+                             "tracklet be re-associated (FilterConfig default "
+                             "0.1)")
+    parser.add_argument("--init_min_tracklets", type=int, default=None,
+                        help="distinct tracklets the init proposal waits for "
+                             "before firing (ProposalConfig default 3; pass 1 "
+                             "for the old fire-on-first-bearing behaviour)")
+    parser.add_argument("--evidence_gate_selection_charge",
+                        action="store_true", default=True,
+                        help="charge log(n_hypotheses) in the evidence gate "
+                             "(default on; see ProposalConfig for the "
+                             "measurements)")
+    parser.add_argument("--no_evidence_gate_selection_charge",
+                        dest="evidence_gate_selection_charge",
+                        action="store_false")
+    parser.add_argument("--prior_sigma_m", type=float, default=200.0,
+                        help="with --init local, the sigma of the Gaussian "
+                             "prior at the first truth pose. Sweeping it "
+                             "measures the BASIN OF ATTRACTION: how good a "
+                             "starting guess a leg needs before bearings can "
+                             "take over. 200 m is a near-solved control; "
+                             "several km is what a real coarse prior looks "
+                             "like")
     parser.add_argument("--no_proposal", action="store_true",
                         help="brute-force control: uniform prior with no "
                              "resection proposal")
@@ -102,16 +127,26 @@ def main():
               f"uniform heading")
     else:
         start = data.truth[0]
-        init = structs.GaussianInit(start.east_m, start.north_m, 200.0)
-        print("prior       : Gaussian at the first truth pose (control)")
+        init = structs.GaussianInit(start.east_m, start.north_m,
+                                    args.prior_sigma_m)
+        print(f"prior       : Gaussian at the first truth pose, sigma "
+              f"{args.prior_sigma_m:.0f} m (control)")
 
     filter_config = structs.FilterConfig(
         n_particles=args.n_particles, seed=args.seed, init=init,
         pi0=args.pi0,
+        **({} if args.association_renewal_rate is None
+           else {"association_renewal_rate": args.association_renewal_rate}),
         position_roughening_m=25.0, heading_roughening_deg=1.0,
         checkpoint_every=args.checkpoint_every,
         measurement_backend=args.backend,
-        proposal=structs.ProposalConfig(enabled=not args.no_proposal))
+        proposal=structs.ProposalConfig(
+            enabled=not args.no_proposal,
+            evidence_gate_selection_charge=(
+                args.evidence_gate_selection_charge),
+            **({} if args.init_min_tracklets is None
+               else {"min_tracklets_for_injection":
+                     args.init_min_tracklets})))
 
     measurements = [] if args.no_bearings else data.measurements
     tables = {} if args.no_bearings else data.tables

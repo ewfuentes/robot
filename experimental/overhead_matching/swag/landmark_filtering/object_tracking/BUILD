@@ -294,6 +294,14 @@ py_binary(
     name = "m10_match_viewer",
     srcs = ["m10_match_viewer.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":harbor_catalog",
+        ":heading",
+        ":m11_base_export",
+        "//experimental/overhead_matching/swag/bearing_only_localization:basemap_lib",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/landmark_filtering:ingest",
+    ],
 )
 
 py_binary(
@@ -303,9 +311,50 @@ py_binary(
     deps = [
         ":bearing_matcher",
         ":heading",
+        ":pano_geometry",
         "//experimental/overhead_matching/swag/data:farfield_paths",
         "//experimental/overhead_matching/swag/landmark_filtering:ingest",
         "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+    ],
+)
+
+py_test(
+    name = "mount_offset_diagnostics_test",
+    srcs = ["mount_offset_diagnostics_test.py"],
+    deps = [":mount_offset_diagnostics"],
+)
+
+py_binary(
+    name = "sun_offset_check",
+    srcs = ["sun_offset_check.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("Pillow"),
+        ":heading",
+        ":pano_geometry",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/landmark_filtering:ingest",
+        "//experimental/overhead_matching/swag/landmark_filtering:pipeline_config",
+    ],
+)
+
+py_test(
+    name = "sun_offset_check_test",
+    srcs = ["sun_offset_check_test.py"],
+    deps = [
+        ":sun_offset_check",
+    ],
+)
+
+py_binary(
+    name = "mount_offset_diagnostics",
+    srcs = ["mount_offset_diagnostics.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":bearing_matcher",
+        ":mount_offset_sweep",
+        "//experimental/overhead_matching/swag/data:farfield_paths",
     ],
 )
 
@@ -336,6 +385,7 @@ py_binary(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         "//experimental/overhead_matching/swag/data:farfield_paths",
+        "//experimental/overhead_matching/swag/scripts:llm_cost",
     ],
 )
 
@@ -475,6 +525,7 @@ py_binary(
     deps = [
         ":harbor_catalog",
         ":heading",
+        ":semantic_audit",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/bearing_only_localization:export_ingest",
         "//experimental/overhead_matching/swag/bearing_only_localization:geodesy",

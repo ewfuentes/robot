@@ -73,6 +73,7 @@ def main():
 
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
+    range_name = artifact["range"]["name"]
     result = ingest.run_ingest(paths.dataset_base, paths.frame_landmarks,
                                IngestConfig())
     obs_by_id = {o.obs_id: o for o in result.observations}
@@ -193,8 +194,12 @@ def main():
             links.append(f"{len(lm.handoff_proposals)} handoff?")
         if lm.merge_conflicts:
             links.append(f"<b>{len(lm.merge_conflicts)} conflict</b>")
+        # Range name from the artifact, never a literal: track pages are named
+        # track_<range>_T<id>.html, and a hardcoded "full_leg1" made every one
+        # of these links dead on any run whose range was not called that -- i.e.
+        # all of them, since run_pipeline names its default range "full".
         track_links = " ".join(
-            f"<a href='../track_full_leg1_T{t}.html'>T{t}</a>"
+            f"<a href='../track_{range_name}_T{t}.html'>T{t}</a>"
             for t in lm.track_ids)
         parts.append(
             f"<tr{cls}><td>{html.escape(lm.landmark_id)}</td>"

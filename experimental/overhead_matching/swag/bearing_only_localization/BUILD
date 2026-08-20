@@ -201,6 +201,37 @@ py_test(
     ],
 )
 
+py_test(
+    name = "observability_test",
+    srcs = ["observability_test.py"],
+    deps = [":observability"],
+)
+
+py_test(
+    name = "satellite_underlay_test",
+    srcs = ["satellite_underlay_test.py"],
+    deps = [":satellite_underlay"],
+)
+
+py_binary(
+    name = "satellite_underlay",
+    srcs = ["satellite_underlay.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("Pillow"),
+        requirement("requests"),
+        ":geodesy",
+        ":run_log",
+    ],
+)
+
+py_binary(
+    name = "observability",
+    srcs = ["observability.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
 py_binary(
     name = "run_localization",
     srcs = ["run_localization.py"],

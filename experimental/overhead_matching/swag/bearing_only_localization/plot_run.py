@@ -46,8 +46,28 @@ def _landmark_positions(data):
     return east, north
 
 
-def _draw_map(data, wedge_keyframe, max_particles, ax):
+# Above this many landmarks, drawing each one as a labelled marker buries
+# everything the figure exists to show. The synthetic scenarios have a handful;
+# a whole-map catalog has 4k-30k, and boston_harbor_leg3's 13,210 rendered as a
+# solid field of gold triangles with the trajectory invisible underneath.
+_MAX_LABELLED_LANDMARKS = 60
+
+
+def _draw_landmarks(data, ax):
+    """Landmarks, drawn at a density the figure can carry.
+
+    Few enough to name: the original marker-and-label treatment, which is what
+    makes the small scenario plots readable. Too many to name: faint dots, no
+    labels, and they recede behind the trajectory where they belong. The count
+    goes in the legend either way, because "13,210 candidates" is itself the
+    point of a whole-map run.
+    """
     lm_east, lm_north = _landmark_positions(data)
+    count = len(data.manifest.landmarks)
+    if count > _MAX_LABELLED_LANDMARKS:
+        ax.scatter(lm_east, lm_north, s=1.5, alpha=0.25, color="0.6",
+                   zorder=1, label=f"catalog ({count:,} landmarks)")
+        return
     for lm, e, n in zip(data.manifest.landmarks, lm_east, lm_north):
         ax.scatter([e], [n], s=250, zorder=5,
                    marker=_LANDMARK_MARKERS.get(lm.type_key, "^"),
@@ -55,9 +75,15 @@ def _draw_map(data, wedge_keyframe, max_particles, ax):
         ax.annotate(lm.landmark_id, (e, n), textcoords="offset points",
                     xytext=(8, 8), fontsize=8)
 
+
+def _draw_map(data, wedge_keyframe, max_particles, ax):
+    lm_east, lm_north = _landmark_positions(data)   # also sizes the bearing rays
+    _draw_landmarks(data, ax)
+
     truth_e = [t.east_m for t in data.truth]
     truth_n = [t.north_m for t in data.truth]
-    ax.plot(truth_e, truth_n, color="0.4", lw=1.5, label="truth")
+    ax.plot(truth_e, truth_n, color="0.15", lw=2.0, zorder=6,
+            label="truth")
     ax.scatter([truth_e[0]], [truth_n[0]], marker="o", color="0.4", s=40,
                zorder=4)
 

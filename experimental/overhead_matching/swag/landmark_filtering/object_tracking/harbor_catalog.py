@@ -78,6 +78,15 @@ FAR_FIELD_KEEP_KEYS = frozenset({
     "leisure", "amenity", "tourism", "power", "bridge", "aeroway", "railway",
     "waterway", "water", "industrial", "military", "barrier", "highway",
     "object_class",           # ENC feature class
+    # `amenity=place_of_worship` alone is nearly free of information in an
+    # Anglophone harbour, where it is a church ~90% of the time (boston: 184 of
+    # 209; folkestone: 1,041 of 1,091). Outside one it is the opposite: a torii
+    # and unpainted wood, tiered tiled roofs and a bell pavilion, a minaret, and
+    # a steeple are about as far-field-legible as buildings get, and the split is
+    # real -- tokyo_bay carries shinto 3,464 vs buddhist 3,328, pohang buddhist
+    # 124 vs christian 93, tangier muslim 210. Dropping `religion` threw away the
+    # single most discriminating tag on those rows while keeping the useless one.
+    "religion", "denomination",
     # identity
     "name", "alt_name", "short_name", "official_name", "loc_name",
     "old_name", "operator", "brand", "ref", "description",
@@ -99,19 +108,62 @@ FAR_FIELD_KEEP_PREFIXES = (
 # Explicitly dropped even if a prefix above would admit them.
 FAR_FIELD_DROP_PREFIXES = (
     "addr:", "payment:", "massgis:", "mass", "contact:", "survey:",
-    "source:", "ref:", "name:",   # name:xx are language variants, not identity
+    "source:", "ref:", "name:",   # except FAR_FIELD_KEEP_NAME_VARIANTS below
     "building:levels:", "check_date",
 )
+
+# Exceptions to the `name:` drop, checked FIRST so the blanket prefix cannot
+# swallow them.
+#
+# "name:xx are language variants, not identity" is true exactly when the bare
+# `name` is already in the language the observer speaks. In an Anglophone
+# harbour it always is, which is why this cost nothing for a year. Elsewhere the
+# bare `name` is in the local script and these are the only strings that share an
+# alphabet with what a VLM reports: on pohang_canal_04, 6,360 of 7,207 named rows
+# are Hangul-only, and dropping these left just 387 rows of 12,766 with any Latin
+# identity -- including `place=city` Pohang and Gyeongju, reduced to 포항시 and
+# 경주시. It is also asymmetric, because the *observer* emits English: the
+# extractor returned `name:en=POSCO Pohang Steelworks` for a landmark whose
+# catalogue entry kept only the Hangul.
+#
+# Kept deliberately narrow. `name:en` is the English exonym, and `*-Latn` is the
+# romanization a transliterated sign carries. Every other variant (name:ja,
+# name:zh, name:el, and name:ko in a Korean table) is either a duplicate of the
+# bare name or genuinely unrelated noise -- pohang's bbox carries 2,520 name:el.
+FAR_FIELD_KEEP_NAME_VARIANTS = frozenset({"name:en"})
+FAR_FIELD_KEEP_NAME_SUFFIXES = ("-latn",)
+
+
+def is_kept_name_variant(key: str) -> bool:
+    """True for the `name:xx` variants worth keeping (see the note above)."""
+    lowered = key.lower()
+    if not lowered.startswith("name:"):
+        return False
+    return (lowered in FAR_FIELD_KEEP_NAME_VARIANTS
+            or lowered.endswith(FAR_FIELD_KEEP_NAME_SUFFIXES))
+
+
+def keeps_tag_key(key: str) -> bool:
+    """Whether a tag key survives far-field pruning, by key name alone.
+
+    The single source of truth for that question. `trim_landmark_feather` used to
+    carry its own copy of this branch and the two could drift apart silently,
+    which is the worst possible failure here: the trim would select rows by one
+    vocabulary and the catalogue would then read them with another.
+    """
+    if is_kept_name_variant(key):
+        return True
+    if any(key.startswith(p) for p in FAR_FIELD_DROP_PREFIXES):
+        return False
+    return (key in FAR_FIELD_KEEP_KEYS
+            or any(key.startswith(p) for p in FAR_FIELD_KEEP_PREFIXES))
 
 
 def prune_far_field_tags(props: dict) -> dict:
     """key -> str value, keeping only far-field-identifying tags."""
     out = {}
     for key, value in props.items():
-        if any(key.startswith(p) for p in FAR_FIELD_DROP_PREFIXES):
-            continue
-        if (key not in FAR_FIELD_KEEP_KEYS
-                and not any(key.startswith(p) for p in FAR_FIELD_KEEP_PREFIXES)):
+        if not keeps_tag_key(key):
             continue
         if value is None or (isinstance(value, float) and math.isnan(value)):
             continue
@@ -133,7 +185,7 @@ EARTH_RADIUS_M = 6378137.0
 # The cache key covers the feather and the anchor, but nothing about this
 # module - without a version, a fix to id parsing or the keep-list silently
 # keeps serving entries built by the old code.
-CACHE_VERSION = 3
+CACHE_VERSION = 4   # 4: +religion/denomination, +name:en and *-Latn variants
 
 # Columns that are structural rather than tags.
 NON_TAG_COLUMNS = ("id", "geometry", "landmark_type")

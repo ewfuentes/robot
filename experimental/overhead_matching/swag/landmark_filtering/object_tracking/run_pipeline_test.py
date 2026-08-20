@@ -7,6 +7,7 @@ from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     run_pipeline as rp,
 )
+from experimental.overhead_matching.swag.scripts import llm_cost
 
 
 def write_jsonl(path: Path, records):
@@ -43,8 +44,26 @@ class TokenCostTest(unittest.TestCase):
         # output + thinking are billed the same, so they are summed together.
         self.assertEqual(cost["output_tokens"], 350)
         self.assertEqual(cost["total_tokens"], 3350)
-        expected = 3000 * 1.00 / 1e6 + 350 * 6.00 / 1e6
+        # Rates come from the price list, not a copy of it: the literals that
+        # used to sit here were the batch rates and only matched because both
+        # figures round to $0.01.
+        input_usd, output_usd, _ = llm_cost.rates_for(None)
+        expected = 3000 * input_usd["small"] + 350 * output_usd["small"]
         self.assertAlmostEqual(cost["usd_on_demand"], round(expected, 2))
+
+    def test_prices_each_model_at_its_own_rate(self):
+        path = self.root / "flash.jsonl"
+        write_jsonl(path, [usage_record("k", 100_000, 5_000)])
+        pro = rp.token_cost([path], "gemini-3.1-pro-preview")
+        flash = rp.token_cost([path], "gemini-3.7-flash")
+        self.assertEqual(pro["total_tokens"], flash["total_tokens"])
+        self.assertLess(flash["usd_on_demand"], pro["usd_on_demand"])
+        merged = rp.merge_costs(pro, flash)
+        self.assertEqual(merged["calls"], 2)
+        self.assertAlmostEqual(merged["usd_on_demand"],
+                               round(pro["usd_on_demand"]
+                                     + flash["usd_on_demand"], 2))
+        self.assertEqual(len(merged["rates"]), 2)
 
     def test_ignores_missing_files_and_error_records(self):
         path = self.root / "r.jsonl"

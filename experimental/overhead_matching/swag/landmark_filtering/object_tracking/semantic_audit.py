@@ -360,12 +360,25 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
     birth = track["birth_keyframe"]
     lifetime = track["end_keyframe"] - birth + 1
 
+    # Names are counted with their detector confidence. Every identity *tag*
+    # reaches the auditor split high/medium/low via tag_vote_table, but `name`
+    # is in NON_IDENTITY_TAG_KEYS and so was excluded from it - the name, the
+    # single most consequential piece of evidence, used to arrive as a bare
+    # count. The extraction prompt explicitly delegates naming doubt to
+    # `confidence` ("express your certainty through the confidence field
+    # rather than by staying silent"), so dropping it discarded exactly the
+    # signal the extractor was told to send.
     name_votes = {}
+    name_confidence = {}
     for e in supports:
         _, extra = _obs_tags(e["obs"])
         name = extra.get("name", "")
         if name:
             name_votes[name] = name_votes.get(name, 0) + 1
+            by_conf = name_confidence.setdefault(
+                name, {c: 0 for c in CONFIDENCE_ORDER})
+            if e["obs"].confidence in by_conf:
+                by_conf[e["obs"].confidence] += 1
 
     reanchors = sum(1 for r in track["records"]
                     if r["action"] == "reanchor_clean")
@@ -386,6 +399,7 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
         "close_text": _close_reason_text(track),
         "tag_table": tag_vote_table(supports),
         "name_votes": sorted(name_votes.items(), key=lambda kv: -kv[1]),
+        "name_confidence": name_confidence,
         "primary_tag_rle": run_length_encode(
             [_obs_tags(e["obs"])[0] for e in supports]),
         "distance_rle": run_length_encode(
@@ -545,6 +559,16 @@ be small in the frame; judge only what is visible.
   if you do. Dense skylines produce confident wrong names at every range, so
   a single track collecting many different building names is expected; report
   the spread rather than hiding it behind a winner.
+  CALIBRATE THE WEIGHT AGAINST THE SUPPORT. The dossier gives each name's
+  detection count and the detector's own confidence in that name, against the
+  track's total detection count. A name asserted by one detection out of
+  dozens is worth listing, but it is not worth a high weight: reserve weights
+  above 0.7 for names carried by a substantial share of the detections or
+  corroborated by what you can see in the images, and keep a name reported
+  once, or reported at `medium` confidence, below 0.3. A downstream matcher
+  treats a high-weighted name as near-decisive and will place this object at
+  the map row of that name however far away it is, so an over-weighted name
+  is worse than no name at all.
 - primary_object.description: one sentence, intrinsic properties only (shape,
   color, material, count), reusable to re-identify the object from a
   different viewpoint. Never mention image position, direction, distance,
@@ -616,8 +640,18 @@ def render_dossier_text(dossier: dict) -> str:
 
     parts.append("")
     if dossier["name_votes"]:
-        parts.append("names reported: " + ", ".join(
-            f"'{name}' x{n}" for name, n in dossier["name_votes"]))
+        conf = dossier.get("name_confidence") or {}
+
+        def _one(name, n):
+            by = conf.get(name)
+            if not by:
+                return f"'{name}' x{n}"
+            split = ", ".join(f"{by[c]} {c}" for c in CONFIDENCE_ORDER if by[c])
+            return f"'{name}' x{n} ({split})" if split else f"'{name}' x{n}"
+
+        parts.append("names reported, with the detector's confidence in each "
+                     "name: " + ", ".join(
+                         _one(name, n) for name, n in dossier["name_votes"]))
     else:
         parts.append("names reported: (none)")
 

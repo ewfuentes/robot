@@ -10,27 +10,35 @@ Conventions:
 - Compass bearings in ENU: degrees clockwise from north, i.e.
   atan2(east, north).
 
-KNOWN ISSUE (found 2026-08-05 while building object_tracking/pano_geometry):
-bearing_camera_deg does NOT return a physically consistent direction across
-faces. The renderer (scripts/panorama_to_pinhole.py) builds rays with
-col_frac = linspace(1, -1), i.e. yaw_090 faces 90 deg counter-clockwise-LEFT
-of forward, and the pano is laid out left-to-right as faces 180|90|0|270.
-This was verified empirically: regenerating the stored pinhole faces from the
-panorama with that math matches to JPEG noise, and reprojected landmark boxes
-land exactly on their objects (see object_tracking/m0_render_boxes.py).
-Under the true convention, bearing_camera_deg is mirrored within each face
-(bearing increases image-right here, but physical azimuth increases
-image-left), which cancels on faces 0/180 only at the face center and leaves
-faces 90/270 pointing ~180 deg away from the physical direction. Downstream
-consumers (tracking gates, triangulation, yaw_offset) fit a per-dataset yaw
-calibration with a sign parameter, which absorbs part but not all of this.
-Do not use these bearings for anything that must land on panorama pixels;
-use object_tracking/pano_geometry.py instead.
+RESOLVED 2026-08-19 (was a KNOWN ISSUE from 2026-08-05):
+`bearing_camera_deg` and `bbox_angles` now delegate to
+`object_tracking/pano_geometry.direction_from_face_px`, the empirically verified
+mapping, instead of carrying their own copy of the maths. There is exactly one
+definition of the camera frame in this project and it lives there; see
+docs/conventions.md.
+
+What the old copy got wrong, precisely: it returned
+`face_yaw + atan((2u-1)tan(fov/2))` where the verified render convention is
+`-(face_yaw + atan((1-2u)tan(fov/2)))`. The two differ by exactly
+`-2*face_yaw mod 360`, i.e. **0 deg on faces 0/180 and exactly 180 deg on faces
+90/270**. Both increase bearing image-right, so the older description of this as
+a "mirror within each face" was itself slightly wrong -- it is a per-face
+constant rotation, which is why a fitted per-dataset yaw offset could absorb part
+of it (the 0/180 faces) and never the rest.
+
+Consequences of the fix, for anyone reading older artifacts: any bearing this
+module produced for a box on face 90 or 270 was 180 deg out. Faces 0 and 180 are
+unchanged, exactly. `ingest._is_seam_pair` was matched to the old convention and
+is corrected in the same commit.
 """
 
 import math
 
 import numpy as np
+
+from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
+    pano_geometry as pg,
+)
 
 # WGS84 Earth radius; same value as common/gps/web_mercator.py, inlined so this
 # module (and the viewer that depends on it) doesn't import torch.
@@ -61,14 +69,11 @@ def bearing_camera_deg(face_yaw_deg: float, x_norm: float,
                        fov_deg: float = 90.0) -> float:
     """Camera-frame bearing of a normalized x coordinate on a pinhole face.
 
-    WARNING: mirrored relative to the true render convention; on faces
-    90/270 the result is ~180 deg from the physical direction. See the
-    KNOWN ISSUE note in the module docstring. The physically verified
-    mapping is object_tracking/pano_geometry.direction_from_face_px.
+    Thin wrapper over `pano_geometry.direction_from_face_px`, kept so existing
+    callers keep working. Do not reimplement the maths here: one definition of
+    the camera frame, in pano_geometry. See docs/conventions.md.
     """
-    col_frac = x_norm / BBOX_NORM_MAX * 2.0 - 1.0
-    offset_rad = math.atan(col_frac * math.tan(math.radians(fov_deg) / 2.0))
-    return (face_yaw_deg + math.degrees(offset_rad)) % 360.0
+    return pg.direction_from_face_px(face_yaw_deg, x_norm, 0.0, fov_deg)[0]
 
 
 def elevation_deg(y_norm: float, fov_deg: float = 90.0) -> float:

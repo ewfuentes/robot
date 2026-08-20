@@ -120,6 +120,18 @@ h2 .hint{font-weight:500;letter-spacing:0;text-transform:none;
 h3{margin:12px 0 6px;font-size:10.5px;font-weight:650;letter-spacing:.09em;
   text-transform:uppercase;color:var(--ink-faint)}
 svg{display:block;width:100%;overflow:visible}
+/* The map zooms by narrowing its viewBox, which scales everything inside it --
+   including line weights and labels, which should NOT grow. Strokes are held
+   constant by vector-effect; text by --map-fs, which drawMap counter-scales. */
+/* The page's other svgs (sparklines, ribbons) rely on svg{overflow:visible} to
+   let labels sit outside their box. The map must NOT, or panned-away geometry
+   paints over the rest of the document. */
+#map{cursor:grab;touch-action:none;overflow:hidden}
+#map.dragging{cursor:grabbing}
+/* Only the static layers are drawn in base coordinates and reached by a
+   transform, so only they need their stroke widths (and their round-cap dots)
+   held at a constant size. Everything else is re-projected per frame. */
+#staticmap *{vector-effect:non-scaling-stroke}
 .axis{fill:var(--ink-faint);font-size:9.5px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .cursor{stroke:var(--accent);stroke-width:1.5;pointer-events:none}
@@ -196,6 +208,9 @@ const H = D.health, KF = D.run.nKeyframes - 1, RUN = D.run;
 const $ = id => document.getElementById(id);
 let t = 0, selMode = null, selTrk = null, tab = "state";
 let showGhosts = true, showBase = true, showParticles = true;
+// Imagery defaults ON when supplied: if someone went to the
+// trouble of fetching a mosaic, they want to see it.
+let showSat = true;
 
 const color = id => id == null || id < 0 ? "#8b93a3"
   : D.colors[id % D.colors.length];
@@ -221,11 +236,139 @@ D.truth.forEach(p => grow(p[0], p[1]));
 H.forEach(h => grow(h.mapE, h.mapN));
 const pad = (X1 - X0 + Y1 - Y0) * 0.05 + 150;
 X0 -= pad; X1 += pad; Y0 -= pad; Y1 += pad;
-const span = Math.max(X1 - X0, Y1 - Y0);
 const MW = 780, MH = 600;
-const px = e => ((e - X0) / span) * MW;
-const py = n => MH - ((n - Y0) / span) * MH;
-const mPerPx = span / MW;
+// Base projection: metres -> the full-extent pixel box. Static layers are built
+// once in this space and reached afterwards by a transform.
+//
+// ONE scale for both axes. The earlier version divided east by MW/span and north
+// by MH/span, which squashed north by 600/780 = 0.77: a 1-sigma circle came out
+// 30% too large north-south, every shape was distorted, and imagery could not be
+// laid over it undistorted. Barely visible at a 25 km extent, badly wrong once
+// you zoom in to read geometry. Fitting by the tighter axis letterboxes instead,
+// which is the honest trade.
+const SC = Math.min(MW / Math.max(X1 - X0, 1e-6),
+                    MH / Math.max(Y1 - Y0, 1e-6));
+const EMID = (X0 + X1) / 2, NMID = (Y0 + Y1) / 2;
+const px0 = e => MW / 2 + (e - EMID) * SC;
+const py0 = n => MH / 2 - (n - NMID) * SC;
+const mPerPx = 1 / SC;
+
+// ---------- map viewport ----------
+// A whole-map run spans 25 km and the thing worth looking at is a few hundred
+// metres of trajectory inside it, so the map zooms. The zoom lives in the
+// PROJECTION, not in the viewBox, and that choice is the whole design:
+//
+//   * viewBox zoom scales everything indiscriminately. Landmark glyphs, label
+//     offsets and flag rings are sized in screen units on purpose -- a 2.2-unit
+//     square is meant to be a 2.2-pixel square -- and at 20x they became
+//     40-pixel squares that swallowed the map. Counter-scaling each of them is a
+//     list of literals someone has to remember to extend.
+//   * Projection zoom keeps the output in one fixed 0..MW x 0..MH screen space.
+//     Screen-sized literals stay screen-sized with no bookkeeping, and anything
+//     that should scale is expressed in metres and divided by mppx().
+//
+// VIEW is the visible rectangle in BASE pixel space: k is metres-per-screen-pixel
+// relative to the full extent, so k = 1 shows everything and k = 0.05 is 20x.
+const VIEW = {x: 0, y: 0, k: 1};
+const VIEW_MIN_K = 1 / 500;
+const VIEW_MAX_K = 1.5;
+const px = e => (px0(e) - VIEW.x) / VIEW.k;
+const py = n => (py0(n) - VIEW.y) / VIEW.k;
+// Metres per screen pixel at the current zoom. Anything geometric -- a 1-sigma
+// radius, a ray length, the scale bar -- goes through this and nothing else.
+const mppx = () => mPerPx * VIEW.k;
+// Maps base pixel space into the current view, for the static layers.
+const staticTransform = () =>
+  `translate(${(-VIEW.x / VIEW.k).toFixed(3)} ${(-VIEW.y / VIEW.k).toFixed(3)})`
+  + ` scale(${(1 / VIEW.k).toFixed(6)})`;
+
+function applyView() {
+  const z = 1 / VIEW.k;
+  const el = $("mapzoom");
+  if (el) el.textContent = z < 1.02 ? "full extent" : `${z.toFixed(1)}x`;
+  drawMap();          // the projection moved, so everything is re-projected
+}
+
+function viewFit(x0, y0, x1, y1) {          // rect in BASE pixel space
+  let w = x1 - x0, h = y1 - y0;
+  const pad = Math.max(w, h) * 0.08 + 4;
+  x0 -= pad; y0 -= pad; w += 2 * pad; h += 2 * pad;
+  const k = Math.min(VIEW_MAX_K,
+                     Math.max(VIEW_MIN_K, Math.max(w / MW, h / MH)));
+  VIEW.k = k;
+  VIEW.x = x0 + w / 2 - MW * k / 2;         // centre the requested rect
+  VIEW.y = y0 + h / 2 - MH * k / 2;
+  applyView();
+}
+
+function viewFitAll() { viewFit(0, 0, MW, MH); }
+
+// The truth track plus wherever the filter currently thinks it is, so a
+// converged run fills the frame and a diverged one still shows both.
+function viewFitTrack() {
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  const g = (x, y) => { if (!isFinite(x) || !isFinite(y)) return;
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+    y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  D.truth.forEach(p => g(px0(p[0]), py0(p[1])));
+  const h = H[t];
+  if (h && h.mapE !== undefined) g(px0(h.mapE), py0(h.mapN));
+  if (x1 <= x0 || y1 <= y0) { viewFitAll(); return; }
+  viewFit(x0, y0, x1, y1);
+}
+
+// Zoom about a screen point, keeping the metre under the cursor put.
+function viewZoomBy(factor, sx, sy) {
+  const k = Math.min(VIEW_MAX_K, Math.max(VIEW_MIN_K, VIEW.k * factor));
+  if (k === VIEW.k) return;
+  VIEW.x += sx * (VIEW.k - k);
+  VIEW.y += sy * (VIEW.k - k);
+  VIEW.k = k;
+  applyView();
+}
+
+// Client coordinates -> the fixed 0..MW x 0..MH screen space.
+function eventToScreen(ev) {
+  const r = $("map").getBoundingClientRect();
+  return {sx: (ev.clientX - r.left) / r.width * MW,
+          sy: (ev.clientY - r.top) / r.height * MH};
+}
+
+function wireMapZoom() {
+  const svg = $("map");
+  if (!svg) return;
+  svg.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const at = eventToScreen(ev);
+    viewZoomBy(Math.exp(ev.deltaY * 0.0016), at.sx, at.sy);
+  }, {passive: false});
+  let drag = null;
+  svg.addEventListener("pointerdown", ev => {
+    drag = eventToScreen(ev); drag.id = ev.pointerId;
+    svg.setPointerCapture(ev.pointerId);
+    svg.classList.add("dragging");
+  });
+  svg.addEventListener("pointermove", ev => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    const now = eventToScreen(ev);
+    VIEW.x -= (now.sx - drag.sx) * VIEW.k;
+    VIEW.y -= (now.sy - drag.sy) * VIEW.k;
+    drag.sx = now.sx; drag.sy = now.sy;
+    applyView();
+  });
+  const end = ev => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    drag = null; svg.classList.remove("dragging");
+  };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+  svg.addEventListener("dblclick", ev => {
+    const at = eventToScreen(ev); viewZoomBy(0.5, at.sx, at.sy);
+  });
+  const bAll = $("tgFitAll"), bTrk = $("tgFitTrack");
+  if (bAll) bAll.onclick = viewFitAll;
+  if (bTrk) bTrk.onclick = viewFitTrack;
+}
 
 // ---------- static map layers, built once ----------
 // The backdrop and basemap do not change with the scrubber, and rebuilding
@@ -246,41 +389,61 @@ function buildBasemap() {
     let d = "";
     for (const path of layer.paths) {
       for (let i = 0; i < path.length; i += 2)
-        d += (i ? "L" : "M") + px(path[i]).toFixed(1) + " "
-          + py(path[i + 1]).toFixed(1);
+        d += (i ? "L" : "M") + px0(path[i]).toFixed(1) + " "
+          + py0(path[i + 1]).toFixed(1);
       if (layer.kind === "polygon") d += "Z";
     }
     return `<path d="${d}" fill="${st.fill}" stroke="${st.stroke}"
       stroke-width="${st.w}" opacity="${st.op}" stroke-linejoin="round"/>`;
   }).join("");
 }
+// A georeferenced raster underlay, if one was supplied. Positioned in BASE
+// pixel space and emitted inside #staticmap, so it inherits the zoom transform
+// and needs no per-frame work. Beneath the vector layers, which are drawn over
+// it as thin outlines rather than fills once imagery is showing.
+const SATELLITE = (() => {
+  const layers = (D.satellite && D.satellite.layers) || [];
+  return layers.map(t => {
+    const x = px0(t.e0), y = py0(t.n1);          // north maps to the SMALLER y
+    const w = px0(t.e1) - px0(t.e0), h = py0(t.n0) - py0(t.n1);
+    // image-rendering:pixelated keeps a coarse wide layer honest about being
+    // coarse rather than smearing it into something that looks like detail.
+    return `<image href="${t.uri}" x="${x.toFixed(2)}" y="${y.toFixed(2)}"
+      width="${w.toFixed(2)}" height="${h.toFixed(2)}"
+      preserveAspectRatio="none" opacity=".92"
+      style="image-rendering:pixelated"/>`;
+  }).join("");
+})();
 const BASEMAP = buildBasemap();
 const BACKDROP = (D.backdrop && D.backdrop.length)
-  ? `<path d="${D.backdrop.map(p => "M" + px(p[0]).toFixed(1) + " "
-      + py(p[1]).toFixed(1) + "h.1").join("")}" stroke="var(--ink-faint)"
+  ? `<path d="${D.backdrop.map(p => "M" + px0(p[0]).toFixed(1) + " "
+      + py0(p[1]).toFixed(1) + "h.1").join("")}" stroke="var(--ink-faint)"
       stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".38"/>`
   : "";
 
 // Scale bar: a map with no basemap and no scale is unreadable at a glance.
+// Recomputed for the current viewport rather than built once, for two reasons:
+// anchored at fixed coordinates it slides out of frame as soon as you pan, and a
+// bar sized for a 25 km view reads 5 km when you are looking at 200 m of quay.
 function scaleBar() {
-  const targetPx = 130;
-  const raw = targetPx * mPerPx;
+  // Screen space is fixed, so the bar sits in the corner and only its LENGTH and
+  // label follow the zoom -- it reads 200 m on a quay and 5 km on the full box.
+  const raw = 130 * mppx();
   const pow = Math.pow(10, Math.floor(Math.log10(raw)));
   const nice = [1, 2, 5, 10].map(m => m * pow)
     .reduce((a, b) => Math.abs(b - raw) < Math.abs(a - raw) ? b : a);
-  const w = nice / mPerPx;
-  const y = MH - 16, x = 14;
-  const label = nice >= 1000 ? (nice / 1000) + " km" : nice + " m";
+  const w = nice / mppx();
+  const y = MH - 16, x = 14, tick = 4;
+  const label = nice >= 1000 ? (nice / 1000) + " km" : Math.round(nice) + " m";
   return `<g opacity=".85"><line x1="${x}" y1="${y}" x2="${x + w}" y2="${y}"
     stroke="var(--ink)" stroke-width="1.6"/>
-    <line x1="${x}" y1="${y - 4}" x2="${x}" y2="${y + 4}" stroke="var(--ink)"
-      stroke-width="1.6"/>
-    <line x1="${x + w}" y1="${y - 4}" x2="${x + w}" y2="${y + 4}"
+    <line x1="${x}" y1="${y - tick}" x2="${x}" y2="${y + tick}"
       stroke="var(--ink)" stroke-width="1.6"/>
-    <text class="axis" x="${x + w / 2}" y="${y - 7}" text-anchor="middle"
-      fill="var(--ink)">${label}</text></g>`;
+    <line x1="${x + w}" y1="${y - tick}" x2="${x + w}" y2="${y + tick}"
+      stroke="var(--ink)" stroke-width="1.6"/>
+    <text class="axis" x="${x + w / 2}" y="${y - tick * 1.8}"
+      text-anchor="middle" fill="var(--ink)">${label}</text></g>`;
 }
-const SCALEBAR = scaleBar();
 
 // ---------- landmark glyphs by type (§7.4) ----------
 // Shape carries class, so "which kind of thing is the filter believing in"
@@ -478,7 +641,11 @@ function drawStrip() {
 // ---------- view 2: map ----------
 function drawMap() {
   const h = H[t], ck = nearestCk(t), P = D.checkpoints[ck];
-  let out = (showBase ? BASEMAP : "") + BACKDROP;
+  // Static layers stay in base coordinates and are moved by one transform:
+  // re-emitting 138k basemap vertices on every wheel tick is not affordable.
+  let out = `<g id="staticmap" transform="${staticTransform()}">`
+    + (showSat ? SATELLITE : "")
+    + (showBase ? BASEMAP : "") + BACKDROP + `</g>`;
 
   if (showParticles && P) {
     // One path per mode rather than one circle per particle: 900 DOM nodes per
@@ -516,7 +683,7 @@ function drawMap() {
   // Per-mode 1-sigma circle + heading tick.
   h.modes.forEach(m => {
     if (selMode !== null && m.id !== selMode) return;
-    const r = Math.max(m.std / mPerPx, 2.5);
+    const r = Math.max(m.std / mppx(), 2.5);   // metres -> current pixels
     const a = m.h * Math.PI / 180, L = 20;
     out += `<circle cx="${px(m.e).toFixed(1)}" cy="${py(m.n).toFixed(1)}"
       r="${r.toFixed(1)}" fill="none" stroke="${color(m.id)}"
@@ -536,7 +703,7 @@ function drawMap() {
   const flags = [];
   if (anchor) meas.forEach(mm => {
     const world = (anchor.h + mm.bearing) * Math.PI / 180;
-    const R = span * 0.6 / mPerPx;
+    const R = 3 * MW;      // long enough to leave the frame at any zoom
     const ray = (off, op, w) => `<line x1="${px(anchor.e).toFixed(1)}"
       y1="${py(anchor.n).toFixed(1)}"
       x2="${(px(anchor.e) + R * Math.sin(world + off)).toFixed(1)}"
@@ -596,10 +763,10 @@ function drawMap() {
   if (h.truthE !== undefined)
     out += `<circle cx="${px(h.truthE).toFixed(1)}" cy="${py(h.truthN).toFixed(1)}"
       r="4.5" fill="none" stroke="var(--truth)" stroke-width="2"/>`;
-  out += SCALEBAR;
+  out += scaleBar();
 
   const svg = $("map");
-  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);
+  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);   // fixed: the zoom is in VIEW
   svg.innerHTML = out;
   $("mapnote").innerHTML =
     `particles: weighted sample of ${RUN.nParticles.toLocaleString()} from `
@@ -1203,6 +1370,15 @@ $("tgPart").onclick = e => { showParticles = !showParticles;
   e.target.classList.toggle("on", showParticles); drawMap(); };
 $("tgGhost").onclick = e => { showGhosts = !showGhosts;
   e.target.classList.toggle("on", showGhosts); drawMap(); };
+if ($("tgSat")) {
+  if (!SATELLITE) $("tgSat").disabled = true;
+  $("tgSat").onclick = e => { showSat = !showSat;
+    e.target.classList.toggle("on", showSat); drawMap(); };
+}
+wireMapZoom();
+// Open on the trajectory rather than the whole box: the 25 km extent is context
+// you ask for, not what you want to read first.
+viewFitTrack();
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   const step = e.shiftKey ? 10 : 1;
@@ -1270,9 +1446,18 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <button id="tgBase" class="on">basemap</button>
 <button id="tgPart" class="on">particles</button>
 <button id="tgGhost" class="on">ghosts</button>
+<button id="tgSat" class="on">satellite</button>
+<button id="tgFitTrack">fit track</button>
+<button id="tgFitAll">full extent</button>
+<span class="axis" id="mapzoom" style="align-self:center"></span>
 </div>
 <svg id="map"></svg>
 <div class="legend"><span id="mapnote"></span></div>
+<div class="legend"><b>Scroll to zoom, drag to pan, double-click to zoom in.</b>
+Opens fitted to the trajectory; <b>full extent</b> restores the whole catalog box
+and <b>fit track</b> returns. The zoom is in the projection, so landmark glyphs,
+labels and flag rings keep a constant size while 1&sigma; circles and the scale
+bar stay true to the ground.</div>
 <div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
 dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
 heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
@@ -1359,6 +1544,15 @@ def main():
     parser.add_argument("--max_particles", type=int,
                         default=viewer_payload.MAX_PARTICLES_PER_FRAME)
     parser.add_argument("--max_visible_range_m", type=float, default=None)
+    parser.add_argument("--satellite", type=Path, default=None,
+                        help="directory holding satellite.jpg + satellite.json "
+                             "(ENU bounds), embedded as an imagery underlay. "
+                             "See satellite_underlay.py.")
+    parser.add_argument("--basemap_detail", type=float, default=1.0,
+                        help="Scale the basemap's vertex budgets up and its "
+                             "simplification tolerance down. The defaults suit "
+                             "reading the whole extent at once; the map zooms, "
+                             "so pass 3-6 for a page you will zoom into.")
     parser.add_argument("--no_thumbnails", action="store_true")
     parser.add_argument("--body_only", action="store_true",
                         help="emit a fragment for embedding rather than a "
@@ -1369,7 +1563,9 @@ def main():
         args.run_dir, sources_dir=args.sources_dir, feather=args.feather,
         ghost_dirs=args.ghost, max_particles=args.max_particles,
         max_visible_range_m=args.max_visible_range_m,
-        embed_thumbnails=not args.no_thumbnails)
+        embed_thumbnails=not args.no_thumbnails,
+        basemap_detail=args.basemap_detail,
+        satellite=args.satellite)
     output = args.output or (args.run_dir / "viewer.html")
     output.write_text(render_html(payload, args.body_only))
 

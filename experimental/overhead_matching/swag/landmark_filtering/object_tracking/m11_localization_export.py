@@ -94,8 +94,15 @@ def _alias_tables(tables: dict, measured_ids: set) -> tuple[dict, dict]:
             detail.append(
                 f"{len(orphans)} of {len(measured_ids)} measured tracklets "
                 f"have no compatibility table and no merge ancestor "
-                f"(e.g. {orphans[:5]}). Matching that predates the current "
-                f"merge does this: re-run m9_match_landmarks against this "
+                f"(e.g. {orphans[:5]}). Two causes, and they need different "
+                f"repairs. (1) The base export includes tracklets the semantic "
+                f"audit returned verdict=drop for, which m9 deliberately never "
+                f"queries -- check "
+                f"`export_meta.json:audit_dropped_tracklets` and rebuild the "
+                f"base export with a current m11_base_export, which excludes "
+                f"them. (2) The matching run predates the merge, in which case "
+                f"the names in matching/compatibility.json will be unmerged "
+                f"ancestors of these -- re-run m9_match_landmarks against this "
                 f"run's merged/ output.")
         if ambiguous:
             detail.append(

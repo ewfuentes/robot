@@ -70,13 +70,34 @@ MODEL_RATES = {
             "output": {"small": 3.75 / 1e6, "large": 3.75 / 1e6},
         },
     },
+    # Same rates as 3.7-flash, per the operator (ekf, 2026-08-19): the Flash tier
+    # is priced as one tier. Recorded here rather than left to the Pro fallback
+    # because that fallback is what produced the mess this entry fixes -- leg1's
+    # audit ran on this model and was billed into the runbook's published table at
+    # Pro rates, over-reporting it ~6x, and a matching estimate for
+    # pohang_canal_04 came out at $17.75 against a real ~$2.86.
+    #
+    # NOT independently bill-verified here, and that distinction is the whole
+    # lesson: the Pro row above traces to a specific invoice (2026-08-17 Vertex,
+    # batch SKUs at $1/M + $6/M) and the numbers built on it were sound; the
+    # damage came from applying that invoice's rate to models it never covered.
+    # If a Flash line item ever appears on a bill, verify and say so here.
+    "gemini-3-flash": {
+        "input": {"small": 0.375 / 1e6, "large": 0.375 / 1e6},
+        "output": {"small": 1.875 / 1e6, "large": 1.875 / 1e6},
+        "promo_last_day": PROMO_LAST_DAY,
+        "after_promo": {
+            "input": {"small": 0.75 / 1e6, "large": 0.75 / 1e6},
+            "output": {"small": 3.75 / 1e6, "large": 3.75 / 1e6},
+        },
+        "source": "operator, 2026-08-19; not bill-verified",
+    },
 }
 
-# Every other model -- gemini-3-flash-preview above all, which runs the audit and
-# matching stages -- prices at pro rates. That is deliberate and conservative,
-# NOT a verified price for those models: it is the rate the published cost tables
-# in docs/object-tracking-runbook.md were computed at, so leaving it in place
-# keeps those numbers reproducible instead of silently restating history.
+# An unrecognised model prices at Pro rates: conservative, and explicitly an
+# UPPER BOUND rather than a price. `rates_for` says so in its label and
+# `Estimate.describe` prints it, because a silent fallback here is precisely how
+# Flash work ended up in a published table at Pro rates.
 DEFAULT_RATE_MODEL = "gemini-3.1-pro"
 
 INPUT_USD = MODEL_RATES[DEFAULT_RATE_MODEL]["input"]

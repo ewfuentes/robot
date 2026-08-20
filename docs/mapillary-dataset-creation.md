@@ -146,6 +146,13 @@ when the orchestrator moved into this repo and the default was fixed.)
 
 ## Things that will bite you
 
+> **Frames and zeros: [`conventions.md`](conventions.md) is the register, and
+> [`azimuth-convention.md`](azimuth-convention.md) is the measured evidence
+> behind the panorama formulas.** Mapillary's `computed_compass_angle` is the
+> bearing of the **left edge**, not the centre — believing otherwise put north
+> at column 0 on six earlier datasets. Restating a frame in your own words is
+> how that happens; import the constant instead.
+
 **Images are stored as captured — except world-locked captures, which get
 their pixels unwound.** Orientation lives in `intrinsics.csv:heading_deg`, and
 `heading_reference` says what that bearing is *of* — `column_0` for
@@ -188,13 +195,13 @@ backwards makes 14 datasets look broken:
   this field for truthiness across projections.
 
 See
-`~/scratch/mappilary/AZIMUTH_CONVENTION.md` for the measurement, and note the
+[`azimuth-convention.md`](azimuth-convention.md) for the measurement, and note the
 corollary: the six older Mapillary VIGOR datasets *were* rotated, with north at
 column 0, which is 180° from the convention the self-collected datasets use.
 
 **Most captures are not 360.** 14 of 22 registry entries are `perspective`,
 56–93° HFOV. They get no pinhole faces and need a single-view path through
-`ingest.py`; see `~/scratch/mappilary/PERSPECTIVE_SUPPORT.md` for the full list of
+`ingest.py`; see [`mapillary-perspective-support.md`](mapillary-perspective-support.md) for the full list of
 what to change. FOV varies *within* a trajectory (NYC has 23 distinct values), so
 it must be read per frame, never from a config scalar.
 
@@ -230,8 +237,8 @@ For a dataset built before this check, or whose `_raw/` was pruned so stage 3
 cannot re-run, apply it in place (idempotent):
 
 ```bash
-python ~/scratch/mappilary/repair_intrinsics_focals.py --all --dry_run   # inspect
-python ~/scratch/mappilary/repair_intrinsics_focals.py --all
+bazel run //experimental/overhead_matching/swag/mapillary_tools:repair_intrinsics_focals -- --all --dry_run   # inspect
+bazel run //experimental/overhead_matching/swag/mapillary_tools:repair_intrinsics_focals -- --all
 ```
 
 **Every dataset needs a `mount_offset_deg` before the localization filter can use
@@ -540,7 +547,8 @@ GPS-quality boundary landed in the same place independently.
 
 ## Related
 
-* `~/scratch/mappilary/README.md` — the collection scripts themselves
-* `~/scratch/mappilary/AZIMUTH_CONVENTION.md` — how the convention was measured
-* `~/scratch/mappilary/PERSPECTIVE_SUPPORT.md` — consuming the non-360 datasets
+* the collection scripts themselves — now bazel targets in
+  `//experimental/overhead_matching/swag/mapillary_tools`, documented in this file
+* [`azimuth-convention.md`](azimuth-convention.md) — how the convention was measured
+* [`mapillary-perspective-support.md`](mapillary-perspective-support.md) — consuming the non-360 datasets
 * `docs/object-tracking-runbook.md` — the M0–M6 tracking pipeline downstream

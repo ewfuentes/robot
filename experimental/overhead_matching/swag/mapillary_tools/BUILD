@@ -4,7 +4,9 @@ load("@pip//:requirements.bzl", "requirement")
 # secret and deliberately absent from this package: MapillaryClient reads
 # $MLY_TOKEN, then ~/.config/mapillary/token. Tile blobs cache to
 # ~/.cache/mapillary_tiles ($MLY_TILE_CACHE to override).
-# Collection (seed -> stitched dataset) still lives in ~/scratch/mappilary;
+# Collection moved in from ~/scratch/mappilary on 2026-08-17; the docs and the
+# last helper script followed on 2026-08-19. Nothing in this repo should
+# reference that directory any more.
 # see docs/farfield-site-search.md and docs/mapillary-dataset-creation.md.
 
 py_library(
@@ -150,4 +152,14 @@ py_test(
   name="vector_tiles_test",
   srcs=["vector_tiles_test.py"],
   deps=[":vector_tiles"],
+)
+
+py_binary(
+    name = "repair_intrinsics_focals",
+    srcs = ["repair_intrinsics_focals.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":mapillary_to_vigor",
+        ":run_farfield_collection",
+    ],
 )

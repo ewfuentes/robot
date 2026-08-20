@@ -23,7 +23,40 @@ median residual. No map, and no assumed tracklet-to-landmark match, enter the
 estimate -- which matters, because the map match is what the offset is needed for
 downstream.
 
-Three gates keep noise out of the minimum:
+The gate that matters most is on the **observation arc** -- how far the bearing
+to the object swept while it was tracked (`--min_arc_deg`, default 20). Two
+properties make it the right gate:
+
+- It is **offset-invariant**. `bearing_world = course + camera - offset`, so a
+  candidate offset subtracts the same constant from every bearing in a tracklet
+  and leaves their spread exactly unchanged. The tracklet set is therefore fixed
+  across the whole sweep, and residuals at different offsets are comparable
+  without any correction. The condition number is *not* offset-invariant, which
+  is the entire reason the support gate below had to exist.
+- It removes the tracklets that **cannot answer the question**. Rays spread over
+  a wide arc can never be rotated into parallelism; rays over a 2 deg arc are
+  nearly parallel at *every* offset, so they always show a small angular
+  residual and always vote for whichever offset makes them most parallel. That
+  is a spurious minimum with real support behind it. Run without the arc gate,
+  leg2's argmin lands 133 deg from the truth and leg3's 159 deg -- both with
+  excellent-looking residuals.
+
+Measured on the three legs whose offsets are independently known (from the sun,
+and on leg1 from a surveyed building):
+
+    gate        leg1 err   leg2 err   leg3 err   contrast (leg1)
+    none          6 deg     133 deg    159 deg        3.8
+    arc >= 20     0 deg       7 deg      2 deg        6.9
+    arc >= 30     0 deg       5 deg      2 deg       14.8
+    arc >= 45     0 deg       5 deg      0 deg       26.0
+
+It also rescues datasets the old gates could only reject. charles_river is a
+narrow river reach: median arc 12 deg, baseline 200 m against the harbour's
+730 m, and 65% of its tracklets blind to the offset. The diluted median called
+the curve FLAT (contrast 1.30); arc >= 30 gives contrast 12.4 at 277 deg, which
+the sun puts at 272.4 deg.
+
+Three further gates keep noise out of the minimum:
 
 - **condition number** (`--max_condition`, default 500). Bearings taken over a
   short arc intersect at a glancing angle, so a tiny residual can coexist with a
@@ -64,18 +97,25 @@ from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
     bearing_matcher as bm,
     heading as heading_mod,
+    pano_geometry as pg,
 )
 from experimental.overhead_matching.swag.landmark_filtering.pipeline_config import (
     IngestConfig,
 )
 
-CONVENTION = (
-    "mount_offset_deg is the azimuth, IN THE CAMERA FRAME, of the vehicle's "
-    "DIRECTION OF TRAVEL - not the bow. Applied as bearing_body_deg = "
-    "(bearing_camera_deg - mount_offset_deg) mod 360.")
+# One shared definition. Restating it is what produced the pohang 180 deg
+# slip; see docs/conventions.md.
+CONVENTION = pg.MOUNT_OFFSET_CONVENTION
 
 # A minimum this shallow relative to the rest of the curve is not a minimum.
 MIN_CONTRAST = 1.5
+
+# Bearing sweep a tracklet must show to be allowed a vote. Below roughly this,
+# its rays are near-parallel at every candidate offset and its residual says
+# more about its own geometry than about the mount. 20 deg is where the three
+# known-offset legs stop moving (see the table in the module docstring); the
+# gains from tightening further are in contrast, not accuracy.
+MIN_ARC_DEG = 20.0
 
 # An offset is a claim about the mount, and one tracklet cannot support it: a
 # single tracklet's residual is a smooth function of the offset by construction,
@@ -92,7 +132,25 @@ def hc_delta(a_deg, b_deg):
     return (a_deg - b_deg + 180.0) % 360.0 - 180.0
 
 
-def load_tracklets(run_dir: Path, paths, min_observations: int):
+def arc_deg(observations):
+    """Angular spread of a tracklet's bearings -- the smallest arc holding them.
+
+    Computed on `course + camera`, i.e. the world bearing at offset 0. The
+    candidate offset is subtracted from every bearing alike, so it cannot change
+    a spread: this number is the same at every offset, which is what lets it
+    select a fixed tracklet set for the whole sweep.
+    """
+    angles = sorted((course + camera) % 360.0
+                    for _, _, camera, course, _ in observations)
+    if len(angles) < 2:
+        return 0.0
+    gaps = [b - a for a, b in zip(angles, angles[1:])]
+    gaps.append(angles[0] + 360.0 - angles[-1])
+    return 360.0 - max(gaps)
+
+
+def load_tracklets(run_dir: Path, paths, min_observations: int,
+                   min_arc_deg: float = 0.0):
     """{tracklet_id: [(east_m, north_m, bearing_camera_deg, course_deg)]}.
 
     Bearings come from m6's fused `merged/measurements.json`, which stores the
@@ -124,10 +182,17 @@ def load_tracklets(run_dir: Path, paths, min_observations: int):
             (frame.x_m, frame.y_m, m["bearing_camera_deg"],
              model.at(frame.time_s), m["anchor_keyframe_idx"]))
 
-    kept = {t: obs for t, obs in by_tracklet.items()
-            if len(obs) >= min_observations}
+    enough = {t: obs for t, obs in by_tracklet.items()
+              if len(obs) >= min_observations}
+    kept = {t: obs for t, obs in enough.items()
+            if arc_deg(obs) >= min_arc_deg}
     print(f"{len(measurements)} measurements over {len(by_tracklet)} tracklets; "
-          f"{len(kept)} have >= {min_observations} observations")
+          f"{len(enough)} have >= {min_observations} observations, "
+          f"{len(kept)} of those sweep >= {min_arc_deg:.0f} deg of bearing")
+    if enough and not kept:
+        arcs = sorted((arc_deg(o) for o in enough.values()), reverse=True)
+        print(f"  widest arc available is {arcs[0]:.1f} deg - this run cannot "
+              f"support a calibration at --min_arc_deg {min_arc_deg:.0f}")
     return kept
 
 
@@ -294,6 +359,7 @@ def write_metadata(paths, record, ok, supersede_validated=False):
         "tracklets_used": record["tracklets_used"],
         "max_condition": record["max_condition"],
         "min_observations": record["min_observations"],
+        "min_arc_deg": record["min_arc_deg"],
         "support_floor": record["support_floor"],
         "source": f"triangulation-residual sweep on {record['run']}",
         "method": ("median triangulation residual over well-conditioned "
@@ -340,6 +406,11 @@ def main():
                         help="Coarse sweep start (default: full circle)")
     parser.add_argument("--stop", type=float, default=360.0)
     parser.add_argument("--min_observations", type=int, default=4)
+    parser.add_argument("--min_arc_deg", type=float, default=MIN_ARC_DEG,
+                        help="A tracklet's bearings must sweep at least this "
+                             "far to vote. Offset-invariant, so it fixes the "
+                             "tracklet set for the whole sweep (default: "
+                             f"{MIN_ARC_DEG:.0f})")
     parser.add_argument("--max_condition", type=float, default=500.0)
     parser.add_argument("--min_tracklets", type=int, default=MIN_TRACKLETS,
                         help="refuse an offset supported by fewer than this "
@@ -368,11 +439,16 @@ def main():
         require=("dataset_base", "frame_landmarks"))
     print(f"dataset: {paths.dataset}\nrun:     {args.run_dir}")
 
-    by_tracklet = load_tracklets(args.run_dir, paths, args.min_observations)
+    by_tracklet = load_tracklets(args.run_dir, paths, args.min_observations,
+                                 args.min_arc_deg)
     if not by_tracklet:
         raise SystemExit(
-            f"no tracklet has {args.min_observations} observations; lower "
-            f"--min_observations or check that m6 produced measurements")
+            f"no tracklet has {args.min_observations} observations and an arc "
+            f"of {args.min_arc_deg:.0f} deg. Lowering --min_arc_deg will "
+            f"produce a number, but see the module docstring: below ~20 deg the "
+            f"argmin is decided by which rays are most parallel, not by the "
+            f"mount. Prefer sun_offset_check, or an offset from a sibling leg "
+            f"of the same rig.")
 
     coarse = sweep(by_tracklet, args.max_condition, args.start, args.stop,
                    args.coarse_step)
@@ -418,6 +494,9 @@ def main():
         "tracklets_used": n_used,
         "tracklets_available": len(by_tracklet),
         "min_observations": args.min_observations,
+        "min_arc_deg": args.min_arc_deg,
+        "median_arc_deg": round(sorted(
+            arc_deg(o) for o in by_tracklet.values())[len(by_tracklet) // 2], 2),
         "max_condition": args.max_condition,
         "min_support_frac": args.min_support_frac,
         "min_tracklets": args.min_tracklets,

@@ -425,8 +425,18 @@ class KidnappedRecoveryTest(unittest.TestCase):
                         f"{np.round(errors[-5:], 0)}")
         recovered = np.nonzero(errors[120:] < 300.0)[0]
         self.assertGreater(len(recovered), 0)
-        self.assertLess(int(recovered[0]), 60,
-                        "recovery took more than 60 keyframes")
+        # 60 keyframes before `evidence_gate_selection_charge` was turned on by
+        # default; 70 after, which is exactly one `refractory_keyframes` cycle
+        # (10). The charge refuses the first post-kidnap event and the next one
+        # carries it, so recovery costs one extra cycle. That is the deliberate
+        # price of the charge: on real data it stops a marginal late injection
+        # destroying a converged belief (boston_harbor_leg1 on good tracks, final
+        # 20132 m -> 368 m at an unchanged 79 m median). The bound is 75 rather
+        # than 70 so ordinary jitter does not trip it, and it is still tight
+        # enough that a *second* lost cycle would.
+        self.assertLess(int(recovered[0]), 75,
+                        f"recovery took {int(recovered[0])} keyframes; the "
+                        f"selection charge costs one refractory cycle, not two")
         self.assertTrue(any(e.trigger in ("null_share", "ess_floor")
                             for e in history.proposal_events),
                         "recovery happened without a proposal firing")

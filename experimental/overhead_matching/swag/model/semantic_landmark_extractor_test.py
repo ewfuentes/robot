@@ -615,5 +615,50 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
         self.assertTrue(extractor_output.mask[0, 0].item())
 
 
+class FarfieldNamingRulesTest(unittest.TestCase):
+    """Pin the clauses of osm_tags_farfield_v2 that were measured.
+
+    Each was checked on a 22-frame control set over 3 passes; see
+    docs/object-tracking-runbook.md, "Tuning the extraction prompt on a
+    22-frame control set". The rejected clause matters as much as the kept
+    ones -- it looked protective and tripled in-region misdirection.
+    """
+
+    def setUp(self):
+        self.v1 = sle.SYSTEM_PROMPTS["osm_tags_farfield"]
+        self.v2 = sle.SYSTEM_PROMPTS["osm_tags_farfield_v2"]
+
+    def test_v2_constrains_naming_to_the_structure(self):
+        # The Chicago-lakefront misrecognition was whole-scene, not per-object.
+        self.assertIn("Name the STRUCTURE, not the SCENE", self.v2)
+        self.assertNotIn("Name the STRUCTURE, not the SCENE", self.v1)
+
+    def test_v2_sends_board_numbers_to_ref(self):
+        # A buoy's painted number identifies a mark only relative to its own
+        # channel: 91% of named buoys in the Boston catalog share a designator,
+        # a median 14.7 km apart.
+        self.assertIn("ref=<exactly as read>", self.v2)
+        self.assertIn("NOT a name", self.v2)
+
+    def test_v2_keeps_the_lookalike_guard_v1_had(self):
+        # v1's guard ("do NOT assign a famous name" among lookalikes) was
+        # deleted in the shipped prompt; v2 restores it, narrowed.
+        self.assertIn("tells THIS one apart from its", self.v2)
+
+    def test_v2_does_not_demand_one_locality_per_panorama(self):
+        # REJECTED CLAUSE. "All the names you give for one panorama must belong
+        # to ONE locality" tripled real wrong-bearing names (0.7 -> 2.3 per
+        # pass): it appears to make the model commit to a locality and then
+        # name more things in it. Do not add it back without re-measuring.
+        self.assertNotIn("must belong to ONE locality", self.v2)
+
+    def test_both_farfield_prompts_still_licence_terrain_recognition(self):
+        # The v4 rewrite bought the mountain datasets their peak names; no fix
+        # may withdraw the licence to recognise distant natural features.
+        for prompt in (self.v1, self.v2):
+            self.assertIn("RECOGNIZING it", prompt)
+            self.assertIn("Name the peaks", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

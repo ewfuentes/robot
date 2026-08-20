@@ -211,7 +211,8 @@ def chip_div(rel_path, caption):
             f"{caption}</div>")
 
 
-def track_section(key, audit, meta_entry, track, texts, extra_chips):
+def track_section(key, audit, meta_entry, track, texts, extra_chips,
+                  range_name):
     parts = []
     po = audit["primary_object"]
     verdict = audit["verdict"]
@@ -230,7 +231,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips):
         f"{audit['single_object']} | drop_reason: "
         f"{esc(audit['drop_reason'])} | supports: "
         f"{meta_entry['n_supports']} | "
-        f"<a href='../../track_full_leg1_T{tid}.html'>track page</a> | "
+        f"<a href='../../track_{range_name}_T{tid}.html'>track page</a> | "
         f"<a href='../preview/index.html#T{tid}'>request preview</a> | "
         f"born {kf_link(meta_entry['birth_keyframe'], 0, 'keyframe page')}"
         "</p>")
@@ -328,6 +329,7 @@ def main():
     texts = load_request_texts(audit_dir)
     artifact = json.loads(
         next(args.run_dir.glob("tracks_*.json")).read_text())
+    range_name = artifact["range"]["name"]
     tracks_by_id = {t["track_id"]: t for t in artifact["tracks"]}
     cfg = sa.AuditConfig()
 
@@ -429,7 +431,8 @@ def main():
     for key, audit in sorted(audits.items(), key=sort_key):
         parts.extend(track_section(
             key, audit, meta[key],
-            tracks_by_id[meta[key]["track_id"]], texts, extra_chips))
+            tracks_by_id[meta[key]["track_id"]], texts, extra_chips,
+            range_name))
 
     parts.append("</body></html>")
     out = audit_dir / "review"

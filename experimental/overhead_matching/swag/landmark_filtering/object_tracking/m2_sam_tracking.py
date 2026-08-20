@@ -44,7 +44,13 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
 
 STAGE_DIR = "m2_sam2"
 
-TEST_CASES = [
+# Curated on boston_harbor_leg1. The ids are POSITIONAL
+# (`f{frame}__lm{index}__box{n}`) and encode nothing about content, so they
+# resolve on any dataset that happens to have a detection at that slot -- see
+# m0_render_boxes, which rendered a Korean harbour under these names. This is a
+# spike tool and it uses only the positions, not the labels, so the cost here is
+# an arbitrary anchor choice rather than a false caption; it still says so now.
+LEG1_TEST_CASES = [
     ("f0000_lm0_custom_house_tower", "f0000__lm0__box0"),
     ("f0000_lm1_one_international_place", "f0000__lm1__box0"),
     ("f0000_lm3_bridge", "f0000__lm3__box0"),
@@ -248,18 +254,28 @@ def main():
     pano_w, pano_h = probe.size
     font = vc.load_font(13)
 
-    # TEST_CASES are boston_harbor_leg1 observation ids; on another dataset they
-    # resolve to nothing, so missing anchors are skipped rather than raising.
+    # These are boston_harbor_leg1 ids. The comment here used to claim they
+    # "resolve to nothing" on another dataset -- they do not, because they are
+    # positional, which is exactly how leg1 fixtures went unnoticed on four other
+    # datasets. Count what resolves and say whose anchors these are.
     anchors = []
-    for case_name, anchor_id in TEST_CASES:
+    resolved = 0
+    for case_name, anchor_id in LEG1_TEST_CASES:
         if anchor_id.endswith("__*"):
             frame_idx = int(anchor_id.split("__")[0][1:])
             anchors.extend(sorted(obs_by_frame.get(frame_idx, []),
                                   key=lambda o: o.obs_id))
         elif anchor_id in obs_by_id:
             anchors.append(obs_by_id[anchor_id])
+            resolved += 1
         else:
             print(f"WARNING: anchor {anchor_id} not in this dataset, skipping")
+    if resolved and paths.dataset != "boston_harbor_leg1":
+        print(f"NOTE: {resolved} anchor(s) came from boston_harbor_leg1's "
+              f"curated ids, which are positional and resolve here by "
+              f"coincidence. They are not anchors chosen for "
+              f"{paths.dataset}; pass ids from this dataset for a considered "
+              f"spot-check.")
     if not anchors:
         parser.error(
             f"none of TEST_CASES exist in {paths.dataset}; this spike tool "

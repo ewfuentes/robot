@@ -71,6 +71,29 @@ class RuleTest(unittest.TestCase):
                          "tourism": "information"}])
         self.assertFalse(any(v[0] for v in result.values()), result)
 
+    def test_english_only_name_rescues_a_soft_unobservable_tag(self):
+        # 219 rows in pohang's source table are named only in name:en. Before
+        # has_name() they read as nameless and were dropped as unobservable.
+        self.assertEqual(
+            drops([{"tourism": "information", "name:en": "Bunker Hill Monument"}]
+                  )["unobservable_only"], [False])
+
+    def test_romanized_name_also_rescues(self):
+        self.assertEqual(
+            drops([{"tourism": "information", "name:ko-Latn": "Homigot"}]
+                  )["unobservable_only"], [False])
+
+    def test_untranslated_name_variant_does_not_rescue(self):
+        # name:el on a Korean row is noise, not identity, and must not rescue.
+        self.assertEqual(
+            drops([{"tourism": "information", "name:el": "noise"}]
+                  )["unobservable_only"], [True])
+
+    def test_english_only_name_saves_a_small_building(self):
+        self.assertEqual(
+            drops([{"building": "yes", "name:en": "Old Custom House"}],
+                  areas=[10.0])["generic_small_building"], [False])
+
     def test_unnamed_information_board_still_dropped(self):
         self.assertEqual(drops([{"tourism": "information"}])["unobservable_only"],
                          [True])

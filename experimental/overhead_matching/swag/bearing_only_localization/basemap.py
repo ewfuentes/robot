@@ -169,13 +169,24 @@ def _decimate(east: np.ndarray, north: np.ndarray, tolerance_m: float
 def build(feather_path: Path | None, anchor_lat_deg: float,
           anchor_lon_deg: float, bounds_enu=None,
           simplify_m: float = DEFAULT_SIMPLIFY_M,
-          max_vertices_per_layer: int = DEFAULT_MAX_VERTICES_PER_LAYER
-          ) -> Basemap:
+          max_vertices_per_layer: int = DEFAULT_MAX_VERTICES_PER_LAYER,
+          detail: float = 1.0) -> Basemap:
     """Extract basemap layers from a landmark feather.
 
     `bounds_enu` is (east_min, east_max, north_min, north_max); features whose
     centroid falls outside are dropped, so a region-sized feather does not put
     the whole state into a harbour page.
+
+    `detail` scales the whole budget/tolerance trade at once: it multiplies each
+    layer's vertex cap and divides the simplification tolerance. The defaults are
+    sized for reading the *whole* extent at once, where one pixel is about 30 m
+    and finer geometry buys bytes rather than detail. The map view is now
+    zoomable, so that assumption no longer holds when you are looking at 200 m of
+    quay -- pass detail > 1 for a page you intend to zoom into.
+
+    Note `max_vertices_per_layer` only reaches layers whose `LAYER_SPECS` budget
+    is None, which today is none of them; `detail` is the knob that moves all of
+    them.
     """
     if feather_path is None:
         return Basemap([], None, ("no feather given",))
@@ -234,9 +245,10 @@ def build(feather_path: Path | None, anchor_lat_deg: float,
                 break
 
     layers = []
+    detail = max(0.1, float(detail))
     for name, kind, _, scale, budget in LAYER_SPECS:
-        cap = budget or max_vertices_per_layer
-        tolerance = simplify_m * scale
+        cap = int(round((budget or max_vertices_per_layer) * detail))
+        tolerance = simplify_m * scale / detail
         # Largest features first, so a cap costs the least important geometry
         # rather than whatever the feather happened to order last.
         candidates = sorted(
@@ -272,6 +284,9 @@ def main():
     parser.add_argument("--feather", type=Path, required=True)
     parser.add_argument("--anchor_lat_deg", type=float, required=True)
     parser.add_argument("--anchor_lon_deg", type=float, required=True)
+    parser.add_argument("--detail", type=float, default=1.0,
+                        help="scale vertex budgets up and the simplification "
+                             "tolerance down together")
     parser.add_argument("--simplify_m", type=float,
                         default=DEFAULT_SIMPLIFY_M)
     parser.add_argument("--output", type=Path, default=None,
@@ -279,7 +294,7 @@ def main():
     args = parser.parse_args()
 
     basemap = build(args.feather, args.anchor_lat_deg, args.anchor_lon_deg,
-                    simplify_m=args.simplify_m)
+                    simplify_m=args.simplify_m, detail=args.detail)
     print(basemap.describe())
     if args.output:
         args.output.write_text(json.dumps(basemap.to_payload(),

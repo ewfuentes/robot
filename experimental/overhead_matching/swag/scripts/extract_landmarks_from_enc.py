@@ -42,6 +42,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -235,6 +236,39 @@ def _meters_between(lon1, lat1, lon2, lat2) -> float:
                       (lat2 - lat1) * meters_per_deg_lat)
 
 
+# A mark's board designator, as it appears at the end of its ENC name:
+# "Hingham Harbor Channel Buoy 16" -> "16", "Squantum Channel Buoy 1SC" -> "1SC",
+# "President Roads Anchorage Buoy C" -> "C".
+_DESIGNATOR_RE = re.compile(
+    r"\b(?:buoy|beacon|mark|light|daybeacon)\s+([0-9]{1,3}[A-Z]{0,2}|[A-Z]{1,3})$",
+    re.IGNORECASE)
+
+
+def designator_from_name(name: str) -> str | None:
+    """The number or letter painted on a mark, pulled out of its ENC name.
+
+    The extractor reads these off the images and reports them as `ref=`, but the
+    catalog only ever carried them buried inside `name`, so the two could not
+    meet: a detection tagged `ref=16` matched nothing, while a detection *named*
+    `16` let the matcher pick one of the three "Buoy 16" rows in Boston Harbor -
+    which sit 19.4 km apart. Publishing the designator as its own tag puts every
+    mark carrying that number on an equal footing in the evidence (91% of named
+    buoys in this catalog share their designator with another, a median 14.7 km
+    apart).
+
+    That makes a disjunction *possible*, not automatic: nothing downstream forces
+    same-`ref` rows to be scored equally. The matcher is an LLM and may still
+    prefer one, and `export_ingest`'s "N are ties" line only counts tables that
+    happen to have come out tied - it does not create them. Enforcing it would
+    need either an instruction in the matcher prompt or a post-hoc pass that
+    levels `log_lr` across every catalog row sharing the tracklet's `ref`.
+    """
+    if not name:
+        return None
+    match = _DESIGNATOR_RE.search(name.strip())
+    return match.group(1).upper() if match else None
+
+
 def _common_tags(row, enums) -> tuple[dict[str, str], list[str]]:
     """Tags + description parts shared by every mapped class."""
     tags: dict[str, str] = {}
@@ -242,6 +276,9 @@ def _common_tags(row, enums) -> tuple[dict[str, str], list[str]]:
     name = _get(row, "OBJNAM")
     if name:
         tags["name"] = str(name)
+        designator = designator_from_name(str(name))
+        if designator:
+            tags["ref"] = designator
     colours = decode_enum(enums, "COLOUR", _get(row, "COLOUR"))
     if colours:
         tags["colour"] = ";".join(colours)

@@ -198,6 +198,17 @@ HARD_UNOBSERVABLE_KEYS = frozenset({"highway", "barrier", "crossing",
 NAME_KEYS = frozenset({"name", "alt_name", "official_name", "short_name",
                        "loc_name", "old_name"})
 
+
+def has_name(tags: dict) -> bool:
+    """Whether a tag bundle carries a proper noun of any kind.
+
+    Counts the kept `name:xx` variants (`hc.is_kept_name_variant`), not just the
+    bare keys. Without this a feature named only in `name:en` -- 219 rows in
+    pohang's source table -- reads as nameless, loses the name rescue, and is
+    dropped as unobservable despite being the best-identified thing on its block.
+    """
+    return any(k in NAME_KEYS or hc.is_kept_name_variant(k) for k in tags)
+
 # Values that make a building conspicuous from the water on their own.
 LANDMARK_BUILDING_VALUES = frozenset({
     "cathedral", "church", "chapel", "tower", "lighthouse", "stadium",
@@ -217,16 +228,8 @@ def far_field_tag_columns(columns) -> list[str]:
     is the difference between a 0.5 GB working set and a 5.5 GB one. Only needed
     for the legacy wide layout; the dict schema is already narrow.
     """
-    keep = []
-    for column in columns:
-        if column in hc.NON_TAG_COLUMNS:
-            continue
-        if any(column.startswith(p) for p in hc.FAR_FIELD_DROP_PREFIXES):
-            continue
-        if (column in hc.FAR_FIELD_KEEP_KEYS
-                or any(column.startswith(p) for p in hc.FAR_FIELD_KEEP_PREFIXES)):
-            keep.append(column)
-    return keep
+    return [column for column in columns
+            if column not in hc.NON_TAG_COLUMNS and hc.keeps_tag_key(column)]
 
 
 def far_field_tag_records(gdf: gpd.GeoDataFrame) -> list[dict]:
@@ -298,8 +301,7 @@ def evaluate_rules(tags: list[dict], areas: np.ndarray,
         # `bridge` is structural, so a named road bridge keeps its bridge tag
         # even though its highway tag is hard-blocked.
         has_structural = any(k in STRUCTURAL_KEYS for k in observable)
-        rescued_by_name = (not hard_blocked
-                           and any(k in NAME_KEYS for k in observable))
+        rescued_by_name = not hard_blocked and has_name(observable)
         unobservable[i] = not (has_structural or rescued_by_name)
 
         # A building survives on its own merits: another structural tag, a
@@ -309,7 +311,7 @@ def evaluate_rules(tags: list[dict], areas: np.ndarray,
             continue
         if any(k in STRUCTURAL_KEYS and k != "building" for k in observable):
             continue
-        if "name" in tag or building in LANDMARK_BUILDING_VALUES:
+        if has_name(tag) or building in LANDMARK_BUILDING_VALUES:
             continue
         height = max(_numeric(tag.get("height")),
                      _numeric(tag.get("building:levels")) * 3.5)
@@ -386,6 +388,8 @@ def rule_fingerprint(min_building_area_m2: float,
         "keep_keys": sorted(hc.FAR_FIELD_KEEP_KEYS),
         "keep_prefixes": sorted(hc.FAR_FIELD_KEEP_PREFIXES),
         "drop_prefixes": sorted(hc.FAR_FIELD_DROP_PREFIXES),
+        "keep_name_variants": sorted(hc.FAR_FIELD_KEEP_NAME_VARIANTS),
+        "keep_name_suffixes": sorted(hc.FAR_FIELD_KEEP_NAME_SUFFIXES),
         "min_building_area_m2": min_building_area_m2,
         "min_building_levels": min_building_levels,
     }, sort_keys=True)

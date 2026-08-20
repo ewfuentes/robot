@@ -144,21 +144,18 @@ def _is_seam_pair(box_a: schema.BBox, box_b: schema.BBox,
     """True if box_a's right edge continues into box_b's left edge on the
     adjacent face (or vice versa).
 
-    KNOWN ISSUE (2026-08-05): this assumes face A's image-right edge adjoins
-    face (A+90)'s image-left edge, which follows the mirrored
-    bearing_camera_deg convention (see the KNOWN ISSUE note in
-    bearing_geometry). Under the empirically verified render convention the
-    pano is laid out 180|90|0|270, so face A's image-right edge physically
-    adjoins face (A+270)'s image-left edge. Consequences: true seam
-    continuations are usually left unmerged (the landmark becomes two
-    observations), and the pairs this DOES merge are ~180 deg apart
-    physically, which can only be one landmark if the VLM boxed two
-    different objects under one entry. Fix by flipping the %360 check to
-    270 and re-validating downstream consumers of seam_merged groups;
-    object_tracking/pano_geometry.pano_bbox_for_observation assumes group
-    members are physically contiguous."""
+    FIXED 2026-08-19 (was a KNOWN ISSUE from 2026-08-05): the adjoining face is
+    `A - 90`, not `A + 90`. In the verified render convention the panorama is laid
+    out `180 | 90 | 0 | 270` left to right and camera azimuth increases
+    image-right, so faces appear in azimuth order 180 -> 90 -> 0 -> 270 and face
+    A's image-right edge physically adjoins face `(A + 270) mod 360`'s image-left
+    edge. The old `+ 90` check followed `bearing_geometry`'s pre-2026-08-19 copy
+    of the camera frame; it left real seam continuations unmerged (the landmark
+    became two observations) and the pairs it did merge were ~180 deg apart
+    physically. See docs/conventions.md.
+    """
     for first, second in ((box_a, box_b), (box_b, box_a)):
-        if (second.face_yaw_deg - first.face_yaw_deg) % 360 != 90:
+        if (second.face_yaw_deg - first.face_yaw_deg) % 360 != 270:
             continue
         if first.xmax < bg.BBOX_NORM_MAX - config.seam_gap_norm:
             continue

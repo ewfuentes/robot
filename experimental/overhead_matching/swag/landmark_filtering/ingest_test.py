@@ -64,11 +64,15 @@ class IngestTest(unittest.TestCase):
                 dataset_base, landmark_base, config or IngestConfig())
 
     def test_seam_merge_across_faces(self):
-        # A box ending at the right edge of face 0 and one starting at the
-        # left edge of face 90 are one object centered near the 45 deg seam.
+        # Corrected 2026-08-19: the face image-right of face 0 is face 270, not
+        # face 90. The panorama runs 180|90|0|270 left to right, so in camera
+        # azimuth the faces are ordered 180 -> 90 -> 0 -> 270 and face 0's right
+        # edge (az 45) is face 270's left edge. A box ending at face 0's right
+        # edge and one starting at face 270's left edge are one object centred on
+        # that 45 deg seam.
         result = self.run_ingest({
             "f0000,42.35,-71.09,": [make_landmark(
-                [box(0, 800, 300, 1000, 500), box(90, 0, 310, 200, 510)])],
+                [box(0, 800, 300, 1000, 500), box(270, 0, 310, 200, 510)])],
         })
         self.assertEqual(len(result.observations), 1)
         obs = result.observations[0]
@@ -79,7 +83,7 @@ class IngestTest(unittest.TestCase):
     def test_seam_merge_requires_y_overlap(self):
         result = self.run_ingest({
             "f0000,42.35,-71.09,": [make_landmark(
-                [box(0, 800, 0, 1000, 100), box(90, 0, 800, 200, 1000)])],
+                [box(0, 800, 0, 1000, 100), box(270, 0, 800, 200, 1000)])],
         })
         self.assertEqual(len(result.observations), 2)
         self.assertFalse(any(o.seam_merged for o in result.observations))
@@ -87,28 +91,34 @@ class IngestTest(unittest.TestCase):
     def test_three_face_transitive_merge(self):
         result = self.run_ingest({
             "f0000,42.35,-71.09,": [make_landmark([
-                box(270, 900, 300, 1000, 500),
+                box(90, 900, 300, 1000, 500),
                 box(0, 0, 300, 1000, 500),
-                box(90, 0, 300, 100, 500),
+                box(270, 0, 300, 100, 500),
             ])],
         })
         self.assertEqual(len(result.observations), 1)
         obs = result.observations[0]
         self.assertEqual(len(obs.boxes), 3)
-        # Spans from ~306 deg (face 270) through face 0 to ~50 deg (face 90).
+        # Corrected 2026-08-19: the azimuth-ordered chain is 90 -> 0 -> 270, so
+        # this spans from inside face 90 (~306 deg) through face 0 to inside
+        # face 270 (~50 deg), crossing both the 315 and 45 deg seams.
         self.assertGreater(obs.angular_width_deg, 90.0)
         self.assertAlmostEqual(obs.bearing_camera_deg, 0.0, delta=15.0)
 
-    def test_wrap_seam_270_to_0(self):
+    def test_wrap_seam_0_to_270(self):
+        # Renamed and re-paired 2026-08-19: face 0's right edge adjoins face
+        # 270's left edge (both sit on az 45). The old 270-then-0 pairing
+        # followed the pre-fix `+90` rule.
         result = self.run_ingest({
             "f0000,42.35,-71.09,": [make_landmark(
-                [box(270, 950, 300, 1000, 500), box(0, 0, 290, 60, 490)])],
+                [box(0, 950, 300, 1000, 500), box(270, 0, 290, 60, 490)])],
         })
         self.assertEqual(len(result.observations), 1)
         obs = result.observations[0]
         self.assertTrue(obs.seam_merged)
-        # Centered near the 315 deg seam.
-        self.assertAlmostEqual(obs.bearing_camera_deg, 315.0, delta=2.0)
+        # Centred on the 45 deg seam, not 315: face 0 spans camera azimuth
+        # 315..45 and face 270 spans 45..135, so their shared edge is 45.
+        self.assertAlmostEqual(obs.bearing_camera_deg, 45.0, delta=2.0)
 
     def test_multi_instance_boxes_stay_separate(self):
         # Two boxes on opposite faces (e.g. "trees") are separate observations

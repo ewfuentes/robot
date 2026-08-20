@@ -39,15 +39,53 @@ from experimental.overhead_matching.swag.landmark_filtering.pipeline_config impo
 
 STAGE_DIR = "m0_boxes"
 
-# (case_name, anchor_obs_id). "f0149__*" expands to one case per landmark
-# in that frame.
-TEST_CASES = [
+# (case_name, anchor_obs_id), curated on boston_harbor_leg1. "f0149__*" expands
+# to one case per landmark in that frame.
+#
+# These names are leg1's, and observation ids are PURELY POSITIONAL
+# (`f{frame}__lm{index}__box{n}`) -- they encode nothing about content. On another
+# dataset the ids therefore resolve perfectly well and the tool renders that
+# dataset's boxes under Boston's landmark names: pohang_canal_04 produced
+# `f0000_lm0_custom_house_tower` for a Korean harbour. The boxes were right and
+# the captions were fiction, and nothing said so, because the only warning fires
+# when an id FAILS to resolve. `--auto_cases` (and the automatic fallback when
+# the curated ids do not all resolve) picks anchors from the data instead, the
+# same way m1_heading_windows does.
+LEG1_DATASET = "boston_harbor_leg1"
+
+LEG1_TEST_CASES = [
     ("f0000_lm0_custom_house_tower", "f0000__lm0__box0"),
     ("f0000_lm1_one_international_place", "f0000__lm1__box0"),
     ("f0000_lm3_bridge", "f0000__lm3__box0"),
     ("f0122_lm2_crane_group", "f0122__lm2__box0"),
     ("f0149_all", "f0149__*"),
 ]
+
+
+def auto_cases(obs_by_frame, n_cases=4):
+    """Anchor cases chosen from the data: the busiest frames, spread out.
+
+    The question this viewer answers is "do the boxes land on the objects the
+    descriptions name", so the useful anchors are simply frames carrying several
+    detections; they are spread across the run so one local mis-stitch cannot
+    make every case look fine. Named for the frame and the observed tag, never
+    for a landmark this tool cannot identify.
+    """
+    ranked = sorted(obs_by_frame.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    if not ranked:
+        return []
+    picked, seen = [], []
+    span = max(obs_by_frame) or 1
+    for frame_idx, observations in ranked:
+        # Keep anchors at least 5% of the run apart.
+        if any(abs(frame_idx - other) < 0.05 * span for other in seen):
+            continue
+        seen.append(frame_idx)
+        picked.append((f"f{frame_idx:04d}_auto_n{len(observations)}",
+                       f"f{frame_idx:04d}__*"))
+        if len(picked) >= n_cases:
+            break
+    return picked
 
 def render_window_frame(pano: np.ndarray, frame, observations, window_x0: float,
                         window_y0: float, win_w: int, win_h: int, font,
@@ -90,6 +128,10 @@ def main():
     parser.add_argument("--frames_before", type=int, default=8)
     parser.add_argument("--frames_after", type=int, default=12)
     parser.add_argument("--window_deg", type=float, default=60.0)
+    parser.add_argument("--auto_cases", action="store_true",
+                        help="pick anchors from the data instead of the "
+                             "curated leg1 ids (implied when they do not all "
+                             "resolve)")
     args = parser.parse_args()
 
     paths = farfield_paths.resolve(
@@ -108,9 +150,31 @@ def main():
     print(f"ingest: {len(result.frames)} frames, "
           f"{len(result.observations)} observations")
 
+    # The curated names describe boston_harbor_leg1's f0000/f0122/f0149
+    # specifically, so the dataset -- not whether the ids resolve -- is the test.
+    # Gating on resolution was not enough: all five ids resolve on leg2 and leg3
+    # (positional ids, similar frame counts), so those legs silently kept leg1's
+    # captions, which is the original bug with extra steps.
+    if args.auto_cases or paths.dataset != LEG1_DATASET:
+        if not args.auto_cases:
+            print(f"NOTE: the curated anchor cases name "
+                  f"{LEG1_DATASET}'s landmarks and describe nothing in "
+                  f"{paths.dataset}. Their ids are positional and resolve here "
+                  f"regardless, which is exactly how they went unnoticed. "
+                  f"Choosing anchors from this dataset's own detections.")
+        selected = auto_cases(obs_by_frame)
+        print(f"using {len(selected)} auto-selected anchor(s): "
+              + ", ".join(name for name, _ in selected))
+    else:
+        selected = [c for c in LEG1_TEST_CASES
+                    if c[1].endswith("__*") or c[1] in obs_by_id]
+        if len(selected) < len(LEG1_TEST_CASES):
+            print(f"WARNING: only {len(selected)} of {len(LEG1_TEST_CASES)} "
+                  f"curated anchors resolve even on {LEG1_DATASET}")
+
     # Expand wildcard cases into one case per landmark in the anchor frame.
     cases = []
-    for case_name, anchor_id in TEST_CASES:
+    for case_name, anchor_id in selected:
         if anchor_id.endswith("__*"):
             frame_idx = int(anchor_id.split("__")[0][1:])
             for obs in sorted(obs_by_frame[frame_idx], key=lambda o: o.obs_id):

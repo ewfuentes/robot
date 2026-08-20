@@ -149,3 +149,42 @@ class UnderSupportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArcGateTest(unittest.TestCase):
+    """The arc gate's defining property is that the candidate offset cannot
+    change it -- that is what makes the tracklet set fixed across a sweep."""
+
+    def observations(self, bearings, course=0.0):
+        # (east, north, camera, course, keyframe)
+        return [(float(i) * 100.0, 0.0, b, course, i)
+                for i, b in enumerate(bearings)]
+
+    def test_arc_is_the_smallest_containing_span(self):
+        self.assertAlmostEqual(
+            mos.arc_deg(self.observations([10.0, 30.0, 50.0])), 40.0, places=6)
+
+    def test_arc_wraps_around_north(self):
+        # 350, 0, 10 spans 20 deg, not 350.
+        self.assertAlmostEqual(
+            mos.arc_deg(self.observations([350.0, 0.0, 10.0])), 20.0, places=6)
+
+    def test_arc_is_invariant_to_the_candidate_offset(self):
+        # The whole justification for gating on arc rather than on condition.
+        base = [12.0, 47.0, 88.0, 300.0]
+        reference = mos.arc_deg(self.observations(base))
+        for offset in (0.0, 37.0, 123.5, 214.0, 359.0):
+            rotated = [(b - offset) % 360.0 for b in base]
+            self.assertAlmostEqual(mos.arc_deg(self.observations(rotated)),
+                                   reference, places=6,
+                                   msg=f"arc moved at offset {offset}")
+
+    def test_course_variation_counts_toward_the_arc(self):
+        # A tracklet held at a constant camera bearing while the vehicle turns
+        # still sweeps the world bearing, and that is what triangulation uses.
+        obs = [(0.0, 0.0, 100.0, 0.0, 0), (100.0, 0.0, 100.0, 40.0, 1),
+               (200.0, 0.0, 100.0, 80.0, 2)]
+        self.assertAlmostEqual(mos.arc_deg(obs), 80.0, places=6)
+
+    def test_single_observation_has_no_arc(self):
+        self.assertEqual(mos.arc_deg(self.observations([10.0])), 0.0)

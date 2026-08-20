@@ -40,6 +40,19 @@ the same object seen twice. They are fused as a von Mises product (resultant of
 kappa-weighted unit vectors), which is what "fused body-frame bearing" in
 `structs.TrackletMeasurement` already promises.
 
+**Tracklets the semantic audit dropped are excluded**, because the pipeline has
+already decided they are not landmarks. m5's audit looks at every detection of an
+object across all its frames and returns `verdict: drop` for the ones that are
+not a usable distinct object; `m9_match_landmarks` honours that and never queries
+them, so they have no compatibility table. Exporting their bearings anyway
+produced two failures at once: `m11_localization_export` died on measurements
+with no table -- blaming a stale matching run, which was the wrong diagnosis --
+and any run that got past it fed the filter bearings the pipeline had already
+classified as clutter, inflating the clutter rate above the `pi0` the filter
+assumes. Five of leg1's 107 tracklets and three of mount_washington leg3's 199
+were in this state. `--keep_dropped_tracklets` restores the old behaviour for a
+control run.
+
 Keyframe indices stay the dataset's own, so a run log points straight back at
 `keyframes/f####.html`. A dataset whose frames are not contiguous 0..N-1 is
 refused rather than silently renumbered -- the filter needs contiguous
@@ -71,6 +84,7 @@ from experimental.overhead_matching.swag.bearing_only_localization import (
 from experimental.overhead_matching.swag.data import farfield_paths
 from experimental.overhead_matching.swag.landmark_filtering import ingest
 from experimental.overhead_matching.swag.landmark_filtering.object_tracking import (
+    semantic_audit,
     harbor_catalog,
     heading as heading_mod,
 )
@@ -195,17 +209,79 @@ def write_export(out_dir: Path, meta: dict, landmarks: list, tables: list,
                     record, enc_hook=msgspec_enc_hook) + b"\n")
 
 
+def audit_dropped_tracklets(run_dir: Path) -> set:
+    """Merged tracklet ids whose semantic audit returned `verdict: drop`.
+
+    Reads the same two files `m9_match_landmarks.query_bundles` reads, and
+    applies the same rule, so the export's measurement set and the matcher's
+    query set cannot drift apart. An absent audit returns the empty set with a
+    warning rather than failing: a run without m5 has no verdicts to honour,
+    and the caller may legitimately be building a pre-audit baseline.
+    """
+    meta_path = run_dir / "semantic_audit" / "audit_meta.json"
+    results_path = run_dir / "semantic_audit" / "results.jsonl"
+    landmarks_path = run_dir / "merged" / "landmarks.json"
+    if not (meta_path.exists() and results_path.exists()
+            and landmarks_path.exists()):
+        print("  WARNING: no semantic audit under this run, so no `drop` "
+              "verdicts can be honoured; every merged tracklet is exported")
+        return set()
+
+    key_for_track = {v["track_id"]: k
+                     for k, v in json.loads(meta_path.read_text()).items()}
+    verdicts = {}
+    with open(results_path) as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            key, audit, _ = semantic_audit.parse_result_line(json.loads(line))
+            if audit:
+                verdicts[key] = audit.get("verdict")
+
+    dropped = set()
+    for landmark in json.loads(landmarks_path.read_text()):
+        # First audited constituent decides, matching query_bundles' loop.
+        for track_id in landmark["track_ids"]:
+            verdict = verdicts.get(key_for_track.get(track_id))
+            if verdict is not None:
+                if verdict == "drop":
+                    dropped.add(landmark["landmark_id"])
+                break
+    return dropped
+
+
 def resolve_mount_offset(run_dir: Path, metadata_path: Path,
                          override: float | None) -> tuple[float, str]:
     """The offset to bake in, and where it came from.
 
-    Order is deliberate: an explicit flag, then this run's own sweep (the
-    reference method, and it is measured from these very bearings), then the
-    dataset's recorded value. A recorded value that was never accuracy-checked
-    is used but announced, because every bearing in the export inherits it.
+    Order, best evidence first:
+
+      1. an explicit `--mount_offset_deg`;
+      2. a recorded offset marked `accuracy_validated` -- an **absolute** check,
+         meaning one that compared against something outside the run's own
+         bearings: a surveyed landmark, or the sun via `sun_offset_check`;
+      3. this run's own `mount_offset_sweep.json`, if the curve was usable;
+      4. a recorded offset that was never checked, used but announced loudly.
+
+    The validated value outranks the sweep, and that ordering is the correction
+    to an earlier version which had it the other way round. The sweep is
+    **relative**: it finds the angle that makes rays to unknown objects agree
+    with each other, so it silently reproduces any error the poses and the
+    heading model share -- including a 180 deg convention slip, which it fits
+    perfectly. It was right about the harbour legs to within 1-3 deg, but being
+    right is not the same as being checkable, and the export bakes this number
+    into every bearing it writes.
     """
     if override is not None:
         return float(override), "--mount_offset_deg"
+
+    block = json.loads(metadata_path.read_text()).get("mount_offset") or {}
+    recorded = block.get("mount_offset_deg")
+    if recorded is not None and block.get("accuracy_validated", False):
+        return float(recorded), (f"pipeline_metadata.mount_offset "
+                                 f"({block.get('status', '?')}, "
+                                 f"accuracy_validated)")
+
     sweep_path = run_dir / "mount_offset_sweep.json"
     if sweep_path.exists():
         sweep = json.loads(sweep_path.read_text())
@@ -215,17 +291,17 @@ def resolve_mount_offset(run_dir: Path, metadata_path: Path,
                     f"{sweep['tracklets_used']} tracklets)")
         print(f"  sweep present but not usable ({sweep.get('verdict')}); "
               f"falling back to the dataset's recorded offset")
-    block = json.loads(metadata_path.read_text()).get("mount_offset") or {}
-    if block.get("mount_offset_deg") is None:
+
+    if recorded is None:
         raise SystemExit(
             f"no mount offset available: {run_dir}/mount_offset_sweep.json is "
             f"absent or unusable and {metadata_path} records none. Run "
-            f"mount_offset_sweep first, or pass --mount_offset_deg.")
+            f"sun_offset_check or mount_offset_sweep first, or pass "
+            f"--mount_offset_deg.")
     source = f"pipeline_metadata.mount_offset ({block.get('status', '?')})"
-    if not block.get("accuracy_validated", False):
-        print(f"  WARNING: {source} was never accuracy-validated; every "
-              f"bearing in this export inherits it")
-    return float(block["mount_offset_deg"]), source
+    print(f"  WARNING: {source} was never accuracy-validated; every "
+          f"bearing in this export inherits it")
+    return float(recorded), source
 
 
 def main():
@@ -239,6 +315,11 @@ def main():
     parser.add_argument("--mount_offset_deg", type=float, default=None,
                         help="override the sweep and the dataset metadata")
     parser.add_argument("--scenario_name", default=None)
+    parser.add_argument("--keep_dropped_tracklets", action="store_true",
+                        help="export bearings for tracklets the semantic audit "
+                             "returned verdict=drop for. They have no "
+                             "compatibility table, so m11_localization_export "
+                             "cannot consume the result; for controls only")
     parser.add_argument("--default_log_lr", type=float, default=0.0,
                         help="flat score every landmark gets in the "
                              "uninformative tables (default: 0, no evidence)")
@@ -287,8 +368,16 @@ def main():
     north = np.array([f.y_m for f in frames], dtype=np.float64)
     course = [model.at(f.time_s) for f in frames]
 
-    measurements, fused = body_frame_measurements(
-        json.loads(measurements_path.read_text()), offset_deg)
+    rows = json.loads(measurements_path.read_text())
+    dropped = set() if args.keep_dropped_tracklets else \
+        audit_dropped_tracklets(args.run_dir)
+    if dropped:
+        before = len({r["tracklet_id"] for r in rows})
+        rows = [r for r in rows if r["tracklet_id"] not in dropped]
+        kept = len({r["tracklet_id"] for r in rows})
+        print(f"audit verdict=drop: excluded {before - kept} of {before} "
+              f"tracklets ({sorted(dropped)[:5]}{'...' if len(dropped) > 5 else ''})")
+    measurements, fused = body_frame_measurements(rows, offset_deg)
     odometry = gps_to_odometry.derive_increments(
         east, north, sigma_pair_m=args.sigma_pair_m,
         min_step_m=args.min_step_m)
@@ -307,6 +396,7 @@ def main():
         "matcher_version": UNINFORMATIVE_MATCHER,
         "mount_offset_deg": offset_deg,
         "mount_offset_source": offset_source,
+        "audit_dropped_tracklets": sorted(dropped),
         "log_lr_scheme": {
             "source": "no matcher; flat tables from m11_base_export",
             "default_log_lr": args.default_log_lr,

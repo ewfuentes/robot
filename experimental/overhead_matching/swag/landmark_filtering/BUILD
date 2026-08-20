@@ -27,6 +27,8 @@ py_library(
     srcs = ["bearing_geometry.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        # The camera frame has one definition and it lives in pano_geometry.
+        "//experimental/overhead_matching/swag/landmark_filtering/object_tracking:pano_geometry",
         requirement("numpy"),
     ],
 )
@@ -37,6 +39,8 @@ py_test(
     deps = [
         requirement("numpy"),
         ":bearing_geometry",
+        # The test asserts bearing_geometry delegates to the canonical frame.
+        "//experimental/overhead_matching/swag/landmark_filtering/object_tracking:pano_geometry",
     ],
 )
 

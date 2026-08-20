@@ -214,7 +214,8 @@ class DossierTest(unittest.TestCase):
         # No absolute keyframe ids leak through - time is relative only.
         self.assertNotIn("f010", text)
         self.assertNotIn("100", text)
-        for needle in ["lifetime: 5 keyframes", "names reported: 'Foo Light' x1",
+        for needle in ["lifetime: 5 keyframes", "names reported, with the detector's confidence in each name: "
+            "'Foo Light' x1 (1 medium)",
                        "run-length encoded", "man_made=water_tower x1",
                        "banded standpipe", "tank cluster", "mask fills 4%"]:
             self.assertIn(needle, text)
@@ -359,3 +360,50 @@ class ParseResultTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameConfidenceTest(unittest.TestCase):
+    """The dossier must carry the detector's confidence in each NAME.
+
+    Every identity tag reaches the auditor split high/medium/low, but `name`
+    is in NON_IDENTITY_TAG_KEYS and so is excluded from the tag table. The
+    extraction prompt tells the detector to express naming doubt through
+    `confidence`, so a dossier that drops it discards exactly that signal --
+    which is how a name asserted once at medium confidence reached the
+    matcher weighted 0.8 (boston_harbor_leg1, T224).
+    """
+
+    def _dossier(self, specs):
+        track = make_track([(kf, oid, CLEAN) for kf, oid, _, _ in specs])
+        obs = {oid: FakeObs(oid, confidence=conf, extra={"name": name})
+               for _, oid, name, conf in specs if name}
+        obs.update({oid: FakeObs(oid, confidence=conf)
+                    for _, oid, name, conf in specs if not name})
+        return sa.build_dossier(track, obs, sa.AuditConfig())
+
+    def test_confidence_split_recorded_and_rendered(self):
+        d = self._dossier([
+            (101, "a", "Georges Island", "medium"),
+            (102, "b", "Custom House Tower", "high"),
+            (103, "c", "Custom House Tower", "high"),
+            (104, "d", "Custom House Tower", "low"),
+        ])
+        self.assertEqual(d["name_confidence"]["Georges Island"],
+                         {"high": 0, "medium": 1, "low": 0})
+        self.assertEqual(d["name_confidence"]["Custom House Tower"],
+                         {"high": 2, "medium": 0, "low": 1})
+        text = sa.render_dossier_text(d)
+        self.assertIn("'Custom House Tower' x3 (2 high, 1 low)", text)
+        self.assertIn("'Georges Island' x1 (1 medium)", text)
+
+    def test_unnamed_track_still_says_none(self):
+        d = self._dossier([(101, "a", "", "high"), (102, "b", "", "high")])
+        self.assertEqual(d["name_confidence"], {})
+        self.assertIn("names reported: (none)", sa.render_dossier_text(d))
+
+    def test_prompt_calibrates_weight_against_support(self):
+        # The measured failure was a name with 1 of 64 detections emitted at
+        # weight 0.8; the prompt must state the ceiling explicitly.
+        self.assertIn("CALIBRATE THE WEIGHT AGAINST THE SUPPORT",
+                      sa.SYSTEM_PROMPT)
+        self.assertIn("below 0.3", sa.SYSTEM_PROMPT)

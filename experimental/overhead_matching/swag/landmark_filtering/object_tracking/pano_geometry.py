@@ -31,6 +31,32 @@ import numpy as np
 
 BBOX_NORM_MAX = 1000.0
 
+# ---------------------------------------------------------------------------
+# The canonical camera frame. Import these; never restate them.
+# ---------------------------------------------------------------------------
+# This module defines THE camera frame for the project, so the words for it live
+# here and every consumer imports them. Two other camera-frame conventions exist
+# in this tree and both have cost real time -- see docs/conventions.md:
+#   - `landmark_filtering/bearing_geometry.py` mirrors bearing within each face
+#     (KNOWN ISSUE, 2026-08-05): faces 90/270 come out ~180 deg from the physical
+#     direction. Do not use it for anything that must land on panorama pixels.
+#   - A dataset's `pipeline_metadata.json:azimuth_convention.formula` references
+#     **column_0**, because it converts a column to an ABSOLUTE azimuth using
+#     heading_deg. That formula is correct; it is simply a different zero, and a
+#     `mount_offset_deg` reasoned in it is exactly 180 deg out. Not hypothetical:
+#     it is what happened to pohang_canal_04.
+CAMERA_FRAME = (
+    "Camera-frame azimuth is clockwise-positive from camera forward, and camera "
+    "forward is the CENTRE column of the panorama: az_cw = (x/pano_w - 0.5)*360. "
+    "Elevation is up-positive: el_up = (0.5 - y/pano_h)*180.")
+
+MOUNT_OFFSET_CONVENTION = (
+    "mount_offset_deg is the azimuth, IN THE CAMERA FRAME, of the vehicle's "
+    "DIRECTION OF TRAVEL - not the bow. Applied as bearing_body_deg = "
+    "(bearing_camera_deg - mount_offset_deg) mod 360. Camera-frame azimuth 0 is "
+    "the CENTRE column of the panorama (pano_geometry), not column 0; a prior "
+    "reasoned in the column-0 convention is exactly 180 deg out.")
+
 
 def direction_from_face_px(face_yaw_deg: float, x_norm: float, y_norm: float,
                            fov_deg: float = 90.0):

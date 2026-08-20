@@ -49,6 +49,7 @@ import time
 from pathlib import Path
 
 from experimental.overhead_matching.swag.data import farfield_paths
+from experimental.overhead_matching.swag.scripts import llm_cost
 
 OT = "//experimental/overhead_matching/swag/landmark_filtering/object_tracking"
 SCRIPTS = "//experimental/overhead_matching/swag/scripts"
@@ -59,12 +60,10 @@ WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 STAGES = ("extract", "boxes", "tracks", "keyframes", "audit", "review", "merge",
           "offset", "match", "matchview", "index")
 
-# On-demand list price for gemini-3.x pro at prompts <= 200k tokens, verified
-# against the 2026-08-17 Vertex bill (whose batch SKUs charged exactly half:
-# $1/M in, $6/M out — the values previously here, mislabeled as on-demand).
-# Batch is half. Used only to report what a run cost, never to decide anything.
-USD_PER_INPUT_TOKEN = 2.00 / 1e6
-USD_PER_OUTPUT_TOKEN = 12.00 / 1e6
+# Prices come from llm_cost.MODEL_RATES, keyed by the model that produced the
+# responses -- a run that extracts on Flash and audits on another model bills at
+# two different rates, and reporting both at one rate is simply a wrong number.
+# Used only to report what a run cost, never to decide anything.
 
 
 def run(cmd, description, dry_run=False, check=True):
@@ -84,12 +83,12 @@ def run(cmd, description, dry_run=False, check=True):
     return result.returncode
 
 
-def token_cost(paths_to_results) -> dict:
+def token_cost(paths_to_results, model: str | None = None) -> dict:
     """Tally tokens and list-price cost from stored `usageMetadata`.
 
     Every response the pipeline stores carries its own usage block, so what a
     run cost is a measurement rather than an estimate. Reported at on-demand
-    list price; halve it for the batch stages.
+    list price for `model`; halve it for the batch stages.
     """
     prompt = output = thinking = calls = 0
     for path in paths_to_results:
@@ -113,12 +112,28 @@ def token_cost(paths_to_results) -> dict:
                 output += usage.get("candidatesTokenCount", 0) or 0
                 thinking += usage.get("thoughtsTokenCount", 0) or 0
     out_tokens = output + thinking
+    input_usd, output_usd, rate_label = llm_cost.rates_for(model)
     return {
         "calls": calls, "prompt_tokens": prompt, "output_tokens": out_tokens,
         "total_tokens": prompt + out_tokens,
-        "usd_on_demand": round(prompt * USD_PER_INPUT_TOKEN
-                               + out_tokens * USD_PER_OUTPUT_TOKEN, 2),
+        "usd_on_demand": round(prompt * input_usd["small"]
+                               + out_tokens * output_usd["small"], 2),
+        "rate_label": rate_label,
     }
+
+
+def merge_costs(*costs) -> dict:
+    """Sum per-model tallies into one, keeping each stage's rate visible."""
+    merged = {"calls": 0, "prompt_tokens": 0, "output_tokens": 0,
+              "total_tokens": 0, "usd_on_demand": 0.0, "rates": []}
+    for cost in costs:
+        for key in ("calls", "prompt_tokens", "output_tokens", "total_tokens"):
+            merged[key] += cost[key]
+        merged["usd_on_demand"] += cost["usd_on_demand"]
+        if cost["calls"]:
+            merged["rates"].append(cost["rate_label"])
+    merged["usd_on_demand"] = round(merged["usd_on_demand"], 2)
+    return merged
 
 
 # What each stage actually reads, mirroring the `require=` each stage's own main()
@@ -133,7 +148,7 @@ STAGE_REQUIRES = {
     "merge":     ("dataset_base",),
     "offset":    ("dataset_base",),
     "match":     ("dataset_base", "feather"),
-    "matchview": ("dataset_base",),
+    "matchview": ("dataset_base", "feather"),
     "index":     ("dataset_base",),
 }
 
@@ -319,6 +334,7 @@ def main():
                    "--run_dir", run_dir],
         "merge": ["bazel", "run", f"{OT}:m6_merge_tracks", "--",
                   "--run_dir", run_dir],
+        # Corroborator; the sun check runs first as a pre-step above.
         "offset": ["bazel", "run", f"{OT}:mount_offset_sweep", "--",
                    "--run_dir", run_dir],
         "match": ["bazel", "run", f"{OT}:m9_match_landmarks", "--",
@@ -341,6 +357,18 @@ def main():
         # Gates sit before the stage that would consume the bad input.
         if stage == "boxes":
             check_extraction(paths, args.dry_run)
+        if stage == "offset":
+            # The absolute estimate first, the relative one after. The sweep
+            # only makes rays agree with each other, so it reproduces any error
+            # the poses and the heading model share -- a 180 deg convention slip
+            # fits it perfectly -- while the sun is checkable against
+            # ephemeris. Not `check`ed: it abstains on overcast (all three
+            # mount_washington legs), and abstaining is a correct outcome that
+            # must not stop the pipeline. It refuses to overwrite an
+            # already-validated offset on its own.
+            run(["bazel", "run", f"{OT}:sun_offset_check", "--",
+                 "--run_dir", run_dir, "--write_metadata"],
+                "offset (sun, absolute)", dry_run=args.dry_run, check=False)
         if stage == "match":
             check_offset(run_dir, args.dry_run)
         run(commands[stage], f"{stage}", dry_run=args.dry_run)
@@ -352,11 +380,11 @@ def main():
     print(f"  skipped: {', '.join(skipped) or 'nothing'}")
 
     if not args.dry_run:
-        cost = token_cost([
-            *paths.frame_landmarks.rglob("predictions.jsonl"),
-            run_dir / "semantic_audit" / "results.jsonl",
-            run_dir / "matching" / "results.jsonl",
-        ])
+        cost = merge_costs(
+            token_cost(list(paths.frame_landmarks.rglob("predictions.jsonl")),
+                       args.extract_model),
+            token_cost([run_dir / "semantic_audit" / "results.jsonl",
+                        run_dir / "matching" / "results.jsonl"], args.model))
         actual = (cost["usd_on_demand"] if args.online
                   else cost["usd_on_demand"] / 2)
         print(f"\n  model calls: {cost['calls']}, "
@@ -364,6 +392,8 @@ def main():
         print(f"  cost: ${cost['usd_on_demand']:.2f} at on-demand list price"
               + ("" if args.online else
                  f"; ~${actual:.2f} if the batch stages billed at half"))
+        for label in dict.fromkeys(cost["rates"]):
+            print(f"    priced at {label}")
         print("\n  viewers to read when convenient:")
         for label, page in (
                 ("m0 boxes", paths.tracks_stage("m0_boxes") / "index.html"),

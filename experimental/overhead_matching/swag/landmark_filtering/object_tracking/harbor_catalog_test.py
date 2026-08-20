@@ -113,6 +113,37 @@ class HarborTagPruningTest(unittest.TestCase):
         })
         self.assertEqual(set(tags), {"building"})
 
+    def test_keeps_religion_the_only_discriminating_tag_on_a_temple(self):
+        # amenity=place_of_worship is ~90% christian in an Anglophone harbour and
+        # a genuine 3-way split in CJK; religion is what separates a torii from a
+        # steeple, and a distant observer can see the difference.
+        tags = hc.prune_far_field_tags({
+            "amenity": "place_of_worship", "religion": "buddhist",
+            "denomination": "jodo_shinshu", "name": "\uc5ed\uc0ac\uc0ac"})
+        self.assertEqual(tags["religion"], "buddhist")
+        self.assertEqual(tags["denomination"], "jodo_shinshu")
+
+    def test_keeps_latin_name_variants_and_drops_the_rest(self):
+        tags = hc.prune_far_field_tags({
+            "name": "\ud3ec\ud56d\uc2dc", "name:en": "Pohang",
+            "name:ko-Latn": "Pohang-si", "name:ko": "\ud3ec\ud56d\uc2dc",
+            "name:ja": "\u30dd\u30bf\u30f3", "name:el": "noise",
+            "place": "city"})
+        self.assertEqual(tags["name:en"], "Pohang")
+        self.assertEqual(tags["name:ko-Latn"], "Pohang-si")
+        for dropped in ("name:ko", "name:ja", "name:el"):
+            self.assertNotIn(dropped, tags)
+
+    def test_name_variant_exception_does_not_admit_other_prefixes(self):
+        # The exception is checked before FAR_FIELD_DROP_PREFIXES, so it must be
+        # narrow enough not to reopen addr:/source:/ref:.
+        self.assertTrue(hc.keeps_tag_key("name:en"))
+        self.assertTrue(hc.keeps_tag_key("name:zh-Latn"))
+        self.assertFalse(hc.keeps_tag_key("name:zh"))
+        self.assertFalse(hc.keeps_tag_key("addr:street"))
+        self.assertFalse(hc.keeps_tag_key("source:name"))
+        self.assertFalse(hc.keeps_tag_key("ref:name"))
+
     def test_skips_missing_and_placeholder_values(self):
         tags = hc.prune_far_field_tags(
             {"name": float("nan"), "man_made": "  ", "building": "none",

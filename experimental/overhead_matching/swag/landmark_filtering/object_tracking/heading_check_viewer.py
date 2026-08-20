@@ -71,7 +71,12 @@ def candidate_offsets(paths, run_dir: Path, extra: list) -> list:
     the dataset's recorded value, this run's sweep, and anything asked for."""
     out = []
     for item in extra:
-        label, _, value = item.partition("=")
+        # `NAME=DEG` names the candidate; a bare `DEG` labels itself. Without
+        # this split a bare number partitions into label="277", value="", which
+        # fails on float("") rather than doing the obvious thing.
+        label, sep, value = item.partition("=")
+        if not sep:
+            label, value = "", item
         out.append((label or f"{float(value):.0f} deg", float(value)))
     if run_dir is not None:
         sweep_path = run_dir / "mount_offset_sweep.json"
