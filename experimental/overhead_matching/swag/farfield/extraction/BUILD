@@ -63,6 +63,7 @@ py_library(
     srcs = ["prompts.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/model:farfield_prompt_text",
         requirement("pydantic"),
         requirement("tqdm"),
     ],
@@ -71,6 +72,7 @@ py_library(
 py_test(
     name = "prompts_test",
     srcs = ["prompts_test.py"],
+    data = ["//experimental/overhead_matching/swag/model:semantic_landmark_extractor_src"],
     deps = [":prompts"],
 )
 
