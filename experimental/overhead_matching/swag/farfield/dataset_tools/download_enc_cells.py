@@ -559,9 +559,11 @@ if __name__ == "__main__":
     parser.add_argument("--bbox", nargs=4, type=float,
                         metavar=("WEST", "SOUTH", "EAST", "NORTH"),
                         help="Bounding box for --catalog_state selection")
-    parser.add_argument("--band", type=int, default=5,
-                        help="Usage band filter for catalog selection "
-                             "(default 5=Harbor; pass --band -1 to disable)")
+    parser.add_argument("--band", type=int, required=True,
+                        help="Usage band filter for catalog selection: 5 is "
+                             "Harbour (previously the default, which every "
+                             "non-harbour collection then inherited); pass -1 "
+                             "to take every band")
     parser.add_argument("--output_dir", type=Path, required=True,
                         help="ENC root to populate (holds ENC_ROOT/); "
                              "conventionally "

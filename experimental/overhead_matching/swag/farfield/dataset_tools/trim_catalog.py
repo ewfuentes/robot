@@ -683,8 +683,9 @@ def cli(argv=None) -> int:
                         help="a completed typed matching artifact to guard "
                              "against (repeatable): no signature it already "
                              "matched may be dropped")
-    parser.add_argument("--confidence_floor", type=float, default=0.5,
-                        help="ignore matches below this confidence (0.5)")
+    parser.add_argument("--confidence_floor", type=float, required=True,
+                        help="ignore matches below this confidence when "
+                             "building the recall guard's expectation")
     parser.add_argument("--allow_recall_loss", action="store_true",
                         help="write anyway when the guard finds losses")
     parser.add_argument(
