@@ -414,3 +414,249 @@ py_test(
         ":structs",
     ],
 )
+
+py_library(
+    name = "sources",
+    srcs = ["sources.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_library(
+    name = "forensics_lib",
+    srcs = ["forensics.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_test(
+    name = "forensics_test",
+    srcs = ["forensics_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":filter_catalog",
+        ":forensics_lib",
+        ":run_io",
+        ":sources",
+        ":structs",
+    ],
+)
+
+py_library(
+    name = "replay",
+    srcs = ["replay.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":filter",
+        ":filter_catalog",
+        ":run_io",
+        ":structs",
+        "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_library(
+    name = "attribution",
+    srcs = ["attribution.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("scipy"),
+        ":filter",
+        ":replay",
+        "//common/python:serialization",
+    ],
+)
+
+py_test(
+    name = "replay_test",
+    size = "large",
+    srcs = ["replay_test.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":attribution",
+        ":filter",
+        ":replay",
+        ":run_io",
+        ":scenario",
+        ":structs",
+    ],
+)
+
+py_library(
+    name = "basemap_lib",
+    srcs = ["basemap.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+    ],
+)
+
+py_binary(
+    name = "basemap",
+    srcs = ["basemap.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":basemap_lib"],
+)
+
+py_library(
+    name = "satellite_underlay_lib",
+    srcs = ["satellite_underlay.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("requests"),
+        ":run_io",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "satellite_underlay",
+    srcs = ["satellite_underlay.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":satellite_underlay_lib"],
+)
+
+py_test(
+    name = "satellite_underlay_test",
+    srcs = ["satellite_underlay_test.py"],
+    deps = [
+        ":satellite_underlay_lib",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_binary(
+    name = "plot_run",
+    srcs = ["plots.py"],
+    main = "plots.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("matplotlib"),
+        requirement("numpy"),
+        ":metrics",
+        ":run_io",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_library(
+    name = "viewer_payload",
+    srcs = ["viewer_payload.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":attribution",
+        ":basemap_lib",
+        ":forensics_lib",
+        ":metrics",
+        ":replay",
+        ":run_io",
+        ":sources",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_library(
+    name = "viewer_lib",
+    srcs = ["viewer.py"],
+    data = [
+        "viewer_assets/app.js",
+        "viewer_assets/style.css",
+    ],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":viewer_payload",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "viewer",
+    srcs = ["viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":viewer_lib"],
+)
+
+py_library(
+    name = "viewer_server_lib",
+    srcs = ["viewer_server.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("flask"),
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":replay",
+        ":run_io",
+        ":sources",
+        ":viewer_lib",
+        ":viewer_payload",
+    ],
+)
+
+py_binary(
+    name = "viewer_server",
+    srcs = ["viewer_server.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        # torch_backend so a run recorded with the GPU backend can serve
+        # live counterfactual replays (filter imports it lazily by config).
+        requirement("torch"),
+        ":torch_backend",
+        ":viewer_server_lib",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_test(
+    name = "viewer_test",
+    size = "large",
+    srcs = ["viewer_test.py"],
+    deps = [
+        requirement("flask"),
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":attribution",
+        ":filter",
+        ":run_io",
+        ":scenario",
+        ":structs",
+        ":viewer_lib",
+        ":viewer_payload",
+        ":viewer_server_lib",
+    ],
+)
+
+py_binary(
+    name = "forensics",
+    srcs = ["forensics_cli.py"],
+    main = "forensics_cli.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        # torch_backend so `forensics replay/attribute` can replay runs
+        # recorded with measurement_backend="torch".
+        requirement("torch"),
+        ":attribution",
+        ":forensics_lib",
+        ":metrics",
+        ":replay",
+        ":run_io",
+        ":sources",
+        ":torch_backend",
+        "//common/torch:load_torch_deps",
+    ],
+)
