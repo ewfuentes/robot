@@ -1,0 +1,256 @@
+"""Interactive run viewer: the five §7.4 views as one self-contained page.
+
+  1. **Run overview strip** — Tier-0 scalars as sparklines, mode lifespans as
+     ribbons whose thickness is their weight, and the §7.3 event index as a
+     clickable glyph rail. The entry point: open a run, look at the strip,
+     click.
+  2. **Map view** — offline vector basemap, catalog backdrop, landmarks glyphed
+     by type, the particle cloud at the selected keyframe drawn as a *weighted*
+     sample and coloured by mode, per-mode 1-sigma circles with heading ticks,
+     bearing wedges from the selected mode, correspondence lines with opacity
+     proportional to association posterior, and a red flag where the matcher's
+     best claim disagrees with where that landmark actually lies.
+  3. **Tracklet inspector** — one tracklet's whole life: crop and payload
+     (tracker), bearing/kappa series, LLR bars per candidate (matcher),
+     per-mode association evolution and attribution series (filter), and a
+     truth-privileged culpability verdict.
+  4. **Mode ledger / genealogy** — modes as rows with weight trajectories,
+     birth provenance, death keyframe, and a pre-computed death waterfall.
+  5. **What-if console** — counterfactual runs ghost-overlaid on the map, with
+     their own final/median error and mode count beside the baseline.
+
+The page renders from `viewer_payload.build` and nothing else, so
+`viewer_server.py` shows the same thing from the same data. Where the payload is
+thin — no attribution cache, no sources directory, no ground truth — the
+affected panel says why rather than rendering an empty box.
+
+The stylesheet and the application script live as real files in
+`viewer_assets/` (build-time data deps) and are INLINED here at render time:
+editable and reviewable as CSS/JS, while the emitted page stays a single
+self-contained offline file.
+
+Two rules the page keeps:
+
+**Truth-privileged content is fenced.** Anything derived from GPS truth lives
+inside a marked band and is never mixed into a panel that reads as a result.
+The 452 m harbour run's error budget is a debugging artifact, not a measurement.
+
+**Nothing is silently truncated.** Where a cap applies — particles per frame,
+table entries shown, basemap vertices — the page states it.
+"""
+
+import argparse
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from experimental.overhead_matching.swag.farfield import provenance
+from experimental.overhead_matching.swag.farfield.localization import (
+    viewer_payload,
+)
+
+_ASSET_DIR = Path(__file__).parent / "viewer_assets"
+# Read once at import: the files are bazel data deps, laid out next to this
+# module in the runfiles tree exactly as in the source tree.
+_STYLE = (_ASSET_DIR / "style.css").read_text()
+_SCRIPT = (_ASSET_DIR / "app.js").read_text()
+
+GENERATOR = ("//experimental/overhead_matching/swag/farfield/"
+             "localization:viewer")
+
+
+def render_html(payload: dict, body_only: bool = False) -> str:
+    run = payload["run"]
+    notes = payload.get("notes") or []
+    notes_html = ""
+    if notes:
+        notes_html = ("<details class=\"notes\"><summary>"
+                      f"{len(notes)} note(s) about this run's completeness"
+                      "</summary><ul>"
+                      + "".join(f"<li>{_escape(n)}</li>" for n in notes)
+                      + "</ul></details>")
+    replay_pill = ("ok" if run["replayable"] else "bad")
+    replay_text = ("replayable" if run["replayable"]
+                   else "not faithfully replayable")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    body = f"""<div class="wrap">
+<header>
+<div class="eyebrow">Bearing-only localization &middot; run viewer</div>
+<h1>{_escape(run['scenario'])}</h1>
+<div class="meta"><b>{run['nParticles']:,}</b> particles &middot;
+<b>{run['nCatalog']:,}</b> catalog landmarks &middot;
+<b>{run['nKeyframes']}</b> keyframes &middot; seed <b>{run['seed']}</b> &middot;
+&pi;<sub>0</sub> <b>{run['pi0']}</b> &middot;
+recall <b>{run['matcherRecall']}</b> &middot;
+backend <b>{_escape(run['backend'])}</b> &middot;
+matcher <b>{_escape(run['matcher'])}</b> &middot;
+history <code>{_escape(run['historyHash'])}</code>
+<span class="pill {replay_pill}">{replay_text}</span></div>
+<div class="meta" style="margin-top:4px">triage (truth-privileged):
+{_escape(payload.get('triageSummary', ''))}</div>
+{notes_html}
+</header>
+<div class="tiles" id="tiles"></div>
+<main>
+<section class="full">
+<h2>Run overview <span class="hint">&mdash; &sect;7.4 view 1 &middot; click to
+scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h2>
+<div class="controls">
+<button id="play">&#9654; play</button>
+<input id="slider" type="range" min="0" value="0">
+<span>kf <b id="kf">0</b></span>
+<button id="clear">clear selection</button>
+</div>
+<svg id="strip"></svg>
+</section>
+<section>
+<h2>Map <span class="hint">&mdash; &sect;7.4 view 2</span></h2>
+<div class="controls" style="margin-bottom:8px">
+<button id="tgBase" class="on">basemap</button>
+<button id="tgPart" class="on">particles</button>
+<button id="tgGhost" class="on">ghosts</button>
+<button id="tgSat" class="on">satellite</button>
+<button id="tgFitTrack">fit track</button>
+<button id="tgFitAll">full extent</button>
+<span class="axis" id="mapzoom" style="align-self:center"></span>
+</div>
+<svg id="map"></svg>
+<div class="legend"><span id="mapnote"></span></div>
+<div class="legend"><b>Scroll to zoom, drag to pan, double-click to zoom in.</b>
+Opens fitted to the trajectory; <b>full extent</b> restores the whole catalog box
+and <b>fit track</b> returns. The zoom is in the projection, so landmark glyphs,
+labels and flag rings keep a constant size while 1&sigma; circles and the scale
+bar stay true to the ground.</div>
+<div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
+dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
+heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
+selected mode; dashed coloured lines are correspondence with opacity &prop;
+association posterior. A <b style="color:var(--port)">red dotted line and
+ring</b> mark an LLR/geometry disagreement: the matcher's best claim lies more
+than 15&deg; off the measured bearing under this mode. Glyphs by type:
+&#9651; light &middot; &#9671; navaid &middot; &#9711; tank &middot;
+&#9770; tower/crane &middot; &#8801; bridge &middot; &#8852; pier/dock
+&middot; &#9723; building. Filled and labelled means the filter is putting
+association mass there at this keyframe.</div>
+</section>
+<section>
+<div class="tabs" id="tabbar">
+<button class="tab on" data-tab="state">State</button>
+<button class="tab" data-tab="modes">Modes</button>
+<button class="tab" data-tab="trklist">Tracklets</button>
+<button class="tab" data-tab="attr">Attribution</button>
+<button class="tab" data-tab="whatif">What-if</button>
+</div>
+<div><div id="state"></div></div>
+<div><div id="modes"></div></div>
+<div><div id="trklist"></div></div>
+<div><div id="attr"></div></div>
+<div><div id="whatif"></div></div>
+</section>
+<section class="full" id="inspector"></section>
+<section class="full">
+<h2>Event index <span class="hint">&mdash; &sect;7.3 &middot; the debugging
+table of contents; click a row to jump</span></h2>
+<div id="events"></div>
+</section>
+</main>
+<footer class="prov" style="margin:0 0 40px">{_escape(GENERATOR)} &middot;
+git {_escape(provenance.git_commit()[:12])} &middot; {_escape(stamp)}</footer>
+</div>
+<script>window.__RUN__ = {_inline_json(payload)};</script>
+<script>{_SCRIPT}</script>"""
+    style = f"<style>{_STYLE}</style>"
+    if body_only:
+        return style + body
+    return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,"
+            "initial-scale=1\">"
+            f"<title>{_escape(run['scenario'])} — run viewer</title>"
+            f"{style}</head><body>{body}</body></html>")
+
+
+def _escape(text) -> str:
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _inline_json(payload: dict) -> str:
+    """JSON safe to embed inside a <script> element.
+
+    `json.dumps` leaves `<` alone, so any string in the payload containing
+    `</script>` would close the element and the rest of the payload would be
+    parsed as HTML. Scenario names and landmark ids come from data files rather
+    than from this code, so that is reachable input, not a hypothetical. The
+    three escapes below are valid JSON string escapes, so the parsed value is
+    unchanged.
+    """
+    return (json.dumps(payload, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            # U+2028/U+2029 are literal line terminators in JS source but legal
+            # inside a JSON string, so they break the script the same way.
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=None,
+                        help="defaults to <run_dir>/viewer.html")
+    parser.add_argument("--sources_dir", type=Path, default=None,
+                        help="object-track run directory, for tracklet crops "
+                             "and matcher payload")
+    parser.add_argument("--feather", type=Path, default=None,
+                        help="landmark feather, for the offline vector "
+                             "basemap")
+    parser.add_argument("--ghost", type=Path, action="append", default=[],
+                        help="counterfactual run directory to overlay "
+                             "(repeatable)")
+    parser.add_argument("--max_particles", type=int,
+                        default=viewer_payload.MAX_PARTICLES_PER_FRAME)
+    parser.add_argument("--satellite", type=Path, default=None,
+                        help="directory written by satellite_underlay.py: "
+                             "satellite.json naming the mosaic layers "
+                             "(wide.jpg/fine.jpg) and their ENU bounds, "
+                             "embedded as an imagery underlay. Typically "
+                             "<run_dir>/satellite.")
+    parser.add_argument("--basemap_detail", type=float, default=1.0,
+                        help="Scale the basemap's vertex budgets up and its "
+                             "simplification tolerance down. The defaults suit "
+                             "reading the whole extent at once; the map zooms, "
+                             "so pass 3-6 for a page you will zoom into.")
+    parser.add_argument("--no_thumbnails", action="store_true")
+    parser.add_argument("--body_only", action="store_true",
+                        help="emit a fragment for embedding rather than a "
+                             "standalone document")
+    args = parser.parse_args()
+
+    payload = viewer_payload.build(
+        args.run_dir, sources_dir=args.sources_dir, feather=args.feather,
+        ghost_dirs=args.ghost, max_particles=args.max_particles,
+        embed_thumbnails=not args.no_thumbnails,
+        basemap_detail=args.basemap_detail,
+        satellite=args.satellite)
+    output = args.output or (args.run_dir / "viewer.html")
+    output.write_text(render_html(payload, args.body_only))
+
+    size_kb = output.stat().st_size / 1024
+    print(f"Wrote {output} ({size_kb:,.0f} KB)")
+    print(f"  {len(payload['health'])} keyframes, "
+          f"{len(payload['checkpoints'])} checkpoints, "
+          f"{len(payload['tracklets'])} tracklets, "
+          f"{len(payload['events'])} events, "
+          f"{len(payload['landmarks'])} referenced landmarks, "
+          f"{len(payload['backdrop'])} backdrop rows, "
+          f"{len(payload['ghosts'])} ghosts")
+    print(f"  attribution: "
+          + ("absent" if not payload["attribution"]
+             else f"{payload['attribution']['nRows']} rows, "
+                  f"verified={payload['attribution']['verified']}"))
+    print(f"  triage: {payload['triageSummary']}")
+    for note in payload["notes"]:
+        print(f"  note: {note}")
+
+
+if __name__ == "__main__":
+    main()
