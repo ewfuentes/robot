@@ -116,3 +116,36 @@ py_test(
         ":testing",
     ],
 )
+
+py_library(
+    name = "pipeline_lib",
+    srcs = ["pipeline.py"],
+    data = ["configs/harbor_example.yaml"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pyyaml"),
+        ":paths",
+        ":run_config",
+        "//experimental/overhead_matching/swag/farfield/extraction:llm_cost",
+        "//experimental/overhead_matching/swag/farfield/viewers:indexes",
+    ],
+)
+
+py_binary(
+    name = "pipeline",
+    srcs = ["pipeline.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":pipeline_lib"],
+)
+
+py_test(
+    name = "pipeline_test",
+    srcs = ["pipeline_test.py"],
+    data = ["configs/harbor_example.yaml"],
+    deps = [
+        requirement("pyyaml"),
+        ":paths",
+        ":pipeline_lib",
+        ":run_config",
+    ],
+)
