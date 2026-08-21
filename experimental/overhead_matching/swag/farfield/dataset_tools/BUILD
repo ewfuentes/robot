@@ -296,3 +296,30 @@ py_test(
         FARFIELD + "/catalog:catalog",
     ],
 )
+
+py_library(
+    name = "migrate_data_root_lib",
+    srcs = ["migrate_data_root.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        FARFIELD + ":paths",
+        FARFIELD + ":provenance",
+        FARFIELD + "/viewers:indexes",
+    ],
+)
+
+py_binary(
+    name = "migrate_data_root",
+    srcs = ["migrate_data_root.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":migrate_data_root_lib"],
+)
+
+py_test(
+    name = "migrate_data_root_test",
+    srcs = ["migrate_data_root_test.py"],
+    deps = [
+        ":migrate_data_root_lib",
+        FARFIELD + ":testing",
+    ],
+)
