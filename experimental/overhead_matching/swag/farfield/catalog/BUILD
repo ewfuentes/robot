@@ -5,9 +5,7 @@ py_library(
     srcs = ["schema.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
-        requirement("geopandas"),
-        requirement("pandas"),
-        requirement("pyarrow"),
+        "//experimental/overhead_matching/swag/data:landmark_schema",
     ],
 )
 

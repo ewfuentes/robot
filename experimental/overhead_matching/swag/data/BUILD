@@ -2,6 +2,21 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+  name = "landmark_schema",
+  srcs = ["landmark_schema.py"],
+  visibility = [
+    "//experimental/overhead_matching:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+  deps = [
+    requirement("numpy"),
+    requirement("pandas"),
+    requirement("geopandas"),
+    requirement("pyarrow"),
+  ],
+)
+
+py_library(
   name = "vigor_dataset",
   srcs = ["vigor_dataset.py"],
   visibility = [
@@ -26,6 +41,7 @@ py_library(
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
     "//common/gps:web_mercator",
+    ":landmark_schema",
     "//experimental/overhead_matching/swag/scripts:distances",
     "//experimental/overhead_matching/swag/model:swag_model_input_output",
     "//experimental/overhead_matching/swag/model:swag_config_types",

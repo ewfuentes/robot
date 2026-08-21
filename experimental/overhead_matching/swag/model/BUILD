@@ -264,7 +264,17 @@ py_binary(
     ":swag_model_input_output",
     ":swag_config_types",
     ":semantic_landmark_utils",
+    "//experimental/overhead_matching/swag/data:landmark_schema",
   ]
+)
+
+py_test(
+  name = "semantic_landmark_extractor_request_stems_test",
+  srcs = ["semantic_landmark_extractor_request_stems_test.py"],
+  deps = [
+    requirement("pillow"),
+    ":semantic_landmark_extractor",
+  ],
 )
 
 py_test(

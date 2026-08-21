@@ -17,8 +17,8 @@ Usage:
 
     # From feather + pano_v2 (expand to new cities):
     bazel run ...precompute_value_embeddings -- \
-        --feather_dirs /data/.../VIGOR/Middletown /data/.../VIGOR/NewYork \
-        --pano_v2_base /data/.../semantic_landmark_embeddings/panov2_tuned_prompt \
+        --feather_dirs /data/.../VIGOR/mapillary/MiamiBeach /data/.../VIGOR/NewYork \
+        --pano_v2_base /data/.../semantic_landmark_embeddings/mapillary \
         --base_embeddings /data/.../eval_text_embeddings.pkl \
         --output /data/.../eval_text_embeddings_expanded.pkl
 
@@ -39,6 +39,7 @@ import common.torch.load_torch_deps  # noqa: F401 - Must import before torch
 
 import numpy as np
 import pandas as pd
+from experimental.overhead_matching.swag.data import landmark_schema
 from tqdm import tqdm
 
 from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
@@ -121,8 +122,8 @@ def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
             from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
                 prune_landmark,
             )
-            df["pruned_props"] = df.apply(
-                lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
+            df["pruned_props"] = [prune_landmark(d)
+                                  for d in landmark_schema.row_dicts(df)]
             n_lm = 0
             for props in df["pruned_props"]:
                 if not props:

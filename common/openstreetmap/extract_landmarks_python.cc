@@ -160,7 +160,7 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
 
     // Main extraction function
     m.def("extract_landmarks", &extract_landmarks, py::arg("pbf_path"), py::arg("bboxes"),
-          py::arg("tag_filters"),
+          py::arg("tag_filters"), py::arg("node_margin_deg") = -1.0,
           R"pbdoc(
         Extract landmarks from an OSM PBF file for multiple bounding boxes in one pass.
 
@@ -172,6 +172,20 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
             Dictionary mapping region_id to BoundingBox to extract landmarks for
         tag_filters : dict
             Dictionary of OSM tags to filter by (e.g., {"amenity": True, "building": True})
+        node_margin_deg : float, optional
+            If >= 0, hold node locations only within (bbox + margin) while building
+            way geometry, so peak memory scales with the requested area rather than
+            with the whole file. This is what makes a country-sized PBF runnable:
+            without it the index stores every node in the file even when the bbox
+            covers a couple of percent of it. Default -1.0 keeps every node, i.e.
+            the original behaviour.
+
+            Which ways match is unchanged (a way is selected iff one of its own
+            vertices is in a bbox). What changes is that a selected way's stored
+            geometry is truncated to the retained vertices, and a way with a single
+            interior vertex needs its neighbours kept to clear the two-coordinate
+            minimum. Use a margin larger than the longest segment you care about --
+            coastlines and submarine cables have vertices kilometres apart.
 
         Returns
         -------

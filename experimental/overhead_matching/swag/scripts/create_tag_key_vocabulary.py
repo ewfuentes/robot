@@ -15,6 +15,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps
 import geopandas as gpd
+from experimental.overhead_matching.swag.data import landmark_schema
 
 from experimental.overhead_matching.swag.model.semantic_landmark_utils import prune_landmark
 
@@ -24,9 +25,8 @@ def collect_osm_keys(feather_path: Path) -> Counter:
     df = gpd.read_feather(feather_path)
     counts = Counter()
 
-    for _, row in df.iterrows():
-        pruned = prune_landmark(row.dropna().to_dict())
-        for key, _ in pruned:
+    for props in landmark_schema.row_dicts(df):
+        for key, _ in prune_landmark(props):
             counts[key] += 1
 
     return counts
