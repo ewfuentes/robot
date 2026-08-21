@@ -188,12 +188,25 @@ def stage_done(stage: str, paths, run_dir: Path, loc_run: Path) -> bool:
         return json.loads(manifest.read_text()).get(
             "config", {}).get("complete", False) is not False
     if stage == "track":
-        # Import here: pulls torch transitively, and only this marker needs it.
-        from experimental.overhead_matching.swag.farfield.tracking import (
-            run_tracking,
-        )
-        return (run_dir / "tracks_complete.json").exists() and \
-            not run_tracking.unfinished_ranges(run_dir)
+        # Read the two marker files directly rather than importing the
+        # tracking module: that module pulls torch/SAM2 transitively, and a
+        # status probe must never need a GPU stack to answer. The contract
+        # (tracking/run_tracking.py) is: run_meta.json declares the ranges,
+        # tracks_complete.json records the ones that FINISHED, so the stage
+        # is done exactly when every declared range appears there. An
+        # unreadable or absent marker reads as nothing-done (fail-safe: a
+        # crashed run re-runs instead of being skipped).
+        meta_path, done_path = (run_dir / "run_meta.json",
+                                run_dir / "tracks_complete.json")
+        if not (meta_path.exists() and done_path.exists()):
+            return False
+        try:
+            declared = [r["name"] for r in
+                        json.loads(meta_path.read_text()).get("ranges", [])]
+            done = json.loads(done_path.read_text()).get("completed", {})
+        except (json.JSONDecodeError, OSError, KeyError, TypeError):
+            return False
+        return bool(declared) and all(name in done for name in declared)
     markers = {
         "keyframes": run_dir / "keyframes" / "index.html",
         "audit": run_dir / "semantic_audit" / "results.jsonl",
@@ -242,6 +255,22 @@ def check_offset(run_dir: Path, dry_run: bool):
           "accept only a validated dataset record or --mount_offset_deg.")
 
 
+def apply_config_versions(paths, cfg: dict) -> None:
+    """Fill artifact versions and the catalog from a run's config.
+
+    Paths carry no default version or catalog on purpose, so the config is
+    what supplies them; an explicit flag still wins (setdefault).
+    """
+    paths.versions.setdefault(
+        paths_lib.FRAME_LANDMARKS, cfg["artifacts"]["frame_landmarks_version"])
+    paths.versions.setdefault(
+        paths_lib.PINHOLE_IMAGES, cfg["artifacts"]["pinhole_images_version"])
+    paths.versions.setdefault(
+        paths_lib.OBJECT_TRACKS, cfg["artifacts"]["object_tracks_version"])
+    if paths.catalog is None:
+        paths.catalog = cfg["catalog"]["name"]
+
+
 def cmd_new_run(args):
     paths = paths_lib.from_args(args)
     try:
@@ -249,6 +278,16 @@ def cmd_new_run(args):
         config = yaml.safe_load(Path(args.config).read_text())
     except FileNotFoundError:
         sys.exit(f"config file {args.config} not found")
+    # The run directory lives under the object_tracks version the config
+    # names, so the config has to be read (and validated) before the path
+    # can be resolved at all.
+    missing = [key for key in REQUIRED_CONFIG
+               if run_config._get(config, key) is None]
+    if missing:
+        sys.exit("run config is missing required values (no defaults are "
+                 "supplied on purpose):\n"
+                 + "\n".join(f"  {key}" for key in missing))
+    apply_config_versions(paths, config)
     run_dir = paths.tracks_runs_root / args.run_name
     path = run_config.create(
         run_dir, config, required=REQUIRED_CONFIG,
@@ -267,13 +306,9 @@ def resolve_run(parser, args):
     doc = run_config.load(run_dir)  # pointed error if not a run
     paths = paths_lib.resolve(parser, args, infer_from=run_dir)
     cfg = doc["config"]
-    # Version/catalog resolution comes from the recorded config.
-    paths.versions.setdefault(
-        paths_lib.FRAME_LANDMARKS, cfg["artifacts"]["frame_landmarks_version"])
-    paths.versions.setdefault(
-        paths_lib.PINHOLE_IMAGES, cfg["artifacts"]["pinhole_images_version"])
-    if paths.catalog is None:
-        paths.catalog = cfg["catalog"]["name"]
+    # Version/catalog resolution comes from the recorded config (the run dir
+    # itself already implies the object_tracks version via its path).
+    apply_config_versions(paths, cfg)
     experiment = paths.experiment_dir(cfg["experiment"]["name"])
     loc_run = experiment / f"{paths.dataset}_{run_dir.name}"
     return paths, run_dir, doc, loc_run

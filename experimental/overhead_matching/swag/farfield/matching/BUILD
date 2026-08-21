@@ -43,6 +43,7 @@ py_library(
     srcs = ["match_viewer.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
         requirement("pillow"),
         ":match_landmarks_lib",
         "//experimental/overhead_matching/swag/farfield:dataset",

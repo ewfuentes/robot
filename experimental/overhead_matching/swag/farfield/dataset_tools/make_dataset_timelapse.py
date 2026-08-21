@@ -34,7 +34,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image
+
+from experimental.overhead_matching.swag.farfield import provenance  # noqa: E402
 
 TRAJECTORY_NAME = "trajectory.png"
 TIMELAPSE_NAME = "gps_timelapse.mp4"
@@ -205,6 +207,15 @@ def render(dataset: Path, width: int, fps: int, max_frames: int | None,
     if not skip_video:
         stage_video(paths, lats, lons, out_dir / TIMELAPSE_NAME,
                     width, fps, max_frames)
+    # These are read as evidence during triage ("does this trajectory look
+    # like a real trip?"), so they say what made them and from what
+    # (REORG.md rule 4) rather than being undated images in a directory.
+    provenance.write(
+        out_dir, generator="farfield/dataset_tools/make_dataset_timelapse.py",
+        inputs={"dataset": dataset, "n_frames": len(paths)},
+        config={"width": width, "fps": fps, "max_frames": max_frames,
+                "skip_video": skip_video},
+        notes=f"{dists[-1] / 1000:.2f} km trajectory view")
 
 
 def main(argv=None) -> int:

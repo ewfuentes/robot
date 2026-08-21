@@ -69,10 +69,30 @@ class StageOrderTest(unittest.TestCase):
         run_dir = Path("/nonexistent/run")
         loc_run = Path("/nonexistent/loc")
         for stage in pipeline.STAGES:
-            if stage == "track":
-                continue  # its marker probe imports torch; covered elsewhere
             self.assertFalse(pipeline.stage_done(stage, paths, run_dir,
                                                  loc_run), stage)
+
+    def test_track_marker_needs_every_declared_range(self):
+        """The crash-recovery contract, and it must answer without importing
+        the torch/SAM2 tracking module."""
+        paths = paths_lib.FarfieldPaths(dataset="x", root=Path("/nonexistent"))
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            loc = run_dir / "loc"
+            (run_dir / "run_meta.json").write_text(json.dumps(
+                {"ranges": [{"name": "a"}, {"name": "b"}]}))
+            # No completion file at all: not done.
+            self.assertFalse(pipeline.stage_done("track", paths, run_dir, loc))
+            # One of two ranges finished (the mid-tracking crash): not done.
+            done = run_dir / "tracks_complete.json"
+            done.write_text(json.dumps({"completed": {"a": "t0"}}))
+            self.assertFalse(pipeline.stage_done("track", paths, run_dir, loc))
+            # Both finished: done.
+            done.write_text(json.dumps({"completed": {"a": "t0", "b": "t1"}}))
+            self.assertTrue(pipeline.stage_done("track", paths, run_dir, loc))
+            # A corrupt marker reads as nothing-done, never as done.
+            done.write_text("{ truncated")
+            self.assertFalse(pipeline.stage_done("track", paths, run_dir, loc))
 
 
 class CommandConstructionTest(unittest.TestCase):
