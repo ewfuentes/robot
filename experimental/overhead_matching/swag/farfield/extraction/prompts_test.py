@@ -48,6 +48,59 @@ class PromptRegistryTest(unittest.TestCase):
         self.assertNotIn("rest on the overall view", v1)
         self.assertIn("Similar-looking neighbours are the normal case", v1)
 
+    def test_the_prompt_text_has_exactly_one_owner(self):
+        """The registries must BE the owner's strings, not copies of them.
+
+        This is the property the duplication removal bought: an extraction
+        run records prompt_sha256, so two registries holding their own copy
+        means two runs can claim the same prompt_type while having been
+        given different instructions. Identity (`is`) rather than equality,
+        because equality is exactly what silently drifts.
+        """
+        from experimental.overhead_matching.swag.model import (
+            farfield_prompt_text,
+        )
+        for name, text in prompts.SYSTEM_PROMPTS.items():
+            self.assertIs(text,
+                          farfield_prompt_text.FARFIELD_SYSTEM_PROMPTS[name],
+                          name)
+        self.assertIs(prompts.USER_PROMPT,
+                      farfield_prompt_text.OSM_TAGS_USER_PROMPT)
+
+    def test_the_shared_extractor_reads_the_same_owner(self):
+        """The other consumer, checked by digest rather than by import: the
+        shared extractor pulls torch, so this test reads its source."""
+        import ast
+        import hashlib
+        from pathlib import Path
+        from experimental.overhead_matching.swag.model import (
+            farfield_prompt_text,
+        )
+        source = Path(farfield_prompt_text.__file__).with_name(
+            "semantic_landmark_extractor.py").read_text()
+        tree = ast.parse(source)
+        registry = next(
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "SYSTEM_PROMPTS"
+                    for t in node.targets))
+        farfield_entries = {
+            key.value: value for key, value in zip(registry.keys,
+                                                   registry.values)
+            if isinstance(key, ast.Constant)
+            and key.value.startswith("osm_tags_farfield")}
+        self.assertEqual(set(farfield_entries), set(prompts.SYSTEM_PROMPTS))
+        for name, node in farfield_entries.items():
+            # An Attribute node is a reference to the owner; a Constant would
+            # mean the text had been pasted back in.
+            self.assertIsInstance(
+                node, ast.Attribute,
+                f"{name} is inlined in semantic_landmark_extractor: the "
+                f"prompt text must reference farfield_prompt_text")
+            digest = hashlib.sha256(
+                prompts.SYSTEM_PROMPTS[name].encode()).hexdigest()
+            self.assertEqual(prompts.prompt_sha256(name), digest)
+
     def test_unknown_prompt_type_raises(self):
         with self.assertRaises(KeyError):
             prompts.prompt_sha256("osm_tags")

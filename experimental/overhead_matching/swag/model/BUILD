@@ -1,3 +1,21 @@
+filegroup(
+  # The source file alone, no deps: lets a torch-free test assert that this
+  # module still REFERENCES the shared prompt text rather than inlining a
+  # second copy of it (farfield/extraction/prompts_test.py).
+  name = "semantic_landmark_extractor_src",
+  srcs = ["semantic_landmark_extractor.py"],
+  visibility = ["//experimental/overhead_matching:__subpackages__"],
+)
+
+py_library(
+  name = "farfield_prompt_text",
+  srcs = ["farfield_prompt_text.py"],
+  visibility = [
+    "//experimental/overhead_matching:__subpackages__",
+    "//common/python:__subpackages__",
+  ],
+)
+
 
 load("@pip//:requirements.bzl", "requirement")
 
@@ -250,6 +268,7 @@ py_binary(
     "//common/python:__subpackages__",
   ],
   deps = [
+    ":farfield_prompt_text",
     requirement("torch"),
     requirement("numpy"),
     requirement("sentence-transformers"),
