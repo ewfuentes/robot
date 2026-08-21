@@ -712,8 +712,10 @@ if __name__ == "__main__":
                         default=[], metavar="RUN_DIR_OR_MATCHES_JSON",
                         help="a matching run to guard against (repeatable): "
                              "no signature it already matched may be dropped")
-    parser.add_argument("--confidence_floor", type=float, default=0.5,
-                        help="ignore matches below this confidence (0.5)")
+    parser.add_argument("--confidence_floor", type=float, required=True,
+                        help="ignore matches below this confidence when "
+                             "building the recall guard's expectation "
+                             "(previously 0.5)")
     parser.add_argument("--allow_recall_loss", action="store_true",
                         help="write anyway when the guard finds losses")
     parser.add_argument("--no_recall_guard", action="store_true",

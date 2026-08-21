@@ -63,6 +63,7 @@ from experimental.overhead_matching.swag.farfield.matching import (
     match_landmarks,
 )
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
+from experimental.overhead_matching.swag.farfield.viewers import page as page_lib
 
 # A signature can expand to hundreds of map rows. Drawing all of them buries
 # the geometry under identical dots, so the map draws the nearest few to the
@@ -1156,9 +1157,9 @@ def main():
         residual_summary = ("<p class='pin'>no geometry check: no match names "
                             "exactly one map row</p>" if payload is not None
                             else "")
-    parts = [
-        "<html><head><title>matches</title><meta charset='utf-8'><style>",
-        "body{font-family:sans-serif;background:#161616;color:#ddd;margin:16px}",
+    # Page-specific CSS only: the frame (body/link/table/footer styling and
+    # the provenance stamp) comes from the one shared page helper.
+    extra_style = "\n".join([
         "a{color:#8bf}code{color:#cfc}",
         ".q{background:#1b2430;border-left:3px solid #4af;padding:8px 12px;",
         "border-radius:5px;max-width:100%;margin:6px 0}",
@@ -1179,8 +1180,8 @@ def main():
         ".links{font-size:12.5px;margin:6px 0}",
         ".nochips{color:#a88;font-size:12.5px;font-style:italic;margin:6px 0}",
         MAP_CSS,
-        "</style></head><body>",
-        "<h1>Observation &rarr; map landmark</h1>",
+    ])
+    parts = [
         f"<p>{len(matches)} tracklets | {len(hit)} with a match | "
         f"{len(miss)} without | matches: "
         f"<span class='instance'>{kinds.get('instance', 0)} instance</span>, "
@@ -1331,8 +1332,11 @@ def main():
                           ensure_ascii=False).replace("</", "<\\/")
         parts.append(f"<script>const MAP_DATA={blob};</script>")
         parts.append(f"<script>{MAP_JS}</script>")
-    parts.append("</body></html>")
-    (out / "index.html").write_text("\n".join(parts))
+    (out / "index.html").write_text(page_lib.page(
+        "Observation -> map landmark", "\n".join(parts),
+        generator="farfield/matching/match_viewer.py",
+        crumbs=[("run", "../../index.html"), ("matching", None)],
+        extra_style=extra_style))
     size_mb = (out / "index.html").stat().st_size / 1e6
     print(f"wrote {out}/index.html ({len(hit)} matched, {len(miss)} not, "
           f"{size_mb:.1f} MB)")
