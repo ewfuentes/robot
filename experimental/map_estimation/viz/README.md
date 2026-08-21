@@ -23,12 +23,14 @@ sits on a remote box: same logging code, viewer in a browser.
 
 | file | role |
 |---|---|
-| `av2_source.py` | finds a log on disk, reports which streams it has, loads them via `av2`. No rerun import. |
-| `av2_scene.py` | turns a source into rerun entities. Owns the entity paths, the map layers, the lidar coloring, the camera grid, and the vehicle outline. |
+| `av2_scene.py` | turns a log into rerun entities. Owns the entity paths, the map layers, the lidar coloring, the camera grid, and the vehicle outline. |
 | `view_log.py` | CLI. |
 
-The split exists so the loader stays testable without a renderer, and so prediction tooling can
-reuse ego poses and calibration without pulling in a viewer.
+Reading a log off disk is **not** this package's job: that is
+[`data/av2_log.py`](../data/README.md), whose `LogSource` every function here takes. The split
+keeps the loader testable without a renderer, and lets prediction tooling reuse ego poses and
+calibration without pulling in a viewer — `topogpt/run_prior.py` does exactly that and imports
+no rerun at all.
 
 ## The entity tree is the transform hierarchy
 
@@ -139,7 +141,7 @@ city coordinate has an ulp of 0.8 mm, some 80× finer than the float16 the retur
 
 **2. `Sweep.from_feather` cannot read a tbv log.** TBV sweeps ship without the `offset_ns`
 column — theirs are `x, y, z, intensity, laser_number` — and the devkit loader indexes it
-unconditionally, so it raises `KeyError` across the whole dataset. `av2_source.lidar_sweeps`
+unconditionally, so it raises `KeyError` across the whole dataset. `av2_log.lidar_sweeps`
 reads the feather itself and substitutes zeros, which also hoists the sensor extrinsics out of
 the loop (the devkit re-reads that file once per sweep).
 

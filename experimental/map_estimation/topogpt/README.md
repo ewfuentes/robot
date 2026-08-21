@@ -178,10 +178,10 @@ bazel run //third_party/python:requirements_3_12.update   # repeat until the .tx
 
 ## Next
 
-- **AV2 → `MapPrior` pkl converter**, written over `viz/av2_source.py`'s `LogSource` rather than
+- **AV2 → `MapPrior` pkl converter**, written over `data/av2_log.py`'s `LogSource` rather than
   upstream's `datasets/argoverse/av2_map_gen.py`. That script calls the `get_scenario_*` APIs and
   samples ego poses along a trajectory at 5 m intervals, i.e. it targets the **motion-forecasting**
-  split, which `av2_source.ensure_supported()` rejects and the viewer cannot render. Every devkit
+  split, which `av2_log.ensure_supported()` rejects and the viewer cannot render. Every devkit
   method it needs exists on the same `ArgoverseStaticMap` that `LogSource.static_map()` already
   returns, so a converter over `LogSource` works on the `sensor`/`tbv` logs already on disk.
   Target schema, ego-centric, adjacency types `0=successor, 1=predecessor, 2=left, 3=right`:

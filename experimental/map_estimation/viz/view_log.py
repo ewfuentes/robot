@@ -24,7 +24,8 @@ from pathlib import Path
 import rerun as rr
 
 from experimental.map_estimation.data import argoverse_layout as al
-from experimental.map_estimation.viz import av2_scene, av2_source
+from experimental.map_estimation.data import av2_log
+from experimental.map_estimation.viz import av2_scene
 
 APPLICATION_ID = "argoverse_log"
 
@@ -119,7 +120,7 @@ def _serve_web(blueprint) -> str:
 
 
 def _list_logs(request: al.Request, root: Path) -> int:
-    log_ids = av2_source.discover_log_ids(request, root)
+    log_ids = av2_log.discover_log_ids(request, root)
     if not log_ids:
         print(f"no logs on disk under {request.local_dir(root)}", file=sys.stderr)
         return 1
@@ -129,7 +130,7 @@ def _list_logs(request: al.Request, root: Path) -> int:
     # would leave a header promising N logs above a truncated list.
     rows = []
     for log_id in log_ids:
-        source = av2_source.LogSource(request, log_id, root)
+        source = av2_log.LogSource(request, log_id, root)
         rows.append(f"  {log_id}  [{', '.join(i.token for i in source.present_items())}]")
 
     print(f"{len(rows)} log(s) under {request.local_dir(root)}:")
@@ -147,12 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         request = al.make_request(args.spec)
         # Before either branch, so an unreadable dataset fails identically whether you are
         # listing or viewing -- and before anything reaches stdout.
-        av2_source.ensure_supported(request)
+        av2_log.ensure_supported(request)
         if args.log_id is None:
             return _list_logs(request, args.root)
-        source = av2_source.LogSource(request, args.log_id, args.root)
-    except (al.UnknownSplitError, al.UnknownItemError, av2_source.MissingStreamError,
-            av2_source.UnsupportedDatasetError) as error:
+        source = av2_log.LogSource(request, args.log_id, args.root)
+    except (al.UnknownSplitError, al.UnknownItemError, av2_log.MissingStreamError,
+            av2_log.UnsupportedDatasetError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -173,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         summary = av2_scene.log_scene(source)
-    except av2_source.MissingStreamError as error:
+    except av2_log.MissingStreamError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(f"{summary.log_id}")
