@@ -309,3 +309,108 @@ py_test(
         ":structs",
     ],
 )
+
+py_library(
+    name = "build_export_lib",
+    srcs = ["build_export.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("pillow"),
+        ":export_ingest",
+        ":gps_to_odometry_lib",
+        ":run_io",
+        ":structs",
+        "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
+        "//experimental/overhead_matching/swag/farfield/calibration:heading",
+        "//experimental/overhead_matching/swag/farfield/catalog",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_binary(
+    name = "build_export",
+    srcs = ["build_export.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":build_export_lib"],
+)
+
+py_test(
+    name = "build_export_test",
+    srcs = ["build_export_test.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("shapely"),
+        ":build_export_lib",
+        ":export_ingest",
+        ":structs",
+        "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_library(
+    name = "run_export_lib",
+    srcs = ["run_export.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":filter",
+        ":metrics",
+        ":run_io",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "run_export",
+    srcs = ["run_export.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":run_export_lib"],
+)
+
+py_library(
+    name = "run_localization_lib",
+    srcs = ["run_localization.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":filter",
+        ":metrics",
+        ":run_io",
+        ":scenario",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "run_localization",
+    srcs = ["run_localization.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":run_localization_lib"],
+)
+
+py_test(
+    name = "run_drivers_test",
+    srcs = ["run_drivers_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":run_export_lib",
+        ":run_io",
+        ":run_localization_lib",
+        ":structs",
+    ],
+)
