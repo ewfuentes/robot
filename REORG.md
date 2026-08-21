@@ -162,8 +162,14 @@ is pinned by a test.
 
 Scripted with a printed move manifest; no deletions without a listed reason.
 
-1. Fix `260819_localization_campaign.md` pointers → `260819_final/`; delete
-   the six byte-identical duplicate `runs/260819_*` leg dirs.
+1. Fix `260819_localization_campaign.md` pointers → `260819_final/`. The six
+   top-level `runs/260819_*` leg dirs are NOT duplicates of their
+   `260819_final/` namesakes, as first believed: their `truth.jsonl` matches
+   (same dataset) but their checkpoints and `particle_history_sha256` differ,
+   and their manifests predate three `ProposalConfig` fields — they are the
+   PRIOR GENERATION of those runs, with materially different results
+   (mtw_leg3: 190 m final vs 78 m for the newer one). They are folded into an
+   experiment directory as a labelled earlier generation, not deleted.
 2. Convert `runs/` to experiment dirs: `runs/<date>_<experiment>/` each with
    `experiment.md` (what is being explored, status, conclusions) + generated
    `index.html`; move the 18 `localization_run_*` dirs out of
@@ -233,16 +239,11 @@ each PR's commit message.
 
 1. **The one-time data migration** (section above), scripted with a printed
    move manifest. It needs the real disk, so it runs after the stack merges.
-2. **Prompt registry consolidation.** The farfield prompt text now exists in
-   two places — `swag/model/semantic_landmark_extractor.py` (shared tree) and
-   `farfield/extraction/prompts.py` (torch-free, for the stage). Both pin
-   sha256 in tests, so drift is loud rather than silent, but one home is
-   better than two.
-3. **Three skipped tests** in `semantic_landmark_extractor_test.py` document
+2. **Three skipped tests** in `semantic_landmark_extractor_test.py` document
    an unshipped v2 prompt revision (see PR 15). Un-skip when the revision
    actually ships, or delete the tests with the idea.
-4. **Site-search tooling** (`farfield_viewshed`, `farfield_landmarks`) stays
+3. **Site-search tooling** (`farfield_viewshed`, `farfield_landmarks`) stays
    on the checkpoint branch; port it if site search resumes.
-5. **Legacy runs.** Five leg1-era localization runs predate the required
+4. **Legacy runs.** Five leg1-era localization runs predate the required
    manifest provenance and will not load under schema 0.3. They are read-only
    history; re-export them from their tracking runs if they matter.
