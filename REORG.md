@@ -235,15 +235,20 @@ All 22 PRs (00-21) are committed as a git-spice stack on top of `main`.
 Every package is green under `bazel test`; the counts per package are in
 each PR's commit message.
 
-**Remaining work, not part of the stack:**
+**The one-time data migration is DONE** (PR 23, `dataset_tools:migrate_data_root`,
+applied 2026-08-21: 397 operations, manifest recorded at
+`/data/farfield_matching/migration_manifest.json`). Note the incident recorded
+in that commit: a dedup bug destroyed the legacy `v1` catalogs on four
+unprocessed datasets before it was found and fixed; they are regenerated with
+provenance saying so, their current catalogs were never affected, and no
+recorded run referenced the lost files.
 
-1. **The one-time data migration** (section above), scripted with a printed
-   move manifest. It needs the real disk, so it runs after the stack merges.
-2. **Three skipped tests** in `semantic_landmark_extractor_test.py` document
+**Remaining work, not part of the stack:**
+1. **Three skipped tests** in `semantic_landmark_extractor_test.py` document
    an unshipped v2 prompt revision (see PR 15). Un-skip when the revision
    actually ships, or delete the tests with the idea.
-3. **Site-search tooling** (`farfield_viewshed`, `farfield_landmarks`) stays
+2. **Site-search tooling** (`farfield_viewshed`, `farfield_landmarks`) stays
    on the checkpoint branch; port it if site search resumes.
-4. **Legacy runs.** Five leg1-era localization runs predate the required
+3. **Legacy runs.** Five leg1-era localization runs predate the required
    manifest provenance and will not load under schema 0.3. They are read-only
    history; re-export them from their tracking runs if they matter.
