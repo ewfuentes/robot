@@ -24,7 +24,7 @@ py_library(
     deps = [
         "//common/torch:load_torch_deps",
         "//experimental/map_estimation/data:argoverse_layout",
-        "//experimental/map_estimation/viz:av2_source",
+        "//experimental/map_estimation/data:av2_log",
         requirement("MapPrior"),
         requirement("numpy"),
         requirement("omegaconf"),
@@ -45,8 +45,8 @@ py_binary(
         ":run_prior_lib",
         "//common/torch:load_torch_deps",
         "//experimental/map_estimation/data:argoverse_layout",
+        "//experimental/map_estimation/data:av2_log",
         "//experimental/map_estimation/viz:av2_scene",
-        "//experimental/map_estimation/viz:av2_source",
         "//experimental/map_estimation/viz:view_log",
         requirement("MapPrior"),
         requirement("numpy"),

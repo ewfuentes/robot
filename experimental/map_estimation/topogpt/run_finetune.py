@@ -29,7 +29,8 @@ import torch
 from omegaconf import OmegaConf
 
 from experimental.map_estimation.data import argoverse_layout as al
-from experimental.map_estimation.viz import av2_scene, av2_source, view_log
+from experimental.map_estimation.data import av2_log
+from experimental.map_estimation.viz import av2_scene, view_log
 from experimental.map_estimation.topogpt.run_prior import (build_sample, directed,
                                                            ego_frame_lanes, local_to_city)
 
@@ -134,7 +135,7 @@ def _scale_to_subset_a(results: dict) -> None:
     results["img_shape"] = [img.shape for img in results["img"]]
 
 
-def camera_batch(source: av2_source.LogSource, timestamp_ns: int, device: str):
+def camera_batch(source: av2_log.LogSource, timestamp_ns: int, device: str):
     """The seven ring views nearest ``timestamp_ns``, preprocessed as subset A preprocesses them.
 
     The ring is synchronised: every camera runs at exactly 50.000 ms with no measurable jitter,
@@ -147,7 +148,7 @@ def camera_batch(source: av2_source.LogSource, timestamp_ns: int, device: str):
     by_token = {item.token: item for item in source.cameras()}
     missing = [name for name in _RING_ORDER if name not in by_token]
     if missing:
-        raise av2_source.MissingStreamError(
+        raise av2_log.MissingStreamError(
             f"{source.log_id} is missing ring cameras {missing}; "
             f"download them with `argoverse download ... --items ring`")
 
@@ -243,7 +244,7 @@ def build_model(ckpt: Path, device: str) -> VectorARLightning:
     return model.eval().to(device)
 
 
-def predict(model, source: av2_source.LogSource, timestamp_ns: int, device: str):
+def predict(model, source: av2_log.LogSource, timestamp_ns: int, device: str):
     """Lane polylines the model generates from the imagery at one instant, in the local frame."""
     batch, span_ms, shapes = camera_batch(source, timestamp_ns, device)
     with torch.no_grad():
@@ -259,11 +260,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         request = al.make_request(args.spec)
-        av2_source.ensure_supported(request)
-        source = av2_source.LogSource(request, args.log_id, args.root)
+        av2_log.ensure_supported(request)
+        source = av2_log.LogSource(request, args.log_id, args.root)
         poses = source.city_SE3_ego()
-    except (al.UnknownSplitError, al.UnknownItemError, av2_source.MissingStreamError,
-            av2_source.UnsupportedDatasetError) as error:
+    except (al.UnknownSplitError, al.UnknownItemError, av2_log.MissingStreamError,
+            av2_log.UnsupportedDatasetError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -316,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         elapsed_s = (timestamp_ns - t0_ns) / 1e9
         try:
             lanes, span_ms, shapes = predict(model, source, timestamp_ns, args.device)
-        except av2_source.MissingStreamError as error:
+        except av2_log.MissingStreamError as error:
             print(f"error: {error}", file=sys.stderr)
             return 1
         if max(abs(span_ms[0]), abs(span_ms[1])) > _MAX_IMAGE_OFFSET_MS:

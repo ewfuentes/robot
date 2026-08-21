@@ -189,6 +189,7 @@ split-aware, so a bare `download sensor/test` just works.
 | `argoverse_catalog.py` | builds/loads the cached index. The only module that lists S3 |
 | `argoverse_download.py` | `ensure_logs`, plan/execute, local status. Offline except for transfers |
 | `argoverse_cli.py` | argparse subcommands (`py_binary` target `argoverse`) |
+| `av2_log.py` | reads one downloaded log: which streams are present, poses, map, sweeps, cameras |
 
 ```bash
 bazel test //experimental/map_estimation/data/...   # all offline; no network, no credentials

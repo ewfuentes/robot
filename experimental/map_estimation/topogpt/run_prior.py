@@ -30,7 +30,7 @@ import torch
 from omegaconf import OmegaConf
 
 from experimental.map_estimation.data import argoverse_layout as al
-from experimental.map_estimation.viz import av2_source
+from experimental.map_estimation.data import av2_log
 
 # `np.float_` was removed in NumPy 2, and upstream still names it in the return annotation of
 # `process_lines`, which is evaluated at import time -- so the module cannot be loaded at all.
@@ -101,7 +101,7 @@ def local_to_city(points: np.ndarray, pose) -> np.ndarray:
     return np.column_stack([xy, np.full(len(xy), pose.translation[2])])
 
 
-def ego_frame_lanes(source: av2_source.LogSource, timestamp_ns: int):
+def ego_frame_lanes(source: av2_log.LogSource, timestamp_ns: int):
     """Every lane segment's centerline in the ego frame, as (x, y, heading), plus adjacency.
 
     TbV and sensor maps ship no ``centerline`` field -- only the two lane boundaries -- so the
@@ -211,11 +211,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         request = al.make_request(args.spec)
-        av2_source.ensure_supported(request)
-        source = av2_source.LogSource(request, args.log_id, args.root)
+        av2_log.ensure_supported(request)
+        source = av2_log.LogSource(request, args.log_id, args.root)
         poses = source.city_SE3_ego()
-    except (al.UnknownSplitError, al.UnknownItemError, av2_source.MissingStreamError,
-            av2_source.UnsupportedDatasetError) as error:
+    except (al.UnknownSplitError, al.UnknownItemError, av2_log.MissingStreamError,
+            av2_log.UnsupportedDatasetError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 

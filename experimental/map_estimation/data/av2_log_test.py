@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from experimental.map_estimation.data import argoverse_layout as al
-from experimental.map_estimation.viz import av2_source
+from experimental.map_estimation.data import av2_log
 
 
 def _make_log(root: Path, request: al.Request, log_id: str, items) -> Path:
@@ -38,19 +38,19 @@ class DiscoverLogIdsTest(unittest.TestCase):
 
     def test_missing_split_dir_is_empty_not_an_error(self):
         """Nothing downloaded yet is a normal state, not a failure."""
-        self.assertEqual(av2_source.discover_log_ids(self.request, self.root), [])
+        self.assertEqual(av2_log.discover_log_ids(self.request, self.root), [])
 
     def test_finds_log_dirs_sorted(self):
         for log_id in ["ccc", "aaa", "bbb"]:
             _make_log(self.root, self.request, log_id, [al.SensorItem.POSES])
         self.assertEqual(
-            av2_source.discover_log_ids(self.request, self.root), ["aaa", "bbb", "ccc"]
+            av2_log.discover_log_ids(self.request, self.root), ["aaa", "bbb", "ccc"]
         )
 
     def test_ignores_stray_files(self):
         _make_log(self.root, self.request, "aaa", [al.SensorItem.POSES])
         (self.request.local_dir(self.root) / "catalog.json").write_bytes(b"{}")
-        self.assertEqual(av2_source.discover_log_ids(self.request, self.root), ["aaa"])
+        self.assertEqual(av2_log.discover_log_ids(self.request, self.root), ["aaa"])
 
 
 class LogSourceTest(unittest.TestCase):
@@ -63,18 +63,18 @@ class LogSourceTest(unittest.TestCase):
     def test_motion_forecasting_is_rejected_up_front(self):
         """Its scenarios are one parquet file, not a log dir; fail before touching disk."""
         request = al.MotionForecastingRequest(split=al.MotionForecastingSplit.VAL)
-        with self.assertRaises(av2_source.UnsupportedDatasetError):
-            av2_source.LogSource(request, "any", self.root)
+        with self.assertRaises(av2_log.UnsupportedDatasetError):
+            av2_log.LogSource(request, "any", self.root)
 
     def test_missing_log_dir_names_the_path(self):
-        with self.assertRaises(av2_source.MissingStreamError) as ctx:
-            av2_source.LogSource(self.request, "nope", self.root)
+        with self.assertRaises(av2_log.MissingStreamError) as ctx:
+            av2_log.LogSource(self.request, "nope", self.root)
         self.assertIn("nope", str(ctx.exception))
 
     def test_present_items_reports_only_what_is_on_disk(self):
         _make_log(self.root, self.request, "aaa",
                   [al.SensorItem.POSES, al.SensorItem.MAP, al.SensorItem.LIDAR])
-        source = av2_source.LogSource(self.request, "aaa", self.root)
+        source = av2_log.LogSource(self.request, "aaa", self.root)
         self.assertEqual(
             set(source.present_items()),
             {al.SensorItem.POSES, al.SensorItem.MAP, al.SensorItem.LIDAR},
@@ -84,13 +84,13 @@ class LogSourceTest(unittest.TestCase):
         """A `cp` that created the directory and then failed is not a downloaded stream."""
         _make_log(self.root, self.request, "aaa", [al.SensorItem.POSES])
         al.local_path(self.request, "aaa", al.SensorItem.LIDAR, self.root).mkdir(parents=True)
-        source = av2_source.LogSource(self.request, "aaa", self.root)
+        source = av2_log.LogSource(self.request, "aaa", self.root)
         self.assertFalse(source.has(al.SensorItem.LIDAR))
 
     def test_missing_poses_error_lists_what_is_present(self):
         _make_log(self.root, self.request, "aaa", [al.SensorItem.MAP])
-        source = av2_source.LogSource(self.request, "aaa", self.root)
-        with self.assertRaises(av2_source.MissingStreamError) as ctx:
+        source = av2_log.LogSource(self.request, "aaa", self.root)
+        with self.assertRaises(av2_log.MissingStreamError) as ctx:
             source.city_SE3_ego()
         self.assertIn("map", str(ctx.exception))
 
@@ -98,8 +98,8 @@ class LogSourceTest(unittest.TestCase):
         """TBV ships no annotations at all, which is a different error from 'not downloaded'."""
         request = al.TbvRequest()
         _make_log(self.root, request, "aaa__Spring_2020", [al.TbvItem.POSES])
-        source = av2_source.LogSource(request, "aaa__Spring_2020", self.root)
-        with self.assertRaises(av2_source.MissingStreamError) as ctx:
+        source = av2_log.LogSource(request, "aaa__Spring_2020", self.root)
+        with self.assertRaises(av2_log.MissingStreamError) as ctx:
             source._require_named("ANNOTATIONS")
         self.assertIn("tbv dataset has no annotations", str(ctx.exception))
 

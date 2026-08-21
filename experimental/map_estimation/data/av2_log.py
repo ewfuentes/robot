@@ -1,7 +1,7 @@
 """Reads one Argoverse 2 log off disk.
 
 Paths come from :mod:`argoverse_layout` -- the same module the download manager writes with --
-so the viewer cannot disagree with the downloader about where anything lives. Parsing is the
+so no reader can disagree with the downloader about where anything lives. Parsing is the
 upstream ``av2`` devkit's job; this module only locates files and decides what is present.
 
 **Every stream is optional.** A log's items are downloaded independently, so a `sensor/val` log
@@ -10,8 +10,11 @@ and no annotations. :meth:`LogSource.present_items` reports what is actually on 
 accessors raise :class:`MissingStreamError` rather than returning something empty that a caller
 would have to distinguish from a genuinely empty stream.
 
-No rerun import: this half is exercised by tests that do not need a renderer, and prediction
-tooling can reuse it for ego poses without pulling in a viewer.
+This is the reading half of the package: everything above it in `argoverse_layout` /
+`argoverse_catalog` / `argoverse_download` decides where a log lives and gets it onto disk, and
+everything built on top -- the viewer, the datasets, the model scripts -- goes through here.
+Nothing it imports renders anything, so a caller that only wants ego poses does not pull in a
+viewer.
 """
 
 from pathlib import Path

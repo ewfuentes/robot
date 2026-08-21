@@ -37,7 +37,7 @@ import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
 
-from experimental.map_estimation.viz import av2_source
+from experimental.map_estimation.data import av2_log
 
 WORLD = "world"
 MAP = f"{WORLD}/map"
@@ -334,7 +334,7 @@ def paint_bucket(mark_type) -> str:
     return "unmarked"
 
 
-def log_map(source: av2_source.LogSource) -> tuple[int, int, int]:
+def log_map(source: av2_log.LogSource) -> tuple[int, int, int]:
     """Log the log's vector HD map, static, in city coordinates.
 
     Everything here is ``static=True``: the map does not change over a log, so it carries no
@@ -397,7 +397,7 @@ def log_map(source: av2_source.LogSource) -> tuple[int, int, int]:
     return len(static_map.vector_lane_segments), len(crossings), len(areas)
 
 
-def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
+def log_ego_path(source: av2_log.LogSource) -> SceneSummary:
     """Log the ego pose over time, plus the whole drive as one static polyline.
 
     The path is static rather than grown frame by frame: it is context for wherever you scrub
@@ -406,7 +406,7 @@ def log_ego_path(source: av2_source.LogSource) -> SceneSummary:
     summary = SceneSummary(log_id=source.log_id)
     poses = source.city_SE3_ego()
     if not poses:
-        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+        raise av2_log.MissingStreamError(f"{source.log_id} has an empty pose stream")
 
     timestamps = sorted(poses)
     t0_ns = timestamps[0]
@@ -472,7 +472,7 @@ def intensity_colors(intensity: np.ndarray) -> np.ndarray:
     return np.stack(channels, axis=-1).astype(np.uint8)
 
 
-def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
+def log_lidar(source: av2_log.LogSource) -> tuple[int, int]:
     """Log every lidar sweep, in city coordinates, on its own timestamps.
 
     **The points are transformed into the city frame before being logged**, which is a deliberate
@@ -499,7 +499,7 @@ def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
     """
     poses = source.city_SE3_ego()
     if not poses:
-        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+        raise av2_log.MissingStreamError(f"{source.log_id} has an empty pose stream")
     # The first *pose*, matching log_ego_path -- not the first sweep, which trails it by ~0.1 s
     # and would put the two streams on offset elapsed timelines.
     t0_ns = min(poses)
@@ -530,7 +530,7 @@ def log_lidar(source: av2_source.LogSource) -> tuple[int, int]:
     return sweeps, points
 
 
-def log_cameras(source: av2_source.LogSource,
+def log_cameras(source: av2_log.LogSource,
                 timestamps_ns: set[int] | None = None) -> tuple[int, int]:
     """Log every camera on disk: its calibration once, then one frame per timestamp.
 
@@ -563,7 +563,7 @@ def log_cameras(source: av2_source.LogSource,
     """
     poses = source.city_SE3_ego()
     if not poses:
-        raise av2_source.MissingStreamError(f"{source.log_id} has an empty pose stream")
+        raise av2_log.MissingStreamError(f"{source.log_id} has an empty pose stream")
     # The first pose, matching log_ego_path and log_lidar, so every stream shares one origin on
     # the elapsed timeline.
     t0_ns = min(poses)
@@ -609,7 +609,7 @@ def log_cameras(source: av2_source.LogSource,
     return cameras, frames
 
 
-def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
+def default_blueprint(source: av2_log.LogSource) -> rrb.Blueprint:
     """A 3D view anchored to the vehicle, beside a grid of the log's camera images.
 
     A view's ``origin`` is the frame it renders in, and that is the whole of "follow the
@@ -644,7 +644,7 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
 
     The camera grid is built from what is **on disk**, so it needs the source. That costs
     nothing in ordering: deciding which cameras exist is a directory check on an already-built
-    :class:`~av2_source.LogSource`, not a read of the imagery, so this still runs before the
+    :class:`~av2_log.LogSource`, not a read of the imagery, so this still runs before the
     sink is chosen and before anything is logged. A log with no cameras -- every ``sensor/val``
     log on hand, and the whole ``lidar`` dataset -- gets the bare 3D view rather than an empty
     pane.
@@ -703,7 +703,7 @@ def default_blueprint(source: av2_source.LogSource) -> rrb.Blueprint:
     return rrb.Blueprint(rrb.Horizontal(scene, grid, column_shares=[2, 1]), time_panel)
 
 
-def log_scene(source: av2_source.LogSource) -> SceneSummary:
+def log_scene(source: av2_log.LogSource) -> SceneSummary:
     """Log the coordinate frame, the map, the vehicle, its path, the lidar, and the cameras."""
     log_coordinate_frames()
     log_vehicle()
@@ -716,12 +716,12 @@ def log_scene(source: av2_source.LogSource) -> SceneSummary:
     # above.
     try:
         summary.lane_segments, summary.crosswalks, summary.drivable_areas = log_map(source)
-    except av2_source.MissingStreamError as error:
+    except av2_log.MissingStreamError as error:
         logging.warning("drawing %s without a map: %s", source.log_id, error)
 
     try:
         summary.lidar_sweeps, summary.lidar_points = log_lidar(source)
-    except av2_source.MissingStreamError as error:
+    except av2_log.MissingStreamError as error:
         logging.warning("drawing %s without lidar: %s", source.log_id, error)
 
     # No warning when a log simply has no cameras -- unlike the map and the lidar, which every
@@ -730,7 +730,7 @@ def log_scene(source: av2_source.LogSource) -> SceneSummary:
     # that has cameras but no calibration to place them with.
     try:
         summary.cameras, summary.camera_frames = log_cameras(source)
-    except av2_source.MissingStreamError as error:
+    except av2_log.MissingStreamError as error:
         logging.warning("drawing %s without cameras: %s", source.log_id, error)
 
     return summary
