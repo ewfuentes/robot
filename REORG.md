@@ -60,22 +60,25 @@ those structurally rather than patching them in place.
 
 ```
 experimental/overhead_matching/swag/farfield/
-  geometry.py            # THE camera frame, mount offset, angles, ENU (PR 01)
-  paths.py               # data-root/lane/dataset resolution (PR 02)
-  provenance.py          # the one manifest writer (PR 02)
-  run_config.py          # run creation + recorded-config access (PR 02)
-  dataset.py             # dataset contract: frames, metadata, ingest (PR 03)
-  catalog/               # landmark schema reader, OSM/ENC catalog, trims (PR 04)
-  extraction/            # VLM landmark extraction + vertex batch + llm_cost (PR 05)
-  tracking/              # SAM2 track building, keyframes, tracklets (PR 06-07)
-  calibration/           # sun check, offset sweep, heading check viewer (PR 08)
-  matching/              # signature build, LLM matching, match viewer (PR 09)
-  localization/          # export, filter, forensics, run viewer (PR 10-11)
-  pipeline.py            # end-to-end orchestrator + status (PR 12)
-  viewers/               # shared page/style helpers + index generators (PR 06, 12)
-  collection/            # mapillary collection pipeline (PR 13)
-  dataset_tools/         # self-collect ingest, trim, audit, triage (PR 14)
-docs/farfield/           # rewritten docs, pipeline order, value-free (PR 15)
+  geometry.py            # THE camera frame, mount offset, angles, ENU
+  paths.py               # data-root/lane/dataset resolution
+  provenance.py          # the one manifest writer
+  run_config.py          # run creation + recorded-config access
+  dataset.py             # dataset contract: frames, metadata, ingest
+  audit_dataset.py       # the contract audit CLI
+  testing.py             # synthetic dataset fixtures
+  catalog/               # landmark schema reader + OSM/ENC catalog
+  extraction/            # pinhole render, prompts, extraction stage, LLM cost
+  tracking/              # SAM2 tracking, keyframes, semantic audit, tracklets
+  calibration/           # sun check, offset sweep, heading model, audit_io
+  matching/              # whole-map LLM matching + match viewer
+  localization/          # export builder, filter, drivers, forensics, viewers
+  pipeline.py            # end-to-end orchestrator (new-run / run / status)
+  configs/               # example run configs, one per environment class
+  viewers/               # shared page helper + disk-scanned index chain
+  collection/            # mapillary collection pipeline
+  dataset_tools/         # ingest, trims, catalog building, offset publisher
+docs/farfield/           # the docs, pipeline order, value-free
 ```
 
 Existing `swag/landmark_filtering/`, `swag/bearing_only_localization/`,
@@ -107,7 +110,7 @@ semantic audit:
   audited has no canonical semantics and must not reach matching or the
   filter);
 - `bearing_series` (mask centroid → camera-frame azimuth via
-  `geometry.direction_from_pano_px`, restricted to audit valid segments);
+  `geometry.azimuth_of_pano_column`, restricted to audit valid segments);
 - `fuse_bearings` (per-epoch circular mean, width-aware kappa).
 
 Offset sweep, matching, and export all call this one library with the run's
@@ -182,27 +185,33 @@ Branch names `reorg/NN-<slug>`, each stacked on the previous via git-spice.
 Every PR description states: what the code does, the assumptions it makes,
 and where it sits in this plan. Scopes may split if review size demands.
 
-| PR | branch | contents |
-|----|--------|----------|
-| 00 | `reorg/00-plan` | This file. |
-| 01 | `reorg/01-geometry` | `farfield/geometry.py` + tests: the single owner for camera frame, mount offset, angle/ENU/earth helpers, body↔world bearings. Fixes: stale KNOWN-ISSUE prose gone; elevation has one definition (off-axis correct); dead helpers dropped. |
-| 02 | `reorg/02-paths-provenance` | `paths.py` (root/lane/dataset resolution, env override, no default catalog), `provenance.py`, `run_config.py` + tests. |
-| 03 | `reorg/03-dataset` | `dataset.py`: frames/metadata loading, ENU fill, `north_aligned` + offset-frame validation, contract audit (argparse, non-zero exit on missing paths). |
-| 04 | `reorg/04-catalog` | Landmark schema reader as the sole feather reader; catalog load/cache; ENC extraction; trim tool (thresholds required, recall guard mandatory, sidecar provenance). |
-| 05 | `reorg/05-extraction` | VLM extraction + `vertex_batch_manager` (one flag block, one model default source) + `llm_cost`. |
-| 06 | `reorg/06-tracking` | Track builder + range runner + track/keyframe viewers + `viewers/` page helper (one CSS, provenance stamped on every page). Pixel thresholds resolution-relative or config-required. |
-| 07 | `reorg/07-audit-tracklets` | Semantic audit build/review + `tracklets.py` (the merge replacement) + tests proving parity of fused bearings with the old m6 output on a fixture. |
-| 08 | `reorg/08-calibration` | Sun check (verdict-gated, always writes JSON), offset sweep, heading-check viewer inside the artifact tree; sidecar-only writes; explicit publish tool. |
-| 09 | `reorg/09-matching` | Signature build from tracklets (per-track), LLM matching, match viewer; feather path read from recorded settings only. |
-| 10 | `reorg/10-export` | Localization export (base + LLM-compat) from tracklets; offset-chain validation; measurements written = measurements used. |
-| 11 | `reorg/11-localization` | Filter + structs (lab notes moved to docs) + metrics module + run_export + runlog forensics CLI + run viewer (assets as files); manifest records inputs + `max_visible_range_m`; replay fallback removed (value always recorded). |
-| 12 | `reorg/12-pipeline-indexes` | `pipeline.py` end-to-end (through localize/plots/viewer), run-config creation, status tool, index-generator chain to the data root. Ordering test. |
-| 13 | `reorg/13-collection` | Mapillary collection port: workspace-relative repo root, coverage gate importable, `mount_offset_frame` written, stitch tooling deduped (`sequences.py` download path deleted). |
-| 14 | `reorg/14-dataset-tools` | Self-collect ingest, trim_dataset (seam invalidation), seams/anchor/timelapse/status; calibrate_mount_offset rebuilt on `geometry` (sidecar-only). |
-| 15 | `reorg/15-docs` | `docs/farfield/`: conventions (updated), pipeline guide, self-collect + collection runbooks, forensics guide — value-free, pipeline order. Old docs deleted. |
+| PR | branch | contents | state |
+|----|--------|----------|-------|
+| 00 | `reorg/00-plan` | This file. | landed |
+| 01 | `reorg/01-geometry` | `farfield/geometry.py`: the single owner for camera frame, mount offset, angle/ENU/earth helpers, body↔world bearings. Stale KNOWN-ISSUE prose gone; one off-axis-correct elevation; the one haversine. | landed |
+| 02 | `reorg/02-paths-provenance` | `paths.py` (no default version/catalog/checkpoint), `provenance.py` (the one manifest writer + byte-identical-version refusal), `run_config.py` (immutable recorded runs). | landed |
+| 03 | `reorg/03-dataset` | `dataset.py` contract + ingest; `north_aligned` and mount-offset-qualifier gates; `audit_dataset` with real argparse. | landed |
+| 04 | `reorg/04-catalog` | `catalog/schema.py` (sole feather reader) + `catalog/catalog.py` (ENU catalog, far-field vocabulary, extents, cache). | landed |
+| 05 | `reorg/05-tracklets` | `tracking/tracklets.py` — **the merge-stage replacement**, with fusion parity pinned against the old m6 output. | landed |
+| 06 | `reorg/06-localization-contract` | `localization/{structs,filter_catalog,run_io,export_ingest,gps_to_odometry}` — schema 0.3 with required provenance; offset-frame enforcement at the export boundary. | landed |
+| 07 | `reorg/07-extraction` | `extraction/{llm_cost,vertex_batch_manager}` — one execution-flag block, `--model` required everywhere. | landed |
+| 08 | `reorg/08-viewers` | `viewers/page.py` (one stylesheet + provenance footer) and `viewers/indexes.py` (disk-scanned index chain to the data root). | landed |
+| 09 | `reorg/09-calibration` | Sun check (verdict-gated `usable`), offset sweep, heading model, `audit_io` — sidecars only, no metadata writes. | landed |
+| 10 | `reorg/10-tracking` | SAM2 tracking stage + keyframe viewer; crash-safe `tracks_complete.json`; readers use recorded config. | landed |
+| 11 | `reorg/11-matching` | Whole-map LLM matching + match viewer, per-track Set 1; msgspec-typed `compatibility.json`; feather from recorded settings. | landed |
+| 12 | `reorg/12-filter` | The particle filter core: resection, mode tracker, proposal, filter, torch backend, scenario, `metrics.py` split out. | landed |
+| 13 | `reorg/13-run-drivers` | `build_export` (one tool, replacing both m11 halves), `run_export`, `run_localization`. | landed |
+| 14 | `reorg/14-extraction-stage` | `panorama_to_pinhole`, the torch-free prompt registry, and the extraction stage orchestrator. | landed |
+| 15 | `reorg/15-shared-schema` | The dict-tags feather schema adopted in the shared tree (`common/openstreetmap`, `swag/data`, `swag/model`, 4 scripts). | landed |
+| 16 | `reorg/16-audit-stage` | Semantic audit library + `audit_requests` / `audit_review`; settings.json provenance; recorded-config readers. | landed |
+| 17 | `reorg/17-forensics-viewers` | Basemap, satellite underlay, plots, the self-contained viewer (+ server), forensics/replay/attribution and the `forensics` CLI. | landed |
+| 18 | `reorg/18-collection` | Mapillary collection: workspace-relative root, coverage gate importable, `mount_offset_frame` written, relics dropped. | landed |
+| 19 | `reorg/19-dataset-tools` | Self-collect ingest, trims, ENC/catalog building, and `publish_mount_offset` — the one guarded metadata writer. | landed |
+| 20 | `reorg/20-pipeline` | `pipeline.py` (new-run / run / status) through `viewer`, run configs, index refresh after every stage. | landed |
+| 21 | `reorg/21-docs` | `docs/farfield/`: README, conventions, datasets, pipeline, localization — value-free, current-state, pipeline order. | landed |
 
-Data migration runs after PR 12 (indexes exist to regenerate), before PR 15
-(docs describe the final layout).
+The one-time data migration (below) runs after PR 20: the index generators
+exist by then, and the docs in PR 21 describe the final layout.
 
 ## Decisions log
 
@@ -216,9 +225,24 @@ Data migration runs after PR 12 (indexes exist to regenerate), before PR 15
 
 ## Status
 
-| PR | state |
-|----|-------|
-| 00 plan | in review |
-| 01 geometry | in review |
-| 02 paths/provenance | in review |
-| 03–15 | not started |
+All 22 PRs (00-21) are committed as a git-spice stack on top of `main`.
+Every package is green under `bazel test`; the counts per package are in
+each PR's commit message.
+
+**Remaining work, not part of the stack:**
+
+1. **The one-time data migration** (section above), scripted with a printed
+   move manifest. It needs the real disk, so it runs after the stack merges.
+2. **Prompt registry consolidation.** The farfield prompt text now exists in
+   two places — `swag/model/semantic_landmark_extractor.py` (shared tree) and
+   `farfield/extraction/prompts.py` (torch-free, for the stage). Both pin
+   sha256 in tests, so drift is loud rather than silent, but one home is
+   better than two.
+3. **Three skipped tests** in `semantic_landmark_extractor_test.py` document
+   an unshipped v2 prompt revision (see PR 15). Un-skip when the revision
+   actually ships, or delete the tests with the idea.
+4. **Site-search tooling** (`farfield_viewshed`, `farfield_landmarks`) stays
+   on the checkpoint branch; port it if site search resumes.
+5. **Legacy runs.** Five leg1-era localization runs predate the required
+   manifest provenance and will not load under schema 0.3. They are read-only
+   history; re-export them from their tracking runs if they matter.
