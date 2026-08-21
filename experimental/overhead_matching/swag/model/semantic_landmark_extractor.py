@@ -7,6 +7,7 @@ import json
 import hashlib
 from pathlib import Path
 import pandas as pd
+from experimental.overhead_matching.swag.data import landmark_schema
 import pickle
 import openai
 import base64
@@ -89,6 +90,7 @@ class OSMPrimaryTagKey(str, Enum):
     LANDUSE = "landuse"
     EMERGENCY = "emergency"
     PUBLIC_TRANSPORT = "public_transport"
+    PLACE = "place"
 
 
 class OSMPrimaryTag(BaseModel):
@@ -650,13 +652,6 @@ Based on the images, provide a few-word summary of the location type (e.g., indu
 Finally, review your work, and confirm that you have not included any information you cannot confidently make out from the images. If something is difficult to read, do NOT include it.
 </instructions>
 
-<constraints>
-- Focus on buildings, monuments, parks, infrastructure, or other landmarks likely in OpenStreetMaps.
-- Do not include very distant objects (more than a few hundred meters away). 
-- Never include landmarks or proper nouns from temporary objects like cars, trucks, or advertisements.
-- Do not mention the location of landmarks in the image or relative to other landmarks (e.g., "on the left", "on the right side of the street").
-- DO not make up details not present in the images.
-</constraints>
 
 <examples>
 An example of a full output is below
@@ -681,7 +676,6 @@ Given four images which show the same location from yaws 0° (facing north), 90�
 Your workflow should be:
  1. Analyze the images for any visually distinctive landmarks and useful signs. Summarize what you have found.
  2. Identify what OSM tags are appropriate and justifiable for each identified landmark.
- 3. Report your results using the specified JSON schema.
 
 For each landmark:
 - Assign a primary OSM tag (e.g., amenity=cafe, shop=pharmacy, building=apartments)
@@ -750,14 +744,298 @@ For chains, include both category and brand:
 - CVS -> shop=pharmacy, brand=CVS
 </osm_tag_guidelines>
 
-<constraints>
-- Focus on OSM-mappable features within ~80 meters, don't include street lamps and fire hydrants.
-- Extract visible text for name/brand tags only if clearly readable
-- Be conservative: only output tags you can confidently identify
-- Exclude transient objects (cars, pedestrians, temporary items, construction areas)
-- Do NOT extract text from billboards, advertisement banners (e.g., on lampposts), or other commercial advertisements — these are temporary and not OSM-mappable
-- Do not mention location in image or relative to other landmarks
-</constraints>
+
+<output_format>
+Provide your response as a JSON object conforming to the assigned schema.
+Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
+</output_format>
+""",
+    'osm_tags_farfield': """<role>
+You are an expert at identifying distant landmarks in outdoor imagery and mapping them to OpenStreetMap (OSM) tags.
+</role>
+
+<context>
+The four images come from a camera on a moving platform — a boat, a road vehicle, or a person on foot.
+They show the same location at relative yaws 0°, 90°, 180°, and 270° (camera frame — NOT compass-aligned; do not assume any cardinal direction).
+The setting may be any outdoor environment: harbour or open water, a river, a mountain range, forest or trail, farmland or open plain, or a built-up area.
+Much of each image is usually sky, water, vegetation or bare ground; the landmarks are the exceptions.
+The platform itself (deck, railings, canopy, bonnet, dashboard, handlebars, the operator, passengers, safety equipment) is visible in most images and must be completely ignored.
+</context>
+
+<instructions>
+Identify permanent, distinctive landmarks that plausibly appear in OpenStreetMap and classify them using OSM's key=value tagging system.
+
+Your workflow should be:
+ 1. Scan the full horizon in all four images — skyline, ridgelines, shoreline, and the middle distance — for distinctive permanent features. Summarize what you have found.
+ 2. Identify what OSM tags are appropriate and justifiable for each identified landmark.
+
+For each landmark:
+- Assign a primary OSM tag (e.g., natural=peak, man_made=crane, man_made=silo, historic=fort, building=commercial, place=island)
+- Add relevant additional tags (name, height, colour, etc. Do not give 2 of the same tags to a single landmark). Include name=<name> ONLY under the naming rules below.
+- Add a distance_estimate additional tag with exactly one of these values: "under_100m", "100m_to_500m", "500m_to_2km", "2km_to_10km", "over_10km"
+- Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each. Boxes must be TIGHT around the landmark itself — never a whole skyline, ridgeline or shoreline in one box.
+- Rate your confidence (high/medium/low) using the rubric below
+- Provide a brief description following the description rules below
+
+If you cannot confidently identify any visually distinct landmarks, it is acceptable to return an empty list of landmarks.
+Based on the images, classify the location type in free text (e.g., open_water, inner_harbor, river_valley, alpine_ridge, forest_trail, open_farmland, high_desert, urban_waterfront).
+Finally, review your work and remove anything you cannot confidently make out from the images, along with any tag you cannot confidently justify.
+</instructions>
+
+<landmark_selection>
+A good far-field landmark is FIXED in place, VISIBLE from a long way off, DISTINCTIVE enough to tell from its neighbours, and plausibly mapped in OSM. There is no distance limit — far-away features are the primary target, as long as you are confident what they are. Prioritize by how strongly a feature identifies itself:
+
+1. Named or recognizable features — a summit you can name, a famous bridge or tower, a structure with a readable sign. These are worth the most; see the naming rules.
+2. Features whose category plus appearance narrows them down — a glaciated peak, a lighthouse, a red-and-white banded chimney, a grain elevator of six linked silos.
+3. Features that repeat and are individually generic — wind turbines, transmission pylons, silos. Report each one you can see as its own landmark; several weak detections combined with other evidence can still locate you. Where instances are so dense or numerous that they cannot be told apart at all, they are not useful landmarks.
+
+Examples across settings, not an exhaustive list:
+- Terrain: summits and named high points (natural=peak), saddles and cols (natural=saddle), ridges (natural=ridge), glaciers and permanent snowfields (natural=glacier), cliffs and rock faces (natural=cliff), buttes and mesas, islands (place=island)
+- Trail and summit markers: cairns (man_made=cairn), summit survey markers (man_made=survey_point), signed summit posts
+- Tall structures: radio and communications masts (man_made=mast, tower:type=communication), transmission pylons (power=tower), water towers, chimneys and smokestacks, church spires, clock towers, skyscrapers with a distinctive top, silos and grain elevators (man_made=silo), storage tanks, wind turbines (power=generator with generator:source=wind), fire lookouts and summit huts
+- Water and coast: lighthouses and daybeacons on pilings or rocks (seamark:type=beacon_lateral), channel, lateral and special-purpose buoys (seamark:type=buoy_lateral or buoy_special_purpose), dams and weirs, locks, bridges (man_made=bridge), piers, wharves, breakwaters, marinas (leisure=marina — a dense cluster of sailboat masts marks one), container and gantry cranes
+- Built and historic: forts, monuments and memorials (historic=*), ski lifts and aerial cableways (aerialway=*), large barns and farm complexes, buildings ONLY if at least one of: unique shape/colour/silhouette, a readable sign or name, or you recognize the specific building
+
+Identifying attributes — ALWAYS include the ones you can actually see, since these are what distinguish one instance from hundreds of its neighbours:
+- A number or letter painted or mounted on the structure (e.g. a buoy's "8", "13", "1SC"; a pylon's line number) → give it as name=<exactly as read>, ONLY if legible and not inferred
+- colour=<red|green|yellow|white|white;orange|...> for anything with a deliberate colour scheme (buoys, beacons, banded chimneys, painted tanks)
+- Shape, where the category has standard shapes — e.g. seamark:<type>:shape=<can|nun|pillar|spar> ("can" is a flat-topped cylinder, "nun" a cone)
+
+DO NOT include:
+- Anything that moves: watercraft (even docked or anchored), road and rail vehicles, aircraft, livestock, people. A marina is a landmark; the boats in it are not.
+- The platform the camera is on, or anything mounted on it
+- Wakes, waves, sun glare, clouds, snow patches that are plainly seasonal, birds
+- Generic shoreline, generic tree lines, generic forest, riprap, ordinary fields
+- Rows of visually identical generic buildings (e.g., condo blocks) with nothing to tell them apart
+
+Report each physical feature as its own landmark, including each member of a repeated group.
+</landmark_selection>
+
+<naming_rules>
+A name is the most valuable thing you can attach to a landmark: it narrows a match
+from "one of the hundreds of peaks, buoys or towers in this region" to one specific
+feature. Give one whenever you honestly can.
+
+Two routes to a name are equally legitimate:
+- READING it: a sign, a painted number or letter, a summit marker, a building's name on its facade.
+- RECOGNIZING it: you know this specific mountain, bridge, tower or building from its shape, profile and setting. Recognition is a real source of identity, not a guess, and for distant natural features it is usually the ONLY route — a summit 10 km away carries no signage. Name the peaks, ranges, islands and well-known structures you genuinely know.
+
+The test is whether you are confident in THIS feature's identity. It is NOT whether
+other things nearby look similar. Similar-looking neighbours are the normal case in
+every setting this prompt covers — a ridgeline of peaks, a field of turbines, a row
+of channel buoys — so treat them as a reason to look for what distinguishes this
+one, never as a reason to withhold a name you are sure of.
+
+Express your certainty through the `confidence` field rather than by staying silent.
+When you give a name, `confidence` describes your certainty in THE NAME, not merely
+in the category:
+- high: you are sure of the identity — read clearly, or recognized unmistakably
+- medium: the identification is probable, but you would not stake a position fix on it
+- low: do not name it at all; report the category and description instead
+
+Never take a name from a billboard, advertising banner or other commercial signage.
+Never derive one from geographic context alone ("we are near X, so this must be X"),
+and never infer a number you cannot read. A confidently wrong name points at a real
+feature that may be many kilometres away — but so does withholding a name you
+actually know, by leaving the feature indistinguishable from its neighbours. Report
+what you know, and rate how sure you are.
+</naming_rules>
+
+<description_rules>
+Descriptions must be stable across viewpoints so the same landmark can be re-identified from other locations:
+- Describe intrinsic properties only: shape, colour, material, relative height, count of elements (e.g., "granite fort with sloped walls and a flagpole", "red-and-white banded smokestack", "glaciated pyramidal summit with a rocky north face").
+- If you recognize the landmark, lead with its canonical name.
+- NEVER mention: position in the image, direction relative to the observer, distance, lighting, weather, or nearby transient objects.
+</description_rules>
+
+<confidence_rubric>
+Rate the landmark as you have reported it — including its name, if you gave one:
+- high: an identity you are sure of (name read clearly or recognized unmistakably), or an unnamed feature whose category is unmistakable (a container crane, a lighthouse, a wind turbine)
+- medium: the category is clear but the instance is generic (an unnamed pier, an unnumbered buoy, one silo among several), or a name you believe but cannot confirm
+- low: category is uncertain — prefer omitting these unless the feature is very distinctive visually, and never attach a name to one
+</confidence_rubric>
+
+<osm_tag_guidelines>
+## Primary OSM Tag Categories
+
+- `natural`: terrain and natural features (peak, saddle, ridge, glacier, cliff, rock, beach, wood, water, coastline)
+- `man_made`: non-building structures (mast, tower, silo, storage_tank, chimney, water_tower, crane, lighthouse, pier, breakwater, bridge, cairn, survey_point)
+- `place`: islands and settlements (island, islet, village, town)
+- `historic`: historically significant features (fort, monument, memorial, lighthouse)
+- `building`: structures with a roof (commercial, church, industrial, farm, hotel). Use `building=yes` if unclear.
+- `power`: power infrastructure (tower for a transmission pylon, generator for a wind turbine or solar plant, plant, line)
+- `leisure`: recreation (marina, park, nature_reserve, sports_centre)
+- `tourism`: visitor attractions (hotels, museums, viewpoints, alpine_hut)
+- `amenity`: facilities providing services (ferry_terminal, shelter, restaurants)
+- `landuse`: land use areas (industrial, port, military, farmland, quarry)
+- `aerialway`: cable cars, chairlifts, gondolas
+- `railway`: rail infrastructure
+- `seamark:type`: navigational aids (buoy_lateral, buoy_special_purpose, beacon_lateral, light_major)
+
+## Key Distinctions
+
+- **man_made vs building**: Use building if it has walls and a roof for human use; man_made for towers, masts, silos, tanks, piers, cranes
+- **natural=peak vs natural=ridge**: peak for a distinct summit point; ridge for an extended crest
+- **power=tower vs man_made=mast/tower**: power=tower is a transmission pylon carrying lines; man_made=mast is a guyed communications mast; man_made=tower is a freestanding tower
+- **historic=fort vs building**: Use historic=fort for fortifications
+- **leisure vs tourism**: Use leisure for local recreation; tourism for visitor attractions
+</osm_tag_guidelines>
+
+
+<output_format>
+Provide your response as a JSON object conforming to the assigned schema.
+Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
+</output_format>
+""",
+    # v2 of the far-field prompt. v1's <naming_rules> licensed recognition
+    # without constraining it to the structure's own visible features, which
+    # produced whole-scene misrecognition (a Boston Harbor panorama named with
+    # the Chicago lakefront) and bare buoy board numbers as names.
+    #
+    # Three clauses, all measured on a 22-frame control set, 3 passes each
+    # (docs/object-tracking-runbook.md, "Tuning the extraction prompt"):
+    #   - name the STRUCTURE not the SCENE
+    #   - lookalikes need a differentiator you can see
+    #   - a painted number or letter is ref=, never name=
+    # Out-of-region names and designator-as-name both went to zero, and
+    # precision rose 66% -> 74%.
+    #
+    # A fourth clause was TRIED AND REJECTED: "all the names you give for one
+    # panorama must belong to ONE locality" reads as protective but TRIPLED
+    # in-region misdirection (real wrong-bearing names 0.7 -> 2.3 per pass) -
+    # it appears to make the model commit to a locality and then name more
+    # things in it. Do not add it back.
+    #
+    # KNOWN COST, unmeasured end-to-end: fewer names overall (30 -> 20 per
+    # pass) and fewer mountain-peak names (6.3 -> 3.7). A carve-out exempting
+    # summits from the lookalike clause was tried and made everything worse
+    # (58% precision, 2.7 peak names), so the peak loss is NOT caused by that
+    # clause's ridge example and its mechanism is still unknown.
+    'osm_tags_farfield_v2': """<role>
+You are an expert at identifying distant landmarks in outdoor imagery and mapping them to OpenStreetMap (OSM) tags.
+</role>
+
+<context>
+The four images come from a camera on a moving platform — a boat, a road vehicle, or a person on foot.
+They show the same location at relative yaws 0°, 90°, 180°, and 270° (camera frame — NOT compass-aligned; do not assume any cardinal direction).
+The setting may be any outdoor environment: harbour or open water, a river, a mountain range, forest or trail, farmland or open plain, or a built-up area.
+Much of each image is usually sky, water, vegetation or bare ground; the landmarks are the exceptions.
+The platform itself (deck, railings, canopy, bonnet, dashboard, handlebars, the operator, passengers, safety equipment) is visible in most images and must be completely ignored.
+</context>
+
+<instructions>
+Identify permanent, distinctive landmarks that plausibly appear in OpenStreetMap and classify them using OSM's key=value tagging system.
+
+Your workflow should be:
+ 1. Scan the full horizon in all four images — skyline, ridgelines, shoreline, and the middle distance — for distinctive permanent features. Summarize what you have found.
+ 2. Identify what OSM tags are appropriate and justifiable for each identified landmark.
+
+For each landmark:
+- Assign a primary OSM tag (e.g., natural=peak, man_made=crane, man_made=silo, historic=fort, building=commercial, place=island)
+- Add relevant additional tags (name, height, colour, etc. Do not give 2 of the same tags to a single landmark). Include name=<name> ONLY under the naming rules below.
+- Add a distance_estimate additional tag with exactly one of these values: "under_100m", "100m_to_500m", "500m_to_2km", "2km_to_10km", "over_10km"
+- Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each. Boxes must be TIGHT around the landmark itself — never a whole skyline, ridgeline or shoreline in one box.
+- Rate your confidence (high/medium/low) using the rubric below
+- Provide a brief description following the description rules below
+
+If you cannot confidently identify any visually distinct landmarks, it is acceptable to return an empty list of landmarks.
+Based on the images, classify the location type in free text (e.g., open_water, inner_harbor, river_valley, alpine_ridge, forest_trail, open_farmland, high_desert, urban_waterfront).
+Finally, review your work and remove anything you cannot confidently make out from the images, along with any tag you cannot confidently justify.
+</instructions>
+
+<landmark_selection>
+A good far-field landmark is FIXED in place, VISIBLE from a long way off, DISTINCTIVE enough to tell from its neighbours, and plausibly mapped in OSM. There is no distance limit — far-away features are the primary target, as long as you are confident what they are. Prioritize by how strongly a feature identifies itself:
+
+1. Named or recognizable features — a summit you can name, a famous bridge or tower, a structure with a readable sign. These are worth the most; see the naming rules.
+2. Features whose category plus appearance narrows them down — a glaciated peak, a lighthouse, a red-and-white banded chimney, a grain elevator of six linked silos.
+3. Features that repeat and are individually generic — wind turbines, transmission pylons, silos. Report each one you can see as its own landmark; several weak detections combined with other evidence can still locate you. Where instances are so dense or numerous that they cannot be told apart at all, they are not useful landmarks.
+
+Examples across settings, not an exhaustive list:
+- Terrain: summits and named high points (natural=peak), saddles and cols (natural=saddle), ridges (natural=ridge), glaciers and permanent snowfields (natural=glacier), cliffs and rock faces (natural=cliff), buttes and mesas, islands (place=island)
+- Trail and summit markers: cairns (man_made=cairn), summit survey markers (man_made=survey_point), signed summit posts
+- Tall structures: radio and communications masts (man_made=mast, tower:type=communication), transmission pylons (power=tower), water towers, chimneys and smokestacks, church spires, clock towers, skyscrapers with a distinctive top, silos and grain elevators (man_made=silo), storage tanks, wind turbines (power=generator with generator:source=wind), fire lookouts and summit huts
+- Water and coast: lighthouses and daybeacons on pilings or rocks (seamark:type=beacon_lateral), channel, lateral and special-purpose buoys (seamark:type=buoy_lateral or buoy_special_purpose), dams and weirs, locks, bridges (man_made=bridge), piers, wharves, breakwaters, marinas (leisure=marina — a dense cluster of sailboat masts marks one), container and gantry cranes
+- Built and historic: forts, monuments and memorials (historic=*), ski lifts and aerial cableways (aerialway=*), large barns and farm complexes, buildings ONLY if at least one of: unique shape/colour/silhouette, a readable sign or name, or you recognize the specific building
+
+Identifying attributes — ALWAYS include the ones you can actually see, since these are what distinguish one instance from hundreds of its neighbours:
+- A number or letter painted or mounted on the structure (e.g. a buoy's "8", "13", "1SC"; a pylon's line number) → give it as name=<exactly as read>, ONLY if legible and not inferred
+- colour=<red|green|yellow|white|white;orange|...> for anything with a deliberate colour scheme (buoys, beacons, banded chimneys, painted tanks)
+- Shape, where the category has standard shapes — e.g. seamark:<type>:shape=<can|nun|pillar|spar> ("can" is a flat-topped cylinder, "nun" a cone)
+
+DO NOT include:
+- Anything that moves: watercraft (even docked or anchored), road and rail vehicles, aircraft, livestock, people. A marina is a landmark; the boats in it are not.
+- The platform the camera is on, or anything mounted on it
+- Wakes, waves, sun glare, clouds, snow patches that are plainly seasonal, birds
+- Generic shoreline, generic tree lines, generic forest, riprap, ordinary fields
+- Rows of visually identical generic buildings (e.g., condo blocks) with nothing to tell them apart
+
+Report each physical feature as its own landmark, including each member of a repeated group.
+</landmark_selection>
+
+<naming_rules>
+Two routes to a name are legitimate:
+- READING it: a sign, a summit marker, a building's name on its facade.
+- RECOGNIZING it: you know this specific item (e.g., mountain, bridge, tower, building) from its
+  own shape, profile and proportions. Name the landmarks you genuinely know, do not guess if there is ambiguity.
+
+A name must be justified by what you can see of
+that structure itself - its outline, its top, its proportions, its colour, its
+signage, its position relative to other features in the same image. It must NEVER
+rest on the overall view resembling a place you know. 
+
+Express your certainty through the `confidence` field rather than by staying silent.
+When you give a name, `confidence` describes your certainty in THE NAME, not merely
+in the category:
+- high: you are sure of the identity - read clearly, or recognized from this
+  structure's own form
+- medium: the identification is probable, but you would not stake a position fix on it
+- low: do not name it at all; report the category and description instead
+
+Never take a name from a billboard, advertising banner or other commercial signage.
+Never derive one from geographic context alone ("we are near X, so this must be X").
+Report what you know, and rate how sure you are.
+</naming_rules>
+
+<description_rules>
+Descriptions must be stable across viewpoints so the same landmark can be re-identified from other locations:
+- Describe intrinsic properties only: shape, colour, material, relative height, count of elements (e.g., "granite fort with sloped walls and a flagpole", "red-and-white banded smokestack", "glaciated pyramidal summit with a rocky north face").
+- If you recognize the landmark, lead with its canonical name.
+- NEVER mention: position in the image, direction relative to the observer, distance, lighting, weather, or nearby transient objects.
+</description_rules>
+
+<confidence_rubric>
+Rate the landmark as you have reported it — including its name, if you gave one:
+- high: an identity you are sure of (name read clearly or recognized unmistakably), or an unnamed feature whose category is unmistakable (a container crane, a lighthouse, a wind turbine)
+- medium: the category is clear but the instance is generic (an unnamed pier, an unnumbered buoy, one silo among several), or a name you believe but cannot confirm
+- low: category is uncertain — prefer omitting these unless the feature is very distinctive visually, and never attach a name to one
+</confidence_rubric>
+
+<osm_tag_guidelines>
+## Primary OSM Tag Categories
+
+- `natural`: terrain and natural features (peak, saddle, ridge, glacier, cliff, rock, beach, wood, water, coastline)
+- `man_made`: non-building structures (mast, tower, silo, storage_tank, chimney, water_tower, crane, lighthouse, pier, breakwater, bridge, cairn, survey_point)
+- `place`: islands and settlements (island, islet, village, town)
+- `historic`: historically significant features (fort, monument, memorial, lighthouse)
+- `building`: structures with a roof (commercial, church, industrial, farm, hotel). Use `building=yes` if unclear.
+- `power`: power infrastructure (tower for a transmission pylon, generator for a wind turbine or solar plant, plant, line)
+- `leisure`: recreation (marina, park, nature_reserve, sports_centre)
+- `tourism`: visitor attractions (hotels, museums, viewpoints, alpine_hut)
+- `amenity`: facilities providing services (ferry_terminal, shelter, restaurants)
+- `landuse`: land use areas (industrial, port, military, farmland, quarry)
+- `aerialway`: cable cars, chairlifts, gondolas
+- `railway`: rail infrastructure
+- `seamark:type`: navigational aids (buoy_lateral, buoy_special_purpose, beacon_lateral, light_major)
+
+## Key Distinctions
+
+- **man_made vs building**: Use building if it has walls and a roof for human use; man_made for towers, masts, silos, tanks, piers, cranes
+- **natural=peak vs natural=ridge**: peak for a distinct summit point; ridge for an extended crest
+- **power=tower vs man_made=mast/tower**: power=tower is a transmission pylon carrying lines; man_made=mast is a guyed communications mast; man_made=tower is a freestanding tower
+- **historic=fort vs building**: Use historic=fort for fortifications
+- **leisure vs tourism**: Use leisure for local recreation; tourism for visitor attractions
+</osm_tag_guidelines>
+
 
 <output_format>
 Provide your response as a JSON object conforming to the assigned schema.
@@ -864,7 +1142,8 @@ def create_description_requests(args):
 
     print(f'create {args}')
     landmarks = _load_landmarks(args.geojson)
-    unique_landmarks = {prune_landmark(row.dropna().to_dict()) for _, row in landmarks.iterrows()}
+    unique_landmarks = {prune_landmark(d)
+                        for d in landmark_schema.row_dicts(landmarks)}
 
     requests = _create_requests(unique_landmarks, prompt_type=prompt_type)
     print("num requests", len(requests))
@@ -1071,6 +1350,26 @@ def create_panorama_description_requests(args):
         panorama_folders = all_panorama_folders
         print(f"Found {len(panorama_folders)} panorama folders")
 
+    # Restrict to the stems the dataset currently contains. The pinhole render
+    # is an artifact that can outlive a dataset trim (folkestone_dover
+    # 2026-08-17: 399 rendered stems vs 105 kept panoramas), and every extra
+    # stem here is a paid model call for a frame nothing downstream reads.
+    if getattr(args, 'panorama_dir', None):
+        panorama_dir = Path(args.panorama_dir)
+        wanted = {p.stem for p in panorama_dir.iterdir()
+                  if p.suffix.lower() in ('.jpg', '.jpeg', '.png')}
+        rendered = {f.name for f in panorama_folders}
+        missing = wanted - rendered
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} panorama(s) in {panorama_dir} have no pinhole "
+                f"render, e.g. {sorted(missing)[:3]}; re-run the pinhole stage")
+        n_stale = len(panorama_folders) - len(wanted)
+        if n_stale:
+            print(f"Excluding {n_stale} rendered stem(s) not in {panorama_dir} "
+                  f"(stale pinhole render)")
+        panorama_folders = [f for f in panorama_folders if f.name in wanted]
+
     if not panorama_folders:
         print(f"No panorama folders found to process")
         return
@@ -1104,8 +1403,9 @@ def create_panorama_description_requests(args):
     prompt_type = getattr(args, 'prompt_type', 'panorama')
     print(f"Prompt type: {prompt_type}")
 
-    if prompt_type == 'osm_tags':
-        system_prompt = SYSTEM_PROMPTS['osm_tags']
+    if prompt_type in ('osm_tags', 'osm_tags_farfield',
+                       'osm_tags_farfield_v2'):
+        system_prompt = SYSTEM_PROMPTS[prompt_type]
         schema = get_osm_tags_schema()
         user_prompt = osm_tags_user_prompt
     else:  # panorama (default)
@@ -1264,8 +1564,8 @@ def create_sentences_pickle(args):
     # Get unique pruned_tags and their custom_ids
     print("Computing unique pruned_tags...")
     pruned_tags_to_custom_id: dict[frozenset, str] = {}
-    for _, row in tqdm.tqdm(landmarks_df.iterrows(), total=len(landmarks_df), desc="Processing landmarks"):
-        props = row.dropna().to_dict()
+    for props in tqdm.tqdm(landmark_schema.row_dicts(landmarks_df),
+                           total=len(landmarks_df), desc="Processing landmarks"):
         pruned_tags = prune_landmark(props)
         if pruned_tags not in pruned_tags_to_custom_id:
             custom_id = custom_id_from_props(pruned_tags)
@@ -1333,11 +1633,16 @@ if __name__ == "__main__":
                                             help='Create batch requests for panorama landmark extraction (Gemini format)')
     panorama_parser.add_argument('--pinhole_dir', type=str, required=True,
                                  help='Directory containing panorama subfolders with pinhole images')
+    panorama_parser.add_argument('--panorama_dir', type=str, default=None,
+                                 help='Dataset panorama dir; requests are restricted to stems '
+                                      'present here, guarding against paying for stems a stale '
+                                      'pinhole render kept after a dataset trim')
     panorama_parser.add_argument('--output_base', type=str, default="/tmp/",
                                  help='Base path for output batch request files')
     panorama_parser.add_argument('--prompt_type', type=str, default='panorama',
-                                 choices=['panorama', 'osm_tags'],
-                                 help='Prompt type: "panorama" (natural language descriptions) or "osm_tags" (structured OSM tags)')
+                                 choices=['panorama', 'osm_tags', 'osm_tags_farfield',
+                                          'osm_tags_farfield_v2'],
+                                 help='Prompt type: "panorama" (natural language descriptions), "osm_tags" (structured OSM tags), or "osm_tags_farfield"/"osm_tags_farfield_v2" (OSM tags for distant landmarks; v2 constrains naming to the structure\'s own visible features)')
     panorama_parser.add_argument('--num_workers', type=int, default=8,
                                  help='Number of parallel workers for image encoding')
     panorama_parser.add_argument('--max_requests_per_batch', type=int, default=10000,

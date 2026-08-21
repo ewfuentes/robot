@@ -10,16 +10,16 @@ Usage:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \\
         --model_path /data/.../best_model.pt \\
         --text_embeddings_path /data/.../eval_text_embeddings.pkl \\
-        --dataset_path /data/overhead_matching/datasets/VIGOR/Middletown \\
-        --pano_v2_base /data/.../semantic_landmark_embeddings/panov2_tuned_prompt \\
-        --output_path /tmp/middletown_corr.pt \\
+        --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \\
+        --pano_v2_base /data/.../semantic_landmark_embeddings/mapillary \\
+        --output_path /tmp/miami_corr.pt \\
         --compute_similarity
 
 Load an existing raw artifact and re-run only the similarity-matrix step:
     bazel run //experimental/overhead_matching/swag/scripts:export_correspondence_similarity -- \\
-        --from_raw /tmp/middletown_corr.pt \\
-        --dataset_path /data/overhead_matching/datasets/VIGOR/Middletown \\
-        --output_path /tmp/middletown_corr.pt \\
+        --from_raw /tmp/miami_corr.pt \\
+        --dataset_path /data/overhead_matching/datasets/VIGOR/mapillary/MiamiBeach \\
+        --output_path /tmp/miami_corr.pt \\
         --compute_similarity
 """
 
@@ -28,6 +28,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
 import numpy as np
+import pandas as pd
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -132,6 +133,17 @@ def build_raw_cost_data(args) -> cm.RawCorrespondenceData:
         print(f"  {len(tags)} panoramas from {base.name}")
     print(f"  Total: {len(pano_tags_from_pano_id)} panoramas with tags")
 
+    if args.pano_metadata_from_tags:
+        # Score an EXTERNAL set of panorama landmarks (e.g. a non-VIGOR dataset)
+        # against this dataset's OSM landmarks. precompute_raw_cost_data only
+        # scores pano_ids present in dataset._panorama_metadata, so replace it
+        # with the pano_ids supplied via --pano_v2_base. The OSM columns
+        # (_satellite_metadata / _landmark_metadata) are left untouched.
+        external_ids = sorted(pano_tags_from_pano_id.keys())
+        dataset._panorama_metadata = pd.DataFrame({"pano_id": external_ids})
+        print(f"  Overrode panorama metadata with {len(external_ids)} external pano_ids "
+              f"(--pano_metadata_from_tags)")
+
     print("Precomputing raw cost matrix data...")
     cost_matrix_memmap_path = None
     if args.stream_cost_matrix:
@@ -195,15 +207,7 @@ def load_raw_cost_data(raw_path: Path) -> cm.RawCorrespondenceData:
     if "cost_matrix" in data:
         cost_matrix = data["cost_matrix"]
     else:
-        # The recorded path is absolute and goes stale if the dataset moves;
-        # fall back to the .npy saved next to the .pt (the write-side layout).
-        cost_npy = Path(data["cost_matrix_path"])
-        if not cost_npy.exists():
-            sibling = raw_path.parent / (raw_path.stem + "_cost_matrix.npy")
-            if sibling.exists():
-                print(f"  Recorded cost-matrix path is stale ({cost_npy}); "
-                      f"using sibling {sibling}")
-                cost_npy = sibling
+        cost_npy = data["cost_matrix_path"]
         print(f"  Memory-mapping cost matrix from {cost_npy}")
         cost_matrix = np.load(cost_npy, mmap_mode="r")
     return cm.RawCorrespondenceData(
@@ -263,6 +267,11 @@ def main():
     parser.add_argument("--ks", type=str, default="1,5,10",
                         help="Comma-separated top-k values for retrieval metrics "
                              "(used with --compute_similarity).")
+    parser.add_argument("--pano_metadata_from_tags", action="store_true",
+                        help="Score an external pano set (from --pano_v2_base) against this "
+                             "dataset's OSM landmarks by overriding the dataset's panorama "
+                             "metadata with the supplied pano_ids. Use when the panoramas are "
+                             "not part of the loaded VIGOR dataset.")
     parser.add_argument("--allow_missing_text_embeddings", action="store_true",
                         help="Silently substitute zero vectors for text values "
                              "not found in the embeddings pickle. Not recommended.")
