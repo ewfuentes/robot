@@ -744,3 +744,10 @@ http_archive(
     build_file = "//third_party:BUILD.zip_file",
     sha256 = "d117316544b43a5dde7ee761b36e17701e9f85574e181d76a74814240fdbaf34",
 )
+
+http_archive(
+    name = "argoverse_snippet",
+    urls = ["https://www.dropbox.com/scl/fi/aeu1ynmx4gsui01cnv9vb/argoverse_snippet.zip?rlkey=cj1asl2a4crzpqeh43rrnshvu&st=ldu1ogjq&dl=1"],
+    build_file = "//third_party:BUILD.zip_file",
+    sha256 = "cca60c05d50518c44fc70c0270161fd8a9966aadeb98a5b5ea3f27508e7ae1e0",
+)

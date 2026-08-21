@@ -16,6 +16,27 @@ py_test(
 )
 
 py_library(
+    name = "argoverse_dataset",
+    srcs = ["argoverse_dataset.py"],
+    deps = [
+        ":argoverse_layout",
+        ":av2_log",
+    ],
+)
+
+py_test(
+    name = "argoverse_dataset_test",
+    size = "small",
+    srcs = ["argoverse_dataset_test.py"],
+    data = ["@argoverse_snippet//:files"],
+    deps = [
+        ":argoverse_dataset",
+        ":argoverse_layout",
+        ":av2_log",
+    ],
+)
+
+py_library(
     name = "argoverse_layout",
     srcs = ["argoverse_layout.py"],
     deps = [
