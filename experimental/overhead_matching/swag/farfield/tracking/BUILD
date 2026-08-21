@@ -168,3 +168,95 @@ py_test(
         ":track_builder",
     ],
 )
+
+py_library(
+    name = "semantic_audit",
+    srcs = ["semantic_audit.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pydantic"),
+        ":track_builder",
+        ":viz_common",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_test(
+    name = "semantic_audit_test",
+    srcs = ["semantic_audit_test.py"],
+    deps = [
+        ":semantic_audit",
+        ":track_builder",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+    ],
+)
+
+py_library(
+    name = "audit_requests_lib",
+    srcs = ["audit_requests.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        ":keyframe_viewer_lib",
+        ":semantic_audit",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager_lib",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "audit_requests",
+    srcs = ["audit_requests.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":audit_requests_lib"],
+)
+
+py_test(
+    name = "audit_requests_test",
+    srcs = ["audit_requests_test.py"],
+    deps = [
+        ":audit_requests_lib",
+        ":track_builder",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:testing",
+    ],
+)
+
+py_library(
+    name = "audit_review_lib",
+    srcs = ["audit_review.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        ":keyframe_viewer_lib",
+        ":semantic_audit",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "audit_review",
+    srcs = ["audit_review.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":audit_review_lib"],
+)
+
+py_test(
+    name = "audit_review_test",
+    srcs = ["audit_review_test.py"],
+    deps = [
+        ":audit_requests_lib",
+        ":audit_review_lib",
+        ":track_builder",
+        "//experimental/overhead_matching/swag/farfield:testing",
+    ],
+)
