@@ -67,6 +67,8 @@ def make_cell_zip(cell: str, *, base=b"fake s57 base file",
             zf.writestr(f"ENC_ROOT/{cell}/{cell}.{suffix}",
                         f"fake update {suffix}".encode())
         zf.writestr("ENC_ROOT/README.TXT", b"shared NOAA readme")
+        zf.writestr(
+            "ENC_ROOT/USERAGREEMENT.TXT", b"shared NOAA user agreement")
     return buf.getvalue()
 
 

@@ -119,7 +119,6 @@ ACTIVE_SCOPES = (
         osm_specs=(
             "north-america/us/new-hampshire-latest.osm.pbf",
             "north-america/us/maine-latest.osm.pbf",
-            "north-america/us/vermont-latest.osm.pbf",
         ),
         enc_state=None,
     ),

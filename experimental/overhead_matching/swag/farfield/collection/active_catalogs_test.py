@@ -102,8 +102,7 @@ class ActiveCatalogsTest(unittest.TestCase):
         self.assertEqual(charles.enc_state, "MA")
         self.assertEqual(washington.osm_specs, (
             "north-america/us/new-hampshire-latest.osm.pbf",
-            "north-america/us/maine-latest.osm.pbf",
-            "north-america/us/vermont-latest.osm.pbf"))
+            "north-america/us/maine-latest.osm.pbf"))
         self.assertIsNone(washington.enc_state)
         self.assertEqual(pohang.output_datasets, ("pohang_canal_04",))
         self.assertEqual(subject.BBOX_BUFFER_KM, 25.0)
@@ -360,7 +359,7 @@ class ActiveCatalogsTest(unittest.TestCase):
             refs = subject.materialize(
                 plan, expected_plan_digest=plan["plan_digest"])
 
-        self.assertEqual(extract.call_count, 3)
+        self.assertEqual(extract.call_count, len(scope.osm_specs))
         self.assertEqual(merge.call_count, 1)
         enc_download.assert_not_called()
         self.assertEqual([ref.dataset for ref in refs],
@@ -372,7 +371,8 @@ class ActiveCatalogsTest(unittest.TestCase):
                               for path in payloads}), 1)
         self.assertEqual(len({path.resolve() for path in payloads}), 3)
         for ref, payload in zip(refs, payloads, strict=True):
-            self.assertEqual(len(schema.read_frame(payload)), 3)
+            self.assertEqual(
+                len(schema.read_frame(payload)), len(scope.osm_specs))
             self.assertEqual(
                 lineage.require_passed_source_coverage(ref), ref)
             manifest = artifact.load_manifest(ref.path)
