@@ -113,20 +113,23 @@ http_archive(
   integrity = "sha256-QPxYvrzzjHWeEae9j9wWNQfSQj71BYu6fyYoDFucVGU=",
 )
 
+# 2.13.6 is the first version we use that supports numpy 2: pybind11 looks up
+# the array API under `numpy._core` on numpy>=2 and `numpy.core` on numpy 1.x.
+# Note the build file was renamed pybind11.BUILD -> pybind11-BUILD.bazel.
 http_archive(
   name = "pybind11_bazel",
-  strip_prefix = "pybind11_bazel-2.11.1.bzl.2",
-  urls = ["https://github.com/pybind/pybind11_bazel/releases/download/v2.11.1.bzl.2/pybind11_bazel-2.11.1.bzl.2.zip"],
-  sha256 = "d911ef169750491c9ddb4e6630bae882b127425627af10e59d499f0f7ff90a48"
+  strip_prefix = "pybind11_bazel-2.13.6",
+  urls = ["https://github.com/pybind/pybind11_bazel/releases/download/v2.13.6/pybind11_bazel-2.13.6.zip"],
+  sha256 = "9df284330336958c837fb70dc34c0a6254dac52a5c983b3373a8c2bbb79ac35e"
 )
 
 # We still require the pybind library.
 http_archive(
   name = "pybind11",
-  build_file = "@pybind11_bazel//:pybind11.BUILD",
-  strip_prefix = "pybind11-2.11.1",
-  urls = ["https://github.com/pybind/pybind11/archive/v2.11.1.tar.gz"],
-  sha256 = "d475978da0cdc2d43b73f30910786759d593a9d8ee05b1b6846d1eb16c6d2e0c"
+  build_file = "@pybind11_bazel//:pybind11-BUILD.bazel",
+  strip_prefix = "pybind11-2.13.6",
+  urls = ["https://github.com/pybind/pybind11/archive/v2.13.6.tar.gz"],
+  sha256 = "e08cb87f4773da97fa7b5f035de8763abc656d87d5773e62f6da0587d1f0ec20"
 )
 
 http_archive(
@@ -186,11 +189,20 @@ PIP_ANNOTATIONS = {
 load("@robot//common/torch:extra_torch_targets.bzl", "extra_torch_targets")
 extra_torch_targets()
         """
-    )
+    ),
+    "rerun-sdk": package_annotation(
+        additive_build_content="""
+load("@robot//third_party/python:extra_rerun_targets.bzl", "extra_rerun_targets")
+extra_rerun_targets()
+        """
+    ),
 }
 
 EXTRA_HUB_ALIASES = {
     "torch": ["libtorch"],
+    # Keyed by the *normalized* distribution name: render_pkg_aliases looks this dict up with
+    # normalize_name(), so "rerun-sdk" would silently never match.
+    "rerun_sdk": ["rerun"],
 }
 
 multi_pip_parse(
@@ -238,6 +250,7 @@ http_archive(
     "@//third_party:embag_0004-fix-build-warnings.patch",
     "@//third_party:embag_0005-display-primitive-arrays.patch",
     "@//third_party:embag_0006-delete-python-build.patch",
+    "@//third_party:embag_0007-fix-make-iterator-return-type.patch",
   ],
   patch_args=["-p1"],
 )
@@ -730,4 +743,11 @@ http_archive(
     urls = ["https://github.com/openmaptiles/fonts/releases/download/v2.0/noto-sans.zip"],
     build_file = "//third_party:BUILD.zip_file",
     sha256 = "d117316544b43a5dde7ee761b36e17701e9f85574e181d76a74814240fdbaf34",
+)
+
+http_archive(
+    name = "argoverse_snippet",
+    urls = ["https://www.dropbox.com/scl/fi/aeu1ynmx4gsui01cnv9vb/argoverse_snippet.zip?rlkey=cj1asl2a4crzpqeh43rrnshvu&st=ldu1ogjq&dl=1"],
+    build_file = "//third_party:BUILD.zip_file",
+    sha256 = "48d278325c09efc51541d68154b4cd59597db8d18494687c7fc70e3733e4bd38",
 )

@@ -16,6 +16,27 @@ py_test(
 )
 
 py_library(
+    name = "argoverse_dataset",
+    srcs = ["argoverse_dataset.py"],
+    deps = [
+        ":argoverse_layout",
+        ":av2_log",
+    ],
+)
+
+py_test(
+    name = "argoverse_dataset_test",
+    size = "small",
+    srcs = ["argoverse_dataset_test.py"],
+    data = ["@argoverse_snippet//:files"],
+    deps = [
+        ":argoverse_dataset",
+        ":argoverse_layout",
+        ":av2_log",
+    ],
+)
+
+py_library(
     name = "argoverse_layout",
     srcs = ["argoverse_layout.py"],
     deps = [
@@ -29,6 +50,22 @@ py_test(
     size = "small",
     srcs = ["argoverse_layout_test.py"],
     deps = [":argoverse_layout"],
+)
+
+py_library(
+    name = "av2_log",
+    srcs = ["av2_log.py"],
+    deps = [
+        ":argoverse_layout",
+        requirement("av2"),
+    ],
+)
+
+py_test(
+    name = "av2_log_test",
+    size = "small",
+    srcs = ["av2_log_test.py"],
+    deps = [":av2_log"],
 )
 
 py_library(
@@ -95,7 +132,8 @@ py_test(
     deps = [":argoverse_cli_lib"],
 )
 
-# The download manager does not use av2; this only guards the opencv pin av2 requires.
+# The download half of this package does not use av2 -- only av2_log and the datasets over it
+# do -- so this guards the opencv pin av2 requires independently of any of them.
 py_test(
     name = "av2_smoke_test",
     size = "small",

@@ -273,8 +273,8 @@ class BoundedNodeLocations : public osmium::handler::Handler {
     std::size_t dropped_ = 0;
 };
 
-std::vector<BoundingBox> expand_bboxes(
-    const std::unordered_map<std::string, BoundingBox>& bboxes, double margin_deg) {
+std::vector<BoundingBox> expand_bboxes(const std::unordered_map<std::string, BoundingBox>& bboxes,
+                                       double margin_deg) {
     std::vector<BoundingBox> out;
     out.reserve(bboxes.size());
     for (const auto& [region_id, bbox] : bboxes) {
@@ -308,8 +308,8 @@ std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     auto run_passes = [&](auto& location_handler) {
         // Pass 1: Extract nodes and ways (with node locations for ways)
         {
-            osmium::io::Reader reader(
-                pbf_path, osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
+            osmium::io::Reader reader(pbf_path,
+                                      osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
 
             LandmarkHandler handler(bboxes, tag_filters);
             osmium::apply(reader, location_handler, handler);
@@ -357,7 +357,7 @@ std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
 
     if (node_margin_deg >= 0.0) {
         BoundedNodeLocations<IndexType> location_handler(index,
-                                                        expand_bboxes(bboxes, node_margin_deg));
+                                                         expand_bboxes(bboxes, node_margin_deg));
         run_passes(location_handler);
     } else {
         LocationHandler location_handler(index);

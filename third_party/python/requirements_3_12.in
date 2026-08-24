@@ -1,7 +1,7 @@
 
 --extra-index-url https://download.pytorch.org/whl/cu128
 easyocr==1.7.2
-numpy==1.26.4
+numpy==2.3.5
 jupyterlab==4.0.8
 matplotlib==3.9.2
 Pillow==10.4.0
@@ -49,6 +49,7 @@ z3-solver==4.15.4.0
 watchdog==6.0.0
 pymgl==0.5.0
 av2==0.3.6
+rerun-sdk==0.36.0
 dinov2 @ git+https://github.com/ewfuentes/dinov2.git@3680537d078b8cc2924f29657b8322cba8b4bb3d
 dinov3 @ git+https://github.com/facebookresearch/dinov3.git@6e50ab28b75133230b6cc3a846a8adc3c300b27d
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
@@ -59,6 +60,16 @@ poly_matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc8281
 cert_tools @ git+https://github.com/utiasASRL/certifiable-tools.git@afcd203bb4623ea60b339f00f8da802f776de1d4
 chompack @ git+https://github.com/ewfuentes/chompack.git@844adda111241bb64f7008e0d0680525290958f3
 hloc @ git+https://github.com/cvg/Hierarchical-Localization.git@2e2a5517d88c7c84db0efd77d720c858da19edcd; platform_machine == "x86_64"
-depth_pro  @ git+https://github.com/apple/ml-depth-pro.git@9efe5c1def37a26c5367a71df664b18e1306c708
 clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
-crosstext2loc @ git+https://github.com/ewfuentes/CVG-Text.git@c3b5727fd8380c35c4f3886b590b8734131db34e
+# TopoGPT. The distribution is named MapPrior. The fork declares its dependencies by name only,
+# without versions, so the pins above stay authoritative. Its dataset-generation devkits are
+# extras and are left uninstalled -- waymo-open-dataset pins tensorflow and nuplan-devkit pins
+# its own torch, so neither co-resolves with this lock.
+MapPrior @ git+https://github.com/ewfuentes/TopoGPT.git@1a60753cc43652efe295ab0f7bb06b74d7916a9a
+# MapPrior's `flow` extra, needed by modules/flow -- configs/model/finetune.yaml resolves it as a
+# hydra _target_ at instantiation time, so no import analysis finds it. Named here rather than
+# taken as an extra because the extra is unversioned; this pins the one package and lets uv pull
+# the rest behind it. Costs nine lock entries -- torchcfm, torchdyn, torchsde, torchcde,
+# torchdiffeq, pot, poethepoet, pastel, trampoline -- and no version change to anything already
+# pinned.
+torchcfm==1.0.7

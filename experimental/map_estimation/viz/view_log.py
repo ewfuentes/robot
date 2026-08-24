@@ -1,0 +1,208 @@
+"""View an AV2 log in rerun: the HD map, the vehicle, its path, the lidar, and the cameras.
+
+    V="bazel run //experimental/map_estimation/viz:view_log --"
+
+    $V sensor/val                              # list what is on disk and exit
+    $V sensor/val --log_id 02678d04-cc9f-3148-9f95-1ba66347dff9
+    $V tbv --log_id 07YOTz... --serve          # stream to a browser instead
+    $V sensor/val --log_id 02678d04... --save /tmp/log.rrd
+
+The dataset spec and ``--root`` mean what they mean in the download CLI
+(``//experimental/map_estimation/data:argoverse``), and paths are resolved through the same
+layout module, so whatever that tool downloaded is what this one opens.
+
+``--log_id`` is deliberately *not* that CLI's repeatable, fnmatch-able selector: one invocation
+produces one recording, so it takes exactly one log id.
+"""
+
+import argparse
+import logging
+import sys
+import threading
+from pathlib import Path
+
+import rerun as rr
+
+from experimental.map_estimation.data import argoverse_layout as al
+from experimental.map_estimation.data import av2_log
+from experimental.map_estimation.viz import av2_scene
+
+APPLICATION_ID = "argoverse_log"
+
+# Headroom over the largest recording this tool writes -- a tbv log with seven cameras is
+# 1.4 GB. See :func:`_serve_web` for what gets dropped when the buffer is too small.
+_SERVE_MEMORY_LIMIT = "8GiB"
+
+# rerun's own default, pinned here only so the printed URL cannot disagree with the server.
+_WEB_VIEWER_PORT = 9090
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="view_log",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("spec", type=str,
+                        help="dataset[/split], e.g. sensor/val, tbv, lidar/train")
+    parser.add_argument("--log_id", type=str, default=None,
+                        help="the single log to view; omit to list the logs present on disk")
+    parser.add_argument("--root", type=Path, default=al.DEFAULT_ROOT,
+                        help=f"local dataset root (default: {al.DEFAULT_ROOT})")
+    parser.add_argument("--verbose", "-v", action="count", default=0)
+
+    sink = parser.add_mutually_exclusive_group()
+    sink.add_argument("--spawn", action="store_true",
+                      help="open the native viewer (default)")
+    sink.add_argument("--serve", action="store_true",
+                      help="serve to a browser; use this when the data is on a remote box")
+    sink.add_argument("--save", type=Path, default=None,
+                      help="write an .rrd file instead of opening a viewer")
+    return parser
+
+
+def _bundled_viewer_path() -> Path:
+    """Path to the viewer executable shipped inside the rerun-sdk wheel.
+
+    Resolved the way the wheel resolves it for itself -- ``rerun_cli/__main__.py`` runs
+    ``os.path.dirname(__file__) + "/rerun"`` -- so this follows the binary if a future version
+    moves it, and fails loudly if one stops shipping it.
+    """
+    import rerun_cli
+
+    executable = Path(rerun_cli.__file__).parent / "rerun"
+    if not executable.is_file():
+        raise FileNotFoundError(f"rerun-sdk shipped no viewer executable at {executable}")
+    return executable
+
+
+def _spawn_bundled_viewer(blueprint, *, port: int = 9876) -> None:
+    """Spawn the wheel's own viewer and stream this recording to it.
+
+    Not ``rr.spawn()``. That calls the Rust ``spawn`` without an ``executable_path``, which
+    falls through to handing the bare name "rerun" to the OS -- so the viewer has to be on
+    ``$PATH``. pip normally puts it there via a console script generated at install time, and
+    Bazel unpacks wheels without running that step, leaving the 100 MB viewer sitting in the
+    runfiles where nothing will look for it.
+
+    Passing ``executable_path`` takes the first branch of the Rust lookup, which uses the path
+    verbatim and never consults ``$PATH`` at all.
+    """
+    import rerun_bindings
+
+    rerun_bindings.spawn(port=port, executable_path=str(_bundled_viewer_path()))
+    rr.connect_grpc(f"rerun+http://127.0.0.1:{port}/proxy", default_blueprint=blueprint)
+
+
+def _serve_web(blueprint) -> str:
+    """Host this recording over HTTP for a browser to connect to, and return the URL to open.
+
+    Two servers, not one: a gRPC server that holds the data, and an HTTP server that hands a
+    viewer to the browser. Neither call blocks; the process has to stay alive to keep them up.
+
+    ``open_browser=False`` because ``--serve`` exists for the case where the data is on a remote
+    box. Launching a browser there is either an error or a browser nobody can see. That is also
+    why the URL is returned rather than discarded: with ``open_browser`` off, ``connect_to`` is
+    only used to build the URL rerun would have opened, so a viewer reached by hand at
+    ``:9090`` with no ``?url=`` attaches to nothing and looks broken.
+
+    **The memory limit is the part that bites.** It bounds a buffer the server keeps so a viewer
+    connecting late still receives the whole recording; past it, data is dropped oldest-first, so
+    a browser attached after logging finishes quietly gets a truncated log. The default is 1 GiB
+    and a tbv log with all seven cameras is 1.4 GB.
+
+    Returns:
+        the URL to open, already carrying the gRPC endpoint as its ``url`` query parameter.
+    """
+    uri = rr.serve_grpc(default_blueprint=blueprint, server_memory_limit=_SERVE_MEMORY_LIMIT)
+    rr.serve_web_viewer(web_port=_WEB_VIEWER_PORT, connect_to=uri, open_browser=False)
+    return f"http://localhost:{_WEB_VIEWER_PORT}/?url={uri}"
+
+
+def _list_logs(request: al.Request, root: Path) -> int:
+    log_ids = av2_log.discover_log_ids(request, root)
+    if not log_ids:
+        print(f"no logs on disk under {request.local_dir(root)}", file=sys.stderr)
+        return 1
+
+    # Build every row before printing any of it. Scanning a log can fail -- a directory removed
+    # between the listing and the scan, a permission error -- and emitting the count line first
+    # would leave a header promising N logs above a truncated list.
+    rows = []
+    for log_id in log_ids:
+        source = av2_log.LogSource(request, log_id, root)
+        rows.append(f"  {log_id}  [{', '.join(i.token for i in source.present_items())}]")
+
+    print(f"{len(rows)} log(s) under {request.local_dir(root)}:")
+    print("\n".join(rows))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+
+    # A bad spec, a missing log, or a log without poses are all ordinary user errors here, so
+    # they get a one-line message rather than a traceback.
+    try:
+        request = al.make_request(args.spec)
+        # Before either branch, so an unreadable dataset fails identically whether you are
+        # listing or viewing -- and before anything reaches stdout.
+        av2_log.ensure_supported(request)
+        if args.log_id is None:
+            return _list_logs(request, args.root)
+        source = av2_log.LogSource(request, args.log_id, args.root)
+    except (al.UnknownSplitError, al.UnknownItemError, av2_log.MissingStreamError,
+            av2_log.UnsupportedDatasetError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    # init before logging, and pick the sink before anything is sent: rerun buffers what is
+    # logged, so a sink chosen afterwards still receives it, but --save wants the file opened up
+    # front rather than flushed at exit.
+    rr.init(APPLICATION_ID, recording_id=args.log_id)
+    # Takes the source because the camera grid depends on which cameras are on disk. That is a
+    # directory check, not a read, so it stays on this side of the sink.
+    blueprint = av2_scene.default_blueprint(source)
+    viewer_url = None
+    if args.save is not None:
+        rr.save(args.save, default_blueprint=blueprint)
+    elif args.serve:
+        viewer_url = _serve_web(blueprint)
+    else:
+        _spawn_bundled_viewer(blueprint)
+
+    try:
+        summary = av2_scene.log_scene(source)
+    except av2_log.MissingStreamError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"{summary.log_id}")
+    print(f"  poses: {summary.poses}, {summary.path_length_m:.1f} m over "
+          f"{summary.duration_s:.1f} s")
+    print(f"  map:   {summary.lane_segments} lane segments, {summary.crosswalks} crosswalks, "
+          f"{summary.drivable_areas} drivable areas")
+    print(f"  lidar: {summary.lidar_sweeps} sweeps, {summary.lidar_points:,} points")
+    print(f"  cams:  {summary.cameras} cameras, {summary.camera_frames:,} frames")
+
+    if args.save is not None:
+        print(f"wrote {args.save}")
+    elif args.serve:
+        print(f"open {viewer_url}")
+        # Both ports have to be reachable from wherever the browser runs, not just the first:
+        # the page is served from one and then connects to the other itself. Over ssh that is
+        # two -L forwards.
+        print(f"serving on ports {_WEB_VIEWER_PORT} (viewer) and 9876 (data); ctrl-c to stop")
+        # Block on an event that never fires rather than on stdin. Reading stdin looks
+        # equivalent but dies instantly wherever stdin is not a terminal -- backgrounded, under
+        # nohup, in a CI step -- which is exactly how --serve gets used when the data is on a
+        # remote box, and it would tear the server down while printing that it was serving.
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

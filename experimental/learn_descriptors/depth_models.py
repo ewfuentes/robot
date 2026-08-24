@@ -2,8 +2,6 @@ import common.torch.load_torch_deps
 
 from PIL import Image
 from pathlib import Path
-import torch
-import depth_pro
 import numpy as np
 
 from transformers import pipeline
@@ -119,61 +117,3 @@ class DepthAnythingV2(DepthModel):
         for img_path, out in zip(paths_imgs, outputs):
             depth = out["predicted_depth"].detach().cpu().numpy()
             self._save_depth_for_image(Path(img_path), depth, dir_out_relative)
-
-
-class DepthPro(DepthModel):
-    # NOTE: I could only find models for DepthPro for indoor use
-    def __init__(
-        self, path_model: Path, device: str = "cuda:0", default_focal_px: float = None
-    ):
-        assert path_model.exists()
-        self.device = torch.device(device)
-        config = depth_pro.depth_pro.DepthProConfig(
-            patch_encoder_preset="dinov2l16_384",
-            image_encoder_preset="dinov2l16_384",
-            checkpoint_uri=path_model,
-            decoder_features=256,
-            use_fov_head=True,
-            fov_encoder_preset="dinov2l16_384",
-        )
-        self.default_focal_px = default_focal_px
-        self.model, self.transform = depth_pro.create_model_and_transforms(config)
-        self.model.to(self.device)
-        self.model.eval()
-
-    def infer_batch(self, paths: list[Path]):
-        assert len(paths) > 0
-
-        imgs = []
-        focals = []
-        for p in paths:
-            assert p.exists()
-            img, _, f_px = depth_pro.load_rgb(p)
-            img_t = self.transform(img)  # [3,H,W]
-            imgs.append(img_t)
-            if f_px is None:
-                f_px = self.default_focal_px
-            focals.append(float(f_px))
-
-        images_batch = torch.stack(imgs, dim=0).to(self.device)  # [B,3,H,W]
-
-        with torch.no_grad():
-            pred = self.model.infer(
-                images_batch, f_px=torch.tensor(float(sum(focals) / len(focals)))
-            )  # f_px averaging is kinda jank
-            depth_batch = pred["depth"]
-            if isinstance(depth_batch, torch.Tensor):
-                depth_batch = depth_batch.detach().cpu().numpy()
-            if depth_batch.ndim == 4:
-                depths_m = [d[0, ...] for d in depth_batch]
-            elif depth_batch.ndim == 3:
-                depths_m = depth_batch
-            elif depth_batch.ndim == 2:
-                depths_m = np.expand_dims(depth_batch, axis=0)
-            else:
-                raise ValueError(
-                    f"Unexpected depth shape from DepthPro: {depth_batch.shape}"
-                )
-
-        # depths_m should be [B, H, W]
-        return depths_m

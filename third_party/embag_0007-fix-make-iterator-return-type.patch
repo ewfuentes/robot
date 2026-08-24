@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Erick Fuentes <fuentes.erick@gmail.com>
+Date: Sat, 16 Aug 2026 00:00:00 -0400
+Subject: [PATCH 7/7] fix make_iterator return type under pybind11 2.12+
+
+pybind11 2.12 changed make_iterator to return typing::Iterator<T>
+instead of a plain py::iterator, so the two return statements in the
+RosValue __iter__ lambda now deduce different types and the lambda no
+longer compiles:
+
+  error: return type 'Iterator<const pybind11::str>' must match previous
+  return type 'Iterator<const pybind11::object>' when lambda expression
+  has unspecified explicit return type
+
+typing::Iterator<T> derives from py::iterator, so naming py::iterator as
+the explicit return type restores a single common type. The other
+make_iterator lambdas each have one return statement and are unaffected.
+---
+ python/embag.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/python/embag.cc b/python/embag.cc
+index 1111111..2222222 100644
+--- a/python/embag.cc
++++ b/python/embag.cc
+@@ -173,7 +173,7 @@ PYBIND11_MODULE(embag, m) {
+         py::arg("array_blob_types") = default_array_blob_types,
+         py::arg("blob_types_as_memoryview") = false,
+         py::arg("ros_time_py_type") = py::none())
+-      .def("__iter__", [](Embag::RosValue::Pointer &v) {
++      .def("__iter__", [](Embag::RosValue::Pointer &v) -> py::iterator {
+         switch (v->getType()) {
+           case Embag::RosValue::Type::array:
+           case Embag::RosValue::Type::primitive_array:
+--
+2.34.1

@@ -272,6 +272,7 @@ py_test(
     name = "proposal_test",
     size = "large",
     srcs = ["proposal_test.py"],
+    tags = ["exclusive"],
     deps = [
         requirement("numpy"),
         ":filter",
@@ -288,6 +289,7 @@ py_test(
     name = "consistency_test",
     size = "large",
     srcs = ["consistency_test.py"],
+    tags = ["exclusive"],
     deps = [
         requirement("numpy"),
         ":filter",
@@ -301,6 +303,7 @@ py_test(
     name = "e2e_convergence_test",
     size = "large",
     srcs = ["e2e_convergence_test.py"],
+    tags = ["exclusive"],
     deps = [
         requirement("numpy"),
         ":filter",
