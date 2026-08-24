@@ -169,7 +169,7 @@ class CliAndConfigTest(ExtractionFixture):
             "--output_dir", "--build_config",
             "--orchestration_config_digest", "--online", "--gcs_prefix",
             "--parallel", "--poll_interval", "--cost_limit",
-            "--approve_cost",
+            "--approve_cost", "--prepare_adoption",
         }.issubset(options))
         self.assertTrue({
             "--run_dir", "--allow_incomplete", "--retry_failed", "--force",
@@ -257,6 +257,47 @@ class ResponseValidationTest(unittest.TestCase):
 
 
 class TypedPublicationTest(ExtractionFixture):
+    def test_prepare_adoption_succeeds_before_cost_or_provider_boundary(self):
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=self.fake_render), mock.patch.object(
+                    ex.llm_cost, "enforce_limit") as cost_gate, \
+                mock.patch.object(
+                    ex.vbm, "run_requests") as provider:
+            first = ex.prepare_adoption(
+                self.args,
+                arguments=("extract_landmarks", "--prepare_adoption"))
+
+        cost_gate.assert_not_called()
+        provider.assert_not_called()
+        pinhole_ref, request_ref = first
+        self.assertFalse(self.args.output_dir.exists())
+        self.assertEqual(
+            artifact.load_manifest(Path(request_ref.path)).upstreams,
+            (pinhole_ref,))
+        request_set = llm_lifecycle.load_request_set(
+            Path(request_ref.path) / llm_lifecycle.REQUEST_SET_NAME)
+        context = ex.load_context(self.args)
+        self.assertTrue(ex._request_set_matches(
+            request_set, context, pinhole_ref))
+        work_dir = Path(request_ref.path).parent
+        self.assertFalse((work_dir / ex.ATTEMPTS_DIR_NAME).exists())
+        self.assertFalse((work_dir / "transport").exists())
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError("published pinhole must be reused")), \
+                mock.patch.object(
+                    ex.llm_cost, "enforce_limit",
+                    side_effect=AssertionError("cost gate must not run")), \
+                mock.patch.object(
+                    ex.vbm, "run_requests",
+                    side_effect=AssertionError("provider must not run")):
+            second = ex.prepare_adoption(
+                self.args,
+                arguments=("extract_landmarks", "--prepare_adoption"))
+        self.assertEqual(second, first)
+
     def test_two_artifacts_publish_with_exact_files_and_provenance(self):
         pinhole_ref, frame_ref = self.run_successfully()
         self.assertEqual(pinhole_ref.kind, paths_lib.PINHOLE_IMAGES)
@@ -319,6 +360,24 @@ class TypedPublicationTest(ExtractionFixture):
                     side_effect=AssertionError("must not execute")):
             second = ex.run(self.args)
         self.assertEqual(first, second)
+
+    def test_adoption_marker_never_weakens_normal_frame_validation(self):
+        self.run_successfully()
+        manifest_path = self.args.output_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["legacy_adoption_schema"] = (
+            ex.LEGACY_ADOPTION_CONFIG_SCHEMA)
+        artifact.atomic_write_json(manifest_path, document)
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError("pinhole must be reused")), \
+                mock.patch.object(
+                    ex.vbm, "run_requests",
+                    side_effect=AssertionError("provider must not run")):
+            with self.assertRaisesRegex(
+                    ValueError, "invalid adopted-frame config shape"):
+                ex.run(self.args)
 
     def test_valid_pinhole_is_reused_after_crash_before_frame_publish(self):
         context = ex.load_context(self.args)

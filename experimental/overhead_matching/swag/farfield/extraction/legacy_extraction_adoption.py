@@ -1,10 +1,10 @@
-"""Verify legacy paid extraction before planning typed, zero-call adoption.
+"""Verify and explicitly publish typed, zero-call legacy adoption.
 
-This module is deliberately a verifier, not a compatibility reader and not a
-publisher.  It reads an explicitly enumerated legacy request/result history,
-proves that every request used the bytes in one already-typed pinhole artifact,
-and builds the exact current canonical results in memory.  The command prints a
-deterministic publication plan; it never calls a provider or writes an artifact.
+The default command is report-only. It reads an explicitly enumerated legacy
+request/result history, proves that every request used the bytes in one
+already-typed pinhole artifact, and builds the exact current canonical results
+in memory. An explicit --publish invocation writes only the verified REQUEST,
+CANONICAL_RESULT, and FRAME_LANDMARKS artifacts; it never calls a provider.
 
 Only the two result shapes observed in the retained farfield runs are accepted:
 
@@ -25,6 +25,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ from experimental.overhead_matching.swag.farfield import (
     artifact,
     llm_lifecycle,
     paths as paths_lib,
+    publication,
+    provenance,
 )
 from experimental.overhead_matching.swag.farfield.extraction import (
     extract_landmarks,
@@ -44,8 +47,11 @@ from experimental.overhead_matching.swag.farfield.extraction import (
 
 
 SPEC_SCHEMA = "farfield.legacy_extraction_adoption_spec/v1"
-REPORT_SCHEMA = "farfield.legacy_extraction_adoption_report/v1"
+REPORT_SCHEMA = extract_landmarks.LEGACY_ADOPTION_REPORT_SCHEMA
 ATTEMPT_PROVENANCE_SCHEMA = "farfield.legacy_extraction_attempt_source/v1"
+PUBLICATION_SCHEMA = "farfield.legacy_extraction_adoption_publication/v1"
+PUBLICATION_PROOF_SCHEMA = extract_landmarks.LEGACY_ADOPTION_PROOF_SCHEMA
+GENERATOR = extract_landmarks.LEGACY_ADOPTION_GENERATOR
 
 REQUEST_ROLE_PRIMARY = "primary"
 REQUEST_ROLE_RETRY = "retry"
@@ -72,6 +78,7 @@ _ONLINE_RETRY_KEYS = frozenset({"error", "key", "request", "response"})
 _REQUEST_RECORD_KEYS = frozenset({"key", "request"})
 _BOX_KEYS = frozenset({"yaw_angle", "xmin", "ymin", "xmax", "ymax"})
 _VALID_YAWS = frozenset({"0", "90", "180", "270"})
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 # Exact provider decorations observed in the retained sources. These are not
 # general compatibility aliases: removal requires this path and exact value.
@@ -135,6 +142,29 @@ class AdoptionPlan:
     canonical_results_bytes: bytes
     predictions_bytes: bytes
     report: dict[str, Any]
+    report_sha256: str
+
+
+@dataclass(frozen=True)
+class AdoptionPublication:
+    """Exact typed identities created by one explicit adoption invocation."""
+
+    request_artifact: artifact.ArtifactRef
+    canonical_results_artifact: artifact.ArtifactRef
+    frame_landmarks_artifact: artifact.ArtifactRef
+    verification_report_sha256: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": PUBLICATION_SCHEMA,
+            "provider_calls": 0,
+            "verification_report_sha256": self.verification_report_sha256,
+            "request_artifact": self.request_artifact.to_dict(),
+            "canonical_results_artifact":
+                self.canonical_results_artifact.to_dict(),
+            "frame_landmarks_artifact":
+                self.frame_landmarks_artifact.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -339,7 +369,7 @@ def _load_source_list(value: Any, *, base: Path, where: str,
 
 
 def load_spec(path: Path | str) -> AdoptionSpec:
-    """Load a strict, explicit source inventory for a report-only run."""
+    """Load a strict, explicit source inventory for verification or adoption."""
     spec_path = _regular_file(Path(path), "adoption spec")
     data = spec_path.read_bytes()
     value = _strict_json_bytes(data, str(spec_path))
@@ -1335,6 +1365,7 @@ def verify_adoption(
         canonical_results_bytes=canonical_bytes,
         predictions_bytes=prediction_bytes,
         report=report,
+        report_sha256=artifact.sha256_json(report),
     )
 
 
@@ -1351,26 +1382,549 @@ def verify_spec(spec: AdoptionSpec) -> AdoptionPlan:
     )
 
 
+def _ref_identity(ref: artifact.ArtifactRef) -> dict[str, str]:
+    return {
+        "kind": ref.kind,
+        "dataset": ref.dataset,
+        "version": ref.version,
+        "manifest_digest": ref.manifest_digest,
+        "content_digest": ref.content_digest,
+    }
+
+
+def _require_sha256(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not _DIGEST_RE.fullmatch(value):
+        raise AdoptionError(f"{where} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _derived_version(frame_version: str, role: str, fingerprint: str) -> str:
+    return artifact.require_identifier(
+        f"{frame_version}.{role}.{fingerprint[:16]}",
+        f"derived {role} artifact version")
+
+
+def _preflight_publication_paths(
+        destinations: Sequence[Path], *,
+        protected_paths: Sequence[Path] = (),
+        ) -> tuple[tuple[Path, ...], int]:
+    paths = tuple(Path(path) for path in destinations)
+    if len(paths) != 3:
+        raise AdoptionError("publication requires request, result, and frame paths")
+    for path in paths:
+        if not path.is_absolute():
+            raise AdoptionError(f"publication destination must be absolute: {path}")
+        if path.name.endswith(artifact.INCOMPLETE_SUFFIX):
+            raise AdoptionError(
+                f"publication destination must not end in .incomplete: {path}")
+
+    resolved = tuple(path.resolve(strict=False) for path in paths)
+    for index, left in enumerate(resolved):
+        for right in resolved[index + 1:]:
+            if left == right or left in right.parents or right in left.parents:
+                raise AdoptionError(
+                    "request, result, and frame destinations must be disjoint")
+    for protected in protected_paths:
+        protected_resolved = Path(protected).resolve(strict=False)
+        for destination in resolved:
+            if (destination == protected_resolved
+                    or destination in protected_resolved.parents
+                    or protected_resolved in destination.parents):
+                raise AdoptionError(
+                    "publication destinations must be disjoint from the "
+                    f"verified input artifact: {protected}")
+
+    def require_no_staging(path: Path) -> None:
+        staging = path.with_name(path.name + artifact.INCOMPLETE_SUFFIX)
+        if staging.exists() or staging.is_symlink():
+            raise artifact.ArtifactExistsError(
+                f"incomplete artifact already exists: {staging}")
+
+    def completed_prefix() -> int:
+        present = tuple(path.exists() or path.is_symlink() for path in paths)
+        allowed = {
+            (False, False, False): 0,
+            (True, False, False): 1,
+            (True, True, False): 2,
+            (True, True, True): 3,
+        }
+        if present not in allowed:
+            occupied = [str(path) for path, exists in zip(paths, present)
+                        if exists]
+            raise artifact.ArtifactExistsError(
+                "completed artifact already exists outside a reusable "
+                f"request/result/frame prefix: {occupied}")
+        return allowed[present]
+
+    for path in paths:
+        require_no_staging(path)
+        for ancestor in (path.parent, *path.parent.parents):
+            if ancestor.is_symlink():
+                raise AdoptionError(
+                    f"publication parent chain contains a symlink: {ancestor}")
+    prefix = completed_prefix()
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise AdoptionError(
+                f"publication parent is not a regular directory: {path.parent}")
+    # Close the predictable race introduced by creating missing parents.
+    for path in paths:
+        require_no_staging(path)
+    if completed_prefix() != prefix:
+        raise artifact.ArtifactExistsError(
+            "adoption publication prefix changed during preflight")
+    return paths, prefix
+
+
+def _reopen_exact_artifact(
+        path: Path, expected_ref: artifact.ArtifactRef, *,
+        upstreams: Sequence[artifact.ArtifactRef],
+        config: Mapping[str, Any],
+        declared_outputs: Sequence[str]) -> artifact.ArtifactRef:
+    reopened = artifact.open_artifact(
+        path,
+        expected_kind=expected_ref.kind,
+        expected_dataset=expected_ref.dataset,
+        expected_version=expected_ref.version)
+    if reopened.to_dict() != expected_ref.to_dict():
+        raise AdoptionError(
+            f"published artifact changed while reopening: {path}")
+    manifest = artifact.load_manifest(path)
+    if manifest.upstreams != tuple(upstreams):
+        raise AdoptionError(
+            f"published artifact has different upstream lineage: {path}")
+    if dict(manifest.config) != dict(config):
+        raise AdoptionError(
+            f"published artifact has different immutable config: {path}")
+    if manifest.declared_outputs != tuple(sorted(declared_outputs)):
+        raise AdoptionError(
+            f"published artifact has different declared outputs: {path}")
+    return reopened
+
+
+def _reuse_exact_artifact(
+        path: Path, *, kind: str, dataset: str, version: str,
+        git_commit: str, arguments: Sequence[str],
+        upstreams: Sequence[artifact.ArtifactRef],
+        config: Mapping[str, Any],
+        declared_outputs: Sequence[str]) -> artifact.ArtifactRef:
+    """Validate and reuse one immutable artifact from a completed prefix."""
+    try:
+        reopened = artifact.open_artifact(
+            path, expected_kind=kind, expected_dataset=dataset,
+            expected_version=version)
+        manifest = artifact.load_manifest(path)
+    except (artifact.ArtifactError, OSError) as error:
+        raise AdoptionError(
+            f"completed adoption prefix is not an exact typed artifact at "
+            f"{path}: {error}") from error
+    if (manifest.generator != GENERATOR
+            or manifest.git_commit != git_commit
+            or manifest.arguments != tuple(arguments)):
+        raise AdoptionError(
+            f"completed adoption prefix has a different publisher invocation: "
+            f"{path}")
+    if manifest.upstreams != tuple(upstreams):
+        raise AdoptionError(
+            f"completed adoption prefix has different upstream lineage: {path}")
+    if dict(manifest.config) != dict(config):
+        raise AdoptionError(
+            f"completed adoption prefix has different immutable config: {path}")
+    if manifest.declared_outputs != tuple(sorted(declared_outputs)):
+        raise AdoptionError(
+            f"completed adoption prefix has different declared outputs: {path}")
+    return reopened
+
+
+def _validated_publication_inputs(
+        plan: AdoptionPlan, request_set: llm_lifecycle.RequestSet,
+        dataset: str, final_build_identity: str,
+        ) -> tuple[artifact.ArtifactRef, dict[str, Any], dict[str, str]]:
+    if not isinstance(plan, AdoptionPlan):
+        raise TypeError("plan must be an AdoptionPlan")
+    if not isinstance(request_set, llm_lifecycle.RequestSet):
+        raise TypeError("request_set must be a RequestSet")
+    dataset = artifact.require_identifier(dataset, "dataset")
+    final_build_identity = _require_sha256(
+        final_build_identity, "final build identity")
+    if request_set.input_digests.get(
+            "build_identity") != final_build_identity:
+        raise AdoptionError(
+            "caller-provided final build identity does not match the "
+            "verified request set")
+    orchestration = {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "extract",
+        "config_digest": _require_sha256(
+            request_set.input_digests.get("orchestration_config", ""),
+            "verified request-set orchestration config digest"),
+    }
+
+    pinhole_ref, _ = _request_contract(dataset, request_set)
+    try:
+        reopened_pinhole = artifact.open_artifact(
+            pinhole_ref.path,
+            expected_kind=paths_lib.PINHOLE_IMAGES,
+            expected_dataset=dataset,
+            expected_version=pinhole_ref.version)
+    except artifact.ArtifactError as error:
+        raise AdoptionError(
+            f"verified pinhole artifact no longer reopens: {error}") from error
+    if reopened_pinhole.to_dict() != pinhole_ref.to_dict():
+        raise AdoptionError(
+            "verified pinhole identity changed before publication")
+
+    report_digest = _require_sha256(
+        plan.report_sha256, "verification report digest")
+    if artifact.sha256_json(plan.report) != report_digest:
+        raise AdoptionError("verification report changed after verification")
+    report = plan.report
+    try:
+        anchors_ok = (
+            report["schema"] == REPORT_SCHEMA
+            and report["dataset"] == dataset
+            and report["status"] == "ready_for_explicit_publication"
+            and report["provider_calls"] == 0
+            and report["request_set"]["fingerprint"]
+                == request_set.fingerprint
+            and report["pinhole_images"]["artifact_ref"]
+                == pinhole_ref.to_dict()
+            and report["attempt_summary"]["raw_provenance"]
+                == "complete_by_source_and_line_digest"
+            and report["publication_plan"]["provider_calls"] == 0
+            and report["publication_plan"]["raw_source_policy"]
+                == "retain_verbatim_by_reported_sha256"
+            and isinstance(report["normalization_ledger"], list)
+            and isinstance(report["sanitation_ledger"], list))
+    except (KeyError, TypeError):
+        anchors_ok = False
+    if not anchors_ok:
+        raise AdoptionError(
+            "verification report lacks the required zero-call raw-source proof")
+
+    canonical_bytes = llm_lifecycle.canonical_results_bytes(
+        request_set, plan.canonical_results)
+    prediction_bytes = extract_landmarks.predictions_bytes(
+        request_set, plan.canonical_results)
+    if canonical_bytes != plan.canonical_results_bytes:
+        raise AdoptionError("canonical results changed after verification")
+    if prediction_bytes != plan.predictions_bytes:
+        raise AdoptionError("frame predictions changed after verification")
+    attempt_ids = {attempt.attempt_id for attempt in plan.attempts}
+    if (any(attempt.request_set_fingerprint != request_set.fingerprint
+            for attempt in plan.attempts)
+            or any(result.attempt_id not in attempt_ids
+                   for result in plan.canonical_results)):
+        raise AdoptionError(
+            "verified canonical results no longer bind their preserved attempts")
+    canonical_report = report.get("canonical_outputs")
+    if (not isinstance(canonical_report, dict)
+            or canonical_report.get("n_results")
+                != len(plan.canonical_results)
+            or canonical_report.get("canonical_results_sha256")
+                != hashlib.sha256(canonical_bytes).hexdigest()
+            or canonical_report.get("predictions_sha256")
+                != hashlib.sha256(prediction_bytes).hexdigest()):
+        raise AdoptionError(
+            "verification report does not bind the current typed output bytes")
+
+    proof = {
+        "schema": PUBLICATION_PROOF_SCHEMA,
+        "verification_report_sha256": report_digest,
+        "verification_report": _json_clone(report),
+    }
+    return pinhole_ref, proof, orchestration
+
+
+def publish_verified_adoption(
+        *, plan: AdoptionPlan, request_set: llm_lifecycle.RequestSet,
+        dataset: str, final_build_identity: str, frame_version: str,
+        request_output_dir: Path | str, result_output_dir: Path | str,
+        frame_output_dir: Path | str, arguments: Sequence[str] = (),
+        git_commit: str | None = None) -> AdoptionPublication:
+    """Publish verified paid outputs without making any provider call.
+
+    Destinations must be absent or form an exact completed request/result/frame
+    prefix from the same invocation. Each typed artifact is atomically
+    published, reopened, and compared with its exact manifest, lineage, and
+    payload. A retry validates and reuses the completed prefix before writing
+    its missing suffix.
+    """
+    dataset = artifact.require_identifier(dataset, "dataset")
+    final_build_identity = _require_sha256(
+        final_build_identity, "final build identity")
+    frame_version = artifact.require_identifier(
+        frame_version, "frame landmark version")
+    pinhole_ref, proof, orchestration = _validated_publication_inputs(
+        plan, request_set, dataset, final_build_identity)
+    fingerprint = request_set.fingerprint
+    request_version = _derived_version(
+        frame_version, "requests", fingerprint)
+    result_version = _derived_version(
+        frame_version, "results", fingerprint)
+    commit = provenance.git_commit() if git_commit is None else git_commit
+    if not isinstance(commit, str) or not commit:
+        raise AdoptionError("git_commit must be a non-empty string")
+    artifact_arguments = tuple(arguments)
+    if not all(isinstance(value, str) for value in artifact_arguments):
+        raise AdoptionError("artifact arguments must be strings")
+    publication_paths, completed_prefix = _preflight_publication_paths(
+        (Path(request_output_dir), Path(result_output_dir),
+         Path(frame_output_dir)),
+        protected_paths=(Path(pinhole_ref.path),))
+    request_dir, result_dir, frame_dir = publication_paths
+
+    report_digest = plan.report_sha256
+    request_set_bytes = (
+        artifact.canonical_json_bytes(request_set.to_dict()) + b"\n")
+    transport_bytes = llm_lifecycle.transport_requests_bytes(request_set)
+
+    request_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": orchestration,
+        "build_identity": final_build_identity,
+        "request_set_fingerprint": fingerprint,
+        **extract_landmarks.legacy_adoption_marker(report_digest),
+        "n_expected": len(request_set.units),
+        "legacy_adoption": proof,
+    }
+    if completed_prefix >= 1:
+        request_ref = _reuse_exact_artifact(
+            request_dir,
+            kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+            dataset=dataset,
+            version=request_version,
+            git_commit=commit,
+            arguments=artifact_arguments,
+            upstreams=(pinhole_ref,),
+            config=request_config,
+            declared_outputs=(
+                llm_lifecycle.REQUEST_SET_NAME,
+                llm_lifecycle.REQUESTS_NAME))
+    else:
+        with publication.published_artifact(
+                request_dir,
+                kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+                dataset=dataset,
+                version=request_version,
+                generator=GENERATOR,
+                git_commit=commit,
+                arguments=artifact_arguments,
+                upstreams=(pinhole_ref,),
+                config=request_config,
+                declared_outputs=(
+                    llm_lifecycle.REQUEST_SET_NAME,
+                    llm_lifecycle.REQUESTS_NAME)) as builder:
+            artifact.atomic_write_file(
+                builder.output_path(llm_lifecycle.REQUEST_SET_NAME),
+                request_set_bytes)
+            artifact.atomic_write_file(
+                builder.output_path(llm_lifecycle.REQUESTS_NAME),
+                transport_bytes)
+        assert builder.artifact_ref is not None
+        request_ref = _reopen_exact_artifact(
+            request_dir, builder.artifact_ref,
+            upstreams=(pinhole_ref,), config=request_config,
+            declared_outputs=(
+                llm_lifecycle.REQUEST_SET_NAME,
+                llm_lifecycle.REQUESTS_NAME))
+    if (request_dir / llm_lifecycle.REQUEST_SET_NAME).read_bytes() \
+            != request_set_bytes:
+        raise AdoptionError("reopened request artifact changed request_set.json")
+    if (request_dir / llm_lifecycle.REQUESTS_NAME).read_bytes() \
+            != transport_bytes:
+        raise AdoptionError("reopened request artifact changed requests.jsonl")
+    recorded_request_set = llm_lifecycle.load_request_set(
+        request_dir / llm_lifecycle.REQUEST_SET_NAME)
+    if recorded_request_set.to_dict() != request_set.to_dict():
+        raise AdoptionError("reopened request artifact contains another workload")
+
+    result_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": orchestration,
+        "build_identity": final_build_identity,
+        "request_set_fingerprint": fingerprint,
+        "n_expected": len(request_set.units),
+        "n_successful": len(plan.canonical_results),
+        "coverage": "complete",
+        **extract_landmarks.legacy_adoption_marker(report_digest),
+    }
+    if completed_prefix >= 2:
+        result_ref = _reuse_exact_artifact(
+            result_dir,
+            kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+            dataset=dataset,
+            version=result_version,
+            git_commit=commit,
+            arguments=artifact_arguments,
+            upstreams=(request_ref,),
+            config=result_config,
+            declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+    else:
+        with publication.published_artifact(
+                result_dir,
+                kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+                dataset=dataset,
+                version=result_version,
+                generator=GENERATOR,
+                git_commit=commit,
+                arguments=artifact_arguments,
+                upstreams=(request_ref,),
+                config=result_config,
+                declared_outputs=(
+                    llm_lifecycle.CANONICAL_RESULTS_NAME,)) as builder:
+            artifact.atomic_write_file(
+                builder.output_path(llm_lifecycle.CANONICAL_RESULTS_NAME),
+                plan.canonical_results_bytes)
+        assert builder.artifact_ref is not None
+        result_ref = _reopen_exact_artifact(
+            result_dir, builder.artifact_ref,
+            upstreams=(request_ref,), config=result_config,
+            declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+    if (result_dir / llm_lifecycle.CANONICAL_RESULTS_NAME).read_bytes() \
+            != plan.canonical_results_bytes:
+        raise AdoptionError(
+            "reopened canonical-result artifact changed its payload")
+    loaded_results = llm_lifecycle.load_canonical_results(
+        result_dir / llm_lifecycle.CANONICAL_RESULTS_NAME, request_set)
+    if loaded_results != plan.canonical_results:
+        raise AdoptionError(
+            "reopened canonical-result artifact contains different results")
+
+    frame_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": orchestration,
+        "build_identity": final_build_identity,
+        "prompt_sha256": hashlib.sha256(
+            request_set.system_prompt.encode("utf-8")).hexdigest(),
+        "response_schema_sha256": artifact.sha256_json(
+            request_set.to_dict()["response_schema"]),
+        "request_set_fingerprint": fingerprint,
+        "request_artifact": _ref_identity(request_ref),
+        "canonical_results_artifact": _ref_identity(result_ref),
+        "coverage": "complete",
+        "n_expected": len(request_set.units),
+        "n_successful": len(plan.canonical_results),
+        **extract_landmarks.legacy_adoption_marker(report_digest),
+    }
+    if completed_prefix >= 3:
+        frame_ref = _reuse_exact_artifact(
+            frame_dir,
+            kind=paths_lib.FRAME_LANDMARKS,
+            dataset=dataset,
+            version=frame_version,
+            git_commit=commit,
+            arguments=artifact_arguments,
+            upstreams=(pinhole_ref, result_ref),
+            config=frame_config,
+            declared_outputs=(extract_landmarks.PREDICTIONS_NAME,))
+    else:
+        with publication.published_artifact(
+                frame_dir,
+                kind=paths_lib.FRAME_LANDMARKS,
+                dataset=dataset,
+                version=frame_version,
+                generator=GENERATOR,
+                git_commit=commit,
+                arguments=artifact_arguments,
+                upstreams=(pinhole_ref, result_ref),
+                config=frame_config,
+                declared_outputs=(
+                    extract_landmarks.PREDICTIONS_NAME,)) as builder:
+            artifact.atomic_write_file(
+                builder.output_path(extract_landmarks.PREDICTIONS_NAME),
+                plan.predictions_bytes)
+        assert builder.artifact_ref is not None
+        frame_ref = _reopen_exact_artifact(
+            frame_dir, builder.artifact_ref,
+            upstreams=(pinhole_ref, result_ref), config=frame_config,
+            declared_outputs=(extract_landmarks.PREDICTIONS_NAME,))
+    if (frame_dir / extract_landmarks.PREDICTIONS_NAME).read_bytes() \
+            != plan.predictions_bytes:
+        raise AdoptionError(
+            "reopened frame-landmark artifact changed its predictions")
+
+    return AdoptionPublication(
+        request_artifact=request_ref,
+        canonical_results_artifact=result_ref,
+        frame_landmarks_artifact=frame_ref,
+        verification_report_sha256=report_digest)
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Verify paid legacy landmark extraction and print a zero-call "
-            "typed-publication plan. No artifact is written."))
+            "Verify paid legacy landmark extraction. The default is report-only; "
+            "--publish explicitly creates the verified zero-call typed artifacts."))
     parser.add_argument(
         "--spec", required=True, type=Path,
         help="Strict JSON source inventory (relative paths resolve beside it)")
+    parser.add_argument(
+        "--publish", action="store_true",
+        help="Explicitly authorize no-clobber typed artifact publication")
+    parser.add_argument("--final-build-identity")
+    parser.add_argument("--frame-version")
+    parser.add_argument("--request-output-dir", type=Path)
+    parser.add_argument("--result-output-dir", type=Path)
+    parser.add_argument("--frame-output-dir", type=Path)
     return parser
 
 
+def _publication_cli_values(args: argparse.Namespace) -> tuple[Any, ...] | None:
+    names = (
+        "final_build_identity", "frame_version", "request_output_dir",
+        "result_output_dir", "frame_output_dir")
+    values = tuple(getattr(args, name) for name in names)
+    if not args.publish:
+        if any(value is not None for value in values):
+            raise AdoptionError(
+                "publication options require explicit --publish authorization")
+        return None
+    missing = [name.replace("_", "-") for name, value in zip(names, values)
+               if value is None]
+    if missing:
+        raise AdoptionError(
+            "--publish requires options: " + ", ".join(missing))
+    return values
+
+
 def main(argv: Iterable[str] | None = None) -> int:
-    args = make_parser().parse_args(argv)
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    args = make_parser().parse_args(arguments)
     try:
-        plan = verify_spec(load_spec(args.spec))
+        spec = load_spec(args.spec)
+        request_set = llm_lifecycle.load_request_set(spec.request_set_path)
+        plan = verify_adoption(
+            dataset=spec.dataset,
+            request_set=request_set,
+            pinhole_dir=spec.pinhole_dir,
+            request_sources=spec.request_sources,
+            result_sources=spec.result_sources,
+            empty_error_sidecars=spec.empty_error_sidecars,
+            spec_sha256=spec.spec_sha256)
+        values = _publication_cli_values(args)
+        if values is None:
+            output: Any = plan.report
+        else:
+            (final_build_identity, frame_version, request_output_dir,
+             result_output_dir, frame_output_dir) = values
+            output = publish_verified_adoption(
+                plan=plan,
+                request_set=request_set,
+                dataset=spec.dataset,
+                final_build_identity=final_build_identity,
+                frame_version=frame_version,
+                request_output_dir=request_output_dir,
+                result_output_dir=result_output_dir,
+                frame_output_dir=frame_output_dir,
+                arguments=arguments).to_dict()
     except (AdoptionError, artifact.ArtifactError,
-            llm_lifecycle.LlmLifecycleError, OSError) as error:
+            llm_lifecycle.LlmLifecycleError,
+            publication.PublicationValidationError, OSError) as error:
         print(f"legacy extraction adoption rejected: {error}", file=sys.stderr)
         return 1
-    print(json.dumps(plan.report, indent=2, sort_keys=True))
+    print(json.dumps(output, indent=2, sort_keys=True))
     return 0
 
 

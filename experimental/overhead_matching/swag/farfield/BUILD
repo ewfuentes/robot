@@ -242,3 +242,10 @@ py_test(
         "@rules_python//python/runfiles",
     ],
 )
+
+py_test(
+    name = "active_regeneration_config_test",
+    srcs = ["active_regeneration_config_test.py"],
+    data = glob(["configs/active_regeneration/*.yaml"]),
+    deps = [":pipeline_lib"],
+)

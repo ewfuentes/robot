@@ -1,3 +1,4 @@
+import argparse
 import base64
 import io
 import json
@@ -5,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -95,6 +97,7 @@ class LegacyAdoptionFixture(unittest.TestCase):
         self._temporary = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self._temporary)
         self.root = Path(self._temporary)
+        self.build_identity = "a" * 64
         self.pinhole = self.root / "pinhole"
         self.requests = {}
         face_payloads = {}
@@ -179,7 +182,11 @@ class LegacyAdoptionFixture(unittest.TestCase):
                 "thinking_level": "HIGH",
                 "face_order": list(prompts.PINHOLE_FACES),
             },
-            input_digests={"dataset_source": "b" * 64},
+            input_digests={
+                "build_identity": self.build_identity,
+                "dataset_source": "b" * 64,
+                "orchestration_config": "d" * 64,
+            },
             upstreams=(pinhole_ref,),
             units=tuple(llm_lifecycle.RequestUnit(
                 key=key,
@@ -243,6 +250,31 @@ class LegacyAdoptionFixture(unittest.TestCase):
             result_sources=result_sources,
             empty_error_sidecars=sidecars,
         )
+
+    def _publish(self, *, plan=None, final_build_identity=None,
+                 request_dir=None, result_dir=None, frame_dir=None):
+        plan = self._verify() if plan is None else plan
+        publication_root = self.root / "publication"
+        request_dir = (publication_root / "requests"
+                       if request_dir is None else Path(request_dir))
+        result_dir = (publication_root / "results"
+                      if result_dir is None else Path(result_dir))
+        frame_dir = (publication_root / "frame-landmarks"
+                     if frame_dir is None else Path(frame_dir))
+        published = adoption.publish_verified_adoption(
+            plan=plan,
+            request_set=self.request_set,
+            dataset="testset",
+            final_build_identity=(
+                self.build_identity if final_build_identity is None
+                else final_build_identity),
+            frame_version="frame-v7",
+            request_output_dir=request_dir,
+            result_output_dir=result_dir,
+            frame_output_dir=frame_dir,
+            arguments=("--publish",),
+            git_commit="test")
+        return published, (request_dir, result_dir, frame_dir)
 
 
 class CompleteAdoptionTest(LegacyAdoptionFixture):
@@ -334,6 +366,321 @@ class CompleteAdoptionTest(LegacyAdoptionFixture):
         self.assertEqual(event["reason"],
                          "model_authored_empty_bounding_boxes")
         self.assertEqual(plan.canonical_results[1].result["landmarks"], [])
+
+
+class TransactionalPublicationTest(LegacyAdoptionFixture):
+    def test_publishes_exact_typed_lineage_and_authenticated_proof(self):
+        sources = (
+            self.primary_path, self.retry_request_path, self.batch_path,
+            self.retry_path, self.error_sidecar)
+        source_bytes = {path: path.read_bytes() for path in sources}
+        plan = self._verify()
+
+        with mock.patch.object(
+                adoption.extract_landmarks.vbm, "run_requests") as provider:
+            published, (request_dir, result_dir, frame_dir) = self._publish(
+                plan=plan)
+
+        provider.assert_not_called()
+        self.assertEqual(
+            {path: path.read_bytes() for path in sources}, source_bytes)
+        self.assertEqual(
+            artifact.open_artifact(request_dir).to_dict(),
+            published.request_artifact.to_dict())
+        self.assertEqual(
+            artifact.open_artifact(result_dir).to_dict(),
+            published.canonical_results_artifact.to_dict())
+        self.assertEqual(
+            artifact.open_artifact(frame_dir).to_dict(),
+            published.frame_landmarks_artifact.to_dict())
+        self.assertEqual(
+            published.verification_report_sha256, plan.report_sha256)
+
+        request_manifest = artifact.load_manifest(request_dir)
+        self.assertEqual(request_manifest.upstreams, (self.pinhole_ref,))
+        self.assertEqual(
+            request_manifest.declared_outputs,
+            (llm_lifecycle.REQUEST_SET_NAME, llm_lifecycle.REQUESTS_NAME))
+        self.assertEqual(
+            request_manifest.config["build_identity"], self.build_identity)
+        orchestration = {
+            "schema": "farfield_pipeline_stage/v1",
+            "stage": "extract",
+            "config_digest": "d" * 64,
+        }
+        self.assertEqual(
+            request_manifest.config["orchestration"], orchestration)
+        self.assertEqual(
+            request_manifest.config["legacy_adoption_schema"],
+            adoption.extract_landmarks.LEGACY_ADOPTION_CONFIG_SCHEMA)
+        proof = request_manifest.config["legacy_adoption"]
+        self.assertEqual(proof["schema"], adoption.PUBLICATION_PROOF_SCHEMA)
+        self.assertEqual(
+            proof["verification_report_sha256"], plan.report_sha256)
+        self.assertEqual(proof["verification_report"], plan.report)
+        self.assertEqual(
+            artifact.sha256_json(proof["verification_report"]),
+            plan.report_sha256)
+        self.assertEqual(
+            llm_lifecycle.load_request_set(
+                request_dir / llm_lifecycle.REQUEST_SET_NAME).to_dict(),
+            self.request_set.to_dict())
+        self.assertEqual(
+            (request_dir / llm_lifecycle.REQUESTS_NAME).read_bytes(),
+            llm_lifecycle.transport_requests_bytes(self.request_set))
+
+        result_manifest = artifact.load_manifest(result_dir)
+        self.assertEqual(
+            result_manifest.upstreams, (published.request_artifact,))
+        self.assertEqual(
+            result_manifest.config["legacy_adoption_report_sha256"],
+            plan.report_sha256)
+        self.assertEqual(
+            result_manifest.config["orchestration"], orchestration)
+        self.assertEqual(
+            result_manifest.config["legacy_adoption_schema"],
+            adoption.extract_landmarks.LEGACY_ADOPTION_CONFIG_SCHEMA)
+        self.assertEqual(
+            (result_dir / llm_lifecycle.CANONICAL_RESULTS_NAME).read_bytes(),
+            plan.canonical_results_bytes)
+        self.assertEqual(
+            llm_lifecycle.load_canonical_results(
+                result_dir / llm_lifecycle.CANONICAL_RESULTS_NAME,
+                self.request_set),
+            plan.canonical_results)
+
+        frame_manifest = artifact.load_manifest(frame_dir)
+        self.assertEqual(
+            frame_manifest.upstreams,
+            (self.pinhole_ref, published.canonical_results_artifact))
+        self.assertNotIn(published.request_artifact, frame_manifest.upstreams)
+        self.assertEqual(
+            frame_manifest.config["build_identity"], self.build_identity)
+        self.assertEqual(
+            frame_manifest.config["orchestration"], orchestration)
+        self.assertEqual(
+            frame_manifest.config["legacy_adoption_report_sha256"],
+            plan.report_sha256)
+        self.assertEqual(
+            frame_manifest.config["legacy_adoption_schema"],
+            adoption.extract_landmarks.LEGACY_ADOPTION_CONFIG_SCHEMA)
+        self.assertEqual(
+            frame_manifest.config["request_artifact"]["manifest_digest"],
+            published.request_artifact.manifest_digest)
+        self.assertEqual(
+            frame_manifest.config["canonical_results_artifact"]
+            ["manifest_digest"],
+            published.canonical_results_artifact.manifest_digest)
+        self.assertEqual(
+            (frame_dir / adoption.extract_landmarks.PREDICTIONS_NAME)
+            .read_bytes(),
+            plan.predictions_bytes)
+        for path in (request_dir, result_dir, frame_dir):
+            self.assertFalse(path.with_name(
+                path.name + artifact.INCOMPLETE_SUFFIX).exists())
+
+    def test_published_adoption_is_accepted_by_exact_extraction_reuse(self):
+        plan = self._verify()
+        published, (_, _, frame_dir) = self._publish(plan=plan)
+        selected = {
+            "artifacts.frame_landmarks_version": "frame-v7",
+            "artifacts.pinhole_images_version": "pinhole-v4",
+            "extraction.model": "gemini-paid-model",
+            "extraction.prompt_type": "osm_tags_farfield",
+            "extraction.pinhole_resolution": 8,
+            "extraction.media_resolution": "MEDIA_RESOLUTION_HIGH",
+            "extraction.thinking_level": "HIGH",
+        }
+        context = adoption.extract_landmarks.ExtractionContext(
+            document={"build_identity": self.build_identity},
+            selected=selected,
+            orchestration={
+                "schema": "farfield_pipeline_stage/v1",
+                "stage": "extract",
+                "config_digest": "d" * 64,
+            },
+            metadata={},
+            frames=tuple(
+                adoption.extract_landmarks.dataset_lib.Frame(
+                    frame_idx=index, pano_id=f"f{index:04d}",
+                    pano_stem=key, lat=0.0, lon=0.0)
+                for index, key in enumerate(self.KEYS)),
+            dataset_base=self.root,
+            panorama_dir=self.root,
+            input_digests=dict(self.request_set.input_digests),
+        )
+        args = argparse.Namespace(dataset="testset", output_dir=frame_dir)
+        with mock.patch.object(
+                adoption.extract_landmarks, "load_context",
+                return_value=context), mock.patch.object(
+                    adoption.extract_landmarks, "ensure_pinhole_artifact",
+                    return_value=self.pinhole_ref), mock.patch.object(
+                    adoption.extract_landmarks.llm_cost,
+                    "enforce_limit") as cost_gate, mock.patch.object(
+                    adoption.extract_landmarks.vbm,
+                    "run_requests") as provider:
+            reused = adoption.extract_landmarks.run(args)
+
+        cost_gate.assert_not_called()
+        provider.assert_not_called()
+        self.assertEqual(
+            reused, (self.pinhole_ref, published.frame_landmarks_artifact))
+
+    def test_retry_validates_and_reuses_each_completed_prefix(self):
+        plan = self._verify()
+        original_reopen = adoption._reopen_exact_artifact
+        for prefix_length in (1, 2):
+            with self.subTest(prefix_length=prefix_length):
+                root = self.root / f"resume-{prefix_length}"
+                paths = (root / "requests", root / "results", root / "frames")
+                reopened = 0
+
+                def fail_after_reopen(*args, **kwargs):
+                    nonlocal reopened
+                    ref = original_reopen(*args, **kwargs)
+                    reopened += 1
+                    if reopened == prefix_length:
+                        raise adoption.AdoptionError(
+                            "injected failure after completed publication")
+                    return ref
+
+                with mock.patch.object(
+                        adoption, "_reopen_exact_artifact",
+                        side_effect=fail_after_reopen), mock.patch.object(
+                            adoption.extract_landmarks.vbm,
+                            "run_requests") as failed_provider:
+                    with self.assertRaisesRegex(
+                            adoption.AdoptionError, "injected failure"):
+                        self._publish(
+                            plan=plan,
+                            request_dir=paths[0], result_dir=paths[1],
+                            frame_dir=paths[2])
+                failed_provider.assert_not_called()
+
+                self.assertEqual(
+                    [path.exists() for path in paths],
+                    [index < prefix_length for index in range(3)])
+                prefix_refs = [
+                    artifact.open_artifact(path).to_dict()
+                    for path in paths[:prefix_length]
+                ]
+                with mock.patch.object(
+                        adoption.extract_landmarks.vbm,
+                        "run_requests") as provider:
+                    published, _ = self._publish(
+                        plan=plan,
+                        request_dir=paths[0], result_dir=paths[1],
+                        frame_dir=paths[2])
+                provider.assert_not_called()
+                self.assertEqual(
+                    [artifact.open_artifact(path).to_dict()
+                     for path in paths[:prefix_length]],
+                    prefix_refs)
+                self.assertTrue(all(path.exists() for path in paths))
+                self.assertEqual(
+                    artifact.load_manifest(paths[1]).upstreams,
+                    (published.request_artifact,))
+                self.assertEqual(
+                    artifact.load_manifest(paths[2]).upstreams,
+                    (self.pinhole_ref,
+                     published.canonical_results_artifact))
+
+                with mock.patch.object(
+                        adoption.publication, "published_artifact",
+                        side_effect=AssertionError(
+                            "an exact complete prefix must only be reused")):
+                    repeated, _ = self._publish(
+                        plan=plan,
+                        request_dir=paths[0], result_dir=paths[1],
+                        frame_dir=paths[2])
+                self.assertEqual(repeated, published)
+
+    def test_retry_rejects_mismatched_completed_prefix_before_new_writes(self):
+        plan = self._verify()
+        root = self.root / "mismatched-prefix"
+        request_dir, result_dir, frame_dir = (
+            root / "requests", root / "results", root / "frames")
+        original_reopen = adoption._reopen_exact_artifact
+
+        def fail_after_request(*args, **kwargs):
+            ref = original_reopen(*args, **kwargs)
+            raise adoption.AdoptionError(
+                "injected failure after completed request")
+
+        with mock.patch.object(
+                adoption, "_reopen_exact_artifact",
+                side_effect=fail_after_request):
+            with self.assertRaisesRegex(adoption.AdoptionError, "injected"):
+                self._publish(
+                    plan=plan,
+                    request_dir=request_dir, result_dir=result_dir,
+                    frame_dir=frame_dir)
+
+        manifest_path = request_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["n_expected"] += 1
+        artifact.atomic_write_json(manifest_path, document)
+        with self.assertRaisesRegex(
+                adoption.AdoptionError, "different immutable config"):
+            self._publish(
+                plan=plan,
+                request_dir=request_dir, result_dir=result_dir,
+                frame_dir=frame_dir)
+        self.assertFalse(result_dir.exists())
+        self.assertFalse(frame_dir.exists())
+
+    def test_preflight_refuses_completed_or_incomplete_target_before_writes(self):
+        plan = self._verify()
+        for label in ("completed", "incomplete"):
+            with self.subTest(label=label):
+                root = self.root / f"occupied-{label}"
+                request_dir = root / "requests"
+                result_dir = root / "results"
+                frame_dir = root / "frames"
+                occupied = (
+                    result_dir if label == "completed"
+                    else frame_dir.with_name(
+                        frame_dir.name + artifact.INCOMPLETE_SUFFIX))
+                occupied.mkdir(parents=True)
+                sentinel = occupied / "sentinel"
+                sentinel.write_bytes(b"keep")
+
+                with self.assertRaisesRegex(
+                        artifact.ArtifactExistsError,
+                        "artifact already exists"):
+                    self._publish(
+                        plan=plan,
+                        request_dir=request_dir,
+                        result_dir=result_dir,
+                        frame_dir=frame_dir)
+
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse(request_dir.exists())
+                if label == "incomplete":
+                    self.assertFalse(result_dir.exists())
+                    self.assertFalse(frame_dir.exists())
+                else:
+                    self.assertFalse(frame_dir.exists())
+
+    def test_final_build_identity_must_match_verified_request_set(self):
+        plan = self._verify()
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "final build identity does not match"):
+            self._publish(
+                plan=plan, final_build_identity="c" * 64)
+        self.assertFalse((self.root / "publication").exists())
+
+    def test_mutated_verification_report_is_not_publishable(self):
+        plan = self._verify()
+        plan.report["sanitation_ledger"].append({"action": "tampered"})
+
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "report changed after verification"):
+            self._publish(plan=plan)
+
+        self.assertFalse((self.root / "publication").exists())
 
 
 class FailClosedCoverageTest(LegacyAdoptionFixture):
@@ -518,7 +865,7 @@ class FailClosedCoverageTest(LegacyAdoptionFixture):
 
 
 class SpecTest(LegacyAdoptionFixture):
-    def test_strict_spec_loads_relative_paths_and_cli_is_report_only(self):
+    def test_strict_spec_loads_relative_paths_and_cli_requires_write_gate(self):
         request_set_path = self.root / "request_set.json"
         request_set_path.write_text(json.dumps(self.request_set.to_dict()))
         spec_path = self.root / "adoption_spec.json"
@@ -552,6 +899,36 @@ class SpecTest(LegacyAdoptionFixture):
         self.assertEqual(plan.report["spec_sha256"],
                          artifact.sha256_file(spec_path))
         self.assertEqual(plan.report["provider_calls"], 0)
+
+        cli_root = self.root / "cli-publication"
+        unauthorized = [
+            "--spec", str(spec_path),
+            "--frame-version", "frame-v7",
+        ]
+        with mock.patch("builtins.print"):
+            self.assertEqual(adoption.main(unauthorized), 1)
+        self.assertFalse(cli_root.exists())
+
+        authorized = [
+            "--spec", str(spec_path),
+            "--publish",
+            "--final-build-identity", self.build_identity,
+            "--frame-version", "frame-v7",
+            "--request-output-dir", str(cli_root / "requests"),
+            "--result-output-dir", str(cli_root / "results"),
+            "--frame-output-dir", str(cli_root / "frames"),
+        ]
+        with mock.patch.object(
+                adoption.extract_landmarks.vbm, "run_requests") as provider, \
+             mock.patch("builtins.print"):
+            self.assertEqual(adoption.main(authorized), 0)
+        provider.assert_not_called()
+        self.assertEqual(
+            artifact.load_manifest(cli_root / "results").upstreams,
+            (artifact.open_artifact(cli_root / "requests"),))
+        self.assertEqual(
+            artifact.load_manifest(cli_root / "frames").upstreams,
+            (self.pinhole_ref, artifact.open_artifact(cli_root / "results")))
 
 
 if __name__ == "__main__":

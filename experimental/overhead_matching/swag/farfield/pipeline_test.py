@@ -1,8 +1,10 @@
+import argparse
 import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -573,6 +575,51 @@ class ManifestCompletionTest(unittest.TestCase):
         self.assertFalse(pipeline.stage_done(
             "track", self.paths, self.config,
             build_identity=self.build_identity))
+
+    def test_adopted_frame_is_complete_with_direct_result_upstream(self):
+        descriptors = pipeline._output_descriptors(
+            self.paths, self.config, "extract",
+            build_identity=self.build_identity)
+        pinhole_kind, pinhole_version, pinhole_path = descriptors[0]
+        frame_kind, frame_version, frame_path = descriptors[1]
+        pinhole_ref = self.publish(
+            pinhole_kind, pinhole_version, pinhole_path,
+            config=self.shared_pinhole_config())
+        result_ref = self.publish(
+            "llm_results", "adopted-results-v1",
+            self.root / "adopted-results")
+        self.publish(
+            frame_kind, frame_version, frame_path,
+            upstreams=(pinhole_ref, result_ref),
+            config={
+                "orchestration":
+                    pipeline.stage_contract("extract", self.config),
+                "build_identity": self.build_identity,
+                "legacy_adoption_schema":
+                    "farfield.legacy_extraction_adopted_artifact/v1",
+                "legacy_adoption_report_sha256": "d" * 64,
+            })
+
+        self.assertTrue(pipeline.stage_done(
+            "extract", self.paths, self.config,
+            build_identity=self.build_identity))
+        args = argparse.Namespace(
+            build_dir=self.root / "build",
+            only="extract", from_stage=None, to_stage=None,
+            skip=(), dry_run=False)
+        document = {
+            "config": self.config,
+            "build_identity": self.build_identity,
+        }
+        with mock.patch.object(
+                pipeline, "resolve_build",
+                return_value=(self.paths, document)), mock.patch.object(
+                    pipeline, "build_commands",
+                    return_value={"extract": ["unreachable"]}), \
+                mock.patch.object(pipeline, "run") as launcher:
+            pipeline.cmd_run(args, mock.Mock())
+        launcher.assert_not_called()
+
 
     def test_collection_scoped_pinhole_resolves_for_extract_and_tracking(self):
         pinhole_ref, frame_ref = self.publish_stage("extract")
