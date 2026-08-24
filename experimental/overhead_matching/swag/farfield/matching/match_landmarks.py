@@ -20,32 +20,47 @@ asked about every chunk. Distinct *signatures* are matched rather than rows -
 identical tag bundles are things the model cannot tell apart by construction -
 and a matched signature expands to every landmark carrying it.
 
-Outputs under <run_dir>/matching/:
-  requests.jsonl        one per (tracklet batch x map chunk)
-  results.jsonl         raw model output
+The mutable provider boundary lives in a sibling ``<output_dir>.llm-work``
+directory. It is not a scientific artifact and is never consumed downstream.
+Each provider response is retained there as one atomically created immutable
+file under ``attempts/``; there is no shared append log.
+The requested ``output_dir`` is published atomically as one typed
+``landmark_matches`` artifact only after every expected request has exactly one
+schema-valid success. It contains:
+
+  request_set.json      immutable request snapshot
+  requests.jsonl        exact provider inputs
+  canonical_results.jsonl complete, unique, validated results
   signatures.json       signature -> [landmark_id, ...] expansion table
   matches.json          per tracklet: matched landmark_ids, confidence, type
   compatibility.json    list[structs.CompatibilityTable], msgspec-encoded so
                         the localization loader decodes it directly
   settings.json         the provenance reference for this matching run
-  manifest.json         the standard farfield provenance manifest
+  manifest.json         typed artifact identity and upstream/config contract
 
 Run:
   bazel run //experimental/overhead_matching/swag/farfield/matching:match_landmarks -- \\
-      --run_dir <runs>/r003_full_leg1 --build_only [required flags...]
+      --tracks_dir ... --audit_dir ... --catalog_dir ... --output_dir ... \
+      --build_config .../build_config.json --orchestration_config_digest ... \
+      --build_only
 """
 
 import argparse
 import hashlib
 import json
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import msgspec
 
 from common.python.serialization import msgspec_enc_hook
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import build_config
+from experimental.overhead_matching.swag.farfield import llm_lifecycle
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
+from experimental.overhead_matching.swag.farfield import publication
 from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.catalog import (
@@ -111,22 +126,60 @@ name being a longer or shorter variant of another; tags present on one side only
 
 SCHEMA = {
     "type": "object", "required": ["matches"],
+    "additionalProperties": False,
     "properties": {"matches": {"type": "array", "items": {
         "type": "object",
         "required": ["set_1_id", "set_2_matches", "no_match_confidence",
                      "uniqueness_score"],
+        "additionalProperties": False,
         "properties": {
-            "set_1_id": {"type": "integer"},
+            "set_1_id": {"type": "integer", "minimum": 0},
             "set_2_matches": {"type": "array", "items": {
                 "type": "object",
                 "required": ["set_2_id", "match_type", "confidence"],
+                "additionalProperties": False,
                 "properties": {
-                    "set_2_id": {"type": "integer"},
+                    "set_2_id": {"type": "integer", "minimum": 0},
                     "match_type": {"type": "string",
                                    "enum": ["instance", "category"]},
-                    "confidence": {"type": "number"}}}},
-            "no_match_confidence": {"type": "number"},
-            "uniqueness_score": {"type": "integer"}}}}}}
+                    "confidence": {"type": "number", "minimum": 0,
+                                   "maximum": 1}}}},
+            "no_match_confidence": {"type": "number", "minimum": 0,
+                                    "maximum": 1},
+            "uniqueness_score": {"type": "integer", "minimum": 1,
+                                 "maximum": 5}}}}}}
+
+ATTEMPTS_DIR_NAME = llm_lifecycle.ATTEMPTS_DIR_NAME
+TRANSPORT_RESULTS_NAME = "transport_results.jsonl"
+SIGNATURES_NAME = "signatures.json"
+SETTINGS_NAME = "settings.json"
+MATCHES_NAME = "matches.json"
+COMPATIBILITY_NAME = "compatibility.json"
+FINAL_OUTPUTS = (
+    llm_lifecycle.REQUEST_SET_NAME,
+    llm_lifecycle.REQUESTS_NAME,
+    llm_lifecycle.CANONICAL_RESULTS_NAME,
+    SIGNATURES_NAME,
+    SETTINGS_NAME,
+    MATCHES_NAME,
+    COMPATIBILITY_NAME,
+)
+GENERATOR = ("//experimental/overhead_matching/swag/farfield/"
+             "matching:match_landmarks")
+
+MATCHING_CONFIG_KEYS = (
+    "matching.model",
+    "matching.query_batch",
+    "matching.chunk_size",
+    "matching.thinking_level",
+    "matching.confidence_floor",
+    "matching.instance_max_rows",
+    "execution.llm_transport",
+    "execution.batch_gcs_prefix",
+    "execution.approve_cost",
+    "cost.limit_usd",
+    "artifacts.landmark_matches_version",
+)
 
 # The affine seam the design doc SS6 specifies for an uncalibrated matcher:
 # clipped log odds. Mirrors structs.CompatibilityTable's clip contract.
@@ -164,35 +217,6 @@ def build_map_signatures(feather_path: Path):
                        else f"{source}:{text}")
         table[signature(tags)].append(landmark_id)
     return dict(table)
-
-
-def load_tracks(run_dir: Path) -> tuple[dict, dict]:
-    """({track_id: track}, {track_id: range_name}) merged across every
-    tracks_*.json in the run.
-
-    A run may be split across several range files. The old matcher's viewer
-    read only the first (`next(glob)`), silently dropping every other range's
-    tracks; load them all, and refuse a duplicate id rather than let one
-    range's track silently shadow another's.
-    """
-    track_paths = sorted(Path(run_dir).glob("tracks_*.json"))
-    if not track_paths:
-        raise SystemExit(f"no tracks_*.json under {run_dir} -- run the "
-                         f"tracking stage first")
-    tracks, range_by_track = {}, {}
-    for path in track_paths:
-        artifact = json.loads(path.read_text())
-        range_name = (artifact.get("range") or {}).get("name", path.stem)
-        for track in artifact["tracks"]:
-            tid = track["track_id"]
-            if tid in tracks:
-                raise SystemExit(
-                    f"track_id {tid!r} appears in more than one "
-                    f"tracks_*.json under {run_dir} (again in {path.name}); "
-                    f"range files must not share ids")
-            tracks[tid] = track
-            range_by_track[tid] = range_name
-    return tracks, range_by_track
 
 
 def format_query(audit) -> str:
@@ -233,34 +257,22 @@ def format_query(audit) -> str:
 
 
 def query_bundles(tracks: dict, audits: dict) -> dict:
-    """tracklet_id ("T<track_id>") -> Set 1 block. AUDITED TRACKS ONLY.
+    """Artifact-scoped AcceptedTracklet id -> Set 1 block.
 
-    One Set 1 entry per audited track whose verdict is not "drop"; each track
-    IS its own tracklet (tracking/tracklets.py -- the merge stage is gone).
-    There is deliberately no fallback to raw tag votes. A track that was
-    never audited has no canonical semantics, no reconciled name, and no
-    description - matching it would mean matching un-adjudicated detector
-    output, and any match it earned could not be trusted downstream. Such
-    tracks are dropped from the pipeline, not silently downgraded.
+    Acceptance, source binding, valid segments, and global identity all come
+    from tracking/tracklets.py's single policy. There is deliberately no
+    fallback to raw tag votes or run-local ids at this stage.
     """
-    out = {}
-    n_dropped = 0
-    orphaned = []
-    for track_id, audit in sorted(audits.items(), key=lambda kv: str(kv[0])):
-        if (audit or {}).get("verdict") == "drop":
-            n_dropped += 1
-            continue
-        track = tracks.get(track_id)
-        if track is None:
-            orphaned.append(track_id)
-            continue
-        out[tracklets.tracklet_id(track)] = format_query(audit)
+    accepted = tracklets.build_accepted_tracklets(tracks, audits)
+    out = {
+        item.tracklet_id: format_query(item.audit)
+        for item in accepted
+    }
+    n_dropped = sum(
+        1 for audit in audits.values()
+        if isinstance(audit, dict) and audit.get("verdict") == "drop")
     if n_dropped:
         print(f"  excluded {n_dropped} audited tracks with verdict=drop")
-    if orphaned:
-        print(f"  WARNING: {len(orphaned)} audited track ids are missing "
-              f"from tracks_*.json (e.g. {orphaned[:3]}); the audit was "
-              f"built against a different tracks artifact")
     return out
 
 
@@ -284,6 +296,7 @@ def build_requests(queries, sig_chunks, query_batch, thinking):
                 "key": f"q{qi:04d}_c{ci:04d}",
                 "batch_keys": batch,
                 "chunk_index": ci,
+                "chunk_signatures": list(chunk),
                 "request": {
                     "contents": [{"parts": [{"text": user}], "role": "user"}],
                     "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -294,7 +307,132 @@ def build_requests(queries, sig_chunks, query_batch, thinking):
     return records
 
 
-def aggregate(results_path, records_by_key, sig_chunks, sig_to_ids):
+def _exact_keys(value, expected, what):
+    if not isinstance(value, dict) or set(value) != set(expected):
+        actual = set(value) if isinstance(value, dict) else set()
+        raise ValueError(
+            f"{what} must have exact keys {sorted(expected)}; "
+            f"missing={sorted(set(expected) - actual)}, "
+            f"unknown={sorted(actual - set(expected))}")
+
+
+def _integer(value, what, *, minimum=None, maximum=None):
+    if type(value) is not int:
+        raise ValueError(f"{what} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{what} must be >= {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{what} must be <= {maximum}")
+    return value
+
+
+def _probability(value, what):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{what} must be a number")
+    value = float(value)
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{what} must be finite and in [0, 1]")
+    return value
+
+
+def _reject_duplicate_json_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        value[key] = item
+    return value
+
+
+def validate_matching_response(key, response, metadata):
+    """Decode one provider response and enforce complete inner coverage."""
+    if not isinstance(response, dict):
+        raise ValueError("provider response must be an object")
+    candidates = response.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) != 1:
+        raise ValueError("provider response must contain exactly one candidate")
+    candidate = candidates[0]
+    if not isinstance(candidate, dict):
+        raise ValueError("response candidate must be an object")
+    content = candidate.get("content")
+    if not isinstance(content, dict):
+        raise ValueError("response candidate content must be an object")
+    parts = content.get("parts")
+    if not isinstance(parts, list) or len(parts) != 1:
+        raise ValueError("response content must contain exactly one part")
+    part = parts[0]
+    if not isinstance(part, dict) or set(part) != {"text"} or not isinstance(
+            part["text"], str):
+        raise ValueError("response part must contain exactly one text string")
+    try:
+        payload = json.loads(
+            part["text"], object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {value!r}")))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"response text is not JSON: {error}") from error
+    _exact_keys(payload, {"matches"}, "matching payload")
+    entries = payload["matches"]
+    batch_keys = metadata["batch_keys"]
+    chunk = metadata["chunk_signatures"]
+    if not isinstance(entries, list) or len(entries) != len(batch_keys):
+        raise ValueError(
+            f"request {key!r} must return exactly {len(batch_keys)} Set 1 "
+            f"entries; found {len(entries) if isinstance(entries, list) else '?'}")
+    validated = []
+    seen_set1 = set()
+    for entry_index, entry in enumerate(entries):
+        _exact_keys(entry, {"set_1_id", "set_2_matches",
+                            "no_match_confidence", "uniqueness_score"},
+                    f"matches[{entry_index}]")
+        set1_id = _integer(entry["set_1_id"],
+                           f"matches[{entry_index}].set_1_id",
+                           minimum=0, maximum=len(batch_keys) - 1)
+        if set1_id in seen_set1:
+            raise ValueError(f"duplicate set_1_id {set1_id} in request {key!r}")
+        seen_set1.add(set1_id)
+        raw_matches = entry["set_2_matches"]
+        if not isinstance(raw_matches, list):
+            raise ValueError("set_2_matches must be a list")
+        set2_matches = []
+        seen_set2 = set()
+        for match_index, match in enumerate(raw_matches):
+            _exact_keys(match, {"set_2_id", "match_type", "confidence"},
+                        f"set_2_matches[{match_index}]")
+            set2_id = _integer(
+                match["set_2_id"], f"set_2_matches[{match_index}].set_2_id",
+                minimum=0, maximum=len(chunk) - 1)
+            if set2_id in seen_set2:
+                raise ValueError(
+                    f"duplicate set_2_id {set2_id} for set_1_id {set1_id}")
+            seen_set2.add(set2_id)
+            match_type = match["match_type"]
+            if match_type not in ("instance", "category"):
+                raise ValueError(f"invalid match_type {match_type!r}")
+            set2_matches.append({
+                "set_2_id": set2_id,
+                "match_type": match_type,
+                "confidence": _probability(
+                    match["confidence"],
+                    f"set_2_matches[{match_index}].confidence"),
+            })
+        validated.append({
+            "set_1_id": set1_id,
+            "set_2_matches": set2_matches,
+            "no_match_confidence": _probability(
+                entry["no_match_confidence"],
+                f"matches[{entry_index}].no_match_confidence"),
+            "uniqueness_score": _integer(
+                entry["uniqueness_score"],
+                f"matches[{entry_index}].uniqueness_score",
+                minimum=1, maximum=5),
+        })
+    if seen_set1 != set(range(len(batch_keys))):
+        raise ValueError(f"request {key!r} does not cover every Set 1 entry")
+    return {"matches": sorted(validated, key=lambda item: item["set_1_id"])}
+
+
+def aggregate(canonical_results, records_by_key, sig_to_ids):
     """Fold per-(batch, chunk) answers into per-tracklet matches.
 
     A matched signature expands to EVERY landmark carrying it, each at the
@@ -322,43 +460,21 @@ def aggregate(results_path, records_by_key, sig_chunks, sig_to_ids):
     """
     per_tracklet = defaultdict(dict)      # tid -> landmark_id -> (conf, kind)
     no_match = defaultdict(list)
-    errors = 0
-    with open(results_path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            meta = records_by_key.get(record.get("key"))
-            if meta is None or record.get("error"):
-                errors += 1
-                continue
-            try:
-                text = record["response"]["candidates"][0]["content"][
-                    "parts"][0]["text"]
-                payload = json.loads(text)
-            except Exception:  # noqa: BLE001
-                errors += 1
-                continue
-            chunk = sig_chunks[meta["chunk_index"]]
-            for entry in payload.get("matches", []):
-                idx = int(entry.get("set_1_id", -1))
-                if not 0 <= idx < len(meta["batch_keys"]):
-                    continue
-                tid = meta["batch_keys"][idx]
-                if entry.get("no_match_confidence") is not None:
-                    no_match[tid].append(float(entry["no_match_confidence"]))
-                for match in entry.get("set_2_matches", []):
-                    sid = int(match.get("set_2_id", -1))
-                    if not 0 <= sid < len(chunk):
-                        continue
-                    conf = float(match.get("confidence") or 0.0)
-                    kind = match.get("match_type", "category")
-                    for landmark_id in sig_to_ids.get(chunk[sid], []):
-                        prev = per_tracklet[tid].get(landmark_id)
-                        if prev is None or conf > prev[0]:
-                            per_tracklet[tid][landmark_id] = (
-                                conf, kind, chunk[sid])
-    return per_tracklet, no_match, errors
+    for record in canonical_results:
+        meta = records_by_key[record.key]
+        chunk = meta["chunk_signatures"]
+        for entry in record.result["matches"]:
+            tid = meta["batch_keys"][entry["set_1_id"]]
+            no_match[tid].append(entry["no_match_confidence"])
+            for match in entry["set_2_matches"]:
+                signature_text = chunk[match["set_2_id"]]
+                for landmark_id in sig_to_ids[signature_text]:
+                    previous = per_tracklet[tid].get(landmark_id)
+                    candidate = (match["confidence"], match["match_type"],
+                                 signature_text)
+                    if previous is None or candidate[0] > previous[0]:
+                        per_tracklet[tid][landmark_id] = candidate
+    return per_tracklet, no_match
 
 
 def global_no_match(matches, per_slice):
@@ -411,86 +527,220 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
     )
 
 
-def write_settings(out: Path, args, paths, records, sigs, queries):
-    """Everything needed to reproduce this matching run, beside its outputs.
+def make_request_set(records, *, model, thinking_level, build_identity,
+                     orchestration_config_digest, upstreams):
+    """Bind the complete matching workload, including ordered unit context."""
+    input_digests = {
+        "build_identity": build_identity,
+        "orchestration_config": orchestration_config_digest,
+    }
+    input_digests.update({ref.kind: ref.content_digest for ref in upstreams})
+    units = tuple(llm_lifecycle.RequestUnit(
+        key=record["key"],
+        request=record["request"],
+        metadata={
+            "batch_keys": record["batch_keys"],
+            "chunk_index": record["chunk_index"],
+            "chunk_signatures": record["chunk_signatures"],
+        },
+    ) for record in records)
+    return llm_lifecycle.RequestSet.create(
+        stage="landmark_matching",
+        model=model,
+        system_prompt=SYSTEM_PROMPT,
+        response_schema=SCHEMA,
+        media_settings={
+            "response_mime_type": "application/json",
+            "thinking_level": thinking_level,
+        },
+        input_digests=input_digests,
+        upstreams=upstreams,
+        units=units,
+    )
 
-    Without this the artifact was unreproducible: `request_meta.json` holds only
-    a key-to-chunk mapping, and the model was never recorded anywhere at all
-    (`results.jsonl` carries request and response but no model field), so
-    "which model produced these matches" had no answer from the artifact. The
-    prompt is hashed rather than named for the same reason the extraction's is:
-    `SYSTEM_PROMPT` is a module constant that can be edited in place.
 
-    Readers (the match viewer above all) consume the RECORDED values here --
-    notably `feather` -- rather than re-resolving through path defaults, so
-    what they show is what this run actually matched against.
-    """
-    settings = {
-        "generator": ("//experimental/overhead_matching/swag/farfield/"
-                      "matching:match_landmarks"),
-        "git_commit": provenance.git_commit(),
-        "dataset": paths.dataset,
-        "run": out.parent.name,
-        "feather": str(paths.feather),
-        "model": args.model,
-        "submitted_by_matcher": bool(args.submit),
-        "transport": "online" if args.online else "batch",
+def _request_metadata(request_set):
+    return {
+        unit.key: {
+            "batch_keys": list(unit.metadata["batch_keys"]),
+            "chunk_index": unit.metadata["chunk_index"],
+            "chunk_signatures": list(unit.metadata["chunk_signatures"]),
+        }
+        for unit in request_set.units
+    }
+
+
+def matching_work_dir(output_dir: Path) -> Path:
+    """Mutable retry state beside, never inside, the published artifact."""
+    output_dir = Path(output_dir)
+    return output_dir.with_name(output_dir.name + ".llm-work")
+
+
+def _write_once_or_verify(path: Path, data: bytes, label: str) -> None:
+    """Create immutable work input once, or require byte identity on resume."""
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
+            raise ValueError(
+                f"recorded {label} at {path} differs from the requested "
+                "workload; choose a new output artifact version")
+        return
+    artifact.atomic_write_file(path, data)
+
+
+def record_work_snapshot(work_dir: Path,
+                         request_set: llm_lifecycle.RequestSet,
+                         sig_to_ids: dict) -> None:
+    """Record the immutable request boundary in mutable orchestration state."""
+    work_dir = Path(work_dir)
+    if work_dir.is_symlink() or (work_dir.exists() and not work_dir.is_dir()):
+        raise ValueError(f"matching work path is not a directory: {work_dir}")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    request_path = work_dir / llm_lifecycle.REQUEST_SET_NAME
+    if request_path.exists() or request_path.is_symlink():
+        recorded = llm_lifecycle.load_request_set(request_path)
+        if recorded.fingerprint != request_set.fingerprint:
+            raise ValueError(
+                f"recorded matching request set at {request_path} differs "
+                "from the requested workload; choose a new output artifact "
+                "version")
+    else:
+        artifact.atomic_write_json(request_path, request_set.to_dict())
+    _write_once_or_verify(
+        work_dir / llm_lifecycle.REQUESTS_NAME,
+        llm_lifecycle.transport_requests_bytes(request_set),
+        "matching transport requests")
+    _write_once_or_verify(
+        work_dir / SIGNATURES_NAME,
+        artifact.canonical_json_bytes(sig_to_ids) + b"\n",
+        "matching signature table")
+
+
+def load_matching_config(args):
+    """Validate the exact immutable recipe and matching stage digest."""
+    config_path = Path(args.build_config)
+    if config_path.name != build_config.BUILD_CONFIG_NAME:
+        raise ValueError(
+            f"--build_config must name {build_config.BUILD_CONFIG_NAME}")
+    document = build_config.load(config_path.parent)
+    if config_path.resolve() != (
+            config_path.parent / build_config.BUILD_CONFIG_NAME).resolve():
+        raise ValueError("--build_config does not name the loaded recipe")
+    if document["dataset"] != args.dataset:
+        raise ValueError(
+            f"build config dataset {document['dataset']!r} does not match "
+            f"--dataset {args.dataset!r}")
+    if args.dataset_base is not None:
+        recorded_base = document["inputs"].get("dataset_base")
+        if recorded_base is None or Path(recorded_base).resolve() != Path(
+                args.dataset_base).resolve():
+            raise ValueError(
+                "--dataset_base does not match build_config inputs.dataset_base")
+    selected = {key: build_config.value(document, key)
+                for key in MATCHING_CONFIG_KEYS}
+    actual_digest = artifact.sha256_json(selected)
+    if args.orchestration_config_digest != actual_digest:
+        raise ValueError(
+            "--orchestration_config_digest does not match the immutable "
+            "matching/execution/cost recipe")
+
+    specs = {
+        "matching.model": build_config.ValueSpec((str,), nonempty=True),
+        "matching.query_batch": build_config.ValueSpec((int,), minimum=1),
+        "matching.chunk_size": build_config.ValueSpec((int,), minimum=1),
+        "matching.thinking_level": build_config.ValueSpec(
+            (str,), nonempty=True),
+        "matching.confidence_floor": build_config.ValueSpec(
+            (int, float), minimum=0.0, maximum=1.0),
+        "matching.instance_max_rows": build_config.ValueSpec(
+            (int,), minimum=1),
+        "execution.llm_transport": build_config.ValueSpec(
+            (str,), choices=("batch", "on_demand")),
+        "execution.batch_gcs_prefix": build_config.ValueSpec(
+            (str,), allow_none=True, nonempty=True),
+        "execution.approve_cost": build_config.ValueSpec((bool,)),
+        "cost.limit_usd": build_config.ValueSpec(
+            (int, float), minimum=0.0),
+        "artifacts.landmark_matches_version": build_config.ValueSpec(
+            (str,), nonempty=True),
+    }
+    for key, spec in specs.items():
+        spec.validate(key, selected[key])
+    return document, selected, {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "match",
+        "config_digest": actual_digest,
+    }
+
+
+def validate_execution_args(args, selected) -> None:
+    """Refuse execution flags that disagree with the recorded recipe."""
+    expected_online = selected["execution.llm_transport"] == "on_demand"
+    if bool(args.online) != expected_online:
+        raise ValueError(
+            "--online selection disagrees with execution.llm_transport")
+    expected_prefix = selected["execution.batch_gcs_prefix"]
+    if ((expected_online and args.gcs_prefix is not None)
+            or (not expected_online and args.gcs_prefix != expected_prefix)):
+        raise ValueError(
+            "--gcs_prefix disagrees with execution.batch_gcs_prefix")
+    if bool(args.approve_cost) != selected["execution.approve_cost"]:
+        raise ValueError(
+            "--approve_cost disagrees with execution.approve_cost")
+    expected_limit = float(selected["cost.limit_usd"])
+    if args.cost_limit is not None and args.cost_limit != expected_limit:
+        raise ValueError("--cost_limit disagrees with cost.limit_usd")
+    args.cost_limit = expected_limit
+    args.model = selected["matching.model"]
+
+
+def settings_document(*, args, selected, records, sigs, queries,
+                      request_set, catalog_path, upstreams, build_identity):
+    """Human-readable reproduction summary within the immutable artifact."""
+    return {
+        "generator": GENERATOR,
+        "dataset": args.dataset,
+        "catalog_feather": str(catalog_path),
+        "model": selected["matching.model"],
+        "transport": selected["execution.llm_transport"],
         "system_prompt_sha256": hashlib.sha256(
             SYSTEM_PROMPT.encode()).hexdigest(),
-        "thinking_level": args.thinking_level,
+        "thinking_level": selected["matching.thinking_level"],
         "support_gate": ("audit membership: a track without a semantic audit "
                          "has no Set 1 entry, and verdict=drop is excluded "
                          "(replaces the retired --min_supports flag)"),
-        "query_batch": args.query_batch,
-        "chunk_size": args.chunk_size,
-        "confidence_floor": args.confidence_floor,
-        "instance_max_rows": args.instance_max_rows,
+        "query_batch": selected["matching.query_batch"],
+        "chunk_size": selected["matching.chunk_size"],
+        "confidence_floor": selected["matching.confidence_floor"],
+        "instance_max_rows": selected["matching.instance_max_rows"],
         "n_set1": len(queries),
         "n_requests": len(records),
         "n_signatures": len(sigs),
+        "request_set_fingerprint": request_set.fingerprint,
+        "required_result_coverage": "complete",
+        "build_identity": build_identity,
+        "upstreams": [ref.to_dict() for ref in upstreams],
         "spatial_gating": ("none - set 2 is the whole catalog, so the catalog's "
                            "extent bounds what can match"),
     }
-    (out / "settings.json").write_text(json.dumps(settings, indent=1) + "\n")
-    print(f"wrote {out}/settings.json")
-    provenance.write(
-        out,
-        generator=settings["generator"],
-        inputs={"run_dir": args.run_dir, "feather": paths.feather},
-        config=settings)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    paths_lib.add_arguments(parser, feather=True)
-    parser.add_argument("--run_dir", type=Path, required=True)
-    # Result-shaping values are required (REORG.md rule 2: no stale defaults
-    # on assumption-carrying args). Previous defaults are quoted for
-    # reference, not authority.
-    # TODO(REORG.md PR 12): these move into the run's recorded config
-    # (run_config.json); CLI-required until then.
-    parser.add_argument("--query_batch", type=int, required=True,
-                        help="Set 1 tracklets per request (previously 10 on "
-                             "the harbor datasets)")
-    parser.add_argument("--chunk_size", type=int, required=True,
-                        help="Map signatures per Set 2 slice (previously 500 "
-                             "on the harbor datasets)")
-    parser.add_argument("--thinking_level", required=True,
-                        help="Gemini thinkingLevel for every request "
-                             "(previously HIGH)")
-    parser.add_argument("--confidence_floor", type=float, required=True,
-                        help="Matches below this are dropped from the table "
-                             "(previously 0.05)")
-    parser.add_argument("--instance_max_rows", type=int, required=True,
-                        help="A signature covering more than this many map "
-                             "rows cannot be an 'instance' match by "
-                             "definition - the tags do not identify one "
-                             "object - so the label is downgraded to "
-                             "'category' in code rather than trusted "
-                             "(previously 5).")
-    vbm.add_execution_arguments(parser)
+    paths_lib.add_arguments(parser, dataset_required=True)
+    parser.add_argument("--tracks_dir", type=Path, required=True)
+    parser.add_argument("--audit_dir", type=Path, required=True)
+    parser.add_argument("--catalog_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--build_config", type=Path, required=True)
+    parser.add_argument("--orchestration_config_digest", required=True)
+    parser.add_argument("--online", action="store_true")
+    parser.add_argument("--gcs_prefix", default=None)
+    parser.add_argument("--parallel", type=int, default=8)
+    parser.add_argument("--poll_interval", type=int, default=120)
+    parser.add_argument("--cost_limit", type=float, default=None)
+    parser.add_argument("--approve_cost", action="store_true")
     parser.add_argument("--submit", action="store_true",
                         help="Execute the requests and carry straight on to "
                              "aggregation, instead of stopping so "
@@ -500,81 +750,185 @@ def main():
     parser.add_argument("--build_only", action="store_true")
     parser.add_argument("--aggregate_only", action="store_true")
     args = parser.parse_args()
-    paths = paths_lib.resolve(
-        parser, args, infer_from=args.run_dir,
-        require=("dataset_base", "feather"))
+    if args.build_only and args.aggregate_only:
+        parser.error("--build_only and --aggregate_only are mutually exclusive")
+    if args.submit and (args.build_only or args.aggregate_only):
+        parser.error("--submit cannot be combined with a one-phase mode")
+    try:
+        document, selected, orchestration = load_matching_config(args)
+        validate_execution_args(args, selected)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
 
-    out = args.run_dir / "matching"
-    out.mkdir(parents=True, exist_ok=True)
-
-    sig_to_ids = build_map_signatures(paths.feather)
-    sigs = sorted(sig_to_ids)
-    sig_chunks = [sigs[i:i + args.chunk_size]
-                  for i in range(0, len(sigs), args.chunk_size)]
-    tracks, _ = load_tracks(args.run_dir)
-    audits = audit_io.load_audits(args.run_dir)
-    if not audits:
+    output_dir = Path(args.output_dir)
+    output_version = selected["artifacts.landmark_matches_version"]
+    if output_dir.name != output_version:
+        parser.error(
+            f"--output_dir must end in configured version {output_version!r}")
+    if output_dir.exists() or output_dir.is_symlink():
         raise SystemExit(
-            f"no semantic audit under {args.run_dir}; matching consumes "
-            "audit output only - run the audit stage and its Vertex pass "
-            "first")
+            f"completed matching artifact already exists: {output_dir}")
+
+    try:
+        audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
+        tracks_ref = audits.tracks_ref
+        audits_ref = audits.semantic_audits_ref
+        catalog_ref = artifact.open_artifact(
+            args.catalog_dir, expected_kind=paths_lib.CATALOGS,
+            expected_dataset=args.dataset,
+            expected_version=build_config.value(
+                document, "artifacts.catalogs_version"))
+    except (artifact.ArtifactError, audit_io.AuditArtifactError) as error:
+        raise SystemExit(f"invalid matching input artifact: {error}") from error
+    expected_versions = {
+        paths_lib.OBJECT_TRACKS: build_config.value(
+            document, "artifacts.object_tracks_version"),
+        paths_lib.SEMANTIC_AUDITS: build_config.value(
+            document, "artifacts.semantic_audits_version"),
+    }
+    for ref in (tracks_ref, audits_ref):
+        if ref.dataset != args.dataset or ref.version != expected_versions[ref.kind]:
+            raise SystemExit(
+                f"{ref.kind} artifact identity does not match build_config")
+    upstreams = (tracks_ref, audits_ref, catalog_ref)
+    catalog_path = Path(args.catalog_dir) / "catalog.feather"
+    if not catalog_path.is_file() or catalog_path.is_symlink():
+        raise SystemExit(
+            f"catalog artifact lacks regular catalog.feather: {catalog_path}")
+
+    sig_to_ids = build_map_signatures(catalog_path)
+    sigs = sorted(sig_to_ids)
+    if not sigs:
+        raise SystemExit("catalog contains no far-field signature to match")
+    query_batch = selected["matching.query_batch"]
+    chunk_size = selected["matching.chunk_size"]
+    thinking_level = selected["matching.thinking_level"]
+    confidence_floor = selected["matching.confidence_floor"]
+    instance_max_rows = selected["matching.instance_max_rows"]
+    sig_chunks = [sigs[i:i + chunk_size]
+                  for i in range(0, len(sigs), chunk_size)]
+    tracks = audits.source_tracks
     queries = query_bundles(tracks, audits)
     if not queries:
         raise SystemExit(
-            f"no matchable tracklet under {args.run_dir}: every audited "
-            "track was dropped or missing. Nothing to match.")
+            "no matchable tracklet: every audited track was dropped; "
+            "nothing to match")
     print(f"map: {sum(len(v) for v in sig_to_ids.values())} landmarks -> "
           f"{len(sigs)} signatures in {len(sig_chunks)} chunks")
     print(f"queries: {len(queries)} tracklets in "
-          f"{math.ceil(len(queries) / args.query_batch)} batches")
+          f"{math.ceil(len(queries) / query_batch)} batches")
 
-    records = build_requests(queries, sig_chunks, args.query_batch,
-                             args.thinking_level)
+    records = build_requests(
+        queries, sig_chunks, query_batch, thinking_level)
+    expected_request_set = make_request_set(
+        records,
+        model=selected["matching.model"],
+        thinking_level=thinking_level,
+        build_identity=document["build_identity"],
+        orchestration_config_digest=orchestration["config_digest"],
+        upstreams=upstreams)
     print(f"requests: {len(records)}")
-    if not args.aggregate_only:
-        with open(out / "requests.jsonl", "w") as f:
-            for r in records:
-                f.write(json.dumps({"key": r["key"],
-                                    "request": r["request"]}) + "\n")
-        (out / "request_meta.json").write_text(json.dumps(
-            {r["key"]: {"batch_keys": r["batch_keys"],
-                        "chunk_index": r["chunk_index"]} for r in records}))
-        (out / "signatures.json").write_text(json.dumps(sig_to_ids))
-        write_settings(out, args, paths, records, sigs, queries)
-        est = sum(len(r["request"]["contents"][0]["parts"][0]["text"])
-                  for r in records) // 4
-        print(f"estimated input: ~{est / 1e6:.2f}M tokens "
-              f"(+ system {len(SYSTEM_PROMPT) // 4 * len(records) / 1e6:.2f}M)")
+    work_dir = matching_work_dir(output_dir)
+    if (args.aggregate_only
+            and not (work_dir / llm_lifecycle.REQUEST_SET_NAME).is_file()):
+        raise SystemExit(
+            f"no matching request snapshot at {work_dir}; run --build_only")
+    try:
+        record_work_snapshot(work_dir, expected_request_set, sig_to_ids)
+        request_set = llm_lifecycle.load_request_set(
+            work_dir / llm_lifecycle.REQUEST_SET_NAME)
+    except (OSError, ValueError, llm_lifecycle.LlmLifecycleError) as error:
+        raise SystemExit(f"invalid matching work state: {error}") from error
+    if request_set.fingerprint != expected_request_set.fingerprint:
+        raise SystemExit(
+            "recorded matching request set does not match the current "
+            "catalog, tracks, audits, prompt, schema, model, or settings; "
+            "choose a new matching artifact version")
+    est = sum(len(r["request"]["contents"][0]["parts"][0]["text"])
+              for r in records) // 4
+    print(f"estimated input: ~{est / 1e6:.2f}M tokens "
+          f"(+ system {len(SYSTEM_PROMPT) // 4 * len(records) / 1e6:.2f}M)")
     if args.build_only:
-        print(f"\nwrote {out}/requests.jsonl - submit with vertex_batch_manager")
+        print(f"\nwrote immutable requests to {work_dir}; submit "
+              f"{work_dir / llm_lifecycle.REQUESTS_NAME} with "
+              "vertex_batch_manager")
         return
 
-    results_path = out / "results.jsonl"
+    transport_path = work_dir / TRANSPORT_RESULTS_NAME
+    attempts_dir = work_dir / ATTEMPTS_DIR_NAME
+    transport_paths = ([transport_path] if transport_path.exists() else [])
+    transport_paths.extend(sorted(work_dir.glob("transport_submit_*.jsonl")))
+    for existing_transport in transport_paths:
+        imported = llm_lifecycle.import_transport_results(
+            existing_transport, attempts_dir, request_set)
+        if imported:
+            print(f"preserved {imported} new transport result(s) in "
+                  f"{attempts_dir}")
+    metadata = _request_metadata(request_set)
+    attempts = (llm_lifecycle.load_attempts(attempts_dir)
+                if attempts_dir.exists() else ())
     if args.submit:
-        vbm.run_requests(args, out / "requests.jsonl", results_path,
-                         tag=f"{paths.dataset}_matching_{args.run_dir.name}")
-    if not results_path.exists():
+        pending = llm_lifecycle.pending_request_keys(
+            request_set, attempts,
+            lambda key, response: validate_matching_response(
+                key, response, metadata[key]))
+        if pending:
+            round_index = 1 + len(tuple(
+                work_dir.glob("transport_submit_*.jsonl")))
+            pending_path = work_dir / f"requests_submit_{round_index:04d}.jsonl"
+            round_transport = (
+                work_dir / f"transport_submit_{round_index:04d}.jsonl")
+            artifact.atomic_write_file(
+                pending_path,
+                llm_lifecycle.transport_requests_bytes(request_set, pending))
+            print(f"submitting {len(pending)}/{len(request_set.units)} "
+                  f"requests without a validated success (round "
+                  f"{round_index})")
+            vbm.run_requests(
+                args, pending_path, round_transport,
+                tag=(f"{args.dataset}_matching_{output_version}_"
+                     f"r{round_index:04d}"))
+            if round_transport.exists():
+                imported = llm_lifecycle.import_transport_results(
+                    round_transport, attempts_dir, request_set)
+                print(f"preserved {imported} new transport result(s) in "
+                      f"{attempts_dir}")
+            attempts = (llm_lifecycle.load_attempts(attempts_dir)
+                        if attempts_dir.exists() else ())
+        else:
+            print("all matching requests already have a validated success")
+    if not attempts_dir.exists():
         raise SystemExit(
-            f"no results at {results_path}; submit the batch first (--submit, "
-            f"or vertex_batch_manager run-online)")
-    meta = {r["key"]: {"batch_keys": r["batch_keys"],
-                       "chunk_index": r["chunk_index"]} for r in records}
-    per_tracklet, no_match, errors = aggregate(
-        results_path, meta, sig_chunks, sig_to_ids)
-    print(f"aggregated: {len(per_tracklet)} tracklets with >=1 match, "
-          f"{errors} unusable responses")
+            f"no bound attempts at {attempts_dir}; submit the immutable "
+            "request set first (--submit, or write provider output to "
+            f"{transport_path})")
+    canonical_results = llm_lifecycle.compile_canonical_results(
+        request_set,
+        attempts,
+        lambda key, response: validate_matching_response(
+            key, response, metadata[key]),
+    )
+    per_tracklet, no_match = aggregate(
+        canonical_results, metadata, sig_to_ids)
+    print(f"validated complete coverage: {len(canonical_results)}/"
+          f"{len(request_set.units)} requests; aggregated "
+          f"{len(per_tracklet)} tracklets with >=1 match")
 
     matches = {}
     tables = []
     for tid in sorted(queries):
+        if len(no_match.get(tid, ())) != len(sig_chunks):
+            raise llm_lifecycle.IncompleteCoverageError(
+                f"tracklet {tid!r} does not have one validated answer for "
+                "every catalog chunk")
         got = per_tracklet.get(tid, {})
         kept = {}
         downgraded = 0
         for lid, (conf, kind, sig) in got.items():
-            if conf < args.confidence_floor:
+            if conf < confidence_floor:
                 continue
             if kind == "instance" and len(
-                    sig_to_ids.get(sig, [])) > args.instance_max_rows:
+                    sig_to_ids.get(sig, [])) > instance_max_rows:
                 kind = "category"
                 downgraded += 1
             kept[lid] = (conf, kind, sig)
@@ -598,15 +952,70 @@ def main():
         scores = {lid: v[0] for lid, v in kept.items()}
         tables.append(to_compatibility_table(
             tid, {lid: to_log_lr(c) for lid, c in scores.items()},
-            matcher_version=f"llm_chunked_v1_{args.thinking_level.lower()}",
+            matcher_version=f"llm_chunked_v1_{thinking_level.lower()}",
             scale=1.0, offset=0.0,
             default_log_lr=to_log_lr(max(1e-4, 1.0 - nm) / max(1, len(sigs)))))
-    (out / "matches.json").write_text(json.dumps(matches, indent=1))
-    (out / "compatibility.json").write_bytes(
-        msgspec.json.encode(tables, enc_hook=msgspec_enc_hook))
+    if set(matches) != set(queries) or {table.tracklet_id for table in tables} != set(
+            queries):
+        raise llm_lifecycle.IncompleteCoverageError(
+            "matching aggregation did not cover every accepted tracklet")
+
+    settings = settings_document(
+        args=args,
+        selected=selected,
+        records=records,
+        sigs=sigs,
+        queries=queries,
+        request_set=request_set,
+        catalog_path=catalog_path,
+        upstreams=upstreams,
+        build_identity=document["build_identity"])
+    manifest_config = {
+        "phase": "canonical_results",
+        "coverage": "complete",
+        "n_expected": len(request_set.units),
+        "n_successful": len(canonical_results),
+        "n_tracklets_expected": len(queries),
+        "n_tracklets_successful": len(matches),
+        "request_set_fingerprint": request_set.fingerprint,
+        "build_identity": document["build_identity"],
+        "orchestration": orchestration,
+        "resolved_stage_config": selected,
+    }
+    with publication.published_artifact(
+            output_dir,
+            kind=paths_lib.LANDMARK_MATCHES,
+            dataset=args.dataset,
+            version=output_version,
+            generator=GENERATOR,
+            git_commit=provenance.git_commit(),
+            arguments=sys.argv,
+            upstreams=upstreams,
+            config=manifest_config,
+            declared_outputs=FINAL_OUTPUTS) as builder:
+        artifact.atomic_write_json(
+            builder.output_path(llm_lifecycle.REQUEST_SET_NAME),
+            request_set.to_dict())
+        artifact.atomic_write_file(
+            builder.output_path(llm_lifecycle.REQUESTS_NAME),
+            llm_lifecycle.transport_requests_bytes(request_set))
+        artifact.atomic_write_file(
+            builder.output_path(llm_lifecycle.CANONICAL_RESULTS_NAME),
+            llm_lifecycle.canonical_results_bytes(
+                request_set, canonical_results))
+        artifact.atomic_write_json(
+            builder.output_path(SIGNATURES_NAME), sig_to_ids)
+        artifact.atomic_write_json(
+            builder.output_path(SETTINGS_NAME), settings)
+        artifact.atomic_write_json(
+            builder.output_path(MATCHES_NAME), matches)
+        artifact.atomic_write_file(
+            builder.output_path(COMPATIBILITY_NAME),
+            msgspec.json.encode(tables, enc_hook=msgspec_enc_hook))
     n_hit = sum(1 for m in matches.values() if m["n_landmarks"])
     print(f"tracklets with a match above the floor: {n_hit}/{len(matches)}")
-    print(f"wrote {out}/matches.json and compatibility.json")
+    print(f"published complete {paths_lib.LANDMARK_MATCHES} artifact: "
+          f"{output_dir}")
 
 
 if __name__ == "__main__":

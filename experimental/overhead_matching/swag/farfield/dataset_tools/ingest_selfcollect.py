@@ -15,17 +15,12 @@ under the filename convention, so they are dropped here — parked with their
 source CSV rows in `trimmed_frames/`, the same reversible-audit-trail
 convention `trim_dataset.py` uses.
 
-heading_deg (the absolute bearing of pano column 0) is derived from the GPS
-course over ground. With `--mount_offset_deg` (quoted in
-`geometry.MOUNT_OFFSET_FRAME` — see `geometry.MOUNT_OFFSET_CONVENTION` for
-what that means) the offset is folded into heading_deg through the geometry
-helpers, and the metadata's mount_offset block records
-`applied_to_heading_deg: true` so no consumer applies it twice. Without the
-flag, heading_deg is the raw course — a PLACEHOLDER that assumes column 0
-faces the direction of travel — and no mount_offset block is written at all:
-per `dataset.mount_offset_record`, an absent block is the honest statement
-that the mount is uncalibrated. Either way `heading_reliable` is false until
-a calibration validates the chain.
+GPS course over ground is retained explicitly as diagnostic data in
+``frames_gps.csv:gps_course_deg``. It is not camera heading and this ingest
+never rotates it into the camera frame. The intrinsics heading columns remain
+present for the common table shape but are deliberately empty; only a
+separate, human-approved nominal-forward record may rotate localization
+bearings.
 
 Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:ingest_selfcollect -- \\
@@ -54,7 +49,7 @@ from experimental.overhead_matching.swag.farfield import provenance
 # extraction_log.csv.
 GPS_CONTRACT = ["idx", "video_t_s", "sensor_elapsed_s", "dist_m",
                 "latitude", "longitude", "altitude_m", "speed_mps",
-                "frame_file"]
+                "gps_course_deg", "frame_file"]
 
 INTRINSICS_COLS = ["idx", "pano_id", "projection", "width", "height",
                    "focal_norm", "k1", "k2", "hfov_deg", "vfov_deg",
@@ -78,43 +73,12 @@ def write_rows(path: Path, rows, fieldnames):
         writer.writerows(rows)
 
 
-def heading_deg_text(course_text: str | None,
-                     mount_offset_deg: float | None, pano_w: int) -> str:
-    """heading_deg (bearing of pano column 0) for one row, "" without a course.
-
-    THE one heading computation. The original ingest carried two copies — a
-    guarded one for extraction_log and an unguarded duplicate for
-    intrinsics.csv — and the unguarded one crashed on a blank `course_deg`
-    that the guarded copy had already survived. Both tables now go through
-    this function.
-
-    With a mount offset (in geometry.MOUNT_OFFSET_FRAME), the bearing of
-    column 0 is computed through the geometry helpers: column 0's camera-frame
-    azimuth -> body frame via the offset -> world frame via the course. The
-    column-0-vs-centre-column half turn falls out of
-    `geometry.azimuth_of_pano_column(0)` instead of being hand-typed, so the
-    conversion cannot be restated wrongly here. Without an offset, heading is
-    the raw course — the uncalibrated placeholder the metadata flags.
-    """
-    if not (course_text or "").strip():
-        return ""
-    course_deg = float(course_text)
-    if mount_offset_deg is None:
-        heading = course_deg % 360.0
-    else:
-        heading = float(geo.body_to_world_bearing_deg(
-            course_deg,
-            geo.apply_mount_offset(geo.azimuth_of_pano_column(0.0, pano_w),
-                                   mount_offset_deg)))
-    return f"{heading:.4f}"
-
-
-def fill_course_from_track(kept: list) -> None:
-    """Fill `course_deg` from the GPS track between consecutive kept fixes.
+def fill_gps_course_from_track(kept: list) -> None:
+    """Fill diagnostic ``gps_course_deg`` from consecutive GPS positions.
 
     Self-collected logs without a per-fix course (boston legs) get the bearing
-    of the surviving track instead. Noisy when near-stationary, but heading
-    here is a prior flagged unreliable anyway.
+    of the surviving track instead. This remains course over ground: it makes
+    no claim about camera heading or the platform's nominal-forward axis.
     """
     for i, r in enumerate(kept):
         a = kept[max(0, i - 1) if i == len(kept) - 1 else i]
@@ -128,7 +92,7 @@ def fill_course_from_track(kept: list) -> None:
             math.sin(dlon) * math.cos(la2),
             math.cos(la1) * math.sin(la2)
             - math.sin(la1) * math.cos(la2) * math.cos(dlon))) % 360.0
-        r["course_deg"] = f"{brg:.4f}"
+        r["gps_course_deg"] = f"{brg:.4f}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -153,17 +117,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ISO UTC start of the sensor log, e.g. "
                         "2026-07-27T21:22:04Z; used with sensor_elapsed_s to "
                         "fill captured_at (epoch ms)")
-    p.add_argument("--mount_offset_deg", type=float, default=None,
-                   help="mount-offset prior, quoted in "
-                        "geometry.MOUNT_OFFSET_FRAME (the camera-frame "
-                        "azimuth, centre column zero, of the direction of "
-                        "travel). It is folded into heading_deg and the "
-                        "metadata records applied_to_heading_deg=true. Omit "
-                        "for an uncalibrated mount: heading_deg is then the "
-                        "raw course and NO mount_offset block is written")
-    p.add_argument("--mount_offset_source", default=None,
-                   help="one-line provenance for --mount_offset_deg, recorded "
-                        "in pipeline_metadata.json (required with it)")
     p.add_argument("--coord_decimals", type=int, default=6,
                    help="lat/lon decimals in frame filenames. Mapillary "
                         "datasets use 6; boston_harbor_leg1's pre-existing "
@@ -180,9 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
-    if args.mount_offset_deg is not None and not args.mount_offset_source:
-        p.error("--mount_offset_deg needs --mount_offset_source: an offset "
-                "without provenance cannot be judged later")
+
+    extra_metadata = None
+    if args.extra_metadata:
+        extra_metadata = json.loads(args.extra_metadata.read_text())
+        if not isinstance(extra_metadata, dict):
+            p.error("--extra_metadata must contain a JSON object")
+        forbidden = sorted(set(extra_metadata) & {
+            "azimuth_convention",
+            "heading_note",
+            "heading_reliable",
+            "heading_source",
+            "mount_offset",
+        })
+        if forbidden:
+            p.error("--extra_metadata may not replace orientation authority "
+                    f"fields: {forbidden}")
 
     frames_dir = args.source_dir / args.frames_subdir
     rows, src_cols = read_rows(args.source_dir / args.gps_csv)
@@ -196,7 +162,12 @@ def main(argv=None) -> int:
 
     course_from_track = "course_deg" not in src_cols
     if course_from_track:
-        fill_course_from_track(kept)
+        fill_gps_course_from_track(kept)
+    else:
+        for row in kept:
+            raw_course = (row.get("course_deg") or "").strip()
+            row["gps_course_deg"] = (
+                "" if not raw_course else f"{float(raw_course) % 360.0:.4f}")
 
     missing = [r["frame_file"] for r in rows
                if not (frames_dir / r["frame_file"]).exists()]
@@ -227,10 +198,9 @@ def main(argv=None) -> int:
     transfer = (lambda s, d: d.write_bytes(s.read_bytes())) if args.copy \
         else (lambda s, d: s.rename(d))
 
-    heading_source = (
-        ("track_bearing" if course_from_track else "gps_course")
-        + ("_minus_mount_prior" if args.mount_offset_deg is not None
-           else "_placeholder"))
+    gps_course_source = (
+        "derived_from_positions" if course_from_track
+        else "source_course_over_ground")
 
     gps_rows, mapping_rows, log_rows, intr_rows = [], [], [], []
     for idx, r in enumerate(kept):
@@ -245,7 +215,9 @@ def main(argv=None) -> int:
             "dist_m": r.get("dist_m", ""), "latitude": r["latitude"],
             "longitude": r["longitude"],
             "altitude_m": r.get("altitude_m", ""),
-            "speed_mps": r.get("speed_mps", ""), "frame_file": name,
+            "speed_mps": r.get("speed_mps", ""),
+            "gps_course_deg": r.get("gps_course_deg", ""),
+            "frame_file": name,
         })
         mapping_rows.append({"pano_id": pano_id, "lat": r["latitude"],
                              "lon": r["longitude"], "filename": name})
@@ -254,18 +226,13 @@ def main(argv=None) -> int:
         if log_start is not None and r.get("sensor_elapsed_s", "").strip():
             captured_at = int((log_start + datetime.timedelta(
                 seconds=float(r["sensor_elapsed_s"]))).timestamp() * 1000)
-        # The ONE guarded heading computation, for both tables (see
-        # heading_deg_text: the unguarded intrinsics duplicate is the bug this
-        # port fixes).
-        heading = heading_deg_text(r.get("course_deg"), args.mount_offset_deg,
-                                   args.width)
         log_row = {
             "frame_idx": idx, "pano_id": pano_id,
             "sequence_id": args.dataset_id, "sequence_position": idx,
             "camera_type": "equirectangular",
             "geometry_source": r.get("gps_quality", "sensor_logger"),
             "lat": r["latitude"], "lng": r["longitude"],
-            "heading_used": heading,
+            "heading_used": "",
             "captured_at": captured_at,
             "original_path": str(frames_dir / r["frame_file"]),
             "output_filename": name,
@@ -281,9 +248,9 @@ def main(argv=None) -> int:
             "width": args.width, "height": args.height,
             "focal_norm": "", "k1": "", "k2": "",
             "hfov_deg": 360.0, "vfov_deg": 180.0,
-            "heading_deg": heading,
-            "heading_reference": "column_0",
-            "heading_source": heading_source,
+            "heading_deg": "",
+            "heading_reference": "",
+            "heading_source": "",
         })
 
     write_rows(out / "frames_gps.csv", gps_rows, GPS_CONTRACT)
@@ -330,27 +297,19 @@ def main(argv=None) -> int:
             "images_rotated": False,
             "frame": "camera (as captured)",
             "bearing_increases": "left_to_right",
-            "heading_deg_is_bearing_of": "column_0",
-            "formula": "azimuth_deg = (heading_deg + (col / width) * 360) "
-                       "mod 360",
-            "heading_per_frame": "intrinsics.csv:heading_deg",
-            # The machine tag for the frame mount offsets are quoted in
-            # (which is NOT this formula's column-0 frame); the convention
-            # paragraph itself lives in the mount_offset block, imported from
-            # geometry.MOUNT_OFFSET_CONVENTION, never retyped.
-            "mount_offset_frame": geo.MOUNT_OFFSET_FRAME,
+            "camera_frame": geo.CAMERA_FRAME,
         },
         "camera_type": "equirectangular",
         "image_dir": "frames",
         "num_images": len(kept),
         "resolution": f"{args.width}x{args.height}",
-        "heading_source": heading_source,
-        "heading_reliable": False,
-        "heading_note": "heading_deg is the absolute bearing of pano column "
-                        "0, derived from the GPS course over ground (see "
-                        "heading_source; on a boat, leeway/crab also makes "
-                        "course differ from heading). Validate before "
-                        "trusting bearings.",
+        "gps_course_diagnostic": {
+            "field": "frames_gps.csv:gps_course_deg",
+            "source": gps_course_source,
+            "use": "diagnostic_only",
+            "note": "course over ground; not camera heading and not "
+                    "nominal-forward calibration",
+        },
         "bbox": {"south": min(lats), "north": max(lats),
                  "west": min(lons), "east": max(lons)},
         "trajectory_km": (round((dists[-1] - dists[0]) / 1000, 3)
@@ -366,26 +325,8 @@ def main(argv=None) -> int:
             "dropped_no_gps": len(dropped),
         },
     }
-    if args.mount_offset_deg is not None:
-        # The block satisfies dataset.mount_offset_record by construction:
-        # frame is the machine tag, applied_to_heading_deg records what this
-        # script ACTUALLY did (heading_deg_text folded the offset in), and the
-        # convention paragraph is the geometry constant verbatim.
-        meta["mount_offset"] = {
-            "mount_offset_deg": args.mount_offset_deg,
-            "frame": geo.MOUNT_OFFSET_FRAME,
-            "applied_to_heading_deg": True,
-            "status": "prior",
-            "accuracy_validated": False,
-            "source": args.mount_offset_source,
-            "convention": geo.MOUNT_OFFSET_CONVENTION,
-        }
-    # else: NO mount_offset block. Absent is the contract's word for
-    # "uncalibrated" (dataset.mount_offset_record); a block with a null angle
-    # is unconsumable and a block with an invented one is a 180-degree
-    # incident waiting to happen.
-    if args.extra_metadata:
-        meta.update(json.loads(args.extra_metadata.read_text()))
+    if extra_metadata:
+        meta.update(extra_metadata)
     (out / "pipeline_metadata.json").write_text(
         json.dumps(meta, indent=2) + "\n")
 

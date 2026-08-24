@@ -128,51 +128,83 @@ py_binary(
     name = "dataset_status_table",
     srcs = ["dataset_status_table.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        FARFIELD + ":geometry",
-        FARFIELD + ":provenance",
-    ],
-)
-
-# ---------------------------------------------------------------------------
-# The one guarded writer of dataset mount-offset metadata
-# ---------------------------------------------------------------------------
-
-py_library(
-    name = "publish_mount_offset_lib",
-    srcs = ["publish_mount_offset.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        ":checksums",
-        FARFIELD + ":dataset",
-        FARFIELD + ":geometry",
-        FARFIELD + ":paths",
-        FARFIELD + ":provenance",
-    ],
-)
-
-py_binary(
-    name = "publish_mount_offset",
-    srcs = ["publish_mount_offset.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":publish_mount_offset_lib"],
-)
-
-py_test(
-    name = "publish_mount_offset_test",
-    srcs = ["publish_mount_offset_test.py"],
-    deps = [
-        ":checksums",
-        ":publish_mount_offset_lib",
-        FARFIELD + ":dataset",
-        FARFIELD + ":geometry",
-        FARFIELD + ":testing",
-    ],
+    deps = [FARFIELD + ":provenance"],
 )
 
 # ---------------------------------------------------------------------------
 # Catalog building (OSM + ENC -> feather -> trim)
 # ---------------------------------------------------------------------------
+
+py_library(
+    name = "extract_landmarks_from_osm_lib",
+    srcs = ["extract_landmarks_from_osm.py"],
+    data = ["//common/openstreetmap:extract_landmarks_python.so"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        FARFIELD + ":provenance",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_binary(
+    name = "extract_landmarks_from_osm",
+    srcs = ["extract_landmarks_from_osm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":extract_landmarks_from_osm_lib"],
+)
+
+py_test(
+    name = "extract_landmarks_from_osm_test",
+    srcs = ["extract_landmarks_from_osm_test.py"],
+    data = ["//common/openstreetmap:extract_landmarks_python.so"],
+    deps = [
+        requirement("shapely"),
+        ":extract_landmarks_from_osm_lib",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_library(
+    name = "plot_landmarks_lib",
+    srcs = ["plot_landmarks.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("matplotlib"),
+        requirement("numpy"),
+        requirement("shapely"),
+        FARFIELD + ":artifact",
+        FARFIELD + ":dataset",
+        FARFIELD + ":geometry",
+        FARFIELD + ":paths",
+        FARFIELD + ":provenance",
+        FARFIELD + ":publication",
+        FARFIELD + "/catalog:schema",
+        FARFIELD + "/collection:pbf_coverage_lib",
+        FARFIELD + "/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "plot_landmarks",
+    srcs = ["plot_landmarks.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":plot_landmarks_lib"],
+)
+
+py_test(
+    name = "plot_landmarks_test",
+    srcs = ["plot_landmarks_test.py"],
+    deps = [
+        requirement("shapely"),
+        ":plot_landmarks_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
+        FARFIELD + "/catalog:schema",
+    ],
+)
 
 py_library(
     name = "download_enc_cells_lib",
@@ -250,9 +282,9 @@ py_library(
     srcs = ["landmark_positive_set.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        FARFIELD + ":artifact",
         FARFIELD + ":paths",
         FARFIELD + ":provenance",
-        FARFIELD + "/catalog:catalog",
     ],
 )
 
@@ -263,6 +295,16 @@ py_binary(
     deps = [":landmark_positive_set_lib"],
 )
 
+py_test(
+    name = "landmark_positive_set_test",
+    srcs = ["landmark_positive_set_test.py"],
+    deps = [
+        ":landmark_positive_set_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
+    ],
+)
+
 py_library(
     name = "trim_catalog_lib",
     srcs = ["trim_catalog.py"],
@@ -271,8 +313,10 @@ py_library(
         requirement("geopandas"),
         requirement("numpy"),
         ":landmark_positive_set_lib",
+        FARFIELD + ":artifact",
         FARFIELD + ":geometry",
         FARFIELD + ":paths",
+        FARFIELD + ":publication",
         FARFIELD + ":provenance",
         FARFIELD + "/catalog:catalog",
         FARFIELD + "/catalog:schema",
@@ -292,7 +336,9 @@ py_test(
     deps = [
         requirement("geopandas"),
         requirement("numpy"),
+        ":landmark_positive_set_lib",
         ":trim_catalog_lib",
-        FARFIELD + "/catalog:catalog",
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
     ],
 )

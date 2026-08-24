@@ -5,9 +5,9 @@ give a discrete fix. This is what lets the mixture proposal sample from the
 likelihood rather than the motion model, so particle count scales with the
 number of plausible hypotheses instead of with search area.
 
-Everything here is heading-free by construction: the subtended angle between
-two body-frame bearings, gamma = beta_b - beta_a, is independent of vehicle
-heading, so the geometry never needs a compass. Heading is recovered
+Everything here is forward-world-bearing-free by construction: the subtended
+angle between two forward-frame bearings, gamma = beta_b - beta_a, is
+independent of the platform's forward-axis world bearing. That bearing is recovered
 afterwards from any one bearing (`heading_from_bearing`).
 
 Conventions match the rest of the package: positions are region-frame ENU
@@ -303,7 +303,7 @@ def resect_three(landmark_positions, bearings_rad,
 def heading_from_bearing(east_m: float, north_m: float, landmark_east_m: float,
                          landmark_north_m: float,
                          body_bearing_rad: float) -> float:
-    """Vehicle heading implied by observing a landmark at a body bearing."""
+    """Forward-axis world bearing implied by one forward-frame observation."""
     world = geo.compass_bearing_rad(landmark_east_m - east_m,
                                         landmark_north_m - north_m)
     return float(geo.wrap_rad(world - body_bearing_rad))

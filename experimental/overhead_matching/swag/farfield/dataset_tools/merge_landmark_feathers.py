@@ -8,15 +8,15 @@ inputs.
 `landmark_type` carries the provenance ("osm", "enc" for NOAA charts) and is
 frame metadata, not a tag, so it never reaches the matcher.
 
-All feather reading goes through `farfield.catalog.schema`, and the output
-gets a `<name>.provenance.json` sidecar in the trim_catalog style — the audit
-found merged feathers on disk with no record of which inputs built them.
+All Feather reading goes through `farfield.catalog.schema`. This source-build
+tool writes a compact Feather plus a provenance sidecar recording its exact
+inputs; publish the selected result separately as a typed CATALOGS artifact.
 
 Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:merge_landmark_feathers -- \\
         --inputs /data/.../sources/osm_harbor_v1.feather \\
                  /data/.../sources/enc_harbor_v1.feather \\
-        --output /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/v1 \\
+        --output /data/.../catalog_sources/merged_v1 \\
         --dedupe_tolerance_m 10
 """
 

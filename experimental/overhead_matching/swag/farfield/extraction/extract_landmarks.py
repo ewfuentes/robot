@@ -1,57 +1,43 @@
-"""VLM landmark extraction: panoramas -> pinhole faces -> Gemini -> frame_landmarks.
+"""Build typed pinhole-image and frame-landmark artifacts.
 
-The pipeline's stage 1. Produces the `frame_landmarks` artifact every
-downstream stage reads (`sentences/results/**/predictions.jsonl`, parsed by
-`farfield/dataset.py`) and the `pinhole_images` artifact it is derived from.
+The immutable build recipe owns every value that can shape pixels, prompts,
+predictions, execution selection, or cost approval.  The command line names
+only the dataset, exact input/output directories, the exact build recipe, and
+the transport settings that must agree with that recipe.
 
-Three stages:
+Publication has two independent transactions.  ``pinhole_images`` is
+published first, then used as an immutable upstream of the LLM request set and
+the final ``frame_landmarks`` artifact.  Consequently a crash between the two
+publications is safe: a rerun validates and reuses the completed pinhole
+artifact.  Provider traffic, request snapshots, and append-only attempts live
+beside (never inside) the final artifact under a request-set fingerprint.
 
-  1. PINHOLE   - Render panoramas to pinhole faces (the pinhole_images
-                 artifact). A full member of the pipeline: it renders into the
-                 artifact lane and writes that artifact's manifest, so a leg
-                 that has never been rendered needs no separate preparation.
-  2. REQUESTS  - Build the Gemini batch request JSONL files (prompts.py).
-  3. EXECUTE   - Run the requests through vertex_batch_manager.run_requests
-                 (upload, submit, poll, download and the cost ceiling all live
-                 there -- this stage never shells out to run them), then verify
-                 that every panorama got a usable response. An incomplete
-                 artifact stops here: downstream ingest reads a frame with no
-                 response as a frame containing no objects, silently.
-
-Every result-shaping argument is required -- model, prompt type, pinhole and
-media resolution, thinking level, both artifact versions. There are no
-defaults on purpose (REORG.md rule 2): each of these has already meant two
-different values in two different places on this project, and a default is
-how a run lands on a value nobody chose.
-
-Example:
-
-    bazel run //experimental/overhead_matching/swag/farfield/extraction:extract_landmarks -- \\
-        --dataset boston_harbor_leg2 \\
-        --frame_landmarks_version v5 \\
-        --pinhole_version v1 \\
-        --prompt_type osm_tags_farfield_v2 \\
-        --pinhole_resolution 2048 \\
-        --media_resolution MEDIA_RESOLUTION_ULTRA_HIGH \\
-        --thinking_level HIGH \\
-        --model <model-id> \\
-        --gcs_prefix gs://<bucket>/<staging>/
+There is no partial-result mode.  ``frame_landmarks`` contains exactly one
+root ``predictions.jsonl`` record for every panorama, in panorama order, and
+is published only after exactly one schema-valid successful response exists
+for every request.
 """
 
+from __future__ import annotations
+
 import argparse
-import hashlib
 import json
 import math
 import os
+import re
 import sys
-import time
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime
-from enum import IntEnum
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
+    dataset as dataset_lib,
+    llm_lifecycle,
     paths as paths_lib,
+    publication,
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.extraction import (
@@ -61,267 +47,829 @@ from experimental.overhead_matching.swag.farfield.extraction import (
     vertex_batch_manager as vbm,
 )
 
-GENERATOR = ("//experimental/overhead_matching/swag/farfield/extraction"
-             ":extract_landmarks")
 
-# Faces are rendered at 90-degree yaw intervals with a 90-degree FOV. This is
-# a convention, not a knob: geometry.direction_from_face_px is the verified
-# inverse of exactly this render, and dataset ingest validates face yaws
-# against it.
+GENERATOR = ("//experimental/overhead_matching/swag/farfield/extraction:"
+             "extract_landmarks")
+PREDICTIONS_NAME = dataset_lib.PREDICTIONS_NAME
+ATTEMPTS_DIR_NAME = llm_lifecycle.ATTEMPTS_DIR_NAME
+REQUEST_ARTIFACT_DIR = "requests"
+RESULT_ARTIFACT_DIR = "results"
+WORK_SUFFIX = ".llm-work"
 FACE_FOV_RAD = math.pi / 2.0
+NUM_WORKERS = 8
+MAX_REQUESTS_PER_BATCH = 10_000
+
+EXTRACTION_CONFIG_KEYS = (
+    "artifacts.frame_landmarks_version",
+    "artifacts.pinhole_images_version",
+    "extraction.model",
+    "extraction.prompt_type",
+    "extraction.pinhole_resolution",
+    "extraction.media_resolution",
+    "extraction.thinking_level",
+    "execution.llm_transport",
+    "execution.batch_gcs_prefix",
+    "execution.approve_cost",
+    "cost.limit_usd",
+)
+
+_DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
+_RAW_SHARD_RE = re.compile(r"raw_(\d+)\.jsonl\Z")
+_REF_IDENTITY_KEYS = frozenset({
+    "kind", "dataset", "version", "manifest_digest", "content_digest",
+})
 
 
-class Stage(IntEnum):
-    PINHOLE = 1
-    REQUESTS = 2
-    EXECUTE = 3
+@dataclass(frozen=True)
+class ExtractionContext:
+    """Validated immutable recipe plus the exact dataset inputs it binds."""
 
-
-STAGE_NAMES = {
-    Stage.PINHOLE: "Convert panoramas to pinhole images",
-    Stage.REQUESTS: "Create batch API request files",
-    Stage.EXECUTE: "Execute requests via vertex_batch_manager",
-}
-
-
-@dataclass
-class Config:
-    """Resolved inputs, outputs and settings for one extraction run."""
-
-    dataset: str
-    root: Path
-    version: str            # frame_landmarks artifact version
-    pinhole_version: str    # pinhole_images artifact version
+    document: dict[str, Any]
+    selected: dict[str, Any]
+    orchestration: dict[str, Any]
+    metadata: dict[str, Any]
+    frames: tuple[dataset_lib.Frame, ...]
     dataset_base: Path
     panorama_dir: Path
-    pinhole_dir: Path
-    artifact_dir: Path
-    prompt_type: str
-    pinhole_resolution: int
-    media_resolution: str
-    thinking_level: str
-    num_workers: int
-    allow_incomplete: bool
-    force: bool
-    start_stage: int
-    end_stage: int
-    # The parsed CLI namespace, carrying vertex_batch_manager's execution
-    # flags (--model, --online, --gcs_prefix, --parallel, --poll_interval,
-    # --cost_limit, --approve_cost). Passed to run_requests as-is.
-    execution: argparse.Namespace
+    input_digests: dict[str, str]
 
     @property
-    def requests_dir(self) -> Path:
-        return self.artifact_dir / "sentence_requests"
+    def stems(self) -> tuple[str, ...]:
+        return tuple(frame.pano_stem for frame in self.frames)
 
     @property
-    def sentences_dir(self) -> Path:
-        return self.artifact_dir / "sentences"
+    def pinhole_version(self) -> str:
+        return self.selected["artifacts.pinhole_images_version"]
 
     @property
-    def main_predictions(self) -> Path:
-        """The one resumable results file the execute stage appends to.
-
-        Lives under `sentences/results/*/prediction-*/` because that is the
-        glob every consumer reads (farfield.dataset.load_predictions). Retry
-        results land in a sibling directory sorting after this one, so they
-        supersede failed keys without mutating anything already written.
-        """
-        return (self.sentences_dir / "results" / "000_main" /
-                "prediction-main" / "predictions.jsonl")
+    def frame_version(self) -> str:
+        return self.selected["artifacts.frame_landmarks_version"]
 
 
-# ---------------------------------------------------------------------------
-# Stage 1: pinhole render
-# ---------------------------------------------------------------------------
-
-def panorama_stems(panorama_dir: Path) -> list:
-    """Stems of the panoramas to render, sorted.
-
-    Stems carry identity through the whole pipeline -- they name the pinhole
-    subdirectories and key the requests and predictions -- so they are
-    compared literally rather than counted.
-    """
-    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-    return sorted(f.stem for f in Path(panorama_dir).iterdir()
-                  if f.is_file() and f.suffix.lower() in exts)
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        value[key] = item
+    return value
 
 
-def check_pinhole_reuse(config: Config) -> bool:
-    """Decide whether an existing pinhole render can be reused.
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r}")
 
-    Verifies the *contract* -- one directory per pano stem, all four faces
-    present, rendered at the requested resolution -- instead of re-deriving
-    the pixels. Resolution is read back from a face JPEG header, which catches
-    a resolution change even on renders that carry no manifest.
-    """
-    pinhole_dir = config.pinhole_dir
-    if not pinhole_dir.exists():
-        return False
 
-    want = panorama_stems(config.panorama_dir)
-    if not want:
-        sys.exit(f"  ERROR: no panoramas found in {config.panorama_dir}")
-
-    have = {d.name for d in pinhole_dir.iterdir() if d.is_dir()}
-    if not have:
-        return False
-
-    print(f"  Found existing pinhole render at {pinhole_dir} "
-          f"({len(have)} panoramas)")
-
-    missing = [s for s in want if s not in have]
-    if missing:
-        print(f"  Incomplete: {len(missing)} of {len(want)} stems absent "
-              f"(e.g. {missing[0]})")
-        return False
-
-    extra = len(have) - len(want)
-    if extra > 0:
-        # A superset still covers this run, but it means the directory was
-        # rendered from a different panorama set, which is worth saying out
-        # loud (the request builder excludes the stale stems).
-        print(f"  Note: {extra} rendered stem(s) are not in "
-              f"{config.panorama_dir}")
-
-    incomplete = [s for s in want
-                  if not all((pinhole_dir / s / f"{face}.jpg").exists()
-                             for face in prompts.PINHOLE_FACES)]
-    if incomplete:
-        print(f"  Incomplete: {len(incomplete)} stem(s) missing faces "
-              f"(e.g. {incomplete[0]})")
-        return False
-
-    probe = pinhole_dir / want[0] / f"{prompts.PINHOLE_FACES[0]}.jpg"
+def _strict_json_loads(text: str, where: str) -> Any:
     try:
-        from PIL import Image
-        with Image.open(probe) as img:
-            width = img.width
-    except OSError as exc:  # an unreadable face is not reusable
-        print(f"  Could not read {probe}: {exc}")
-        return False
+        return json.loads(
+            text, object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_constant)
+    except (json.JSONDecodeError, UnicodeError, ValueError) as error:
+        raise ValueError(f"{where}: invalid strict JSON: {error}") from error
 
-    if width != config.pinhole_resolution:
-        print(f"  Resolution mismatch: rendered at {width}px, requested "
-              f"{config.pinhole_resolution}px")
-        return False
 
-    print(f"  Verified {len(want)} stems x {len(prompts.PINHOLE_FACES)} faces "
-          f"at {width}px - reusing")
+def _ref_identity(ref: artifact.ArtifactRef) -> dict[str, str]:
+    return {
+        "kind": ref.kind,
+        "dataset": ref.dataset,
+        "version": ref.version,
+        "manifest_digest": ref.manifest_digest,
+        "content_digest": ref.content_digest,
+    }
+
+
+def _validate_ref_identity(value: Any, *, kind: str, dataset: str,
+                           where: str) -> dict[str, str]:
+    if not isinstance(value, dict) or frozenset(value) != _REF_IDENTITY_KEYS:
+        raise ValueError(f"{where} is not an exact artifact identity")
+    if value["kind"] != kind or value["dataset"] != dataset:
+        raise ValueError(f"{where} names the wrong artifact kind or dataset")
+    if (not isinstance(value["version"], str) or not value["version"]
+            or not isinstance(value["manifest_digest"], str)
+            or not isinstance(value["content_digest"], str)
+            or not _DIGEST_RE.fullmatch(value["manifest_digest"])
+            or not _DIGEST_RE.fullmatch(value["content_digest"])):
+        raise ValueError(f"{where} contains an invalid version or digest")
+    return value
+
+
+def _validate_schema(value: Any, schema: Mapping[str, Any],
+                     where: str = "prediction") -> None:
+    """Strict subset of JSON Schema used by ``prompts.response_schema``.
+
+    The provider schema is composed only of objects, arrays, strings, enums,
+    integers, and scalar bounds.  Exact object keys are required here even if
+    a provider happens to ignore ``additionalProperties``: unknown model
+    fields must never leak into the canonical consumer artifact.
+    """
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if not isinstance(value, dict):
+            raise ValueError(f"{where} must be an object")
+        properties = schema.get("properties")
+        if not isinstance(properties, Mapping):
+            raise ValueError(f"{where} has an invalid object schema")
+        required = set(schema.get("required", ()))
+        expected = set(properties)
+        actual = set(value)
+        if actual != expected or required != expected:
+            raise ValueError(
+                f"{where} must have exact keys {sorted(expected)}; "
+                f"found {sorted(actual)}")
+        for key, child_schema in properties.items():
+            _validate_schema(value[key], child_schema, f"{where}.{key}")
+    elif schema_type == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"{where} must be an array")
+        item_schema = schema.get("items")
+        if not isinstance(item_schema, Mapping):
+            raise ValueError(f"{where} has an invalid array schema")
+        for index, item in enumerate(value):
+            _validate_schema(item, item_schema, f"{where}[{index}]")
+    elif schema_type == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"{where} must be a string")
+    elif schema_type == "integer":
+        if type(value) is not int:
+            raise ValueError(f"{where} must be an integer")
+    elif schema_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{where} must be numeric")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{where} must be finite")
+    elif schema_type == "boolean":
+        if type(value) is not bool:
+            raise ValueError(f"{where} must be boolean")
+    elif schema_type == "null":
+        if value is not None:
+            raise ValueError(f"{where} must be null")
+    elif schema_type is not None:
+        raise ValueError(f"{where} has unsupported schema type {schema_type!r}")
+
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{where} must be one of {schema['enum']!r}")
+    if "minimum" in schema and value < schema["minimum"]:
+        raise ValueError(f"{where} must be >= {schema['minimum']}")
+    if "maximum" in schema and value > schema["maximum"]:
+        raise ValueError(f"{where} must be <= {schema['maximum']}")
+
+
+def _provider_prediction_to_canonical(value: Any) -> dict[str, Any]:
+    """Validate the provider schema and normalize yaw strings for ingest."""
+    _validate_schema(value, prompts.response_schema())
+    # JSON round-trip detaches the returned payload before normalization.
+    prediction = json.loads(artifact.canonical_json_bytes(value))
+    for landmark_index, landmark in enumerate(prediction["landmarks"]):
+        boxes = landmark["bounding_boxes"]
+        if not boxes:
+            raise ValueError(
+                f"prediction.landmarks[{landmark_index}].bounding_boxes must "
+                "not be empty")
+        for box_index, box in enumerate(boxes):
+            where = (f"prediction.landmarks[{landmark_index}]."
+                     f"bounding_boxes[{box_index}]")
+            yaw = box["yaw_angle"]
+            if yaw not in ("0", "90", "180", "270"):
+                raise ValueError(
+                    f"{where}.yaw_angle must be one of '0', '90', '180', "
+                    "'270'")
+            if box["xmin"] >= box["xmax"] or box["ymin"] >= box["ymax"]:
+                raise ValueError(f"{where} must have positive width and height")
+            box["yaw_angle"] = int(yaw)
+    return prediction
+
+
+def _validate_canonical_prediction(value: Any) -> dict[str, Any]:
+    """Validate the exact prediction shape consumed by ``dataset.run_ingest``."""
+    try:
+        prediction = json.loads(artifact.canonical_json_bytes(value))
+    except (artifact.ArtifactError, TypeError, ValueError) as error:
+        raise ValueError(f"prediction is not finite JSON: {error}") from error
+    if not isinstance(prediction, dict) or set(prediction) != {
+            "location_type", "landmarks"}:
+        raise ValueError("prediction must have exact keys location_type, landmarks")
+    schema_view = json.loads(artifact.canonical_json_bytes(prediction))
+    landmarks = schema_view.get("landmarks")
+    if not isinstance(landmarks, list):
+        raise ValueError("prediction.landmarks must be an array")
+    for landmark_index, landmark in enumerate(landmarks):
+        boxes = landmark.get("bounding_boxes") if isinstance(landmark, dict) \
+            else None
+        if not isinstance(boxes, list) or not boxes:
+            raise ValueError(
+                f"prediction.landmarks[{landmark_index}].bounding_boxes must "
+                "be a non-empty array")
+        for box_index, box in enumerate(boxes):
+            where = (f"prediction.landmarks[{landmark_index}]."
+                     f"bounding_boxes[{box_index}]")
+            if not isinstance(box, dict):
+                raise ValueError(f"{where} must be an object")
+            yaw = box.get("yaw_angle")
+            if isinstance(yaw, bool) or type(yaw) is not int or yaw not in (
+                    0, 90, 180, 270):
+                raise ValueError(f"{where}.yaw_angle must be 0, 90, 180, or 270")
+            if (isinstance(box.get("xmin"), bool)
+                    or isinstance(box.get("ymin"), bool)
+                    or isinstance(box.get("xmax"), bool)
+                    or isinstance(box.get("ymax"), bool)):
+                raise ValueError(f"{where} coordinates must be numeric")
+            try:
+                if box["xmin"] >= box["xmax"] or box["ymin"] >= box["ymax"]:
+                    raise ValueError(
+                        f"{where} must have positive width and height")
+            except (KeyError, TypeError) as error:
+                raise ValueError(f"{where} has invalid coordinates") from error
+            box["yaw_angle"] = str(yaw)
+    _validate_schema(schema_view, prompts.response_schema())
+    return prediction
+
+
+def validate_response(key: str, response: Mapping[str, Any]) -> dict[str, Any]:
+    """LLM lifecycle validator for one extraction response."""
+    del key
+    candidates = response.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) != 1:
+        raise ValueError("response must contain exactly one candidate")
+    candidate = candidates[0]
+    content = candidate.get("content") if isinstance(candidate, Mapping) else None
+    parts = content.get("parts") if isinstance(content, Mapping) else None
+    if not isinstance(parts, list) or len(parts) != 1:
+        raise ValueError("response candidate must contain exactly one part")
+    part = parts[0]
+    text = part.get("text") if isinstance(part, Mapping) else None
+    if not isinstance(text, str) or not text:
+        raise ValueError("response part must contain non-empty JSON text")
+    payload = _strict_json_loads(text, "response text")
+    return _provider_prediction_to_canonical(payload)
+
+
+def _selected_values(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: build_config.value(document, key)
+            for key in EXTRACTION_CONFIG_KEYS}
+
+
+def _validate_selected(selected: dict[str, Any]) -> None:
+    specs = {
+        "artifacts.frame_landmarks_version": build_config.ValueSpec(
+            (str,), nonempty=True),
+        "artifacts.pinhole_images_version": build_config.ValueSpec(
+            (str,), nonempty=True),
+        "extraction.model": build_config.ValueSpec((str,), nonempty=True),
+        "extraction.prompt_type": build_config.ValueSpec(
+            (str,), choices=prompts.PROMPT_TYPES),
+        "extraction.pinhole_resolution": build_config.ValueSpec(
+            (int,), minimum=1),
+        "extraction.media_resolution": build_config.ValueSpec(
+            (str,), choices=prompts.MEDIA_RESOLUTIONS),
+        "extraction.thinking_level": build_config.ValueSpec(
+            (str,), choices=prompts.THINKING_LEVELS),
+        "execution.llm_transport": build_config.ValueSpec(
+            (str,), choices=("batch", "on_demand")),
+        "execution.batch_gcs_prefix": build_config.ValueSpec(
+            (str,), allow_none=True, nonempty=True),
+        "execution.approve_cost": build_config.ValueSpec((bool,)),
+        "cost.limit_usd": build_config.ValueSpec(
+            (int, float), minimum=0.0),
+    }
+    for key, spec in specs.items():
+        spec.validate(key, selected[key])
+    prefix = selected["execution.batch_gcs_prefix"]
+    if selected["execution.llm_transport"] == "batch":
+        if not isinstance(prefix, str) or not prefix.startswith("gs://"):
+            raise build_config.InvalidConfigValue(
+                "execution.batch_gcs_prefix must be a gs:// URI in batch mode")
+    elif prefix is not None:
+        raise build_config.InvalidConfigValue(
+            "execution.batch_gcs_prefix must be null in on_demand mode")
+
+
+def load_context(args: argparse.Namespace) -> ExtractionContext:
+    """Load the exact recipe and validate its dataset/stage binding."""
+    config_path = Path(args.build_config)
+    if config_path.name != build_config.BUILD_CONFIG_NAME:
+        raise ValueError(
+            f"--build_config must name {build_config.BUILD_CONFIG_NAME}")
+    document = build_config.load(config_path.parent)
+    if config_path.resolve() != (
+            config_path.parent / build_config.BUILD_CONFIG_NAME).resolve():
+        raise ValueError("--build_config does not name the loaded recipe")
+    if document["dataset"] != args.dataset:
+        raise ValueError(
+            f"build config dataset {document['dataset']!r} does not match "
+            f"--dataset {args.dataset!r}")
+    dataset_base = Path(args.dataset_base).resolve()
+    recorded_base = document["inputs"].get("dataset_base")
+    if recorded_base is None or Path(recorded_base).resolve() != dataset_base:
+        raise ValueError(
+            "--dataset_base does not match build_config inputs.dataset_base")
+
+    selected = _selected_values(document)
+    _validate_selected(selected)
+    actual_digest = artifact.sha256_json(selected)
+    if args.orchestration_config_digest != actual_digest:
+        raise ValueError(
+            "--orchestration_config_digest does not match the immutable "
+            "extraction/execution/cost recipe")
+    orchestration = {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "extract",
+        "config_digest": actual_digest,
+    }
+
+    expected_online = selected["execution.llm_transport"] == "on_demand"
+    if bool(args.online) != expected_online:
+        raise ValueError(
+            "--online selection disagrees with execution.llm_transport")
+    expected_prefix = selected["execution.batch_gcs_prefix"]
+    if ((expected_online and args.gcs_prefix is not None)
+            or (not expected_online and args.gcs_prefix != expected_prefix)):
+        raise ValueError(
+            "--gcs_prefix disagrees with execution.batch_gcs_prefix")
+    if bool(args.approve_cost) != selected["execution.approve_cost"]:
+        raise ValueError(
+            "--approve_cost disagrees with execution.approve_cost")
+    if args.cost_limit != float(selected["cost.limit_usd"]):
+        raise ValueError("--cost_limit disagrees with cost.limit_usd")
+    if args.parallel < 1 or args.poll_interval < 1:
+        raise ValueError("--parallel and --poll_interval must be positive")
+    args.model = selected["extraction.model"]
+
+    pinhole_output = Path(args.pinhole_output_dir).resolve()
+    frame_output = Path(args.output_dir).resolve()
+    if (pinhole_output == frame_output
+            or pinhole_output in frame_output.parents
+            or frame_output in pinhole_output.parents):
+        raise ValueError(
+            "--pinhole_output_dir and --output_dir must be disjoint")
+
+    metadata = dataset_lib.load_metadata(dataset_base)
+    dataset_lib.require_camera_frame_panoramas(metadata, dataset_base)
+    if metadata["dataset_name"] != args.dataset:
+        raise ValueError(
+            "pipeline_metadata.json dataset_name does not match --dataset")
+    frames = tuple(dataset_lib.load_frames(dataset_base))
+    if not frames:
+        raise ValueError(f"no panoramas under {dataset_base / 'panorama'}")
+    panorama_dir = dataset_base / "panorama"
+    try:
+        source_digests = paths_lib.dataset_source_digests(dataset_base)
+    except paths_lib.MissingInput as exc:
+        raise ValueError(str(exc)) from exc
+    mismatched_sources = [
+        key for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS
+        if document["inputs"].get(key) != source_digests[key]
+    ]
+    if mismatched_sources:
+        raise ValueError(
+            "dataset source bytes differ from the immutable build recipe: "
+            f"{mismatched_sources}")
+    input_digests = {
+        "build_identity": document["build_identity"],
+        "orchestration_config": actual_digest,
+        "panorama_directory": source_digests[
+            paths_lib.DATASET_PANORAMA_SHA256],
+        "pipeline_metadata": source_digests[
+            paths_lib.DATASET_PIPELINE_METADATA_SHA256],
+        "frames_gps": source_digests[paths_lib.DATASET_FRAMES_GPS_SHA256],
+    }
+    return ExtractionContext(
+        document=document,
+        selected=selected,
+        orchestration=orchestration,
+        metadata=metadata,
+        frames=frames,
+        dataset_base=dataset_base,
+        panorama_dir=panorama_dir,
+        input_digests=input_digests,
+    )
+
+
+def _pinhole_outputs(context: ExtractionContext) -> tuple[str, ...]:
+    return tuple(sorted(
+        f"{stem}/{face}.jpg"
+        for stem in context.stems
+        for face in prompts.PINHOLE_FACES))
+
+
+def _pinhole_config(context: ExtractionContext) -> dict[str, Any]:
+    return {
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "selected_config": context.selected,
+        "input_digests": context.input_digests,
+        "geometry": {
+            "fov_deg": 90.0,
+            "faces": list(prompts.PINHOLE_FACES),
+            "resolution_x": context.selected["extraction.pinhole_resolution"],
+            "resolution_y": context.selected["extraction.pinhole_resolution"],
+            "n_panoramas": len(context.frames),
+            "layout": "one directory per panorama stem; four JPEG faces",
+        },
+        "panorama_keys": list(context.stems),
+    }
+
+
+def _validate_manifest(path: Path, *, upstreams: Sequence[artifact.ArtifactRef],
+                       config: Mapping[str, Any],
+                       declared_outputs: Sequence[str]) -> None:
+    manifest = artifact.load_manifest(path)
+    if manifest.upstreams != tuple(upstreams):
+        raise ValueError(f"{path} has different upstream artifact identities")
+    if dict(manifest.config) != dict(config):
+        raise ValueError(f"{path} has a different immutable configuration")
+    if manifest.declared_outputs != tuple(sorted(declared_outputs)):
+        raise ValueError(f"{path} has different declared outputs")
+
+
+def ensure_pinhole_artifact(
+        args: argparse.Namespace, context: ExtractionContext,
+        *, arguments: Sequence[str] = ()) -> artifact.ArtifactRef:
+    """Validate and reuse, or transactionally publish, pinhole faces."""
+    destination = Path(args.pinhole_output_dir)
+    outputs = _pinhole_outputs(context)
+    config = _pinhole_config(context)
+    if destination.exists() or destination.is_symlink():
+        ref = artifact.open_artifact(
+            destination,
+            expected_kind=paths_lib.PINHOLE_IMAGES,
+            expected_dataset=args.dataset,
+            expected_version=context.pinhole_version)
+        _validate_manifest(
+            destination, upstreams=(), config=config,
+            declared_outputs=outputs)
+        return ref
+
+    with publication.published_artifact(
+            destination,
+            kind=paths_lib.PINHOLE_IMAGES,
+            dataset=args.dataset,
+            version=context.pinhole_version,
+            generator=GENERATOR,
+            git_commit=provenance.git_commit(),
+            arguments=arguments,
+            upstreams=(),
+            config=config,
+            declared_outputs=outputs) as builder:
+        resolution = context.selected["extraction.pinhole_resolution"]
+        panorama_to_pinhole.process_panoramas(
+            context.panorama_dir,
+            builder.path,
+            FACE_FOV_RAD,
+            FACE_FOV_RAD,
+            resolution,
+            resolution,
+            num_workers=NUM_WORKERS,
+        )
+    assert builder.artifact_ref is not None
+    return builder.artifact_ref
+
+
+def _request_media_settings(context: ExtractionContext) -> dict[str, Any]:
+    return {
+        "prompt_type": context.selected["extraction.prompt_type"],
+        "pinhole_resolution": context.selected["extraction.pinhole_resolution"],
+        "media_resolution": context.selected["extraction.media_resolution"],
+        "thinking_level": context.selected["extraction.thinking_level"],
+        "face_order": list(prompts.PINHOLE_FACES),
+    }
+
+
+def _request_set_matches(
+        request_set: llm_lifecycle.RequestSet,
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef) -> bool:
+    value = request_set.to_dict()
+    if (value["stage"] != "frame_landmark_extraction"
+            or value["model"] != context.selected["extraction.model"]
+            or value["system_prompt"] != prompts.SYSTEM_PROMPTS[
+                context.selected["extraction.prompt_type"]]
+            or value["response_schema"] != prompts.response_schema()
+            or value["media_settings"] != _request_media_settings(context)
+            or value["input_digests"] != context.input_digests
+            or request_set.upstreams != (pinhole_ref,)):
+        return False
+    units = value["units"]
+    if [unit["key"] for unit in units] != list(context.stems):
+        return False
+    for unit in units:
+        if unit["metadata"] != {"panorama_stem": unit["key"]}:
+            return False
+        request = unit["request"]
+        try:
+            contents = request["contents"]
+            parts = contents[0]["parts"]
+            instruction = request["systemInstruction"]["parts"][0]["text"]
+            generation = request["generationConfig"]
+        except (KeyError, IndexError, TypeError):
+            return False
+        if (not isinstance(contents, list) or len(contents) != 1
+                or not isinstance(parts, list) or len(parts) != 5
+                or sum(isinstance(part, dict) and "inline_data" in part
+                       for part in parts) != 4
+                or parts[-1] != {"text": prompts.USER_PROMPT}
+                or instruction != value["system_prompt"]
+                or generation.get("responseSchema") != value["response_schema"]
+                or generation.get("responseMimeType") != "application/json"
+                or generation.get("thinkingConfig") != {
+                    "thinkingLevel": context.selected[
+                        "extraction.thinking_level"]}):
+            return False
     return True
 
 
-def observed_pinhole_geometry(config: Config) -> dict:
-    """Read the rendered face geometry back off disk.
+def build_request_set(
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef,
+        work_root: Path) -> llm_lifecycle.RequestSet:
+    """Construct the complete deterministic workload from the pinhole artifact."""
+    work_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+            prefix=".request-build-", dir=work_root) as temporary:
+        files = prompts.write_requests(
+            Path(pinhole_ref.path),
+            context.panorama_dir,
+            Path(temporary),
+            prompt_type=context.selected["extraction.prompt_type"],
+            media_resolution=context.selected["extraction.media_resolution"],
+            thinking_level=context.selected["extraction.thinking_level"],
+            num_workers=NUM_WORKERS,
+        )
+        records = []
+        for path in sorted(files):
+            with path.open(encoding="utf-8") as stream:
+                for line_number, line in enumerate(stream, 1):
+                    if not line.strip():
+                        raise ValueError(f"{path}:{line_number}: blank request")
+                    value = _strict_json_loads(
+                        line, f"{path}:{line_number}")
+                    if not isinstance(value, dict) or set(value) != {
+                            "key", "request"}:
+                        raise ValueError(
+                            f"{path}:{line_number}: request record must have "
+                            "exact keys key, request")
+                    records.append(value)
+    keys = [record["key"] for record in records]
+    if keys != list(context.stems):
+        raise ValueError(
+            "generated request keys do not exactly cover panoramas in order: "
+            f"expected {list(context.stems)}, found {keys}")
+    units = tuple(llm_lifecycle.RequestUnit(
+        key=record["key"], request=record["request"],
+        metadata={"panorama_stem": record["key"]})
+        for record in records)
+    return llm_lifecycle.RequestSet.create(
+        stage="frame_landmark_extraction",
+        model=context.selected["extraction.model"],
+        system_prompt=prompts.SYSTEM_PROMPTS[
+            context.selected["extraction.prompt_type"]],
+        response_schema=prompts.response_schema(),
+        media_settings=_request_media_settings(context),
+        input_digests=context.input_digests,
+        upstreams=(pinhole_ref,),
+        units=units,
+    )
 
-    Recorded from the output rather than from the flags, so the manifest
-    states what the faces *are* rather than what was requested.
-    """
-    stems = panorama_stems(config.panorama_dir)
-    geometry = {"n_panoramas": len(stems),
-                "faces": list(prompts.PINHOLE_FACES)}
-    if not stems:
-        return geometry
-    probe = config.pinhole_dir / stems[0] / f"{prompts.PINHOLE_FACES[0]}.jpg"
-    try:
-        from PIL import Image
-        with Image.open(probe) as img:
-            geometry["res_x"], geometry["res_y"] = img.width, img.height
-    except OSError:
-        geometry["res_x"] = config.pinhole_resolution
-        geometry["res_y"] = None
-        geometry["note"] = f"could not read {probe} to confirm resolution"
-    return geometry
+
+def _request_version(context: ExtractionContext, fingerprint: str) -> str:
+    return f"{context.frame_version}.requests.{fingerprint[:16]}"
 
 
-def write_pinhole_manifest(config: Config, *, adopted: bool = False) -> Path:
-    """Record how the pinhole faces were rendered, next to the faces."""
-    notes = ("Dir names are panorama stems and must match panorama/ exactly: "
-             "they key the requests and predictions downstream.")
-    if adopted:
-        notes += (" Adopted: this render predates this invocation and was "
-                  "verified against the contract (stems x faces x "
-                  "resolution) rather than re-rendered, so argv/git here "
-                  "describe the verifying run, not the original render.")
-    path = provenance.write(
-        config.pinhole_dir,
-        generator=f"{GENERATOR} (stage 1) -> extraction/panorama_to_pinhole",
-        inputs={"panorama_dir": paths_lib.relative_to_root(
-            config.panorama_dir, config.root)},
-        config={
-            **observed_pinhole_geometry(config),
-            "requested_res_x": config.pinhole_resolution,
-            "fov_deg": math.degrees(FACE_FOV_RAD),
-            "layout": "one dir per pano stem, 4 face JPEGs each",
-            "convention": ("faces at 90-deg yaw intervals, 90-deg FOV; "
-                           "geometry.direction_from_face_px is the render's "
-                           "verified inverse (see farfield/geometry.py)"),
+def _result_version(context: ExtractionContext, fingerprint: str) -> str:
+    return f"{context.frame_version}.results.{fingerprint[:16]}"
+
+
+def _request_config(context: ExtractionContext,
+                    request_set: llm_lifecycle.RequestSet) -> dict[str, Any]:
+    return {
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "purpose": "frame_landmark_extraction",
+        "n_expected": len(request_set.units),
+        "request_set_fingerprint": request_set.fingerprint,
+    }
+
+
+def _validate_request_artifact(
+        path: Path, request_set: llm_lifecycle.RequestSet,
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef) -> artifact.ArtifactRef:
+    ref = artifact.open_artifact(
+        path,
+        expected_kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+        expected_dataset=context.document["dataset"],
+        expected_version=_request_version(context, request_set.fingerprint))
+    _validate_manifest(
+        path,
+        upstreams=(pinhole_ref,),
+        config=_request_config(context, request_set),
+        declared_outputs=(llm_lifecycle.REQUEST_SET_NAME,
+                          llm_lifecycle.REQUESTS_NAME))
+    recorded = llm_lifecycle.load_request_set(
+        path / llm_lifecycle.REQUEST_SET_NAME)
+    if recorded.fingerprint != request_set.fingerprint:
+        raise ValueError(f"{path} contains a different request set")
+    return ref
+
+
+def ensure_request_artifact(
+        args: argparse.Namespace, context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef,
+        *, arguments: Sequence[str] = (),
+    ) -> tuple[llm_lifecycle.RequestSet, artifact.ArtifactRef, Path]:
+    """Find the exact fingerprint-scoped workload, or construct it once."""
+    work_root = Path(args.output_dir).with_name(
+        Path(args.output_dir).name + WORK_SUFFIX)
+    work_root.mkdir(parents=True, exist_ok=True)
+    candidates = []
+    for work_dir in sorted(work_root.iterdir()):
+        if not work_dir.is_dir() or not _DIGEST_RE.fullmatch(work_dir.name):
+            continue
+        request_dir = work_dir / REQUEST_ARTIFACT_DIR
+        if not request_dir.exists():
+            continue
+        # A corrupt fingerprint-scoped snapshot is a hard error, not a reason
+        # to silently build another workload beside it.
+        artifact.open_artifact(
+            request_dir,
+            expected_kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+            expected_dataset=args.dataset)
+        request_set = llm_lifecycle.load_request_set(
+            request_dir / llm_lifecycle.REQUEST_SET_NAME)
+        if work_dir.name != request_set.fingerprint:
+            raise ValueError(
+                f"work directory {work_dir} does not match its request "
+                "fingerprint")
+        if _request_set_matches(request_set, context, pinhole_ref):
+            candidates.append((request_set, request_dir, work_dir))
+    if len(candidates) > 1:
+        raise ValueError(
+            "multiple request fingerprints claim the same immutable workload")
+    if candidates:
+        request_set, request_dir, work_dir = candidates[0]
+        ref = _validate_request_artifact(
+            request_dir, request_set, context, pinhole_ref)
+        return request_set, ref, work_dir
+
+    request_set = build_request_set(context, pinhole_ref, work_root)
+    work_dir = work_root / request_set.fingerprint
+    request_dir = work_dir / REQUEST_ARTIFACT_DIR
+    ref = llm_lifecycle.publish_request_set(
+        request_dir,
+        request_set=request_set,
+        dataset=args.dataset,
+        version=_request_version(context, request_set.fingerprint),
+        generator=GENERATOR,
+        git_commit=provenance.git_commit(),
+        arguments=arguments,
+        extra_config={
+            key: value for key, value in _request_config(
+                context, request_set).items()
+            if key != "request_set_fingerprint"
         },
-        extra={"kind": paths_lib.PINHOLE_IMAGES, "dataset": config.dataset,
-               "version": config.pinhole_version},
-        notes=notes,
     )
-    print(f"  Wrote {path}")
-    return path
+    # The lifecycle helper adds request_set_fingerprint itself.
+    _validate_request_artifact(
+        request_dir, request_set, context, pinhole_ref)
+    return request_set, ref, work_dir
 
 
-def stage_pinhole(config: Config):
-    """Stage 1: render panoramas to pinhole faces."""
-    if check_pinhole_reuse(config):
-        # A reused render is still an artifact; give it a manifest if its
-        # producer predates the contract. An existing manifest is left alone.
-        if not (config.pinhole_dir / provenance.MANIFEST_NAME).exists():
-            write_pinhole_manifest(config, adopted=True)
-        return
-
-    if config.pinhole_dir.exists() and not config.force:
-        response = input(
-            f"  Pinhole dir {config.pinhole_dir} exists but verification "
-            f"failed. Re-render? [y/N]: ")
-        if response.lower() != "y":
-            print("  Aborting")
-            sys.exit(1)
-
-    config.pinhole_dir.mkdir(parents=True, exist_ok=True)
-    panorama_to_pinhole.process_panoramas(
-        config.panorama_dir,
-        config.pinhole_dir,
-        FACE_FOV_RAD,
-        FACE_FOV_RAD,
-        config.pinhole_resolution,
-        config.pinhole_resolution,  # fov_x == fov_y, so res_y == res_x
-        num_workers=config.num_workers,
-    )
-    write_pinhole_manifest(config)
+def _normalize_transport_record(value: Any, where: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{where}: transport record must be an object")
+    if set(value) == {"key", "response"}:
+        if not isinstance(value["key"], str) or not value["key"]:
+            raise ValueError(f"{where}: key must be non-empty")
+        if not isinstance(value["response"], dict):
+            raise ValueError(f"{where}: response must be an object")
+        return value
+    if set(value) == {"key", "error"}:
+        if (not isinstance(value["key"], str) or not value["key"]
+                or value["error"] is None):
+            raise ValueError(f"{where}: invalid error record")
+        return value
+    if set(value) == {"key", "request", "response", "error"}:
+        key = value["key"]
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{where}: key must be non-empty")
+        if value["error"] is not None:
+            return {"key": key, "error": value["error"]}
+        if not isinstance(value["response"], dict):
+            raise ValueError(f"{where}: successful response must be an object")
+        return {"key": key, "response": value["response"]}
+    raise ValueError(
+        f"{where}: unrecognized transport record keys {sorted(value)}")
 
 
-# ---------------------------------------------------------------------------
-# Stage 2: requests
-# ---------------------------------------------------------------------------
+def normalize_transport_shard(raw_path: Path) -> Path:
+    """Normalize batch and on-demand files to the lifecycle boundary."""
+    records = []
+    sources = [raw_path, raw_path.with_suffix(".errors.jsonl")]
+    for source in sources:
+        if not source.exists():
+            continue
+        with source.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    raise ValueError(f"{source}:{line_number}: blank record")
+                value = _strict_json_loads(
+                    line, f"{source}:{line_number}")
+                records.append(_normalize_transport_record(
+                    value, f"{source}:{line_number}"))
+    normalized = raw_path.with_name(
+        raw_path.name.replace("raw_", "normalized_", 1))
+    artifact.atomic_write_file(
+        normalized,
+        b"".join(artifact.canonical_json_bytes(record) + b"\n"
+                 for record in records))
+    return normalized
 
-def stage_requests(config: Config):
-    """Stage 2: build the Gemini batch request JSONL files."""
-    written = prompts.write_requests(
-        config.pinhole_dir,
-        config.panorama_dir,
-        config.requests_dir,
-        prompt_type=config.prompt_type,
-        media_resolution=config.media_resolution,
-        thinking_level=config.thinking_level,
-        num_workers=config.num_workers,
-    )
-    print(f"  {len(written)} request file(s) in {config.requests_dir}")
+
+def import_transport_history(
+        work_dir: Path, request_set: llm_lifecycle.RequestSet) -> Path:
+    """Idempotently import every completed or interrupted transport shard."""
+    attempts_dir = work_dir / ATTEMPTS_DIR_NAME
+    transport_dir = work_dir / "transport"
+    if not transport_dir.exists():
+        return attempts_dir
+    for raw_path in sorted(transport_dir.iterdir()):
+        if not raw_path.is_file() or not _RAW_SHARD_RE.fullmatch(raw_path.name):
+            continue
+        normalized = normalize_transport_shard(raw_path)
+        llm_lifecycle.import_transport_results(
+            normalized, attempts_dir, request_set)
+    return attempts_dir
 
 
-# ---------------------------------------------------------------------------
-# Stage 3: execute
-# ---------------------------------------------------------------------------
+def _attempts(path: Path) -> tuple[llm_lifecycle.Attempt, ...]:
+    return llm_lifecycle.load_attempts(path) if path.exists() else ()
 
-def _total_estimate(request_files: list, model: str) -> llm_cost.Estimate:
-    """One estimate over several request files, priced at the actual model."""
+
+def pending_units(
+        request_set: llm_lifecycle.RequestSet,
+        attempts: Sequence[llm_lifecycle.Attempt],
+    ) -> tuple[llm_lifecycle.RequestUnit, ...]:
+    """Units without a valid response; duplicate valid responses fail closed."""
+    expected = {unit.key for unit in request_set.units}
+    valid = {key: 0 for key in expected}
+    for attempt in attempts:
+        if attempt.request_set_fingerprint != request_set.fingerprint:
+            raise llm_lifecycle.LlmLifecycleError(
+                f"attempt {attempt.attempt_id!r} targets another request set")
+        if attempt.key not in expected:
+            raise llm_lifecycle.LlmLifecycleError(
+                f"attempt {attempt.attempt_id!r} has unknown key")
+        if attempt.response is None:
+            continue
+        try:
+            # Attempt values are recursively frozen by llm_lifecycle.  Its
+            # public serializer is the supported thaw boundary and produces
+            # the ordinary dict/list response shape the stage validator sees
+            # during canonical compilation.
+            response_value = attempt.to_dict()["response"]
+            assert response_value is not None
+            validate_response(attempt.key, response_value)
+        except Exception:
+            continue
+        valid[attempt.key] += 1
+    duplicates = sorted(key for key, count in valid.items() if count > 1)
+    if duplicates:
+        raise llm_lifecycle.IncompleteCoverageError(
+            f"duplicate valid extraction responses for keys {duplicates}")
+    return tuple(unit for unit in request_set.units if valid[unit.key] == 0)
+
+
+def _request_record_bytes(unit: llm_lifecycle.RequestUnit) -> bytes:
+    value = unit.to_dict()
+    return artifact.canonical_json_bytes({
+        "key": unit.key, "request": value["request"]}) + b"\n"
+
+
+def _request_chunks(
+        units: Sequence[llm_lifecycle.RequestUnit]) -> tuple[bytes, ...]:
+    chunks = []
+    current = bytearray()
+    count = 0
+    for unit in units:
+        line = _request_record_bytes(unit)
+        if len(line) > prompts.MAX_BATCH_FILE_SIZE_GCP:
+            raise ValueError(f"request {unit.key!r} exceeds provider file limit")
+        if current and (len(current) + len(line)
+                        > prompts.MAX_BATCH_FILE_SIZE_GCP
+                        or count >= MAX_REQUESTS_PER_BATCH):
+            chunks.append(bytes(current))
+            current = bytearray()
+            count = 0
+        current.extend(line)
+        count += 1
+    if current:
+        chunks.append(bytes(current))
+    return tuple(chunks)
+
+
+def _total_estimate(paths: Sequence[Path], model: str) -> llm_cost.Estimate:
     _, _, rate_label = llm_cost.rates_for(model)
     total = llm_cost.Estimate(model=model, rate_label=rate_label)
-    for path in request_files:
+    for path in paths:
         part = llm_cost.estimate_jsonl(path, model=model)
         for field in ("n_requests", "prompt_tokens", "output_tokens",
                       "n_images", "text_chars", "n_large_prompts",
@@ -331,564 +879,354 @@ def _total_estimate(request_files: list, model: str) -> llm_cost.Estimate:
     return total
 
 
-def stage_execute(config: Config):
-    """Stage 3: run every request file through vertex_batch_manager.
-
-    `run_requests` owns the transport (batch by default, `--online` to swap),
-    the staging bucket contract, resumability (keys that already have a
-    usable response in the output are skipped) and the cost ceiling priced at
-    the run's `--model`. This stage only sequences the files into the one
-    results file every consumer globs.
-    """
-    execution = config.execution
-    files = sorted(config.requests_dir.glob("*.jsonl"))
-    if not files:
-        sys.exit(f"no request files under {config.requests_dir}; run stage "
-                 f"{int(Stage.REQUESTS)} (requests) first")
-
-    out = config.main_predictions
-    out.parent.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%y%m%d_%H%M%S")
-
-    if len(files) == 1:
-        # run_requests carries the cost gate itself, priced at --model.
-        vbm.run_requests(execution, files[0], out,
-                         tag=f"{config.dataset}_{config.version}_{stamp}")
+def execute_pending(
+        args: argparse.Namespace,
+        request_set: llm_lifecycle.RequestSet,
+        units: Sequence[llm_lifecycle.RequestUnit],
+        work_dir: Path,
+        attempts_dir: Path) -> None:
+    """Execute one resumable attempt for every currently invalid unit."""
+    if not units:
         return
+    transport_dir = work_dir / "transport"
+    transport_dir.mkdir(parents=True, exist_ok=True)
+    indices = [int(match.group(1))
+               for path in transport_dir.iterdir()
+               if path.is_file()
+               for match in [_RAW_SHARD_RE.fullmatch(path.name)]
+               if match]
+    next_index = max(indices, default=-1) + 1
+    pending_paths = []
+    shards = []
+    for offset, content in enumerate(_request_chunks(units)):
+        index = next_index + offset
+        pending_path = transport_dir / f"pending_{index:04d}.jsonl"
+        raw_path = transport_dir / f"raw_{index:04d}.jsonl"
+        artifact.atomic_write_file(pending_path, content)
+        pending_paths.append(pending_path)
+        shards.append((index, pending_path, raw_path))
 
-    # Several request files are still ONE step to the operator, so the
-    # ceiling is enforced once over the total, up front ...
-    total = _total_estimate(files, execution.model)
-    try:
-        llm_cost.enforce_limit(
-            total, limit_usd=execution.cost_limit,
-            label=(f"{config.dataset} landmark extraction "
-                   f"({len(files)} request files)"),
-            online=execution.online,
-            approved=execution.approve_cost)
-    except llm_cost.CostLimitExceeded as exc:
-        sys.exit(f"\n{exc}")
-    # ... and the per-file gates inside run_requests are then marked approved,
-    # so one human answer covers the step instead of one per file. Each file's
-    # estimate is a subset of the total the human just saw.
-    approved = argparse.Namespace(**{**vars(execution), "approve_cost": True})
-    for idx, path in enumerate(files):
-        vbm.run_requests(
-            approved, path, out,
-            tag=f"{config.dataset}_{config.version}_{stamp}_p{idx:02d}")
-
-
-# ---------------------------------------------------------------------------
-# Completeness gate
-# ---------------------------------------------------------------------------
-
-def validate_predictions(sentences_dir: Path, panorama_dir: Path) -> dict:
-    """Classify every stored response: usable, empty, or failed.
-
-    The batch API reports success at the *job* level while individual requests
-    can still come back with no candidates at all -- leg2 lost 23 of 236
-    frames to transient `TPU device returned error` and the old pipeline
-    printed "Pipeline complete!" over it. Nothing downstream notices either:
-    ingest skips a frame with no prediction with a bare `continue`, so
-    tracking would simply see 10% of the leg as containing no objects and
-    starve tracks crossing it.
-
-    `empty` is not a failure. A frame of open water genuinely has no
-    landmarks, and on leg2 19 frames are legitimately in that state.
-    """
-    paths = sorted(Path(sentences_dir).glob(
-        "results/*/prediction-*/predictions.jsonl"))
-    report = {"files": len(paths), "ok": [], "empty": [], "failed": [],
-              "unparseable": []}
-    # Later files win, matching dataset.load_predictions' sorted-glob dict
-    # build, so a retry directory supersedes the attempt it repairs.
-    by_key = {}
-    for path in paths:
-        with open(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    report["unparseable"].append(str(path))
-                    continue
-                key = record.get("key")
-                if key:
-                    by_key[key] = record
-
-    for key, record in by_key.items():
-        response = record.get("response") or {}
-        if not isinstance(response, dict) or "candidates" not in response:
-            report["failed"].append(key)
-            continue
-        try:
-            text = (response["candidates"][0]["content"]["parts"][0]["text"]
-                    ).strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-            landmarks = json.loads(text).get("landmarks") or []
-        except (KeyError, IndexError, json.JSONDecodeError, TypeError):
-            report["failed"].append(key)
-            continue
-        report["empty" if not landmarks else "ok"].append(key)
-
-    stems = panorama_stems(panorama_dir)
-    report["n_panoramas"] = len(stems)
-    report["missing"] = [s for s in stems if s not in by_key]
-    return report
-
-
-def _repair_hint(config: Config) -> str:
-    return (f"bazel run {GENERATOR} -- \\\n"
-            f"        --dataset {config.dataset} "
-            f"--frame_landmarks_version {config.version} "
-            f"--pinhole_version {config.pinhole_version} \\\n"
-            f"        --prompt_type {config.prompt_type} "
-            f"--pinhole_resolution {config.pinhole_resolution} \\\n"
-            f"        --media_resolution {config.media_resolution} "
-            f"--thinking_level {config.thinking_level} \\\n"
-            f"        --model {config.execution.model} --retry_failed")
-
-
-def print_validation(report: dict, *, repair_hint: str) -> bool:
-    """Report response coverage. Returns True when the artifact is complete."""
-    n_ok, n_empty = len(report["ok"]), len(report["empty"])
-    failed, missing = report["failed"], report["missing"]
-    total = report.get("n_panoramas", 0)
-    print(f"  {n_ok} with landmarks, {n_empty} legitimately empty, "
-          f"{len(failed)} failed, {len(missing)} absent (of {total} panoramas)")
-    if not failed and not missing:
-        print("  Complete: every panorama has a usable response.")
-        return True
-    print(f"\n  INCOMPLETE ARTIFACT: {len(failed) + len(missing)} of {total} "
-          f"panoramas ({100 * (len(failed) + len(missing)) / max(total, 1):.1f}%)"
-          f" have no usable response.")
-    for key in (failed + missing)[:5]:
-        print(f"    {key}")
-    if len(failed) + len(missing) > 5:
-        print(f"    ... and {len(failed) + len(missing) - 5} more")
-    print("\n  Downstream will NOT complain: ingest (farfield/dataset.py) "
-          "skips a frame with no prediction silently, so tracking would read "
-          "these as frames containing no objects.")
-    print(f"\n  Repair with:\n    {repair_hint}")
-    return False
-
-
-def coverage_summary(report: dict) -> dict:
-    """Response coverage, recorded so an accepted gap stays visible.
-
-    A consumer reading the manifest can otherwise not tell a leg with
-    genuinely few landmarks from one that lost frames to API errors -- both
-    look like frames with no observations.
-    """
-    gaps = report["failed"] + report["missing"]
-    summary = {
-        "n_panoramas": report.get("n_panoramas", 0),
-        "n_with_landmarks": len(report["ok"]),
-        "n_empty_responses": len(report["empty"]),
-        "n_no_usable_response": len(gaps),
-    }
-    if gaps:
-        summary["complete"] = False
-        summary["missing_keys"] = sorted(gaps)
-        summary["warning"] = (
-            "Panoramas listed in missing_keys have NO usable response. ingest "
-            "skips them silently, so downstream reads them as frames "
-            "containing no objects. Repair with --retry_failed.")
-    else:
-        summary["complete"] = True
-    return summary
-
-
-# ---------------------------------------------------------------------------
-# Retry
-# ---------------------------------------------------------------------------
-
-def retry_request_records(requests_dir: Path, wanted: set) -> list:
-    """The stored request records whose keys are in `wanted`."""
-    subset = []
-    for path in sorted(Path(requests_dir).glob("*.jsonl")):
-        with open(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                if record.get("key") in wanted:
-                    subset.append(record)
-    return subset
-
-
-def retry_failed(config: Config):
-    """Re-run only the requests that came back without a usable response.
-
-    Written as an *additional* predictions file rather than by editing the
-    original: consumers build a dict over a sorted glob, so a directory
-    sorting after the first attempt supersedes it key by key. The failed
-    attempt stays on disk as the record of what happened, and no published
-    file is mutated. After a repair the manifest is refreshed so its recorded
-    coverage matches the artifact again.
-    """
-    report = validate_predictions(config.sentences_dir, config.panorama_dir)
-    broken = report["failed"] + report["missing"]
-    if not broken:
-        print("Nothing to retry: every panorama has a usable response.")
-        return
-    print(f"retrying {len(broken)} request(s)")
-
-    wanted = set(broken)
-    subset = retry_request_records(config.requests_dir, wanted)
-    if len(subset) != len(wanted):
-        found = {r.get("key") for r in subset}
-        print(f"  WARNING: {len(wanted - found)} failed key(s) have no "
-              f"request on disk; {config.requests_dir} may have been deleted")
-    if not subset:
-        sys.exit("no requests available to retry")
-
-    stamp = datetime.now().strftime("%Y-%m-%dT%H%M%S")
-    retry_dir = (config.sentences_dir / "results" /
-                 f"zz_retry_{stamp}" / f"prediction-retry-{stamp}")
-    retry_dir.mkdir(parents=True, exist_ok=True)
-    requests_path = retry_dir / "requests.jsonl"
-    with open(requests_path, "w") as handle:
-        for record in subset:
-            handle.write(json.dumps(record) + "\n")
-    print(f"  wrote {requests_path} ({len(subset)} requests)")
-
-    # Online rather than batch: a handful of requests does not justify a
-    # batch job's queue latency, and run-online is itself resumable on error.
-    # The cost gate inside run_requests still applies, priced at --model.
-    online = argparse.Namespace(**{**vars(config.execution), "online": True})
-    vbm.run_requests(online, requests_path, retry_dir / "predictions.jsonl",
-                     tag=f"{config.dataset}_{config.version}_retry_{stamp}")
-
-    print("\nafter retry:")
-    report = validate_predictions(config.sentences_dir, config.panorama_dir)
-    complete = print_validation(report, repair_hint=_repair_hint(config))
-    if complete or config.allow_incomplete:
-        write_frame_landmarks_manifest(config, report)
-
-
-# ---------------------------------------------------------------------------
-# frame_landmarks manifest
-# ---------------------------------------------------------------------------
-
-def request_fingerprint(requests_dir: Path) -> dict:
-    """Hash what was actually sent to the model.
-
-    `prompt_type` names a key in `prompts.SYSTEM_PROMPTS`, and that key's
-    *text* can be edited without the name changing -- so the name alone does
-    not pin the extraction. The request JSONL holds the prompt as it went
-    out, alongside every image, so hashing those files pins the whole
-    request: change the prompt, the resolution, or the pano set, and the
-    digest moves.
-    """
-    files = sorted(Path(requests_dir).glob("*.jsonl"))
-    if not files:
-        return {"request_sha256": None,
-                "note": "request files absent at manifest time"}
-    digest = hashlib.sha256()
-    n_requests = 0
-    for path in files:
-        with open(path, "rb") as handle:
-            for line in handle:
-                digest.update(line)
-                n_requests += 1
-    return {"request_sha256": digest.hexdigest(),
-            "request_files": [f.name for f in files],
-            "n_requests": n_requests}
-
-
-def prompt_fingerprint(requests_dir: Path) -> dict:
-    """Hash the system prompt TEXT alone, as it was actually sent.
-
-    `request_sha256` pins the whole request, images included, so two datasets
-    extracted with an identical prompt still get different digests and the
-    manifest cannot answer "did these two runs use the same prompt?". That
-    question cost a hand comparison across 4.4 GB of stored request JSONL
-    when the boston_harbor_leg1 v1 -> v4 regression was traced to a silent
-    rewrite of `osm_tags_farfield`. This digest answers it directly:
-    `grep prompt_sha256 artifacts/frame_landmarks/*/*/manifest.json`.
-
-    Read from the request file rather than from the prompt registry so it
-    records what went out, not what the tree says now.
-    """
-    files = sorted(Path(requests_dir).glob("*.jsonl"))
-    if not files:
-        return {"prompt_sha256": None}
-    with open(files[0]) as handle:
-        first = handle.readline()
-    if not first.strip():
-        return {"prompt_sha256": None}
-    try:
-        request = json.loads(first).get("request", {})
-        instruction = (request.get("systemInstruction")
-                       or request.get("system_instruction") or {})
-        text = "".join(part.get("text", "")
-                       for part in instruction.get("parts", []))
-    except (json.JSONDecodeError, AttributeError):
-        return {"prompt_sha256": None}
-    if not text:
-        return {"prompt_sha256": None}
-    return {"prompt_sha256": hashlib.sha256(text.encode()).hexdigest(),
-            "prompt_chars": len(text)}
-
-
-def landmark_counts(sentences_dir: Path) -> dict:
-    """How many predictions came back, for a size check against the panos."""
-    files = sorted(Path(sentences_dir).rglob("predictions.jsonl"))
-    if not files:
-        return {"note": "predictions.jsonl absent at manifest time"}
-    lines = 0
-    for path in files:
-        with open(path, "rb") as handle:
-            lines += sum(1 for _ in handle)
-    return {"n_prediction_files": len(files), "n_prediction_lines": lines}
-
-
-def write_frame_landmarks_manifest(config: Config, report: dict) -> Path:
-    """Record the extraction that produced the `frame_landmarks` artifact."""
-    root = config.root
-    path = provenance.write(
-        config.artifact_dir,
-        generator=GENERATOR,
-        inputs={
-            "dataset_base": paths_lib.relative_to_root(config.dataset_base,
-                                                       root),
-            "panorama_dir": paths_lib.relative_to_root(config.panorama_dir,
-                                                       root),
-            "pinhole_images": paths_lib.relative_to_root(config.pinhole_dir,
-                                                         root),
-        },
-        config={
-            "prompt_type": config.prompt_type,
-            # The name is a lookup key whose text can change under it; the
-            # digest is what actually pins this extraction.
-            **prompt_fingerprint(config.requests_dir),
-            **request_fingerprint(config.requests_dir),
-            "model": config.execution.model,
-            "pinhole_resolution": config.pinhole_resolution,
-            "media_resolution": config.media_resolution,
-            "thinking_level": config.thinking_level,
-            "execution": ("online (on-demand)" if config.execution.online
-                          else "batch"),
-            "gcs_prefix": config.execution.gcs_prefix,
-            **landmark_counts(config.sentences_dir),
-            **coverage_summary(report),
-        },
-        extra={"kind": paths_lib.FRAME_LANDMARKS, "dataset": config.dataset,
-               "version": config.version},
-        notes=("Consumers glob sentences/results/**/predictions.jsonl "
-               "(farfield/dataset.py). DO NOT DELETE sentence_requests/: no "
-               "stage reads it back, but each request line carries the "
-               "system prompt verbatim, which makes it the only record of "
-               "the prompt text this artifact was built with - `prompt_type` "
-               "names a registry key whose text changes over time, and "
-               "git_commit pins the tree rather than the working copy that "
-               "ran. It is also what request_sha256 is computed over, so the "
-               "digest cannot be recomputed once it is gone."),
+    total = _total_estimate(pending_paths, args.model)
+    llm_cost.enforce_limit(
+        total,
+        limit_usd=args.cost_limit,
+        label=(f"{args.dataset} frame-landmark extraction "
+               f"({len(units)} pending panoramas)"),
+        online=args.online,
+        approved=args.approve_cost,
     )
-    print(f"  Wrote {path}")
-    return path
+    # The full pending workload was gated once above.  Per-shard VBM checks
+    # are marked approved so splitting for provider limits cannot turn one
+    # configured approval into several interactive decisions.
+    execution = argparse.Namespace(**{
+        **vars(args), "approve_cost": True,
+    })
+    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
+    for index, pending_path, raw_path in shards:
+        try:
+            vbm.run_requests(
+                execution,
+                pending_path,
+                raw_path,
+                tag=(f"{args.dataset}_{request_set.fingerprint[:12]}_"
+                     f"{index:04d}"),
+            )
+        finally:
+            # Preserve useful prefix results even when the provider command
+            # raises or is interrupted; the next invocation retries only the
+            # keys that still lack one valid response.
+            if raw_path.exists() or raw_path.with_suffix(
+                    ".errors.jsonl").exists():
+                normalized = normalize_transport_shard(raw_path)
+                llm_lifecycle.import_transport_results(
+                    normalized, attempts_dir, request_set)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline driver
-# ---------------------------------------------------------------------------
-
-STAGE_FUNCS = {
-    Stage.PINHOLE: stage_pinhole,
-    Stage.REQUESTS: stage_requests,
-    Stage.EXECUTE: stage_execute,
-}
-
-
-def run_pipeline(config: Config):
-    print("=" * 70)
-    print("Farfield landmark extraction")
-    print("=" * 70)
-    print(f"  Dataset:        {config.dataset}")
-    print(f"  Panorama dir:   {config.panorama_dir}")
-    print(f"  Pinhole dir:    {config.pinhole_dir} "
-          f"(pinhole_images {config.pinhole_version})")
-    print(f"  Artifact dir:   {config.artifact_dir} "
-          f"(frame_landmarks {config.version})")
-    print(f"  Prompt type:    {config.prompt_type} "
-          f"(sha256 {prompts.prompt_sha256(config.prompt_type)[:12]}...)")
-    print(f"  Pinhole res:    {config.pinhole_resolution}")
-    print(f"  Media res:      {config.media_resolution}")
-    print(f"  Thinking level: {config.thinking_level}")
-    print(f"  Model:          {config.execution.model}")
-    print(f"  Transport:      "
-          f"{'online (on-demand)' if config.execution.online else 'batch'}")
-    print(f"  Stages:         {config.start_stage} -> {config.end_stage}")
-    print()
-
-    stages = [s for s in Stage
-              if config.start_stage <= s <= config.end_stage]
-
-    if Stage.EXECUTE in stages:
-        # The old orchestrator exported this into every vertex subprocess; the
-        # imported client needs it in our own environment instead. Explicit
-        # settings are respected.
-        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
-        vbm.check_environment()
-
-    pipeline_start = time.time()
-    for stage in stages:
-        print(f"\n{'=' * 70}")
-        print(f"STAGE {stage.value}: {STAGE_NAMES[stage]}")
-        print(f"{'=' * 70}")
-        stage_start = time.time()
-        STAGE_FUNCS[stage](config)
-        print(f"\n  Stage {stage.value} completed in "
-              f"{time.time() - stage_start:.1f}s")
-
-    # The manifest certifies the artifact, so it is written only once the
-    # stage that produces predictions has run -- and only past the
-    # completeness gate (or with the gap explicitly accepted and recorded).
-    if config.end_stage >= Stage.EXECUTE:
-        print(f"\n{'=' * 70}")
-        print("VALIDATE: response coverage")
-        print(f"{'=' * 70}")
-        report = validate_predictions(config.sentences_dir,
-                                      config.panorama_dir)
-        complete = print_validation(report, repair_hint=_repair_hint(config))
-        if not complete and not config.allow_incomplete:
-            print("\n  Stopping without a manifest. Pass --allow_incomplete "
-                  "to write one anyway; the manifest records the gap.")
-            sys.exit(1)
-        write_frame_landmarks_manifest(config, report)
-
-    print(f"\n{'=' * 70}")
-    print(f"Extraction finished in {time.time() - pipeline_start:.1f}s")
-    if config.end_stage >= Stage.EXECUTE:
-        print(f"frame_landmarks artifact: {config.artifact_dir}")
-    print(f"{'=' * 70}")
+def _result_config(
+        context: ExtractionContext,
+        request_set: llm_lifecycle.RequestSet) -> dict[str, Any]:
+    return {
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "purpose": "frame_landmark_extraction",
+        "request_set_fingerprint": request_set.fingerprint,
+        "n_expected": len(request_set.units),
+        "n_successful": len(request_set.units),
+        "coverage": "complete",
+    }
 
 
-def main():
-    # Stages run for tens of minutes and print progress as they go. Redirected
-    # to a file, Python block-buffers stdout, so a live run looks frozen for
-    # 8 KB at a time -- which is indistinguishable from a hang exactly when
-    # you most want to know it is still working.
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+def ensure_result_artifact(
+        args: argparse.Namespace,
+        context: ExtractionContext,
+        request_set: llm_lifecycle.RequestSet,
+        request_ref: artifact.ArtifactRef,
+        results: Sequence[llm_lifecycle.CanonicalResult],
+        work_dir: Path,
+        *, arguments: Sequence[str] = (),
+    ) -> artifact.ArtifactRef:
+    result_dir = work_dir / RESULT_ARTIFACT_DIR
+    expected_bytes = llm_lifecycle.canonical_results_bytes(
+        request_set, results)
+    if result_dir.exists() or result_dir.is_symlink():
+        ref = artifact.open_artifact(
+            result_dir,
+            expected_kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+            expected_dataset=args.dataset,
+            expected_version=_result_version(
+                context, request_set.fingerprint))
+        _validate_manifest(
+            result_dir,
+            upstreams=(request_ref,),
+            config=_result_config(context, request_set),
+            declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+        if (result_dir / llm_lifecycle.CANONICAL_RESULTS_NAME).read_bytes() \
+                != expected_bytes:
+            raise ValueError(
+                f"{result_dir} contains different canonical results")
+        return ref
+    ref = llm_lifecycle.publish_canonical_results(
+        result_dir,
+        request_set=request_set,
+        request_artifact=request_ref,
+        results=results,
+        dataset=args.dataset,
+        version=_result_version(context, request_set.fingerprint),
+        generator=GENERATOR,
+        git_commit=provenance.git_commit(),
+        arguments=arguments,
+        extra_config={
+            "orchestration": context.orchestration,
+            "build_identity": context.document["build_identity"],
+            "purpose": "frame_landmark_extraction",
+        },
+    )
+    _validate_manifest(
+        result_dir,
+        upstreams=(request_ref,),
+        config=_result_config(context, request_set),
+        declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+    return ref
 
+
+def predictions_bytes(
+        request_set: llm_lifecycle.RequestSet,
+        results: Sequence[llm_lifecycle.CanonicalResult]) -> bytes:
+    if [unit.key for unit in request_set.units] != [
+            result.key for result in results]:
+        raise llm_lifecycle.IncompleteCoverageError(
+            "canonical extraction results do not match request order")
+    return b"".join(
+        artifact.canonical_json_bytes({
+            "key": result.key,
+            "prediction": _validate_canonical_prediction(result.result),
+        }) + b"\n"
+        for result in results)
+
+
+def _frame_config(
+        context: ExtractionContext,
+        request_set: llm_lifecycle.RequestSet,
+        request_ref: artifact.ArtifactRef,
+        result_ref: artifact.ArtifactRef) -> dict[str, Any]:
+    return {
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "selected_config": context.selected,
+        "prompt_sha256": prompts.prompt_sha256(
+            context.selected["extraction.prompt_type"]),
+        "response_schema_sha256": artifact.sha256_json(
+            prompts.response_schema()),
+        "request_set_fingerprint": request_set.fingerprint,
+        "request_artifact": _ref_identity(request_ref),
+        "canonical_results_artifact": _ref_identity(result_ref),
+        "coverage": "complete",
+        "n_expected": len(request_set.units),
+        "n_successful": len(request_set.units),
+    }
+
+
+def _read_predictions(path: Path, expected_keys: Sequence[str]) -> list[dict]:
+    records = []
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                raise ValueError(f"{path}:{line_number}: blank record")
+            value = _strict_json_loads(line, f"{path}:{line_number}")
+            if not isinstance(value, dict) or set(value) != {
+                    "key", "prediction"}:
+                raise ValueError(
+                    f"{path}:{line_number}: expected exact keys key, prediction")
+            value["prediction"] = _validate_canonical_prediction(
+                value["prediction"])
+            records.append(value)
+    keys = [record["key"] for record in records]
+    if keys != list(expected_keys) or len(keys) != len(set(keys)):
+        raise ValueError(
+            f"{path} must exactly cover panorama order {list(expected_keys)}; "
+            f"found {keys}")
+    return records
+
+
+def validate_existing_frame_artifact(
+        args: argparse.Namespace,
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef) -> artifact.ArtifactRef:
+    destination = Path(args.output_dir)
+    ref = artifact.open_artifact(
+        destination,
+        expected_kind=paths_lib.FRAME_LANDMARKS,
+        expected_dataset=args.dataset,
+        expected_version=context.frame_version)
+    manifest = artifact.load_manifest(destination)
+    if manifest.declared_outputs != (PREDICTIONS_NAME,):
+        raise ValueError(
+            f"{destination} must declare only {PREDICTIONS_NAME}")
+    if len(manifest.upstreams) != 2 or manifest.upstreams[0] != pinhole_ref:
+        raise ValueError(
+            f"{destination} does not bind the exact pinhole artifact once")
+    result_ref = manifest.upstreams[1]
+    if (result_ref.kind != llm_lifecycle.RESULT_ARTIFACT_KIND
+            or result_ref.dataset != args.dataset):
+        raise ValueError(
+            f"{destination} does not bind a canonical LLM result artifact")
+    config = dict(manifest.config)
+    expected_keys = {
+        "orchestration", "build_identity", "selected_config",
+        "prompt_sha256", "response_schema_sha256",
+        "request_set_fingerprint", "request_artifact",
+        "canonical_results_artifact", "coverage", "n_expected",
+        "n_successful",
+    }
+    if set(config) != expected_keys:
+        raise ValueError(f"{destination} has an invalid manifest config shape")
+    if (config["orchestration"] != context.orchestration
+            or config["build_identity"] != context.document["build_identity"]
+            or config["selected_config"] != context.selected
+            or config["prompt_sha256"] != prompts.prompt_sha256(
+                context.selected["extraction.prompt_type"])
+            or config["response_schema_sha256"] != artifact.sha256_json(
+                prompts.response_schema())
+            or config["coverage"] != "complete"
+            or config["n_expected"] != len(context.frames)
+            or config["n_successful"] != len(context.frames)
+            or not isinstance(config["request_set_fingerprint"], str)
+            or not _DIGEST_RE.fullmatch(config["request_set_fingerprint"])):
+        raise ValueError(f"{destination} has a different extraction contract")
+    request_identity = _validate_ref_identity(
+        config["request_artifact"],
+        kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+        dataset=args.dataset,
+        where="manifest.config.request_artifact")
+    result_identity = _validate_ref_identity(
+        config["canonical_results_artifact"],
+        kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+        dataset=args.dataset,
+        where="manifest.config.canonical_results_artifact")
+    if result_identity != _ref_identity(result_ref):
+        raise ValueError(
+            "manifest config and upstream canonical-result identities differ")
+    fingerprint = config["request_set_fingerprint"]
+    if (request_identity["version"] != _request_version(context, fingerprint)
+            or result_identity["version"] != _result_version(
+                context, fingerprint)):
+        raise ValueError(
+            "manifest LLM artifact versions do not match its request "
+            "fingerprint")
+    _read_predictions(destination / PREDICTIONS_NAME, context.stems)
+    return ref
+
+
+def publish_frame_artifact(
+        args: argparse.Namespace,
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef,
+        request_set: llm_lifecycle.RequestSet,
+        request_ref: artifact.ArtifactRef,
+        result_ref: artifact.ArtifactRef,
+        results: Sequence[llm_lifecycle.CanonicalResult],
+        *, arguments: Sequence[str] = (),
+    ) -> artifact.ArtifactRef:
+    destination = Path(args.output_dir)
+    content = predictions_bytes(request_set, results)
+    config = _frame_config(
+        context, request_set, request_ref, result_ref)
+    with publication.published_artifact(
+            destination,
+            kind=paths_lib.FRAME_LANDMARKS,
+            dataset=args.dataset,
+            version=context.frame_version,
+            generator=GENERATOR,
+            git_commit=provenance.git_commit(),
+            arguments=arguments,
+            upstreams=(pinhole_ref, result_ref),
+            config=config,
+            declared_outputs=(PREDICTIONS_NAME,)) as builder:
+        artifact.atomic_write_file(
+            builder.output_path(PREDICTIONS_NAME), content)
+    assert builder.artifact_ref is not None
+    return builder.artifact_ref
+
+
+def run(args: argparse.Namespace, *, arguments: Sequence[str] = ()) \
+        -> tuple[artifact.ArtifactRef, artifact.ArtifactRef]:
+    """Execute the complete extraction producer contract."""
+    context = load_context(args)
+    pinhole_ref = ensure_pinhole_artifact(
+        args, context, arguments=arguments)
+    destination = Path(args.output_dir)
+    if destination.exists() or destination.is_symlink():
+        return pinhole_ref, validate_existing_frame_artifact(
+            args, context, pinhole_ref)
+
+    request_set, request_ref, work_dir = ensure_request_artifact(
+        args, context, pinhole_ref, arguments=arguments)
+    attempts_dir = import_transport_history(work_dir, request_set)
+    pending = pending_units(request_set, _attempts(attempts_dir))
+    execute_pending(
+        args, request_set, pending, work_dir, attempts_dir)
+    attempts = _attempts(attempts_dir)
+    results = llm_lifecycle.compile_canonical_results(
+        request_set, attempts, validate_response)
+    result_ref = ensure_result_artifact(
+        args, context, request_set, request_ref, results, work_dir,
+        arguments=arguments)
+    frame_ref = publish_frame_artifact(
+        args, context, pinhole_ref, request_set, request_ref, result_ref,
+        results, arguments=arguments)
+    return pinhole_ref, frame_ref
+
+
+def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    paths_lib.add_arguments(parser, pinhole=True)
-    vbm.add_execution_arguments(parser)
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset_base", type=Path, required=True)
+    parser.add_argument("--pinhole_output_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--build_config", type=Path, required=True)
+    parser.add_argument("--orchestration_config_digest", required=True)
 
-    parser.add_argument(
-        "--prompt_type", required=True, choices=list(prompts.PROMPT_TYPES),
-        help="Which farfield prompt to extract with. Required: v1 and v2 "
-             "behave measurably differently (see the registry comments in "
-             "prompts.py), so which one a run used must be chosen, and is "
-             "recorded in the manifest as text digest, not just name.")
-    parser.add_argument(
-        "--pinhole_resolution", type=int, required=True,
-        help="Pinhole face resolution in pixels. Required: previously 1024 "
-             "here and 2048 in the collector -- which is why there is no "
-             "default.")
-    parser.add_argument(
-        "--media_resolution", required=True,
-        choices=list(prompts.MEDIA_RESOLUTIONS),
-        help="Media resolution for Gemini image processing. Required: it "
-             "changes what the model can read off a face, and it is priced "
-             "differently.")
-    parser.add_argument(
-        "--thinking_level", required=True,
-        choices=list(prompts.THINKING_LEVELS),
-        help="Gemini thinking level. Required: it shapes both the result and "
-             "the bill (thinking tokens run ~4.5x visible output).")
-    parser.add_argument(
-        "--num_workers", type=int, default=8,
-        help="Workers for pinhole rendering and image encoding (default: 8)")
-    parser.add_argument(
-        "--start_stage", type=int, default=int(Stage.PINHOLE),
-        help=f"Resume from this stage (1-{int(Stage.EXECUTE)}, default: 1)")
-    parser.add_argument(
-        "--end_stage", type=int, default=int(Stage.EXECUTE),
-        help=f"Stop after this stage (1-{int(Stage.EXECUTE)}, default: "
-             f"{int(Stage.EXECUTE)})")
-    parser.add_argument(
-        "--allow_incomplete", action="store_true",
-        help="Write a manifest even when some panoramas have no usable "
-             "response (the gap is recorded in the manifest)")
-    parser.add_argument(
-        "--retry_failed", action="store_true",
-        help="Re-run only the requests with no usable response and stop. "
-             "Results are written as an additional predictions file that "
-             "supersedes the failed attempt; nothing is overwritten.")
-    parser.add_argument(
-        "--validate_only", action="store_true",
-        help="Report response coverage for an existing extraction and stop")
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Skip the re-render confirmation when an existing pinhole "
-             "render fails verification. Never implied by any other flag.")
+    execution = parser.add_argument_group("model transport")
+    execution.add_argument("--online", action="store_true")
+    execution.add_argument("--gcs_prefix", default=None)
+    execution.add_argument("--parallel", type=int, default=8)
+    execution.add_argument("--poll_interval", type=int, default=120)
+    execution.add_argument("--cost_limit", type=float, required=True)
+    execution.add_argument("--approve_cost", action="store_true")
+    return parser
 
-    args = parser.parse_args()
 
-    # The artifact versions name what this run writes; a default here is how
-    # one version's data is silently read against another's (REORG.md rule 2).
-    if not args.frame_landmarks_version:
-        parser.error(
-            "--frame_landmarks_version is required: it names the output "
-            "artifact version, and there is no default on purpose.")
-    if not args.pinhole_version:
-        parser.error(
-            "--pinhole_version is required: it names the pinhole_images "
-            "artifact this extraction renders into / reads from, and there "
-            "is no default on purpose.")
-
-    last = int(Stage.EXECUTE)
-    if not (1 <= args.start_stage <= last):
-        parser.error(f"--start_stage must be between 1 and {last}")
-    if not (1 <= args.end_stage <= last):
-        parser.error(f"--end_stage must be between 1 and {last}")
-    if args.start_stage > args.end_stage:
-        parser.error("--start_stage must be <= --end_stage")
-
-    paths = paths_lib.resolve(parser, args,
-                              require=("dataset_base", "panorama_dir"))
-
-    config = Config(
-        dataset=paths.dataset,
-        root=paths.root,
-        version=args.frame_landmarks_version,
-        pinhole_version=args.pinhole_version,
-        dataset_base=paths.dataset_base,
-        panorama_dir=paths.panorama_dir,
-        pinhole_dir=paths.pinhole_images,
-        artifact_dir=paths.frame_landmarks,
-        prompt_type=args.prompt_type,
-        pinhole_resolution=args.pinhole_resolution,
-        media_resolution=args.media_resolution,
-        thinking_level=args.thinking_level,
-        num_workers=args.num_workers,
-        allow_incomplete=args.allow_incomplete,
-        force=args.force,
-        start_stage=args.start_stage,
-        end_stage=args.end_stage,
-        execution=args,
-    )
-
-    if args.validate_only:
-        report = validate_predictions(config.sentences_dir,
-                                      config.panorama_dir)
-        print_validation(report, repair_hint=_repair_hint(config))
-        return
-    if args.retry_failed:
-        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
-        vbm.check_environment()
-        retry_failed(config)
-        return
-
-    run_pipeline(config)
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+    args = make_parser().parse_args()
+    pinhole_ref, frame_ref = run(args, arguments=tuple(sys.argv))
+    print(f"pinhole_images: {pinhole_ref.path}")
+    print(f"frame_landmarks: {frame_ref.path}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,5 @@
-import json
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import numpy as np
 
@@ -135,82 +132,6 @@ class OffsetAlgebraTest(unittest.TestCase):
         az_camera = (sun_world - course + offset) % 360.0
         recovered = (course + az_camera - sun_world) % 360.0
         self.assertAlmostEqual(recovered, offset, places=6)
-
-
-class AssessTest(unittest.TestCase):
-    """The verdict gate on `usable` -- the audit-mandated fix.
-
-    The old code computed `usable` from concentration alone, so a
-    FIXED-OBJECT abstention (the bright blob tracked the vehicle's own
-    structure) whose per-frame "offsets" happened to agree with each other
-    could still publish accuracy_validated=True. Abstentions are never
-    usable, whatever their concentration.
-    """
-
-    def test_fixed_object_with_high_concentration_is_not_usable(self):
-        # Concentration clears R_TRUSTWORTHY, but the fixed-object model
-        # explains the blobs even better while the course varied: abstain.
-        verdict, _, usable = soc.assess(
-            concentration=0.97, r_fixed=0.999, course_r=0.5)
-        self.assertEqual(verdict, "FIXED-OBJECT")
-        self.assertFalse(usable)
-
-    def test_agreeing_run_is_usable(self):
-        verdict, _, usable = soc.assess(
-            concentration=0.97, r_fixed=0.5, course_r=0.5)
-        self.assertEqual(verdict, "AGREEING")
-        self.assertTrue(usable)
-
-    def test_weak_run_is_not_usable(self):
-        verdict, _, usable = soc.assess(
-            concentration=0.85, r_fixed=0.5, course_r=0.5)
-        self.assertEqual(verdict, "WEAK")
-        self.assertFalse(usable)
-
-    def test_scattered_run_is_not_usable(self):
-        verdict, _, usable = soc.assess(
-            concentration=0.4, r_fixed=0.3, course_r=0.5)
-        self.assertEqual(verdict, "SCATTERED")
-        self.assertFalse(usable)
-
-    def test_fixed_object_test_needs_course_variation(self):
-        # On a dead-straight run the two models are the same model, so the
-        # fixed-object comparison is inadmissible; the concentration verdict
-        # stands (main prints the course-variation warning separately).
-        verdict, _, usable = soc.assess(
-            concentration=0.97, r_fixed=0.999, course_r=0.995)
-        self.assertEqual(verdict, "AGREEING")
-        self.assertTrue(usable)
-
-
-class SidecarTest(unittest.TestCase):
-    """The check writes its sidecar into the run dir -- always, whatever the
-    verdict -- and never touches dataset metadata. The sidecar must state its
-    convention so it cannot be consumed in the wrong frame."""
-
-    def test_sidecar_is_written_and_stamped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            record = {"dataset": "x", "offset_deg": 215.0, "usable": True,
-                      "verdict": "AGREEING"}
-            out = soc.write_sidecar(Path(tmp), record)
-            self.assertEqual(out, Path(tmp) / "sun_offset_check.json")
-            self.assertTrue(out.exists())
-            data = json.loads(out.read_text())
-            self.assertEqual(data["convention"], geo.MOUNT_OFFSET_CONVENTION)
-            self.assertEqual(data["frame"], geo.MOUNT_OFFSET_FRAME)
-            self.assertIn("git_commit", data)
-            self.assertIn("argv", data)
-
-    def test_abstaining_record_is_still_written(self):
-        # An abstention on disk is the record that stops the next person from
-        # re-deriving it; writing is unconditional.
-        with tempfile.TemporaryDirectory() as tmp:
-            record = {"dataset": "x", "offset_deg": 306.7, "usable": False,
-                      "verdict": "FIXED-OBJECT"}
-            out = soc.write_sidecar(Path(tmp), record)
-            data = json.loads(out.read_text())
-            self.assertFalse(data["usable"])
-            self.assertEqual(data["verdict"], "FIXED-OBJECT")
 
 
 if __name__ == "__main__":

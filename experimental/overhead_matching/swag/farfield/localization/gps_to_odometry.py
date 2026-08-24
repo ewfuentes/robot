@@ -1,20 +1,23 @@
-"""Derive body-frame dead-reckoning odometry from GPS fixes (§5.2).
+"""Derive nominal-forward dead-reckoning odometry from GPS fixes (§5.2).
 
 The deployed system has no GPS; GPS exists only in data collection. This
 producer turns a sequence of ENU fixes into the OdometryDelta increments the
 filter consumes, the way §5.2 specifies:
 
-  forward = fix-to-fix step length, left = 0. Rotating a displacement by its
-  own direction is pure forward, so real leeway/crab is MISASSIGNED into
-  forward+heading — the documented §5.2 derivation artifact, priced by the
-  scenario crab knob, not hidden here.
+  GPS course is a surrogate for nominal-forward orientation during ordinary
+  forward travel. A usable chord becomes forward=length, left=0. A
+  human-reviewed reverse chord becomes forward=-length and its course is
+  rotated 180 degrees before yaw differencing, so reversing does not invent a
+  platform turn. Crab/current remain declared motion-model uncertainty.
 
-  dyaw = differenced course. Course is the direction of each step; its noise
+  delta_yaw_cw = differenced usable course proxy. Course is the direction of
+  each step; its noise
   is geometric — sigma_course ~ atan(sigma_pair / step) — so it is computed
   per step from the step length rather than declared as a constant. A step
-  too short to carry a usable course (speed gate) emits dyaw = 0 with
-  sigma_yaw_rad inflated to `slow_yaw_sigma_deg`, the §5.2 "no yaw signal"
-  posture. When usable courses are separated by a gap, the catch-up dyaw
+  below the displacement gate emits zero translation and zero yaw with
+  explicitly inflated uncertainties. This prevents stationary GPS jitter
+  from accumulating as false travel. When usable courses are separated by a
+  gap, the catch-up yaw
   spans the whole gap (its measurement noise still telescopes to the two
   endpoint course sigmas); the gapped steps in between already carried the
   inflated sigma.
@@ -22,54 +25,102 @@ filter consumes, the way §5.2 specifies:
   sigma_m is the honest per-fix-pair constant (~1 m: correlated absolute GPS
   error differences out). No IMU-style step scaling is cosplayed onto real
   data — emulating worse odometry is an explicit, labelled experiment via
-  the --extra_* knobs, never a default.
+  the extra-noise parameters, never a default.
 
-Differenced-course dyaw is substantially noisier than a real gyro, which is
+Differenced-course yaw is substantially noisier than a real gyro, which is
 the safe direction for the paper's claims: convergence demonstrated on
 course-grade yaw lower-bounds what an IMU would deliver.
 
-As a CLI, rewrites a localization export (export_ingest.py layout) into a
-sibling directory with regenerated tier1_odometry.jsonl, leaving the source
-export untouched. The modeling knobs (--sigma_pair_m, --min_step_m,
---slow_yaw_sigma_deg) are required: they shape every increment, so they are
-stated per invocation and land in the output's meta rather than defaulting.
+The serialized motion convention is rotate-then-move and clockwise-positive:
+``yaw_k = yaw_{k-1} + delta_yaw_cw_rad`` and then translation is rotated by
+``yaw_k``. It is deliberately not called generic SE(2).
+
+Publication belongs to ``build_export`` and its transactional
+``localization_inputs`` artifact.  This module intentionally exposes only the
+pure derivation boundary so there is no second, unmanifested export writer.
 """
 
-import argparse
-import json
 import math
-import shutil
-from pathlib import Path
 
-import msgspec
 import numpy as np
 
-from common.python.serialization import msgspec_dec_hook, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import structs
 
 
+def _finite_nonnegative(value, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric")
+    value = float(value)
+    if not math.isfinite(value) or value < 0.0 or (positive and value == 0.0):
+        qualifier = "positive" if positive else "nonnegative"
+        raise ValueError(f"{name} must be finite and {qualifier}")
+    return value
+
+
+def _reverse_keyframes(reverse_keyframe_ranges, n_steps: int) -> set[int]:
+    if not isinstance(reverse_keyframe_ranges, (list, tuple)):
+        raise ValueError("reverse_keyframe_ranges must be a list or tuple")
+    result = set()
+    previous_end = 0
+    for index, interval in enumerate(reverse_keyframe_ranges):
+        if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       for value in interval)):
+            raise ValueError(
+                f"reverse_keyframe_ranges[{index}] must be [start, end] ints")
+        start, end = interval
+        if start < 1 or end < start or end > n_steps:
+            raise ValueError(
+                f"reverse range [{start}, {end}] is outside increments "
+                f"1..{n_steps}")
+        if start <= previous_end:
+            raise ValueError("reverse ranges must be sorted and non-overlapping")
+        result.update(range(start, end + 1))
+        previous_end = end
+    return result
+
+
 def derive_increments(east_m, north_m, *,
                       sigma_pair_m: float,
-                      min_step_m: float,
-                      slow_yaw_sigma_deg: float = 30.0,
+                      displacement_gate_m: float,
+                      stationary_sigma_m: float,
+                      slow_yaw_sigma_deg: float,
+                      reverse_keyframe_ranges,
                       extra_sigma_m: float = 0.0,
                       extra_yaw_sigma_deg: float = 0.0,
                       noise_seed: int = 0) -> list:
     """ENU fixes (keyframes 0..N) -> OdometryDelta increments (1..N).
 
-    sigma_pair_m and min_step_m are required keywords — callers pass the
-    run-config values, so what shaped the odometry is what got recorded. The
-    --extra_* knobs inject additional noise AND declare it (an honest
+    Baseline values and reverse annotations are required keywords — callers
+    pass immutable build-config values, so the recorded recipe shaped the
+    odometry. The
+    extra-noise parameters inject additional noise AND declare it (an honest
     producer emulating a worse sensor, not a lying one); they exist for
     drift-injection experiments and default to off.
     """
     east_m = np.asarray(east_m, dtype=np.float64)
     north_m = np.asarray(north_m, dtype=np.float64)
-    if east_m.shape != north_m.shape or east_m.ndim != 1 or east_m.size < 2:
+    if (east_m.shape != north_m.shape or east_m.ndim != 1
+            or east_m.size < 2 or not np.all(np.isfinite(east_m))
+            or not np.all(np.isfinite(north_m))):
         raise ValueError("need matching 1-D east/north arrays of >= 2 fixes")
-    if sigma_pair_m <= 0.0 or min_step_m <= 0.0:
-        raise ValueError("sigma_pair_m and min_step_m must be positive")
+    sigma_pair_m = _finite_nonnegative(
+        sigma_pair_m, "sigma_pair_m", positive=True)
+    displacement_gate_m = _finite_nonnegative(
+        displacement_gate_m, "displacement_gate_m", positive=True)
+    stationary_sigma_m = _finite_nonnegative(
+        stationary_sigma_m, "stationary_sigma_m", positive=True)
+    if stationary_sigma_m < sigma_pair_m:
+        raise ValueError("stationary_sigma_m must be >= sigma_pair_m")
+    slow_yaw_sigma_deg = _finite_nonnegative(
+        slow_yaw_sigma_deg, "slow_yaw_sigma_deg", positive=True)
+    extra_sigma_m = _finite_nonnegative(extra_sigma_m, "extra_sigma_m")
+    extra_yaw_sigma_deg = _finite_nonnegative(
+        extra_yaw_sigma_deg, "extra_yaw_sigma_deg")
+    if isinstance(noise_seed, bool) or not isinstance(noise_seed, int):
+        raise ValueError("noise_seed must be an integer")
+    reverse = _reverse_keyframes(reverse_keyframe_ranges, east_m.size - 1)
 
     rng = np.random.default_rng(noise_seed)
     slow_sigma_rad = math.radians(slow_yaw_sigma_deg)
@@ -84,25 +135,33 @@ def derive_increments(east_m, north_m, *,
         d_north = float(north_m[kf] - north_m[kf - 1])
         step_m = math.hypot(d_east, d_north)
 
-        dyaw_rad = 0.0
+        delta_yaw_cw_rad = 0.0
         sigma_yaw_rad = slow_sigma_rad
-        if step_m >= min_step_m:
+        if step_m >= displacement_gate_m:
             course_rad = math.atan2(d_east, d_north)
+            if kf in reverse:
+                # A reverse chord points aft; rotate it to the platform's
+                # nominal-forward proxy before differencing yaw.
+                course_rad = float(geo.wrap_rad(course_rad + math.pi))
             course_sigma_rad = math.atan(sigma_pair_m / step_m)
             if prev_course_rad is not None:
-                dyaw_rad = float(geo.wrap_rad(course_rad - prev_course_rad))
+                delta_yaw_cw_rad = float(geo.wrap_rad(course_rad - prev_course_rad))
                 sigma_yaw_rad = math.hypot(course_sigma_rad,
                                            prev_course_sigma_rad)
             prev_course_rad = course_rad
             prev_course_sigma_rad = course_sigma_rad
 
-        forward_m, left_m = step_m, 0.0
-        sigma_m = sigma_pair_m
+            forward_m = -step_m if kf in reverse else step_m
+            sigma_m = sigma_pair_m
+        else:
+            forward_m = 0.0
+            sigma_m = stationary_sigma_m
+        left_m = 0.0
         if inject:
             forward_m += float(rng.normal(0.0, extra_sigma_m))
             left_m += float(rng.normal(0.0, extra_sigma_m))
-            dyaw_rad = float(geo.wrap_rad(
-                dyaw_rad + rng.normal(0.0, extra_yaw_rad)))
+            delta_yaw_cw_rad = float(geo.wrap_rad(
+                delta_yaw_cw_rad + rng.normal(0.0, extra_yaw_rad)))
             sigma_m = math.hypot(sigma_m, extra_sigma_m)
             sigma_yaw_rad = math.hypot(sigma_yaw_rad, extra_yaw_rad)
 
@@ -110,92 +169,7 @@ def derive_increments(east_m, north_m, *,
             keyframe_idx=kf,
             forward_m=forward_m,
             left_m=left_m,
-            dyaw_rad=dyaw_rad,
+            delta_yaw_cw_rad=delta_yaw_cw_rad,
             sigma_m=sigma_m,
             sigma_yaw_rad=sigma_yaw_rad))
     return increments
-
-
-def rewrite_export(export_dir: Path, output_dir: Path, **derive_kwargs) -> list:
-    """Copy an export, regenerating its odometry from truth.jsonl fixes.
-
-    The source export is left untouched. truth.jsonl carries the GPS fixes
-    in the export's ENU frame; headings in it are diagnostics and unused.
-    """
-    export_dir, output_dir = Path(export_dir), Path(output_dir)
-    if output_dir.resolve() == export_dir.resolve():
-        raise ValueError("refusing to rewrite an export in place; give a "
-                         "separate --output_dir")
-    truth = [msgspec.json.decode(line, type=structs.TruthPose,
-                                 dec_hook=msgspec_dec_hook)
-             for line in (export_dir / "truth.jsonl").read_bytes().splitlines()
-             if line.strip()]
-    if len(truth) < 2:
-        raise ValueError(f"{export_dir}/truth.jsonl has {len(truth)} poses; "
-                         "cannot derive odometry")
-    increments = derive_increments([t.east_m for t in truth],
-                                   [t.north_m for t in truth],
-                                   **derive_kwargs)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("landmarks.json", "tier1_tables.json",
-                 "tier1_measurements.jsonl", "truth.jsonl"):
-        shutil.copy2(export_dir / name, output_dir / name)
-    with open(output_dir / "tier1_odometry.jsonl", "wb") as f:
-        for increment in increments:
-            f.write(msgspec.json.encode(increment,
-                                        enc_hook=msgspec_enc_hook))
-            f.write(b"\n")
-    # Raw-dict round trip so meta fields this build does not model survive;
-    # record what regenerated the odometry and with what.
-    meta = json.loads((export_dir / "export_meta.json").read_text())
-    meta["schema_version"] = structs.SCHEMA_VERSION
-    meta["odometry_derivation"] = {
-        "generator": "farfield.localization.gps_to_odometry",
-        **{k: v for k, v in derive_kwargs.items()},
-    }
-    (output_dir / "export_meta.json").write_text(json.dumps(meta, indent=1))
-    return increments
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--export_dir", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, required=True)
-    parser.add_argument("--sigma_pair_m", type=float, required=True,
-                        help="per-fix-pair GPS sigma (previously 1.0)")
-    parser.add_argument("--min_step_m", type=float, required=True,
-                        help="speed gate: steps shorter than this carry no "
-                             "usable course (previously 2.0)")
-    parser.add_argument("--slow_yaw_sigma_deg", type=float, required=True,
-                        help="yaw sigma for gated steps (previously 30.0)")
-    parser.add_argument("--extra_sigma_m", type=float, default=0.0,
-                        help="drift-injection experiment: extra translation "
-                             "noise, injected AND declared")
-    parser.add_argument("--extra_yaw_sigma_deg", type=float, default=0.0)
-    parser.add_argument("--noise_seed", type=int, default=0)
-    args = parser.parse_args()
-
-    increments = rewrite_export(
-        args.export_dir, args.output_dir,
-        sigma_pair_m=args.sigma_pair_m, min_step_m=args.min_step_m,
-        slow_yaw_sigma_deg=args.slow_yaw_sigma_deg,
-        extra_sigma_m=args.extra_sigma_m,
-        extra_yaw_sigma_deg=args.extra_yaw_sigma_deg,
-        noise_seed=args.noise_seed)
-
-    steps = np.array([i.forward_m for i in increments])
-    gated = sum(1 for i in increments
-                if i.dyaw_rad == 0.0
-                and i.sigma_yaw_rad >= math.radians(args.slow_yaw_sigma_deg))
-    yaw_sigmas = np.degrees([i.sigma_yaw_rad for i in increments])
-    print(f"{len(increments)} increments -> {args.output_dir}")
-    print(f"step: median {np.median(steps):.1f} m, max {steps.max():.1f} m")
-    print(f"dyaw sigma: median {np.median(yaw_sigmas):.2f} deg; "
-          f"{gated} slow/gapped steps at {args.slow_yaw_sigma_deg:.0f} deg")
-
-
-if __name__ == "__main__":
-    main()

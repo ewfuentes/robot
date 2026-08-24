@@ -14,9 +14,9 @@ forensics and CI". Same modules, same answers, no browser:
 module; the rename kills that confusion — the I/O library is `run_io`, the
 CLI is `forensics`.)
 
-Counterfactual output defaults under <run_dir>/counterfactuals/: a what-if is
-a question about one run, so its ghost lives with that run — nothing here
-writes outside the data root.
+Counterfactual output defaults under the sibling
+<run_dir>.counterfactuals/: a what-if is a question about one run, but its
+ghost must not mutate that completed run artifact.
 
 Examples
 --------
@@ -45,7 +45,6 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics,
     replay as replay_mod,
     run_io,
-    sources as sources_mod,
 )
 
 
@@ -227,25 +226,6 @@ def cmd_tracklet(args) -> int:
         for entry in sorted(endorsed, key=lambda e: -e.log_lr)[:args.top]:
             print(f"    {entry.log_lr:+6.2f}  {entry.landmark_id}")
 
-    if args.sources_dir:
-        bundle = sources_mod.load(args.sources_dir, [args.tracklet],
-                                  embed_thumbnails=False)
-        source = bundle.get(args.tracklet)
-        if source is not None:
-            print(f"  tracker: name {source.best_name!r}, "
-                  f"{source.n_supports} supports, tracks {source.track_ids}")
-            if source.description:
-                print(f"    \"{source.description}\"")
-            if source.unresolved:
-                print(f"    flagged: {source.unresolved}")
-            if source.no_match_rate is not None:
-                print(f"    matcher's own verdict over "
-                      f"{source.n_matcher_chunks} chunks: no-match "
-                      f"{source.no_match_rate:.2f}, uniqueness "
-                      f"{source.median_uniqueness}")
-        for note in bundle.notes:
-            print(f"    note: {note}")
-
     try:
         cache = attribution_mod.read_cache(
             args.run_dir,
@@ -295,7 +275,7 @@ def cmd_tracklet(args) -> int:
           f"{'top res':>8} {'mass fit':>9} {'null':>6} {'surp':>6}  "
           f"filter believes")
     for epoch in verdict.epochs[:args.top]:
-        print(f"    {epoch.keyframe_idx:>5} {epoch.bearing_body_deg:>8.1f} "
+        print(f"    {epoch.keyframe_idx:>5} {epoch.bearing_forward_cw_deg:>8.1f} "
               f"{epoch.sigma_deg:>6.1f} "
               f"{(f'{epoch.best_fit_residual_deg:.2f}' if epoch.best_fit_residual_deg is not None else '-'):>9} "
               f"{(f'{epoch.top_endorsed_residual_deg:.1f}' if epoch.top_endorsed_residual_deg is not None else '-'):>8} "
@@ -455,13 +435,12 @@ def main() -> int:
     rep.add_argument("--no_persistence", action="store_true")
     rep.add_argument("--no_modes", action="store_true")
     rep.add_argument("--output_dir", type=Path, default=None,
-                     help="defaults to <run_dir>/counterfactuals/<slug>")
+                     help="defaults to <run_dir>.counterfactuals/<slug>")
     rep.set_defaults(func=cmd_replay)
 
     trk = subparsers.add_parser("tracklet", help="one tracklet's dossier")
     add_common(trk)
     trk.add_argument("tracklet")
-    trk.add_argument("--sources_dir", type=Path, default=None)
     trk.add_argument("--top", type=int, default=12)
     trk.set_defaults(func=cmd_tracklet)
 

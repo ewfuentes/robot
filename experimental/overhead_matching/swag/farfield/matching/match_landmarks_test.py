@@ -12,6 +12,11 @@ from pathlib import Path
 import msgspec
 import shapely
 
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import build_config
+from experimental.overhead_matching.swag.farfield import llm_lifecycle
+from experimental.overhead_matching.swag.farfield import paths as paths_lib
+from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.localization import structs
 from experimental.overhead_matching.swag.farfield.matching import (
@@ -19,6 +24,11 @@ from experimental.overhead_matching.swag.farfield.matching import (
 )
 
 ANCHOR_LAT, ANCHOR_LON = 42.35, -71.05
+DATASET = "tiny_harbor"
+TRACKS_VERSION = "tracks-v1"
+AUDITS_VERSION = "audits-v1"
+CATALOG_VERSION = "catalog-v1"
+MATCHES_VERSION = "matches-v1"
 
 
 def write_feather(path: Path) -> Path:
@@ -51,6 +61,7 @@ def track(track_id: int, keyframes) -> dict:
     return {
         "track_id": track_id,
         "birth_keyframe": min(keyframes),
+        "end_keyframe": max(keyframes),
         "close_reason": "end_of_range",
         "records": [
             {"keyframe": kf, "action": "propagate",
@@ -63,10 +74,14 @@ def track(track_id: int, keyframes) -> dict:
 
 
 def audit(verdict="keep", name="Graves Light") -> dict:
+    kept = verdict != "drop"
     return {
         "verdict": verdict,
+        "single_object": kept,
+        "drop_reason": "none" if kept else "insufficient_evidence",
         "landmark_kind": "fixed_structure",
-        "valid_segments": [{"start_t": 0, "end_t": 10}],
+        "valid_segments": ([{"start_t": 0, "end_t": 2}]
+                           if kept else []),
         "unresolved": "possibly a monument instead",
         "primary_object": {
             "tags": [{"tag": "man_made=lighthouse", "weight": 0.9},
@@ -78,42 +93,132 @@ def audit(verdict="keep", name="Graves Light") -> dict:
             "distinctive_features": ["red lantern room"],
             "extent": "point_like",
         },
+        "strike_votes": [],
+        "secondary_objects": [],
+        "confidence": "high",
     }
 
 
-def write_run(run_dir: Path, split_ranges=False) -> None:
-    """tracks_*.json (+ optionally a second range file) and a semantic audit
-    for tracks 1 (keep), 2 (keep), 3 (drop). Track 4 exists but was never
-    audited."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    first = {"range": {"name": "seg0"},
-             "tracks": [track(1, [0, 1, 2]), track(2, [1, 2, 3])]}
-    second = {"range": {"name": "seg1"},
-              "tracks": [track(3, [4, 5]), track(4, [4, 5])]}
-    if split_ranges:
-        (run_dir / "tracks_seg0.json").write_text(json.dumps(first))
-        (run_dir / "tracks_seg1.json").write_text(json.dumps(second))
-    else:
-        merged = {"range": {"name": "seg0"},
-                  "tracks": first["tracks"] + second["tracks"]}
-        (run_dir / "tracks_seg0.json").write_text(json.dumps(merged))
+def write_bound_inputs(root: Path):
+    """Publish the three exact typed upstreams consumed by matching."""
+    tracks_dir = root / "object_tracks" / TRACKS_VERSION
+    tracks_document = {
+        "range": {"name": "seg0"},
+        "tracks": [track(1, [0, 1, 2]), track(2, [1, 2, 3]),
+                   track(3, [4, 5]), track(4, [4, 5])],
+    }
+    with artifact.ArtifactDirectoryBuilder(
+            tracks_dir,
+            kind=paths_lib.OBJECT_TRACKS,
+            dataset=DATASET,
+            version=TRACKS_VERSION,
+            generator="test:tracks",
+            git_commit="test",
+            arguments=(),
+            declared_outputs=("tracks_seg0.json",)) as builder:
+        artifact.atomic_write_json(
+            builder.output_path("tracks_seg0.json"), tracks_document)
+    tracks_ref = artifact.open_artifact(tracks_dir)
+    tracks_path = tracks_dir / "tracks_seg0.json"
+    tracks_by_id = {item["track_id"]: item
+                    for item in tracks_document["tracks"]}
 
-    audit_dir = run_dir / "semantic_audit"
-    audit_dir.mkdir(exist_ok=True)
-    meta = {}
-    with open(audit_dir / "results.jsonl", "w") as f:
-        for tid, payload in ((1, audit()),
-                             (2, audit(name="Customs Tower")),
-                             (3, audit(verdict="drop"))):
-            key = f"T{tid}"
-            meta[key] = {"track_id": tid, "birth_keyframe": 0,
-                         "n_supports": 3, "chips": []}
-            f.write(json.dumps({
-                "key": key,
-                "response": {"candidates": [{"content": {"parts": [
-                    {"text": json.dumps(payload)}]}}]},
-            }) + "\n")
-    (audit_dir / "audit_meta.json").write_text(json.dumps(meta))
+    audit_dir = root / "semantic_audits" / AUDITS_VERSION
+    requests = {}
+    result_lines = []
+    for tid, payload in ((1, audit()),
+                         (2, audit(name="Customs Tower")),
+                         (3, audit(verdict="drop"))):
+        key = f"T{tid}"
+        requests[key] = {
+            "track_id": tid,
+            "birth_keyframe": tracks_by_id[tid]["birth_keyframe"],
+            "range": "seg0",
+            "source_track_sha256": audit_io.canonical_sha256(
+                tracks_by_id[tid]),
+        }
+        result_lines.append(artifact.canonical_json_bytes({
+            "key": key,
+            "response": {"candidates": [{"content": {"parts": [
+                {"text": json.dumps(payload)}]}}]},
+        }) + b"\n")
+    meta = {
+        "schema": audit_io.META_SCHEMA,
+        "source_tracks": {
+            "artifact_id": audit_io.source_artifact_id(tracks_ref),
+            "file": tracks_path.name,
+            "sha256": artifact.sha256_file(tracks_path),
+        },
+        "requests": requests,
+    }
+    with artifact.ArtifactDirectoryBuilder(
+            audit_dir,
+            kind=paths_lib.SEMANTIC_AUDITS,
+            dataset=DATASET,
+            version=AUDITS_VERSION,
+            generator="test:audits",
+            git_commit="test",
+            arguments=(),
+            upstreams=(tracks_ref,),
+            config={
+                "phase": "canonical_results",
+                "coverage": "complete",
+                "n_expected": len(requests),
+                "n_successful": len(requests),
+            },
+            declared_outputs=("audit_meta.json", "results.jsonl")) as builder:
+        artifact.atomic_write_json(builder.output_path("audit_meta.json"), meta)
+        artifact.atomic_write_file(
+            builder.output_path("results.jsonl"), b"".join(result_lines))
+
+    catalog_dir = root / "catalogs" / CATALOG_VERSION
+    with artifact.ArtifactDirectoryBuilder(
+            catalog_dir,
+            kind=paths_lib.CATALOGS,
+            dataset=DATASET,
+            version=CATALOG_VERSION,
+            generator="test:catalog",
+            git_commit="test",
+            arguments=(),
+            declared_outputs=("catalog.feather",)) as builder:
+        write_feather(builder.output_path("catalog.feather"))
+    return tracks_dir, audit_dir, catalog_dir
+
+
+def write_build_config(root: Path, dataset_base: Path) -> tuple[Path, str]:
+    config = {
+        "artifacts": {
+            "object_tracks_version": TRACKS_VERSION,
+            "semantic_audits_version": AUDITS_VERSION,
+            "catalogs_version": CATALOG_VERSION,
+            "landmark_matches_version": MATCHES_VERSION,
+        },
+        "matching": {
+            "model": "test-model",
+            "query_batch": 2,
+            "chunk_size": 2,
+            "thinking_level": "HIGH",
+            "confidence_floor": 0.05,
+            "instance_max_rows": 1,
+        },
+        "execution": {
+            "llm_transport": "on_demand",
+            "batch_gcs_prefix": None,
+            "approve_cost": False,
+        },
+        "cost": {"limit_usd": 5.0},
+    }
+    build_dir = root / "build"
+    path = build_config.create(
+        build_dir,
+        dataset=DATASET,
+        config=config,
+        generator="test:build",
+        inputs={"dataset_base": dataset_base, "farfield_root": root})
+    document = build_config.load(build_dir)
+    selected = {key: build_config.value(document, key)
+                for key in ml.MATCHING_CONFIG_KEYS}
+    return path, artifact.sha256_json(selected)
 
 
 def run_main(argv):
@@ -125,45 +230,24 @@ def run_main(argv):
         sys.argv = old
 
 
-class LoadTracksTest(unittest.TestCase):
-    def test_loads_every_range_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            write_run(run_dir, split_ranges=True)
-            tracks, range_by_track = ml.load_tracks(run_dir)
-            self.assertEqual(set(tracks), {1, 2, 3, 4})
-            self.assertEqual(range_by_track[1], "seg0")
-            self.assertEqual(range_by_track[3], "seg1")
-
-    def test_duplicate_track_id_across_ranges_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            run_dir.mkdir()
-            artifact = {"range": {"name": "seg0"}, "tracks": [track(1, [0])]}
-            (run_dir / "tracks_a.json").write_text(json.dumps(artifact))
-            (run_dir / "tracks_b.json").write_text(json.dumps(
-                {"range": {"name": "seg1"}, "tracks": [track(1, [1])]}))
-            with self.assertRaises(SystemExit):
-                ml.load_tracks(run_dir)
-
-    def test_no_tracks_is_a_clear_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit):
-                ml.load_tracks(Path(tmp))
-
-
 class QueryBundlesTest(unittest.TestCase):
     def test_one_entry_per_audited_track_drop_excluded(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            write_run(run_dir, split_ranges=True)
-            from experimental.overhead_matching.swag.farfield.calibration \
-                import audit_io
-            tracks, _ = ml.load_tracks(run_dir)
-            audits = audit_io.load_audits(run_dir)
-            queries = ml.query_bundles(tracks, audits)
-            # 1 and 2 audited keep; 3 audited drop; 4 never audited.
-            self.assertEqual(set(queries), {"T1", "T2"})
+        tracks = {
+            1: track(1, [0, 1, 2]),
+            2: track(2, [1, 2, 3]),
+            3: track(3, [4, 5]),
+            4: track(4, [4, 5]),
+        }
+        audits = {
+            1: audit(),
+            2: audit(name="Customs Tower"),
+            3: audit(verdict="drop"),
+        }
+        queries = ml.query_bundles(tracks, audits)
+        # 1 and 2 audited keep; 3 audited drop; 4 never audited.
+        self.assertEqual(
+            {key.rsplit("#", 1)[-1] for key in queries}, {"T1", "T2"})
+        self.assertTrue(all(key.startswith("sha256:") for key in queries))
 
     def test_query_block_carries_the_audit_uncertainty(self):
         block = ml.format_query(audit())
@@ -175,9 +259,9 @@ class QueryBundlesTest(unittest.TestCase):
         self.assertIn("features: red lantern room", block)
         self.assertIn('unresolved: "possibly a monument instead"', block)
 
-    def test_orphaned_audit_is_skipped(self):
-        queries = ml.query_bundles({}, {9: audit()})
-        self.assertEqual(queries, {})
+    def test_orphaned_audit_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "no source track"):
+            ml.query_bundles({}, {9: audit()})
 
 
 class SignatureTest(unittest.TestCase):
@@ -226,28 +310,83 @@ class ConfidenceMathTest(unittest.TestCase):
         self.assertEqual(decoded[0].clip_hi, 4.0)
 
 
+class ResponseValidationTest(unittest.TestCase):
+
+    metadata = {
+        "batch_keys": ["T1", "T2"],
+        "chunk_index": 0,
+        "chunk_signatures": ["man_made=lighthouse", "man_made=tower"],
+    }
+
+    @staticmethod
+    def response(entries):
+        return {"candidates": [{"content": {"parts": [
+            {"text": json.dumps({"matches": entries})}]}}]}
+
+    @staticmethod
+    def entry(set_1_id):
+        return {
+            "set_1_id": set_1_id,
+            "set_2_matches": [],
+            "no_match_confidence": 0.95,
+            "uniqueness_score": 3,
+        }
+
+    def test_no_match_is_valid_when_every_set1_item_is_present(self):
+        result = ml.validate_matching_response(
+            "q", self.response([self.entry(1), self.entry(0)]), self.metadata)
+        self.assertEqual([item["set_1_id"] for item in result["matches"]],
+                         [0, 1])
+
+    def test_missing_set1_item_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exactly 2"):
+            ml.validate_matching_response(
+                "q", self.response([self.entry(0)]), self.metadata)
+
+    def test_duplicate_set1_item_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "duplicate set_1_id"):
+            ml.validate_matching_response(
+                "q", self.response([self.entry(0), self.entry(0)]),
+                self.metadata)
+
+    def test_unknown_fields_and_invalid_probabilities_are_rejected(self):
+        entries = [self.entry(0), self.entry(1)]
+        entries[0]["unexpected"] = True
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            ml.validate_matching_response(
+                "q", self.response(entries), self.metadata)
+        entries = [self.entry(0), self.entry(1)]
+        entries[0]["no_match_confidence"] = 1.1
+        with self.assertRaisesRegex(ValueError, r"\[0, 1\]"):
+            ml.validate_matching_response(
+                "q", self.response(entries), self.metadata)
+
+
 class EndToEndBuildAggregateTest(unittest.TestCase):
     """--build_only, fabricated results, --aggregate_only. No network."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
-        self.run_dir = tmp / "run"
-        write_run(self.run_dir, split_ranges=True)
-        self.feather = write_feather(tmp / "cat.feather")
         self.dataset_base = tmp / "datasets" / "tiny_harbor"
         self.dataset_base.mkdir(parents=True)
-        self.match_dir = self.run_dir / "matching"
+        (self.tracks_dir, self.audit_dir,
+         self.catalog_dir) = write_bound_inputs(tmp)
+        self.feather = self.catalog_dir / "catalog.feather"
+        self.build_config, orchestration_digest = write_build_config(
+            tmp, self.dataset_base)
+        self.match_dir = tmp / "landmark_matches" / MATCHES_VERSION
+        self.work_dir = ml.matching_work_dir(self.match_dir)
         self.flags = [
-            "--run_dir", str(self.run_dir),
+            "--dataset", DATASET,
             "--dataset_base", str(self.dataset_base),
-            "--feather", str(self.feather),
-            "--query_batch", "2",
-            "--chunk_size", "2",
-            "--thinking_level", "HIGH",
-            "--confidence_floor", "0.05",
-            "--instance_max_rows", "1",
-            "--model", "test-model",
+            "--tracks_dir", str(self.tracks_dir),
+            "--audit_dir", str(self.audit_dir),
+            "--catalog_dir", str(self.catalog_dir),
+            "--output_dir", str(self.match_dir),
+            "--build_config", str(self.build_config),
+            "--orchestration_config_digest", orchestration_digest,
+            "--online",
         ]
 
     def tearDown(self):
@@ -261,26 +400,28 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         signature (instance), T2 matches the two-row tower signature
         (instance, so aggregation must downgrade it), plus one below-floor
         match for T2 that must be dropped."""
-        meta = json.loads((self.match_dir / "request_meta.json").read_text())
-        sigs = sorted(ml.build_map_signatures(self.feather))
-        chunks = [sigs[i:i + 2] for i in range(0, len(sigs), 2)]
-        with open(self.match_dir / "results.jsonl", "w") as f:
-            for key, record in meta.items():
-                chunk = chunks[record["chunk_index"]]
+        snapshot = llm_lifecycle.load_request_set(
+            self.work_dir / llm_lifecycle.REQUEST_SET_NAME)
+        with open(self.work_dir / ml.TRANSPORT_RESULTS_NAME, "w") as f:
+            for unit in snapshot.units:
+                key = unit.key
+                record = unit.metadata
+                chunk = record["chunk_signatures"]
                 entries = []
                 for i, tid in enumerate(record["batch_keys"]):
+                    local_id = tid.rsplit("#", 1)[-1]
                     set_2 = []
-                    if (tid == "T1" and
+                    if (local_id == "T1" and
                             "man_made=lighthouse; name=Graves Light" in chunk):
                         set_2.append({
                             "set_2_id": chunk.index(
                                 "man_made=lighthouse; name=Graves Light"),
                             "match_type": "instance", "confidence": 0.9})
-                    if tid == "T2" and "man_made=tower" in chunk:
+                    if local_id == "T2" and "man_made=tower" in chunk:
                         set_2.append({
                             "set_2_id": chunk.index("man_made=tower"),
                             "match_type": "instance", "confidence": 0.6})
-                    if tid == "T2" and "object_class=LIGHTS" in chunk:
+                    if local_id == "T2" and "object_class=LIGHTS" in chunk:
                         set_2.append({
                             "set_2_id": chunk.index("object_class=LIGHTS"),
                             "match_type": "category", "confidence": 0.01})
@@ -299,7 +440,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         # --- request construction -------------------------------------------
         requests = [json.loads(line) for line in
-                    (self.match_dir / "requests.jsonl").read_text()
+                    (self.work_dir / llm_lifecycle.REQUESTS_NAME).read_text()
                     .splitlines()]
         # 2 tracklets in one batch of 2, 3 signatures in 2 chunks.
         self.assertEqual(len(requests), 2)
@@ -317,14 +458,51 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         # --- signatures.json -------------------------------------------------
         signatures = json.loads(
-            (self.match_dir / "signatures.json").read_text())
+            (self.work_dir / ml.SIGNATURES_NAME).read_text())
         self.assertEqual(sorted(signatures["man_made=tower"]),
                          ["osm:node:102", "osm:node:103"])
+        snapshot = llm_lifecycle.load_request_set(
+            self.work_dir / llm_lifecycle.REQUEST_SET_NAME)
+        self.assertEqual(
+            [ref.kind for ref in snapshot.upstreams],
+            [paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
+             paths_lib.CATALOGS])
+        self.assertFalse(self.match_dir.exists())
 
-        # --- settings.json: the provenance reference -------------------------
-        settings = json.loads((self.match_dir / "settings.json").read_text())
+        # --- aggregate --------------------------------------------------------
+        self._fabricate_results()
+        run_main(self.flags + ["--aggregate_only"])
+
+        # Raw provider output is retained as bound attempts, while the only
+        # publishable aggregation input is complete canonical output.
+        attempts = llm_lifecycle.load_attempts(
+            self.work_dir / ml.ATTEMPTS_DIR_NAME)
+        self.assertEqual(len(attempts), len(snapshot.units))
+        self.assertFalse(
+            (self.match_dir / ml.ATTEMPTS_DIR_NAME).exists())
+        canonical = llm_lifecycle.load_canonical_results(
+            self.match_dir / llm_lifecycle.CANONICAL_RESULTS_NAME, snapshot)
+        self.assertEqual(len(canonical), len(snapshot.units))
+        match_ref = artifact.open_artifact(
+            self.match_dir,
+            expected_kind=paths_lib.LANDMARK_MATCHES,
+            expected_dataset=DATASET,
+            expected_version=MATCHES_VERSION)
+        self.assertEqual(match_ref.kind, paths_lib.LANDMARK_MATCHES)
+        manifest = artifact.load_manifest(self.match_dir)
+        self.assertEqual(manifest.config["coverage"], "complete")
+        self.assertEqual(manifest.config["n_expected"], len(snapshot.units))
+        self.assertEqual(manifest.config["n_successful"], len(snapshot.units))
+        self.assertEqual(
+            [ref.kind for ref in manifest.upstreams],
+            [paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
+             paths_lib.CATALOGS])
+
+        # --- settings.json: immutable reproduction summary ------------------
+        settings = json.loads(
+            (self.match_dir / ml.SETTINGS_NAME).read_text())
         self.assertEqual(settings["model"], "test-model")
-        self.assertEqual(settings["feather"], str(self.feather))
+        self.assertEqual(settings["catalog_feather"], str(self.feather))
         self.assertEqual(settings["query_batch"], 2)
         self.assertEqual(settings["chunk_size"], 2)
         self.assertEqual(settings["confidence_floor"], 0.05)
@@ -333,23 +511,21 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertEqual(
             settings["system_prompt_sha256"],
             hashlib.sha256(ml.SYSTEM_PROMPT.encode()).hexdigest())
-        self.assertIn("git_commit", settings)
         self.assertEqual(settings["n_set1"], 2)
         self.assertEqual(settings["n_signatures"], 3)
-        # The audit IS the support gate; the old flag must be gone.
+        self.assertEqual(settings["required_result_coverage"], "complete")
+        self.assertEqual(settings["request_set_fingerprint"],
+                         snapshot.fingerprint)
         self.assertNotIn("min_supports", settings)
         self.assertIn("audit membership", settings["support_gate"])
-        # The shared provenance manifest exists beside it.
-        self.assertTrue((self.match_dir / "manifest.json").exists())
-
-        # --- aggregate --------------------------------------------------------
-        self._fabricate_results()
-        run_main(self.flags + ["--aggregate_only"])
 
         matches = json.loads((self.match_dir / "matches.json").read_text())
-        self.assertEqual(set(matches), {"T1", "T2"})
+        matches_by_local = {
+            key.rsplit("#", 1)[-1]: value for key, value in matches.items()}
+        self.assertEqual(set(matches_by_local), {"T1", "T2"})
+        self.assertTrue(all("@sha256:" in key for key in matches))
 
-        t1 = matches["T1"]
+        t1 = matches_by_local["T1"]
         self.assertEqual(t1["n_landmarks"], 1)
         self.assertEqual(t1["matches"][0]["landmark_id"], "osm:node:101")
         self.assertEqual(t1["matches"][0]["match_type"], "instance")
@@ -357,7 +533,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertAlmostEqual(t1["no_match_confidence"], 0.1)
         self.assertEqual(t1["per_slice_no_match"]["n"], 2)
 
-        t2 = matches["T2"]
+        t2 = matches_by_local["T2"]
         # The signature expanded to 2 rows > --instance_max_rows 1, so the
         # instance claim is downgraded in code rather than trusted; the
         # 0.01 match sits below the floor and is dropped entirely.
@@ -371,9 +547,9 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         # --- compatibility.json: decodes as the filter's structs -------------
         tables = msgspec.json.decode(
-            (self.match_dir / "compatibility.json").read_bytes(),
+            (self.match_dir / ml.COMPATIBILITY_NAME).read_bytes(),
             type=list[structs.CompatibilityTable])
-        by_id = {t.tracklet_id: t for t in tables}
+        by_id = {t.tracklet_id.rsplit("#", 1)[-1]: t for t in tables}
         self.assertEqual(set(by_id), {"T1", "T2"})
 
         import math
@@ -395,16 +571,41 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
                          {"osm:node:102", "osm:node:103"})
 
     def test_missing_audit_is_a_clear_error(self):
-        import shutil
-        shutil.rmtree(self.run_dir / "semantic_audit")
+        flags = list(self.flags)
+        flags[flags.index("--audit_dir") + 1] = str(
+            Path(self._tmp.name) / "missing-audit")
         with self.assertRaises(SystemExit) as ctx:
-            run_main(self.flags + ["--build_only"])
-        self.assertIn("semantic audit", str(ctx.exception))
-
-    def test_model_flag_is_required(self):
-        flags = [f for f in self.flags if f not in ("--model", "test-model")]
-        with self.assertRaises(SystemExit):
             run_main(flags + ["--build_only"])
+        self.assertIn("input artifact", str(ctx.exception))
+
+    def test_one_missing_request_refuses_all_publication(self):
+        self._build()
+        self._fabricate_results()
+        transport = self.work_dir / ml.TRANSPORT_RESULTS_NAME
+        lines = transport.read_text().splitlines()
+        self.assertGreater(len(lines), 1)
+        transport.write_text(lines[0] + "\n")
+        with self.assertRaisesRegex(
+                llm_lifecycle.IncompleteCoverageError,
+                "complete, unique successful coverage"):
+            run_main(self.flags + ["--aggregate_only"])
+        self.assertFalse(self.match_dir.exists())
+
+    def test_duplicate_success_refuses_ambiguous_selection(self):
+        self._build()
+        self._fabricate_results()
+        transport = self.work_dir / ml.TRANSPORT_RESULTS_NAME
+        lines = transport.read_text().splitlines()
+        transport.write_text("\n".join(lines + [lines[0]]) + "\n")
+        with self.assertRaisesRegex(
+                llm_lifecycle.IncompleteCoverageError,
+                "duplicate valid responses"):
+            run_main(self.flags + ["--aggregate_only"])
+        self.assertFalse(self.match_dir.exists())
+
+    def test_model_cannot_override_build_config(self):
+        with self.assertRaises(SystemExit):
+            run_main(self.flags + ["--model", "other", "--build_only"])
 
 
 if __name__ == "__main__":

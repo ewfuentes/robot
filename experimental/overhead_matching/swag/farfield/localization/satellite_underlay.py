@@ -18,7 +18,8 @@ and the trajectory inside it is 0.4-18 km, so:
 is embedded in the viewer page, so a page built with it is for internal use and
 must not be shipped with a data release. `satellite.json` records the source and
 release so that provenance travels with the file rather than living in someone's
-memory. Nothing is written into the repository.
+memory. The result is transactionally published beside the immutable run as
+`<run>.satellite`; nothing is written into the run or the repository.
 
 Wayback rather than the current World Imagery endpoint: releases are dated, so
 imagery can be pinned near a dataset's own capture date. `--date` is REQUIRED
@@ -39,7 +40,6 @@ for a backdrop, not a survey.
 import argparse
 import concurrent.futures
 import io
-import json
 import math
 import time
 from pathlib import Path
@@ -47,10 +47,14 @@ from pathlib import Path
 import numpy as np
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
     geometry as geo,
     provenance,
 )
-from experimental.overhead_matching.swag.farfield.localization import run_io
+from experimental.overhead_matching.swag.farfield.localization import (
+    run_io,
+    side_outputs,
+)
 
 TILE_PX = 256
 WAYBACK_TILE_URL = ("https://wayback.maptiles.arcgis.com/arcgis/rest/services/"
@@ -190,13 +194,29 @@ def fit_zoom(name, lat_min, lat_max, lon_min, lon_max, max_zoom, budget):
     return plan
 
 
+def trajectory_enu(data) -> tuple[np.ndarray, np.ndarray]:
+    """Trajectory extent, preferring truth and otherwise the estimated path."""
+    if data.truth:
+        east = np.array([point.east_m for point in data.truth], dtype=np.float64)
+        north = np.array([point.north_m for point in data.truth], dtype=np.float64)
+    elif data.health:
+        east = np.array(
+            [record.mean_east_m for record in data.health], dtype=np.float64)
+        north = np.array(
+            [record.mean_north_m for record in data.health], dtype=np.float64)
+    else:
+        raise ValueError(
+            "satellite underlay needs truth or estimated health positions")
+    return east, north
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse
                                      .RawDescriptionHelpFormatter)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--out_dir", type=Path, default=None,
-                        help="default: <run_dir>/satellite")
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help="default: sibling <run_dir>.satellite")
     parser.add_argument("--date", required=True,
                         help="YYYY-MM: pin imagery near the dataset's capture "
                              "date. Required — imagery from years later is a "
@@ -219,8 +239,7 @@ def main():
     # wide: the catalog's own extent. fine: the trajectory plus a margin.
     lat = np.array([lm.lat_deg for lm in manifest.landmarks], dtype=np.float64)
     lon = np.array([lm.lon_deg for lm in manifest.landmarks], dtype=np.float64)
-    east = np.array([p.east_m for p in data.truth], dtype=np.float64)
-    north = np.array([p.north_m for p in data.truth], dtype=np.float64)
+    east, north = trajectory_enu(data)
     t_lat, t_lon = frame.latlon_from_enu(
         np.array([east.min() - args.fine_margin_m,
                   east.max() + args.fine_margin_m]),
@@ -258,45 +277,53 @@ def main():
     release, label = find_release(args.date, session)
     print(f"  ESRI Wayback release {release} ({label})")
 
-    out_dir = args.out_dir or (args.run_dir / "satellite")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    layers = []
-    for plan in plans:
-        x0, y0, x1, y1 = plan["tiles"]
-        image, failures = fetch_mosaic(x0, y0, x1, y1, plan["zoom"], release,
-                                       session)
-        name = f"{plan['name']}.jpg"
-        image.save(out_dir / name, quality=args.jpeg_quality, optimize=True)
-        e0, e1, n0, n1 = enu_bounds_of_tiles(x0, y0, x1, y1, plan["zoom"], frame)
-        layers.append({"image": name, "zoom": plan["zoom"],
-                       "east_min": e0, "east_max": e1,
-                       "north_min": n0, "north_max": n1,
-                       "n_tiles": plan["n_tiles"], "n_failed": failures,
-                       "bytes": (out_dir / name).stat().st_size})
-        print(f"  {plan['name']}: {(out_dir / name).stat().st_size / 1e6:.1f} MB"
-              + (f", {failures} tile(s) missing" if failures else ""))
+    with side_outputs.publish_directory(
+            args.run_dir, output_dir=args.output_dir,
+            suffix=".satellite") as output:
+        out_dir = output.staging_dir
+        layers = []
+        for plan in plans:
+            x0, y0, x1, y1 = plan["tiles"]
+            image, failures = fetch_mosaic(
+                x0, y0, x1, y1, plan["zoom"], release, session)
+            name = f"{plan['name']}.jpg"
+            image.save(
+                out_dir / name, quality=args.jpeg_quality, optimize=True)
+            e0, e1, n0, n1 = enu_bounds_of_tiles(
+                x0, y0, x1, y1, plan["zoom"], frame)
+            layers.append({"image": name, "zoom": plan["zoom"],
+                           "east_min": e0, "east_max": e1,
+                           "north_min": n0, "north_max": n1,
+                           "n_tiles": plan["n_tiles"], "n_failed": failures,
+                           "bytes": (out_dir / name).stat().st_size})
+            print(
+                f"  {plan['name']}: "
+                f"{(out_dir / name).stat().st_size / 1e6:.1f} MB"
+                + (f", {failures} tile(s) missing" if failures else ""))
 
-    (out_dir / "satellite.json").write_text(json.dumps({
-        "source": f"ESRI World Imagery Wayback release {release} ({label})",
-        "licence": "ESRI World Imagery is licensed and NOT redistributable; "
-                   "a viewer page built with it is for internal use only",
-        "anchor_lat_deg": manifest.anchor_lat_deg,
-        "anchor_lon_deg": manifest.anchor_lon_deg,
-        "projection_note": "tiles are web mercator, bounds are equirectangular "
-                           "in the run's frame; up to ~0.3% stretch over 25 km",
-        "layers": layers,
-    }, indent=1))
-    provenance.write(
-        out_dir,
-        generator="//experimental/overhead_matching/swag/farfield/"
-                  "localization:satellite_underlay",
-        inputs={"run_dir": Path(args.run_dir).resolve()},
-        config={"date": args.date, "release": release, "release_label": label,
-                "wide_zoom": wide["zoom"], "fine_zoom": fine["zoom"],
-                "fine_margin_m": args.fine_margin_m,
-                "max_tiles": args.max_tiles,
-                "jpeg_quality": args.jpeg_quality})
-    print(f"  wrote {out_dir}/satellite.json")
+        artifact.atomic_write_json(out_dir / "satellite.json", {
+            "source": f"ESRI World Imagery Wayback release {release} ({label})",
+            "licence": "ESRI World Imagery is licensed and NOT redistributable; "
+                       "a viewer page built with it is for internal use only",
+            "anchor_lat_deg": manifest.anchor_lat_deg,
+            "anchor_lon_deg": manifest.anchor_lon_deg,
+            "projection_note":
+                "tiles are web mercator, bounds are equirectangular in the "
+                "run's frame; up to ~0.3% stretch over 25 km",
+            "layers": layers,
+        })
+        provenance.write(
+            out_dir,
+            generator="//experimental/overhead_matching/swag/farfield/"
+                      "localization:satellite_underlay",
+            inputs={"run_dir": Path(args.run_dir).resolve()},
+            config={"date": args.date, "release": release,
+                    "release_label": label,
+                    "wide_zoom": wide["zoom"], "fine_zoom": fine["zoom"],
+                    "fine_margin_m": args.fine_margin_m,
+                    "max_tiles": args.max_tiles,
+                    "jpeg_quality": args.jpeg_quality})
+    print(f"  wrote {output.destination}/satellite.json")
 
 
 if __name__ == "__main__":

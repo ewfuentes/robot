@@ -14,8 +14,10 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 
-from experimental.overhead_matching.swag.farfield.catalog import (
-    catalog as catalog_lib,
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import paths as paths_lib
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    landmark_positive_set as positive_set,
 )
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     trim_catalog as tc,
@@ -251,19 +253,7 @@ class RuleTest(unittest.TestCase):
             self.assertEqual(len(mask), 4)
 
 
-class ColumnSelectionTest(unittest.TestCase):
-    def test_far_field_columns_match_prune_far_field_tags(self):
-        """Pre-selecting columns must not change what the catalog vocabulary
-        keeps -- the trim and the catalog must select by the SAME list."""
-        columns = ["id", "geometry", "landmark_type", "name", "man_made",
-                   "addr:housenumber", "seamark:type", "payment:cash",
-                   "building:levels", "name:fr", "opening_hours", "height"]
-        selected = set(tc.far_field_tag_columns(columns))
-        row = {c: "x" for c in columns if c not in ("id", "geometry",
-                                                    "landmark_type")}
-        direct = set(catalog_lib.prune_far_field_tags(row))
-        self.assertEqual(selected, direct)
-
+class GeometryTest(unittest.TestCase):
     def test_footprint_area_of_polygon(self):
         gdf = gpd.GeoDataFrame(
             {"id": ["a", "b", "c"]},
@@ -285,47 +275,154 @@ def catalog(rows) -> gpd.GeoDataFrame:
         geometry=[r[2] for r in rows], crs="EPSG:4326")
 
 
-def write_matches(path: Path, entries) -> Path:
-    """The matching stage's matches.json shape:
-    [(tracklet, signature, confidence)]."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        tracklet: {"matches": [{"landmark_id": f"osm:way:{i}",
-                                "signature": signature,
-                                "confidence": confidence,
-                                "match_type": "instance"}]}
-        for i, (tracklet, signature, confidence) in enumerate(entries)}))
-    return path
+DATASET = "test_dataset"
 
 
-class GuardIsMandatoryTest(unittest.TestCase):
-    """The recall guard cannot be silently skipped: a run with neither
-    --matched_from nor --positive_set refuses unless --no_recall_guard is
-    passed explicitly."""
+def publish_catalog(root: Path, rows, version: str = "v1",
+                    upstreams=()) -> Path:
+    output_dir = Path(root) / version
+    with artifact.ArtifactDirectoryBuilder(
+            output_dir,
+            kind=paths_lib.CATALOGS,
+            dataset=DATASET,
+            version=version,
+            generator="trim_catalog_test",
+            git_commit="test",
+            upstreams=upstreams,
+            declared_outputs=("catalog.feather",)) as builder:
+        catalog(rows).to_feather(builder.output_path("catalog.feather"))
+    return output_dir
 
-    def test_refuses_to_run_blind(self):
+
+def trim_config(output_dir: Path) -> dict:
+    return artifact.load_manifest(output_dir).config
+
+
+def publish_supporting_artifact(
+        root: Path, kind: str, version: str,
+) -> artifact.ArtifactRef:
+    output_dir = root / version
+    with artifact.ArtifactDirectoryBuilder(
+            output_dir,
+            kind=kind,
+            dataset=DATASET,
+            version=version,
+            generator="trim_catalog_test",
+            git_commit="test",
+            declared_outputs=("payload.json",)) as builder:
+        artifact.atomic_write_json(builder.output_path("payload.json"), {})
+    return artifact.open_artifact(output_dir)
+
+
+def publish_matches(
+        root: Path, catalog_ref: artifact.ArtifactRef, entries,
+        version: str = "matches_v1",
+) -> tuple[Path, artifact.ArtifactRef]:
+    """Publish [(tracklet, signature, confidence)] as LANDMARK_MATCHES."""
+    tracks_ref = publish_supporting_artifact(
+        root, paths_lib.OBJECT_TRACKS, f"tracks_for_{version}")
+    audits_ref = publish_supporting_artifact(
+        root, paths_lib.SEMANTIC_AUDITS, f"audits_for_{version}")
+    matches = {}
+    signatures = {}
+    for i, (tracklet, signature, confidence) in enumerate(entries):
+        landmark_id = f"osm:way:{i}"
+        signatures.setdefault(signature, []).append(landmark_id)
+        matches[tracklet] = {
+            "n_landmarks": 1,
+            "n_signatures": 1,
+            "matches": [{
+                "landmark_id": landmark_id,
+                "signature": signature,
+                "confidence": confidence,
+                "match_type": "instance",
+            }],
+        }
+    if not matches:
+        matches = {"LT0": {
+            "n_landmarks": 0,
+            "n_signatures": 0,
+            "matches": [],
+        }}
+        signatures = {"man_made=unused": ["osm:way:unused"]}
+    output_dir = root / version
+    with artifact.ArtifactDirectoryBuilder(
+            output_dir,
+            kind=paths_lib.LANDMARK_MATCHES,
+            dataset=DATASET,
+            version=version,
+            generator="trim_catalog_test",
+            git_commit="test",
+            upstreams=(tracks_ref, audits_ref, catalog_ref),
+            config={
+                "phase": "canonical_results",
+                "coverage": "complete",
+                "n_expected": 1,
+                "n_successful": 1,
+                "n_tracklets_expected": len(matches),
+                "n_tracklets_successful": len(matches),
+            },
+            declared_outputs=positive_set.MATCHING_OUTPUTS) as builder:
+        for output in positive_set.MATCHING_OUTPUTS:
+            if output == positive_set.MATCHES_PAYLOAD:
+                artifact.atomic_write_json(builder.output_path(output), matches)
+            elif output == positive_set.SIGNATURES_PAYLOAD:
+                artifact.atomic_write_json(
+                    builder.output_path(output), signatures)
+            else:
+                artifact.atomic_write_file(
+                    builder.output_path(output), b"{}\n")
+    return output_dir, artifact.open_artifact(output_dir)
+
+
+class EvidenceIsOptionalTest(unittest.TestCase):
+    """A new catalog can be trimmed before any matching result exists."""
+
+    def test_publishes_without_matching_or_positive_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"man_made": "lighthouse"},
-                      Point(-70.89, 42.32))]).to_feather(source)
-            with self.assertRaises(SystemExit) as caught:
-                tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
-            self.assertIn("refusing to trim blind", str(caught.exception))
-            self.assertFalse((tmp / "v2_trimmed.feather").exists())
+            source = publish_catalog(
+                tmp, [("osm:node:1", {"man_made": "lighthouse"},
+                       Point(-70.89, 42.32))])
+            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
+            self.assertTrue((tmp / "v2_trimmed" / "manifest.json").exists())
+            record = trim_config(tmp / "v2_trimmed")
+            self.assertNotIn("recall_guard", record)
+            for key in ("matched_from", "positive_set", "confidence_floor",
+                        "allow_recall_loss"):
+                self.assertNotIn(key, record)
 
-    def test_no_recall_guard_is_the_explicit_override(self):
+    def test_guarded_and_unguarded_runs_publish_the_same_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"man_made": "lighthouse"},
-                      Point(-70.89, 42.32))]).to_feather(source)
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    no_recall_guard=True)
-            self.assertTrue((tmp / "v2_trimmed.feather").exists())
-            record = json.loads(
-                (tmp / "v2_trimmed.provenance.json").read_text())
-            self.assertTrue(record["recall_guard"]["no_recall_guard"])
+            root = Path(tmp)
+            rows = [("osm:node:1", {"man_made": "tower"},
+                     Point(-71.0, 42.3))]
+            source = publish_catalog(root / "source", rows)
+            source_ref = artifact.open_artifact(source)
+            matching_dir, _ = publish_matches(
+                root / "matching", source_ref,
+                [("LT0", "man_made=tower", 0.9)])
+            positive = root / "positive.json"
+            positive_set.main(matching_dir, positive)
+
+            unguarded = root / "unguarded"
+            guarded = root / "guarded"
+            tc.main(source, unguarded, None, 2000.0, 6.0, False)
+            tc.main(source, guarded, positive, 2000.0, 6.0, False,
+                    matched_from=[matching_dir], confidence_floor=0.8)
+            plain_manifest = artifact.load_manifest(unguarded)
+            guarded_manifest = artifact.load_manifest(guarded)
+            plain_bytes = (unguarded / "catalog.feather").read_bytes()
+            guarded_bytes = (guarded / "catalog.feather").read_bytes()
+
+        self.assertEqual(guarded_manifest.upstreams, (source_ref,))
+        self.assertEqual(guarded_manifest.upstreams, plain_manifest.upstreams)
+        self.assertEqual(guarded_manifest.config, plain_manifest.config)
+        self.assertEqual(guarded_manifest.declared_outputs,
+                         plain_manifest.declared_outputs)
+        self.assertEqual(guarded_manifest.content_digest,
+                         plain_manifest.content_digest)
+        self.assertEqual(guarded_bytes, plain_bytes)
 
 
 class MatchedRecallGuardTest(unittest.TestCase):
@@ -334,87 +431,138 @@ class MatchedRecallGuardTest(unittest.TestCase):
 
     def test_reads_matches_and_honours_the_confidence_floor(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = write_matches(
-                Path(tmp) / "run" / "matching" / "matches.json",
+            root = Path(tmp)
+            source = publish_catalog(
+                root, [("a", {"man_made": "tower"},
+                        Point(-71.0, 42.3))])
+            source_ref = artifact.open_artifact(source)
+            matching_dir, matching_ref = publish_matches(
+                root, source_ref,
                 [("LT0", "man_made=lighthouse", 0.9),
                  ("LT1", "amenity=bench", 0.2)])
-            found = tc.matched_signatures([path.parent.parent], 0.5)
+            found, refs = tc.matched_signatures(
+                [matching_dir], 0.5, source_ref)
         self.assertEqual(sorted(found), ["man_made=lighthouse"])
         self.assertEqual(found["man_made=lighthouse"][0][1], "LT0")
+        self.assertEqual(refs, (matching_ref,))
 
-    def test_accepts_the_matches_file_directly(self):
+    def test_rejects_a_loose_matches_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = write_matches(Path(tmp) / "matches.json",
-                                 [("LT0", "man_made=pier", 0.6)])
-            self.assertEqual(sorted(tc.matched_signatures([path], 0.5)),
-                             ["man_made=pier"])
+            root = Path(tmp)
+            source = publish_catalog(
+                root, [("a", {"man_made": "tower"},
+                        Point(-71.0, 42.3))])
+            source_ref = artifact.open_artifact(source)
+            loose = root / "matches.json"
+            loose.write_text("{}")
+            with self.assertRaisesRegex(SystemExit, "LANDMARK_MATCHES"):
+                tc.matched_signatures([loose], 0.5, source_ref)
 
-    def test_missing_matches_file_is_an_error_not_a_silent_pass(self):
+    def test_accepts_matches_from_a_prior_trim_of_the_same_full_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [("a", {"man_made": "tower"}, Point(-71.0, 42.3))]
+            source = publish_catalog(root / "full", rows)
+            source_ref = artifact.open_artifact(source)
+            prior_trim = publish_catalog(
+                root / "trimmed", rows, version="trimmed_v1",
+                upstreams=(source_ref,))
+            matching_dir, _ = publish_matches(
+                root / "matching", artifact.open_artifact(prior_trim),
+                [("LT0", "man_made=tower", 0.9)])
+            found, _ = tc.matched_signatures(
+                [matching_dir], 0.5, source_ref)
+        self.assertEqual(set(found), {"man_made=tower"})
+
+    def test_missing_matching_artifact_is_an_error_not_a_silent_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = publish_catalog(
+                root, [("a", {"man_made": "tower"},
+                        Point(-71.0, 42.3))])
             with self.assertRaises(SystemExit):
-                tc.matched_signatures([Path(tmp)], 0.5)
+                tc.matched_signatures(
+                    [root / "missing"], 0.5,
+                    artifact.open_artifact(source))
+
+    def test_matching_bound_to_another_catalog_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = publish_catalog(
+                root / "source",
+                [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
+            other = publish_catalog(
+                root / "other",
+                [("b", {"man_made": "pier"}, Point(-70.9, 42.2))])
+            matching_dir, _ = publish_matches(
+                root / "matching", artifact.open_artifact(other),
+                [("LT0", "man_made=pier", 0.9)])
+            with self.assertRaisesRegex(SystemExit, "typed descendant"):
+                tc.main(
+                    source, root / "v2", None, 2000.0, 6.0, False,
+                    matched_from=[matching_dir])
+            self.assertFalse((root / "v2").exists())
 
     def test_refuses_to_write_when_a_matched_signature_is_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"amenity": "bench"},
-                      Point(-71.0, 42.3))]).to_feather(source)
-            matches = write_matches(tmp / "matches.json",
-                                    [("LT0", "amenity=bench", 0.9)])
+            source = publish_catalog(
+                tmp, [("osm:node:1", {"amenity": "bench"},
+                       Point(-71.0, 42.3))])
+            matches, _ = publish_matches(
+                tmp, artifact.open_artifact(source),
+                [("LT0", "amenity=bench", 0.9)])
             with self.assertRaises(SystemExit) as caught:
                 tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
                         matched_from=[matches])
             self.assertIn("refusing to write", str(caught.exception))
-            self.assertFalse((tmp / "v2_trimmed.feather").exists())
+            self.assertFalse((tmp / "v2_trimmed").exists())
 
     def test_allow_recall_loss_is_the_explicit_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"amenity": "bench"},
-                      Point(-71.0, 42.3))]).to_feather(source)
-            matches = write_matches(tmp / "matches.json",
-                                    [("LT0", "amenity=bench", 0.9)])
+            source = publish_catalog(
+                tmp, [("osm:node:1", {"amenity": "bench"},
+                       Point(-71.0, 42.3))])
+            source_ref = artifact.open_artifact(source)
+            matches, _ = publish_matches(
+                tmp, source_ref, [("LT0", "amenity=bench", 0.9)])
             tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
                     matched_from=[matches], allow_recall_loss=True)
-            record = json.loads(
-                (tmp / "v2_trimmed.provenance.json").read_text())
-        self.assertEqual(record["recall_guard"]["lost_signatures"],
-                         ["amenity=bench"])
+            manifest = artifact.load_manifest(tmp / "v2_trimmed")
+        self.assertEqual(manifest.upstreams, (source_ref,))
+        self.assertNotIn("recall_guard", manifest.config)
 
     def test_signatures_from_another_region_do_not_block_a_write(self):
         """A run from a different dataset matches signatures this table never
         held; that is not a rule dropping something."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"man_made": "lighthouse"},
-                      Point(-70.89, 42.32))]).to_feather(source)
-            matches = write_matches(
-                tmp / "matches.json",
+            source = publish_catalog(
+                tmp, [("osm:node:1", {"man_made": "lighthouse"},
+                       Point(-70.89, 42.32))])
+            source_ref = artifact.open_artifact(source)
+            matches, _ = publish_matches(
+                tmp, source_ref,
                 [("LT0", "natural=peak; name=Mt Adams", 0.9)])
             tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
                     matched_from=[matches])
-            record = json.loads(
-                (tmp / "v2_trimmed.provenance.json").read_text())
-        self.assertEqual(record["recall_guard"]["lost_signatures"], [])
+            manifest = artifact.load_manifest(tmp / "v2_trimmed")
+        self.assertEqual(manifest.upstreams, (source_ref,))
 
     def test_passes_when_the_matched_signature_survives(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("osm:node:1", {"man_made": "lighthouse",
-                                     "name": "Boston Light"},
-                      Point(-70.89, 42.32))]).to_feather(source)
-            matches = write_matches(tmp / "matches.json",
-                                    [("LT0", "man_made=lighthouse; "
-                                             "name=Boston Light", 0.9)])
+            source = publish_catalog(
+                tmp, [("osm:node:1", {"man_made": "lighthouse",
+                                       "name": "Boston Light"},
+                       Point(-70.89, 42.32))])
+            matches, _ = publish_matches(
+                tmp, artifact.open_artifact(source),
+                [("LT0", "man_made=lighthouse; name=Boston Light", 0.9)])
             tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
                     matched_from=[matches])
-            record = json.loads(
-                (tmp / "v2_trimmed.provenance.json").read_text())
-        self.assertEqual(record["recall_guard"]["lost_signatures"], [])
+            record = trim_config(tmp / "v2_trimmed")
         self.assertEqual(record["rows_out"], 1)
 
 
@@ -423,81 +571,95 @@ class WriteProtectionTest(unittest.TestCase):
     than overwritten -- every past number was computed against the old one."""
 
     def build(self, tmp: Path) -> Path:
-        source = tmp / "v1.feather"
-        catalog([("osm:node:1", {"man_made": "lighthouse"},
-                  Point(-70.89, 42.32))]).to_feather(source)
-        return source
+        return publish_catalog(
+            tmp, [("osm:node:1", {"man_made": "lighthouse"},
+                   Point(-70.89, 42.32))])
 
     def test_existing_catalog_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             source = self.build(tmp)
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    no_recall_guard=True)
+            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
             with self.assertRaises(SystemExit) as caught:
-                tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                        no_recall_guard=True)
-        self.assertIn("versioned, not overwritten", str(caught.exception))
-
-    def test_force_replaces_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            source = self.build(tmp)
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    no_recall_guard=True)
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    no_recall_guard=True, force=True)
+                tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False)
+        self.assertIn("immutable and versioned", str(caught.exception))
 
     def test_dry_run_never_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             source = self.build(tmp)
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, True,
-                    no_recall_guard=True)
-            self.assertFalse((tmp / "v2_trimmed.feather").exists())
+            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, True)
+            self.assertFalse((tmp / "v2_trimmed").exists())
 
-    def test_byte_identical_sibling_trim_is_refused(self):
-        """File-level twin of provenance.check_version_is_new: a trim whose
-        bytes equal an existing sibling's is versioning noise."""
+    def test_loose_feather_is_not_accepted_as_an_input_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            sibling = tmp / "v2_trimmed.feather"
-            sibling.write_bytes(b"feather bytes")
-            sibling.with_suffix(".provenance.json").write_text(json.dumps(
-                {"output_sha256": tc.sha256_of(sibling)}))
+            loose = tmp / "catalog.feather"
+            catalog([("a", {"man_made": "tower"}, Point(-71.0, 42.3))]
+                    ).to_feather(loose)
             with self.assertRaises(SystemExit) as caught:
-                tc.check_not_byte_identical_sibling(
-                    tc.sha256_of(sibling), tmp / "v3_trimmed.feather")
-            self.assertIn("byte-identical", str(caught.exception))
-            # A different digest passes.
-            tc.check_not_byte_identical_sibling(
-                "0" * 64, tmp / "v3_trimmed.feather")
+                tc.main(loose, tmp / "v2", None, 2000.0, 6.0, False)
+        self.assertIn("invalid input catalog artifact", str(caught.exception))
 
-    def test_the_trims_own_source_is_exempt(self):
-        """A trim that drops nothing is a legitimate outcome (a small or
-        already-clean table); refusing it would block the first trim of any
-        such catalog. The check is about duplicating an earlier TRIM."""
+
+class PositiveSetIdentityTest(unittest.TestCase):
+
+    @staticmethod
+    def write_positive(path: Path, matching_dir: Path) -> Path:
+        positive_set.main(matching_dir, path)
+        return path
+
+    def test_exact_matching_and_catalog_identities_are_validated_not_published(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            source.write_bytes(b"feather bytes")
-            digest = tc.sha256_of(source)
-            # Without the exemption the source blocks the write...
-            with self.assertRaises(SystemExit):
-                tc.check_not_byte_identical_sibling(
-                    digest, tmp / "v1_trimmed.feather")
-            # ...naming it as the input lets an identical trim through.
-            tc.check_not_byte_identical_sibling(
-                digest, tmp / "v1_trimmed.feather", source)
+            source = publish_catalog(
+                tmp, [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
+            source_ref = artifact.open_artifact(source)
+            matching_dir, _ = publish_matches(
+                tmp, source_ref, [])
+            positive = self.write_positive(
+                tmp / "positive.json", matching_dir)
+            output = tmp / "v2"
+            tc.main(source, output, positive, 2000.0, 6.0, False)
+            manifest = artifact.load_manifest(output)
+        self.assertEqual(manifest.upstreams, (source_ref,))
+        self.assertNotIn("recall_guard", manifest.config)
 
-    def test_sibling_without_sidecar_is_hashed_directly(self):
+    def test_positive_set_from_a_prior_trim_of_the_full_catalog_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [("a", {"man_made": "tower"}, Point(-71.0, 42.3))]
+            source = publish_catalog(root / "full", rows)
+            source_ref = artifact.open_artifact(source)
+            prior_trim = publish_catalog(
+                root / "trimmed", rows, version="trimmed_v1",
+                upstreams=(source_ref,))
+            matching_dir, _ = publish_matches(
+                root / "matching", artifact.open_artifact(prior_trim),
+                [("LT0", "man_made=tower", 0.9)])
+            positive = self.write_positive(root / "positive.json", matching_dir)
+            output = root / "trimmed_v2"
+            tc.main(source, output, positive, 2000.0, 6.0, False)
+            manifest = artifact.load_manifest(output)
+        self.assertEqual(manifest.upstreams, (source_ref,))
+
+    def test_positive_set_from_another_catalog_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            sibling = tmp / "v2_trimmed.feather"
-            sibling.write_bytes(b"feather bytes")
-            with self.assertRaises(SystemExit):
-                tc.check_not_byte_identical_sibling(
-                    tc.sha256_of(sibling), tmp / "v3_trimmed.feather")
+            source = publish_catalog(
+                tmp / "source",
+                [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
+            other = publish_catalog(
+                tmp / "other",
+                [("b", {"man_made": "tower"}, Point(-70.0, 41.3))])
+            matching_dir, _ = publish_matches(
+                tmp / "other_matching", artifact.open_artifact(other), [])
+            positive = self.write_positive(
+                tmp / "positive.json", matching_dir)
+            with self.assertRaises(SystemExit) as caught:
+                tc.main(source, tmp / "v2", positive, 2000.0, 6.0, False)
+            self.assertFalse((tmp / "v2").exists())
+        self.assertIn("typed descendant", str(caught.exception))
 
 
 class RuleFingerprintTest(unittest.TestCase):
@@ -549,68 +711,57 @@ class ClipBoxTest(unittest.TestCase):
     def test_clip_without_a_centre_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("a", {"man_made": "tower"}, Point(-71.0, 42.3))]
-                    ).to_feather(source)
+            source = publish_catalog(
+                tmp, [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
             with self.assertRaises(SystemExit) as caught:
                 tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                        no_recall_guard=True, clip_km=25.0)
+                        clip_km=25.0)
         self.assertIn("impossible to reproduce", str(caught.exception))
 
     def test_clip_is_reported_as_its_own_rule_and_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            source = tmp / "v1.feather"
-            catalog([("a", {"man_made": "tower"}, Point(-71.08, 42.36)),
-                     ("b", {"man_made": "tower"}, Point(-71.08, 42.56))]
-                    ).to_feather(source)
+            source = publish_catalog(
+                tmp,
+                [("a", {"man_made": "tower"}, Point(-71.08, 42.36)),
+                 ("b", {"man_made": "tower"}, Point(-71.08, 42.56))])
             tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    no_recall_guard=True, clip_km=25.0,
+                    clip_km=25.0,
                     clip_center_lat=42.36, clip_center_lon=-71.08)
-            record = json.loads(
-                (tmp / "v2_trimmed.provenance.json").read_text())
+            record = trim_config(tmp / "v2_trimmed")
         self.assertEqual(record["drops_per_rule"]["outside_clip_box"], 1)
         self.assertEqual(record["rows_out"], 1)
-        self.assertEqual(record["arguments"]["clip_km"], 25.0)
+        self.assertEqual(record["clip_km"], 25.0)
 
 
 class ProvenanceTest(unittest.TestCase):
-    """The provenance sidecar has one job: make the catalog reproducible."""
+    """The typed manifest makes the catalog reproducible and immutable."""
 
     def run_once(self, tmp: Path):
-        source = tmp / "v1.feather"
-        catalog([("a", {"man_made": "lighthouse", "name": "Boston Light"},
-                  Point(-70.89, 42.32))]).to_feather(source)
-        tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                no_recall_guard=True, clip_km=25.0, clip_center_lat=42.32,
+        source = publish_catalog(
+            tmp,
+            [("a", {"man_made": "lighthouse", "name": "Boston Light"},
+              Point(-70.89, 42.32))])
+        output = tmp / "v2_trimmed"
+        tc.main(source, output, None, 2000.0, 6.0, False,
+                clip_km=25.0, clip_center_lat=42.32,
                 clip_center_lon=-70.89)
-        return (json.loads((tmp / "v2_trimmed.provenance.json").read_text()),
-                source)
+        return artifact.load_manifest(output), artifact.open_artifact(source)
 
-    def test_records_every_argument_and_both_hashes(self):
+    def test_records_exact_upstream_and_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
-            record, source = self.run_once(Path(tmp))
-            self.assertEqual(record["input_sha256"], tc.sha256_of(source))
-            self.assertEqual(
-                record["output_sha256"],
-                tc.sha256_of(Path(tmp) / "v2_trimmed.feather"))
-        for key in ("input", "output", "min_building_area_m2",
-                    "min_building_levels", "clip_km", "clip_center_lat",
-                    "clip_center_lon", "confidence_floor"):
-            self.assertIn(key, record["arguments"])
-        # git_commit comes from the shared provenance module, argv from the
-        # invocation -- the two fields the audit found missing everywhere.
-        self.assertIn("git_commit", record)
-        self.assertIn("argv", record)
-
-    def test_reproduce_command_carries_the_arguments(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            record, _ = self.run_once(Path(tmp))
-        command = record["reproduce"]
-        self.assertIn("trim_catalog", command)
-        self.assertIn("--clip_km 25.0", command)
-        self.assertIn("--min_building_area_m2 2000.0", command)
-        self.assertNotIn("None", command)
+            manifest, source_ref = self.run_once(Path(tmp))
+        self.assertEqual(manifest.kind, paths_lib.CATALOGS)
+        self.assertEqual(manifest.upstreams, (source_ref,))
+        self.assertEqual(manifest.declared_outputs, ("catalog.feather",))
+        self.assertEqual(manifest.config["min_building_area_m2"], 2000.0)
+        self.assertEqual(manifest.config["min_building_levels"], 6.0)
+        self.assertEqual(manifest.config["clip_km"], 25.0)
+        self.assertEqual(manifest.config["clip_center_lat"], 42.32)
+        self.assertEqual(manifest.config["clip_center_lon"], -70.89)
+        self.assertEqual(manifest.config["rows_out"], 1)
+        self.assertTrue(manifest.config["rule_fingerprint"])
+        self.assertTrue(manifest.git_commit)
 
 
 if __name__ == "__main__":

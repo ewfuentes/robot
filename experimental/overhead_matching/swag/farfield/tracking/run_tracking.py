@@ -1,38 +1,17 @@
-"""Tracking stage: SAM2 track building over keyframe ranges + track viewer.
+"""Build one immutable ``object_tracks`` artifact for one configured range.
 
-Runs tracking over the requested ranges with a media hook that captures
-every propagation frame, then writes a static site:
-- <run_dir>/index.html: per-range stats, an alive-timeline (click a bar to
-  open its track), a filterable gallery of tracks with representative
-  thumbnails, and a section for landmarks that produced no track (rejected
-  births and never-supported tracks).
-- <run_dir>/track_<range>_T<id>.html: looping video of the track's whole life
-  (mask overlay, detection boxes at keyframes colored by class), a
-  termination explanation, and a per-keyframe evidence table listing every
-  nearby detection with include/exclude reasoning against the RECORDED config
-  thresholds.
-
-Completion contract (the P0 fix for the crash-shaped hole the old stage had):
-`run_meta.json` is written at the START of the run and records only inputs +
-settings -- it is NOT a completion claim, and nothing may treat its presence
-as one (the old stage wrote it before the range loop, so a crash mid-tracking
-left a marker that made the orchestrator skip the stage). Completion lives in
-`tracks_complete.json`, updated ONLY as each range finishes; a range is done
-when its name appears there, and the run is done when every range declared in
-run_meta.json appears there (`unfinished_ranges`). `--skip_existing_ranges`
-reuses a finished range's tracks_<range>.json + media instead of re-tracking.
-
-Serve with any static file server, e.g. the http.server already running on
-the output tree.
-
-Run:
-  bazel run //experimental/overhead_matching/swag/farfield/tracking:run_tracking
+The production contract is deliberately smaller than the old tracking-run
+workspace: one explicit range named ``full``, one ``tracks_full.json``
+payload, and one completed typed manifest.  Tracking, media encoding, and the
+static review pages all happen in ``<output_dir>.incomplete``.  Only after
+every output is finalized is the manifest written and the directory renamed
+atomically into place.  A failed invocation is therefore never reusable as a
+completed scientific artifact.
 """
 
 import argparse
 import concurrent.futures as cf
 import dataclasses
-import datetime
 import html
 import json
 import math
@@ -40,7 +19,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -49,10 +27,13 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact as artifact_lib,
+    build_config,
     dataset,
     geometry as geo,
     paths as paths_lib,
     provenance,
+    publication as publication_lib,
 )
 from experimental.overhead_matching.swag.farfield.tracking import (
     range_runner as rr,
@@ -67,9 +48,8 @@ from experimental.overhead_matching.swag.farfield.viewers import (
 )
 
 GENERATOR = "//experimental/overhead_matching/swag/farfield/tracking:run_tracking"
-
-RUN_META = "run_meta.json"
-TRACKS_COMPLETE = "tracks_complete.json"
+TRACKS_FILE = "tracks_full.json"
+RANGE_NAME = "full"
 
 CLASS_COLORS = {
     "continue_clean": (60, 220, 60),
@@ -88,161 +68,6 @@ MASK_TINT = (255, 60, 60)
 ENCODE_WORKERS = 8
 VIDEO_SIZE = 512
 VIDEO_FPS = 6
-
-
-# ---------------------------------------------------------------------------
-# Run metadata + completion markers
-# ---------------------------------------------------------------------------
-
-def _now() -> str:
-    return datetime.datetime.now().isoformat(timespec="seconds")
-
-
-def write_run_meta(run_dir: Path, *, run_name: str, dataset_name: str,
-                   notes: str, inputs: dict, builder_cfg, ingest_params,
-                   ranges: list) -> Path:
-    """Record the run's inputs and settings, WITHOUT any completion claim.
-
-    Written up front so a crash mid-run still leaves a record of what was
-    attempted. Everything result-shaping is here verbatim: the full
-    TrackBuilderConfig and IngestParams (so the recorded values are the used
-    values, never a stale default), every resolved input including the SAM2
-    checkpoint (the old stage omitted it), and the declared ranges that
-    tracks_complete.json must eventually cover.
-    """
-    run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / RUN_META
-    path.write_text(json.dumps({
-        "run_name": run_name,
-        "dataset": dataset_name,
-        "notes": notes,
-        "created": _now(),
-        "generator": ("//experimental/overhead_matching/swag/farfield/"
-                      "tracking:run_tracking"),
-        "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
-        "viewer_rel": ".",
-        # None values are recorded deliberately (e.g. video on keyframe-only
-        # datasets): "known absent" is information, and
-        # paths.recorded_run_inputs skips falsy entries on the read side.
-        "inputs": {k: (str(v) if v is not None else None)
-                   for k, v in inputs.items()},
-        "config": {
-            "track_builder": dataclasses.asdict(builder_cfg),
-            "ingest": dataclasses.asdict(ingest_params),
-        },
-        "ranges": [{"name": n, "k_start": a, "k_end": b}
-                   for n, a, b in ranges],
-        "completion": (f"this file is NOT a completion marker; a range is "
-                       f"complete only when it appears in {TRACKS_COMPLETE}"),
-    }, indent=1))
-    return path
-
-
-def completed_ranges(run_dir: Path) -> dict:
-    """{range_name: finished-timestamp} recorded so far, {} when none."""
-    path = Path(run_dir) / TRACKS_COMPLETE
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text()).get("completed", {})
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def mark_range_complete(run_dir: Path, range_name: str) -> Path:
-    """Append one finished range to tracks_complete.json (atomic rewrite).
-
-    Called ONLY after the range's tracks_<range>.json has been written; this
-    ordering is the whole point of the marker (see the module docstring).
-    """
-    run_dir = Path(run_dir)
-    completed = completed_ranges(run_dir)
-    completed[range_name] = _now()
-    doc = {
-        "schema": "farfield_tracks_complete/v1",
-        "note": ("a range listed here has its tracks_<range>.json fully "
-                 "written; the run is complete when every range declared in "
-                 f"{RUN_META} is listed"),
-        "completed": completed,
-    }
-    path = run_dir / TRACKS_COMPLETE
-    # Atomic replace: a crash mid-write must not corrupt the marker that
-    # exists precisely to survive crashes.
-    fd, tmp = tempfile.mkstemp(dir=run_dir, prefix=TRACKS_COMPLETE + ".")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(doc, indent=1))
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-    return path
-
-
-def unfinished_ranges(run_dir: Path) -> list:
-    """Ranges declared in run_meta.json but absent from tracks_complete.json.
-
-    The orchestrator's (REORG.md PR 12) skip test: a stage is re-runnable
-    while this is non-empty, and only an empty answer means done.
-    """
-    meta_path = Path(run_dir) / RUN_META
-    declared = [r["name"] for r in
-                json.loads(meta_path.read_text()).get("ranges", [])]
-    done = completed_ranges(run_dir)
-    return [name for name in declared if name not in done]
-
-
-def refresh_artifact_manifest(paths, runs_root: Path, run_name: str):
-    """Write/refresh `manifest.json` for the object_tracks artifact.
-
-    Refreshed on every run because this artifact is a *working tree* -- its
-    version bumps only when the pipeline changes shape, while runs accumulate
-    inside it -- so the manifest's job is to name the producer and point at
-    the per-run records that carry the settings.
-    """
-    runs = {}
-    for run_dir in sorted(p for p in runs_root.glob("*") if p.is_dir()):
-        if not (run_dir / RUN_META).exists():
-            continue
-        try:
-            pending = unfinished_ranges(run_dir)
-        except (json.JSONDecodeError, OSError):
-            pending = ["<unreadable run_meta>"]
-        runs[run_dir.name] = ("complete" if not pending
-                              else f"incomplete: {', '.join(pending)}")
-    inputs = {
-        "dataset_base": paths_lib.relative_to_root(paths.dataset_base,
-                                                   paths.root),
-        "frame_landmarks": paths_lib.relative_to_root(paths.frame_landmarks,
-                                                      paths.root),
-    }
-    try:
-        inputs["video"] = paths_lib.relative_to_root(paths.video, paths.root)
-    except paths_lib.MissingInput:
-        pass  # keyframe-only dataset
-    provenance.write(
-        paths.object_tracks,
-        generator=("//experimental/overhead_matching/swag/farfield/tracking"
-                   ":run_tracking (+ later per-run stages)"),
-        inputs=inputs,
-        config={
-            "per_run": f"runs/<run>/{RUN_META} records the resolved inputs "
-                       f"(incl. the SAM2 checkpoint), the full "
-                       f"TrackBuilderConfig + ingest params, and the declared "
-                       f"ranges; runs/<run>/{TRACKS_COMPLETE} records which "
-                       f"ranges actually finished",
-            "runs": runs,
-            "latest_run": run_name,
-        },
-        notes=("Working tree of the tracking pipeline: products and their "
-               "debug boards travel together, and the internal layout is the "
-               "producer's. Immutability lives on the run ids - never "
-               "regenerate an rNNN in place with different settings, mint "
-               "the next one. Mint v<N+1> if the pipeline changes shape."),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -396,11 +221,12 @@ class MediaSink:
                 else:
                     failures.append((key, code, stderr[:200]))
         if failures:
-            # Loud: a missing video is a dead link in the viewer, and the old
-            # `check=True` at least stopped the run rather than hiding it.
-            print(f"  WARNING: {len(failures)} track video(s) failed to encode")
-            for key, code, stderr in failures[:5]:
-                print(f"    {key}: ffmpeg exit {code}: {stderr}")
+            details = "; ".join(
+                f"{key}: ffmpeg exit {code}: {stderr}"
+                for key, code, stderr in failures[:5])
+            raise RuntimeError(
+                f"{len(failures)} track video(s) failed to encode; "
+                f"refusing to publish viewer with dead links ({details})")
         shutil.rmtree(self.frames_root, ignore_errors=True)
         return encoded
 
@@ -572,7 +398,11 @@ def render_track_page(out, range_name, t, cfg, obs_by_id, seeded_by,
         supports = rec.get("supports", [])
         area = rec.get("mask_area")
         extra = f" (mask {area}px)" if area is not None else ""
-        kf_cell = f"<a href='keyframes/{kf}.html'>{kf}</a>"
+        # Keyframe pages belonged to the retired mutable run workspace and
+        # are not outputs of this immutable producer.  Keep the evidence
+        # table self-contained instead of publishing a dead cross-artifact
+        # link.
+        kf_cell = kf
         if not supports:
             health = rec.get("health")
             note = (f"health: {json.dumps(health)}" if health
@@ -645,230 +475,489 @@ def timeline_svg(range_name, artifact):
     return "\n".join(rows)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    paths_lib.add_arguments(parser, video=True, checkpoint=True)
-    parser.add_argument("--runs_root", type=Path, default=None,
-                        help="default: <object_tracks artifact>/runs "
-                             "(requires --object_tracks_version)")
-    parser.add_argument("--run_name", required=True,
-                        help="results land in <runs_root>/<run_name>/")
-    parser.add_argument("--notes", default="",
-                        help="what changed in this run and why (shown in "
-                             "run_meta.json and the diff viewer)")
-    parser.add_argument("--range", nargs=3, action="append", default=None,
-                        metavar=("NAME", "K_START", "K_END"))
-    parser.add_argument("--skip_existing_ranges", action="store_true",
-                        help="reuse tracks_<range>.json + media already in "
-                             "the run dir instead of re-tracking that range "
-                             "(resume after a crash / partial iteration)")
-    # TODO(run_config): the ingest values move into the run's recorded config
-    # (run_config.json, REORG.md PR 12); required on the CLI until then. No
-    # defaults on purpose -- these shape which detections exist at all.
-    parser.add_argument("--fov_deg", type=float, required=True,
-                        help="Pinhole-face FOV the extraction rendered with, "
-                             "degrees (previously 90.0 on all datasets)")
-    parser.add_argument("--seam_gap_norm", type=float, required=True,
-                        help="Seam-merge margin in bbox units 0-1000 "
-                             "(previously 25)")
-    parser.add_argument("--seam_min_y_iou", type=float, required=True,
-                        help="Vertical IoU to accept a seam continuation "
-                             "(previously 0.3)")
-    args = parser.parse_args()
+class TrackingContractError(ValueError):
+    """An explicit input disagrees with the immutable tracking recipe."""
 
-    paths = paths_lib.resolve(
-        parser, args,
-        require=("dataset_base", "frame_landmarks", "sam2_checkpoint"))
-    ingest_params = dataset.IngestParams(
-        fov_deg=args.fov_deg, seam_gap_norm=args.seam_gap_norm,
-        seam_min_y_iou=args.seam_min_y_iou)
-    # No source video is a mode, not an error: Mapillary datasets retain only
-    # the posted keyframes, so the tracker propagates across those directly.
+
+def _exact_keys(value, expected: set[str], where: str) -> None:
+    if not isinstance(value, dict):
+        raise TrackingContractError(f"{where} must be an object")
+    missing = sorted(expected - set(value))
+    unknown = sorted(set(value) - expected)
+    if missing or unknown:
+        raise TrackingContractError(
+            f"{where} has missing={missing}, unknown={unknown}")
+
+
+def _flatten_config(value, prefix: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {prefix: value}
+    if not value:
+        return {prefix: value}
+    flattened = {}
+    for key, child in value.items():
+        if not isinstance(key, str) or not key:
+            raise TrackingContractError(
+                f"{prefix} contains a non-string or empty key")
+        flattened.update(_flatten_config(child, f"{prefix}.{key}"))
+    return flattened
+
+
+def orchestration_contract(document: dict) -> dict:
+    """Recompute the pipeline's exact track-stage config selection."""
+    config = document.get("config")
+    if not isinstance(config, dict):
+        raise TrackingContractError("build config has no config object")
+    selected = {}
+    for prefix in ("ingest", "tracking", "gps_course"):
+        if prefix not in config:
+            raise TrackingContractError(
+                f"build config does not record {prefix!r}")
+        selected.update(_flatten_config(config[prefix], prefix))
+    selected["artifacts.object_tracks_version"] = build_config.value(
+        document, "artifacts.object_tracks_version")
+    return {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "track",
+        "config_digest": artifact_lib.sha256_json(selected),
+    }
+
+
+def _same_path(actual: Path, recorded: str, what: str) -> Path:
+    actual = Path(actual)
+    recorded_path = Path(recorded)
+    resolved = actual.resolve()
+    if resolved != recorded_path.resolve():
+        raise TrackingContractError(
+            f"{what} disagrees with immutable build config: "
+            f"{resolved} != {recorded_path.resolve()}")
+    return resolved
+
+
+def load_tracking_config(args):
+    """Validate explicit bindings and materialize every scientific setting."""
+    config_path = Path(args.build_config)
+    if (config_path.name != build_config.BUILD_CONFIG_NAME
+            or not config_path.is_file() or config_path.is_symlink()):
+        raise TrackingContractError(
+            f"--build_config must name a regular, non-symlink "
+            f"{build_config.BUILD_CONFIG_NAME} file")
+    document = build_config.load(config_path.parent)
+    if document["dataset"] != args.dataset:
+        raise TrackingContractError(
+            "--dataset disagrees with the immutable build config")
+
+    inputs = document["inputs"]
+    dataset_base = _same_path(
+        args.dataset_base, inputs.get("dataset_base", ""), "--dataset_base")
+    if not dataset_base.is_dir() or dataset_base.is_symlink():
+        raise TrackingContractError(
+            f"--dataset_base must be a regular directory: {dataset_base}")
+    metadata = dataset.load_metadata(dataset_base)
+    if metadata["dataset_name"] != args.dataset:
+        raise TrackingContractError(
+            "dataset metadata disagrees with --dataset")
     try:
-        video = paths.video
-    except paths_lib.MissingInput:
-        video = None
-        print(f"{paths.dataset}: no source video in metadata; tracking "
-              f"across keyframes only")
-    ctx = rr.load_context(paths.dataset_base, paths.frame_landmarks,
-                          video, paths.sam2_checkpoint, ingest_params,
-                          preview_size=VIDEO_SIZE)
-    last_keyframe = max(f.frame_idx for f in ctx["result"].frames)
-    if args.range:
-        ranges = [(n, int(a), int(b)) for n, a, b in args.range]
-        past_end = [n for n, _, b in ranges if b > last_keyframe]
-        if past_end:
-            parser.error(
-                f"range(s) {', '.join(past_end)} end past this dataset's last "
-                f"keyframe f{last_keyframe:04d} ({paths.dataset} has "
-                f"{len(ctx['result'].frames)} frames)")
-    else:
-        # The whole leg. A production stage defaulting to anything less than
-        # the full leg silently truncates the run.
-        ranges = [("full", 0, last_keyframe)]
-    font = vc.load_font(13)
-    # The whole config comes from the dataclass defaults and is recorded
-    # verbatim (run_meta.json + every tracks_*.json); there is deliberately
-    # no per-threshold CLI override. reference_pano_width is set from the
-    # actual imagery -- see TrackBuilderConfig's resolution warning.
-    builder_cfg = tb.TrackBuilderConfig(reference_pano_width=ctx["pano_w"])
-    lane_runs_root = None
-    try:
-        lane_runs_root = paths.tracks_runs_root
+        dataset_digests = paths_lib.dataset_source_digests(dataset_base)
     except paths_lib.MissingInput as exc:
-        if args.runs_root is None:
-            parser.error(str(exc))
-    runs_root = args.runs_root or lane_runs_root
-    out = runs_root / args.run_name
-    out.mkdir(parents=True, exist_ok=True)
-    # Inputs + settings only -- completion lives in tracks_complete.json,
-    # written per range below (see the module docstring).
-    write_run_meta(
-        out, run_name=args.run_name, dataset_name=paths.dataset,
-        notes=args.notes,
-        inputs={
-            "dataset_base": paths.dataset_base,
-            "frame_landmarks": paths.frame_landmarks,
-            "video": video,
-            "sam2_checkpoint": paths.sam2_checkpoint,
-        },
-        builder_cfg=builder_cfg, ingest_params=ingest_params, ranges=ranges)
+        raise TrackingContractError(str(exc)) from exc
+    mismatched_sources = [
+        key for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS
+        if inputs.get(key) != dataset_digests[key]
+    ]
+    if mismatched_sources:
+        raise TrackingContractError(
+            "dataset source bytes differ from the immutable build recipe: "
+            f"{mismatched_sources}")
 
-    artifacts = {}
-    videos = {}
-    for range_name, k_start, k_end in ranges:
-        art_path = out / f"tracks_{range_name}.json"
-        if args.skip_existing_ranges and art_path.exists():
-            artifacts[range_name] = json.loads(art_path.read_text())
-            videos.update({p.stem: 1 for p in
-                           (out / "videos").glob(f"{range_name}_T*.mp4")})
-            # The artifact exists and parses, so the range is done; recording
-            # it keeps a resumed run's completion marker consistent even when
-            # the crash happened between the artifact write and the mark.
-            mark_range_complete(out, range_name)
-            print(f"range {range_name}: reusing existing artifact + media")
-            continue
-        print(f"range {range_name}: f{k_start:04d}..f{k_end:04d}")
-        sink = MediaSink(out, range_name, font, ctx["pano_w"])
-        _, artifact = rr.run_range(
-            range_name, k_start, k_end, builder_cfg, ctx["backend"],
-            ctx["provider"], ctx["model"], ctx["result"], ctx["obs_by_frame"],
-            ctx["det_pano_boxes"], ctx["pano_w"], ctx["pano_h"],
-            paths.dataset_base, on_interval=sink.on_interval)
-        rr.write_artifact(artifact, out, range_name)
-        mark_range_complete(out, range_name)
-        artifacts[range_name] = artifact
-        print("  encoding videos ...")
-        videos.update(sink.finalize())
+    configured_checkpoint = build_config.value(
+        document, "tracking.sam2_checkpoint")
+    checkpoint = _same_path(
+        args.checkpoint, configured_checkpoint, "--checkpoint")
+    checkpoint = _same_path(
+        checkpoint, inputs.get("sam2_checkpoint", ""), "--checkpoint")
+    checkpoint_digest = artifact_lib.sha256_file(checkpoint)
+    if checkpoint_digest != inputs.get("sam2_checkpoint_sha256"):
+        raise TrackingContractError(
+            "SAM2 checkpoint content digest disagrees with build config")
 
-    obs_by_id = ctx["obs_by_id"]
+    ingest = document["config"].get("ingest")
+    _exact_keys(
+        ingest, {"fov_deg", "seam_gap_norm", "seam_min_y_iou"},
+        "build config ingest")
+    ingest_params = dataset.IngestParams(**ingest)
 
-    # obs -> track it seeded (for cross links).
-    seeded_by = {}
-    for range_name, artifact in artifacts.items():
-        for t in artifact["tracks"]:
-            seeded_by[t["birth_obs_id"]] = track_key(range_name, t["track_id"])
+    tracking = document["config"].get("tracking")
+    builder_fields = {field.name for field in dataclasses.fields(
+        tb.TrackBuilderConfig)}
+    _exact_keys(
+        tracking, builder_fields | {"sam2_checkpoint", "range"},
+        "build config tracking")
+    range_config = tracking["range"]
+    _exact_keys(range_config, {"k_start", "k_end"},
+                "build config tracking.range")
+    if (type(range_config["k_start"]) is not int
+            or type(range_config["k_end"]) is not int
+            or range_config["k_start"] > range_config["k_end"]):
+        raise TrackingContractError(
+            "tracking.range must contain integer k_start <= k_end")
+    if (args.k_start != range_config["k_start"]
+            or args.k_end != range_config["k_end"]):
+        raise TrackingContractError(
+            "--k_start/--k_end disagree with immutable build config")
+    builder_cfg = tb.TrackBuilderConfig(**{
+        field.name: tracking[field.name]
+        for field in dataclasses.fields(tb.TrackBuilderConfig)
+    })
 
-    # Per-track pages, ordered for prev/next navigation. Each page explains
-    # thresholds from ITS range's recorded config, never a fresh default.
-    ordered = [(rn, t) for rn, a in artifacts.items() for t in a["tracks"]
-               if t["records"]]
-    keys = [track_key(rn, t["track_id"]) for rn, t in ordered]
-    for i, (rn, t) in enumerate(ordered):
+    course = document["config"].get("gps_course")
+    _exact_keys(course, {"min_displacement_m", "smooth_window_s"},
+                "build config gps_course")
+    for name, allow_zero in (("min_displacement_m", False),
+                             ("smooth_window_s", True)):
+        value = course[name]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0.0
+                or (not allow_zero and value == 0.0)):
+            qualifier = "nonnegative" if allow_zero else "positive"
+            raise TrackingContractError(
+                f"gps_course.{name} must be finite and {qualifier}")
+
+    output_version = build_config.value(
+        document, "artifacts.object_tracks_version")
+    if Path(args.output_dir).name != output_version:
+        raise TrackingContractError(
+            f"--output_dir must end in configured version {output_version!r}")
+    orchestration = orchestration_contract(document)
+    if args.orchestration_config_digest != orchestration["config_digest"]:
+        raise TrackingContractError(
+            "--orchestration_config_digest does not match the immutable "
+            "track-stage config selection")
+
+    pinhole_ref = artifact_lib.open_artifact(
+        args.pinhole_dir,
+        expected_kind=paths_lib.PINHOLE_IMAGES,
+        expected_dataset=args.dataset,
+        expected_version=build_config.value(
+            document, "artifacts.pinhole_images_version"))
+    frame_ref = artifact_lib.open_artifact(
+        args.frame_landmarks_dir,
+        expected_kind=paths_lib.FRAME_LANDMARKS,
+        expected_dataset=args.dataset,
+        expected_version=build_config.value(
+            document, "artifacts.frame_landmarks_version"))
+    pinhole_manifest = artifact_lib.load_manifest(args.pinhole_dir)
+    if pinhole_manifest.config.get(
+            "build_identity") != document["build_identity"]:
+        raise TrackingContractError(
+            "pinhole artifact belongs to a different immutable build identity")
+    pinhole_input_digests = pinhole_manifest.config.get("input_digests")
+    expected_extraction_digests = {
+        "pipeline_metadata": dataset_digests[
+            paths_lib.DATASET_PIPELINE_METADATA_SHA256],
+        "frames_gps": dataset_digests[paths_lib.DATASET_FRAMES_GPS_SHA256],
+        "panorama_directory": dataset_digests[
+            paths_lib.DATASET_PANORAMA_SHA256],
+    }
+    if (not isinstance(pinhole_input_digests, dict)
+            or any(pinhole_input_digests.get(key) != value
+                   for key, value in expected_extraction_digests.items())):
+        raise TrackingContractError(
+            "pinhole artifact does not bind the current frozen dataset sources")
+    frame_manifest = artifact_lib.load_manifest(args.frame_landmarks_dir)
+    if frame_manifest.config.get(
+            "build_identity") != document["build_identity"]:
+        raise TrackingContractError(
+            "frame_landmarks artifact belongs to a different immutable "
+            "build identity")
+    if frame_manifest.upstreams.count(pinhole_ref) != 1:
+        raise TrackingContractError(
+            "frame_landmarks does not bind the exact pinhole artifact once")
+
+    video = Path(args.video) if args.video is not None else None
+    video_digest = None
+    if video is not None:
+        video = _same_path(video, inputs.get("video", ""), "--video")
+        video_digest = artifact_lib.sha256_file(video)
+        if video_digest != inputs.get("video_sha256"):
+            raise TrackingContractError(
+                "source video content digest disagrees with build config")
+    elif "video_sha256" in inputs:
+        raise TrackingContractError(
+            "immutable build config records a source video but --video is absent")
+    return {
+        "document": document,
+        "build_config_sha256": artifact_lib.sha256_file(config_path),
+        "dataset_base": dataset_base,
+        "dataset_source_sha256": artifact_lib.sha256_json(dataset_digests),
+        "checkpoint": checkpoint,
+        "checkpoint_sha256": checkpoint_digest,
+        "video": video,
+        "video_sha256": video_digest,
+        "ingest_params": ingest_params,
+        "builder_cfg": builder_cfg,
+        "course": dict(course),
+        "output_version": output_version,
+        "orchestration": orchestration,
+        # Pipeline dependency order is part of the artifact contract.
+        "upstreams": (pinhole_ref, frame_ref),
+    }
+
+
+def dataset_tracking_source_digest(dataset_base: Path) -> str:
+    """Bind the raw metadata/GPS/panorama bytes actually read by tracking."""
+    try:
+        return artifact_lib.sha256_json(
+            paths_lib.dataset_source_digests(dataset_base))
+    except paths_lib.MissingInput as exc:
+        raise TrackingContractError(str(exc)) from exc
+
+
+def _seal_staged_outputs(publication) -> None:
+    """Freeze the dynamic viewer/media filenames before manifest publication."""
+    outputs = []
+    for path in publication.staging_dir.rglob("*"):
+        if path.is_symlink():
+            raise TrackingContractError(
+                f"tracking output contains a symlink: {path}")
+        if path.is_file():
+            outputs.append(path.relative_to(
+                publication.staging_dir).as_posix())
+    required = {TRACKS_FILE, "index.html"}
+    missing = sorted(required - set(outputs))
+    if missing:
+        raise TrackingContractError(
+            f"tracking did not finalize required outputs: {missing}")
+    # Track ids, and therefore page/media filenames, become known only after
+    # the GPU run.  Seal the builder's public declaration immediately before
+    # publish; ArtifactDirectoryBuilder still verifies the exact file set,
+    # writes the manifest last, validates it, and performs the atomic rename.
+    publication.declared_outputs = tuple(sorted(outputs))
+
+
+def validate_tracks_document(value: dict, *, expected_range: dict,
+                             expected_config: dict) -> None:
+    """Reject a partial or stale range-runner payload before publication."""
+    _exact_keys(
+        value,
+        {"range", "config", "tracks", "rejected_births", "track_overlaps"},
+        "tracks_full.json")
+    if value["range"] != expected_range:
+        raise TrackingContractError(
+            "range runner returned a payload for a different range")
+    if value["config"] != expected_config:
+        raise TrackingContractError(
+            "range runner returned a payload with different tracking config")
+    for name in ("tracks", "rejected_births", "track_overlaps"):
+        if not isinstance(value[name], list):
+            raise TrackingContractError(
+                f"tracks_full.json.{name} must be a list")
+    track_ids = [track.get("track_id") for track in value["tracks"]
+                 if isinstance(track, dict)]
+    if (len(track_ids) != len(value["tracks"])
+            or any(type(track_id) is not int for track_id in track_ids)
+            or len(track_ids) != len(set(track_ids))):
+        raise TrackingContractError(
+            "tracks_full.json tracks must have unique integer track_id values")
+
+
+def render_viewer(out: Path, dataset_name: str, tracks_document: dict,
+                  obs_by_id: dict, videos: dict) -> int:
+    """Write every static page after media finalization; return page count."""
+    range_name = RANGE_NAME
+    tracks = tracks_document["tracks"]
+    seeded_by = {
+        track["birth_obs_id"]: track_key(range_name, track["track_id"])
+        for track in tracks
+    }
+    ordered = [track for track in tracks if track["records"]]
+    keys = [track_key(range_name, track["track_id"]) for track in ordered]
+    for index, track in enumerate(ordered):
         render_track_page(
-            out, rn, t, artifacts[rn]["config"], obs_by_id, seeded_by,
-            keys[i - 1] if i > 0 else None,
-            keys[i + 1] if i + 1 < len(keys) else None,
-            track_key(rn, t["track_id"]) in videos)
+            out, range_name, track, tracks_document["config"], obs_by_id,
+            seeded_by, keys[index - 1] if index > 0 else None,
+            keys[index + 1] if index + 1 < len(keys) else None,
+            track_key(range_name, track["track_id"]) in videos)
 
-    # Index page.
-    parts = [f"<script>{GALLERY_JS}</script>"]
-    parts.append("<h2>Alive timeline</h2><p>bar = track lifetime, solid "
-                 "notches = supported keyframes; click to open</p>")
-    for range_name, artifact in artifacts.items():
-        parts.append(f"<h3>{html.escape(range_name)}</h3>")
-        parts.append(timeline_svg(range_name, artifact))
-
-    # NOTE: the old viewer also chipped tracks by whether they would advance
-    # to the semantic audit "at its default bar". That re-derived a decision
-    # from a freshly-constructed default AuditConfig -- exactly the stale-
-    # default failure mode this migration removes. Audit advancement is
-    # decided (and recorded) by the audit stage itself (REORG.md PR 07); this
-    # viewer shows only what this stage knows.
-    parts.append("<h2>Tracks</h2><div class='controls'>"
-                 "range <select id='f_range' onchange='applyFilters()'>"
-                 "<option value='all'>all</option>"
-                 + "".join(f"<option>{rn}</option>" for rn in artifacts)
-                 + "</select> status <select id='f_status' "
-                 "onchange='applyFilters()'><option value='all'>all</option>"
-                 "<option value='alive'>alive</option>"
-                 "<option value='closed'>closed</option></select>"
-                 " min supported <input id='f_minsup' type='number' value='0'"
-                 " style='width:60px' oninput='applyFilters()'></div>")
-    parts.append("<div class='cards'>")
-    cards = []
-    for range_name, artifact in artifacts.items():
-        for t in artifact["tracks"]:
-            if not t["records"]:
-                continue
-            cards.append((t["n_supported_keyframes"], range_name, t))
-    cards.sort(key=lambda c: -c[0])
-    for sup, range_name, t in cards:
-        key = track_key(range_name, t["track_id"])
-        status = t["close_reason"] if t["status"] == "closed" else "alive"
-        thumb = f"thumbs/{key}.jpg"
-        cards_html = (
+    parts = [f"<script>{GALLERY_JS}</script>",
+             "<h2>Alive timeline</h2><p>bar = track lifetime, solid "
+             "notches = supported keyframes; click to open</p>",
+             timeline_svg(range_name, tracks_document),
+             "<h2>Tracks</h2><div class='controls'>"
+             "<input id='f_range' type='hidden' value='all'>"
+             "status <select id='f_status' onchange='applyFilters()'>"
+             "<option value='all'>all</option><option value='alive'>alive"
+             "</option><option value='closed'>closed</option></select>"
+             " min supported <input id='f_minsup' type='number' value='0'"
+             " style='width:60px' oninput='applyFilters()'></div>",
+             "<div class='cards'>"]
+    cards = sorted(
+        ((track["n_supported_keyframes"], track) for track in ordered),
+        key=lambda item: -item[0])
+    for supported, track in cards:
+        key = track_key(range_name, track["track_id"])
+        status = (track["close_reason"]
+                  if track["status"] == "closed" else "alive")
+        preview = (
+            f"<img src='thumbs/{key}.jpg' loading='lazy'>"
+            if (out / "thumbs" / f"{key}.jpg").is_file()
+            else "<span class='chip'>no preview</span>")
+        parts.append(
             f"<div class='card' data-range='{range_name}' "
-            f"data-status='{status}' data-sup='{sup}'>"
-            f"<a href='track_{key}.html'><img src='{thumb}' loading='lazy'>"
-            f"</a><br><b>T{t['track_id']}</b> "
-            f"{html.escape(t['modal_label'][:40])}<br>"
-            f"<small>{range_name} | b=f{t['birth_keyframe']:04d} | "
-            f"sup={sup}</small><br>{status_chip(t)}</div>")
-        parts.append(cards_html)
-    parts.append("</div>")
-
-    parts.append("<h2>Landmarks that produced no track</h2>"
+            f"data-status='{status}' data-sup='{supported}'>"
+            f"<a href='track_{key}.html'>{preview}</a><br>"
+            f"<b>T{track['track_id']}</b> "
+            f"{html.escape(track['modal_label'][:40])}<br>"
+            f"<small>b=f{track['birth_keyframe']:04d} | sup={supported}"
+            f"</small><br>{status_chip(track)}</div>")
+    parts.append("</div><h2>Landmarks that produced no track</h2>"
                  "<p>Rejected at birth (mask health) or never supported "
                  "after birth.</p><div class='cards'>")
-    for range_name, artifact in artifacts.items():
-        rejected_ids = {r["obs_id"] for r in artifact["rejected_births"]}
-        for t in artifact["tracks"]:
-            if not t["records"]:
-                continue
-            is_reject = t["birth_obs_id"] in rejected_ids and \
-                t["close_reason"].startswith("birth_")
-            never_supported = (t["n_supported_keyframes"] == 0
-                               and t["status"] == "closed")
-            if not (is_reject or never_supported):
-                continue
-            key = track_key(range_name, t["track_id"])
-            obs = obs_by_id.get(t["birth_obs_id"])
-            label = vc.obs_semantic_label(obs) if obs else t["birth_obs_id"]
-            parts.append(
-                f"<div class='card' data-range='{range_name}' "
-                f"data-status='{t['close_reason']}' data-sup='0'>"
-                f"<a href='track_{key}.html'>"
-                f"<img src='thumbs/{key}.jpg' loading='lazy'></a><br>"
-                f"{html.escape(label[:48])}<br>"
-                f"<small>{html.escape(t['birth_obs_id'])} ({range_name})"
-                f"</small><br>{status_chip(t)}</div>")
+    rejected_ids = {
+        item["obs_id"] for item in tracks_document["rejected_births"]
+    }
+    for track in ordered:
+        is_reject = (track["birth_obs_id"] in rejected_ids
+                     and track["close_reason"].startswith("birth_"))
+        never_supported = (track["n_supported_keyframes"] == 0
+                           and track["status"] == "closed")
+        if not (is_reject or never_supported):
+            continue
+        key = track_key(range_name, track["track_id"])
+        observation = obs_by_id.get(track["birth_obs_id"])
+        label = (vc.obs_semantic_label(observation)
+                 if observation else track["birth_obs_id"])
+        preview = (
+            f"<img src='thumbs/{key}.jpg' loading='lazy'>"
+            if (out / "thumbs" / f"{key}.jpg").is_file()
+            else "<span class='chip'>no preview</span>")
+        parts.append(
+            f"<div class='card' data-range='{range_name}' "
+            f"data-status='{track['close_reason']}' data-sup='0'>"
+            f"<a href='track_{key}.html'>{preview}</a><br>"
+            f"{html.escape(label[:48])}<br>"
+            f"<small>{html.escape(track['birth_obs_id'])}</small><br>"
+            f"{status_chip(track)}</div>")
     parts.append("</div>")
     (out / "index.html").write_text(page_lib.page(
-        f"Tracking run {args.run_name}", "\n".join(parts),
+        f"Object tracks: {dataset_name}", "\n".join(parts),
         generator=GENERATOR, extra_style=EXTRA_STYLE))
-    print(f"wrote {out}/index.html ({len(keys)} track pages, "
-          f"{len(videos)} videos)")
-    pending = unfinished_ranges(out)
-    if pending:
-        print(f"WARNING: ranges never finished: {', '.join(pending)} "
-              f"(see {TRACKS_COMPLETE})")
+    return len(keys)
 
-    # Only when writing into the artifact lane; a --runs_root pointed elsewhere
-    # is scratch and should not claim to be an artifact version.
-    if lane_runs_root is not None and runs_root == lane_runs_root:
-        refresh_artifact_manifest(paths, runs_root, args.run_name)
-        print(f"refreshed {paths.object_tracks}/manifest.json")
+
+def publish_tracking(args, *, arguments: tuple[str, ...] = ()):
+    resolved = load_tracking_config(args)
+    builder_cfg = resolved["builder_cfg"]
+    source_digests = {
+        "build_config": resolved["build_config_sha256"],
+        "dataset_tracking_inputs": resolved["dataset_source_sha256"],
+        "sam2_checkpoint": resolved["checkpoint_sha256"],
+        paths_lib.PINHOLE_IMAGES: resolved["upstreams"][0].content_digest,
+        paths_lib.FRAME_LANDMARKS: resolved["upstreams"][1].content_digest,
+    }
+    if resolved["video_sha256"] is not None:
+        source_digests["video"] = resolved["video_sha256"]
+    manifest_config = {
+        "orchestration": resolved["orchestration"],
+        "schema": "farfield_object_tracks/v1",
+        "coverage": "complete",
+        "build_identity": resolved["document"]["build_identity"],
+        "range": {"name": RANGE_NAME, "k_start": args.k_start,
+                  "k_end": args.k_end},
+        "resolved": {
+            "ingest": dataclasses.asdict(resolved["ingest_params"]),
+            "tracking": {
+                **dataclasses.asdict(builder_cfg),
+                "sam2_checkpoint": str(resolved["checkpoint"].resolve()),
+            },
+            "gps_course": resolved["course"],
+        },
+        "source_digests": source_digests,
+    }
+    with publication_lib.published_artifact(
+            args.output_dir,
+            kind=paths_lib.OBJECT_TRACKS,
+            dataset=args.dataset,
+            version=resolved["output_version"],
+            generator=GENERATOR,
+            git_commit=provenance.git_commit(),
+            arguments=arguments,
+            upstreams=resolved["upstreams"],
+            config=manifest_config,
+            declared_outputs=()) as publication:
+        out = publication.staging_dir
+        ctx = rr.load_context(
+            resolved["dataset_base"], Path(resolved["upstreams"][1].path),
+            resolved["video"], resolved["checkpoint"],
+            resolved["ingest_params"],
+            course_min_displacement_m=(
+                resolved["course"]["min_displacement_m"]),
+            course_smooth_window_s=resolved["course"]["smooth_window_s"],
+            preview_size=VIDEO_SIZE)
+        frames = ctx["result"].frames
+        frame_indices = {frame.frame_idx for frame in frames}
+        expected_indices = set(range(args.k_start, args.k_end + 1))
+        missing_indices = sorted(expected_indices - frame_indices)
+        if missing_indices:
+            raise TrackingContractError(
+                f"configured tracking range is not covered by the dataset; "
+                f"missing keyframes {missing_indices[:10]}")
+        if builder_cfg.reference_pano_width != ctx["pano_w"]:
+            raise TrackingContractError(
+                "tracking.reference_pano_width disagrees with source "
+                f"panoramas: {builder_cfg.reference_pano_width} != "
+                f"{ctx['pano_w']}")
+        font = vc.load_font(13)
+        print(f"range {RANGE_NAME}: f{args.k_start:04d}..f{args.k_end:04d}")
+        sink = MediaSink(out, RANGE_NAME, font, ctx["pano_w"])
+        _, tracks_document = rr.run_range(
+            RANGE_NAME, args.k_start, args.k_end, builder_cfg,
+            ctx["backend"], ctx["provider"], ctx["model"], ctx["result"],
+            ctx["obs_by_frame"], ctx["det_pano_boxes"], ctx["pano_w"],
+            ctx["pano_h"], resolved["dataset_base"],
+            on_interval=sink.on_interval)
+        validate_tracks_document(
+            tracks_document,
+            expected_range=manifest_config["range"],
+            expected_config=dataclasses.asdict(builder_cfg))
+        artifact_lib.atomic_write_json(out / TRACKS_FILE, tracks_document)
+        print("  encoding videos ...")
+        videos = sink.finalize()
+        page_count = render_viewer(
+            out, args.dataset, tracks_document, ctx["obs_by_id"], videos)
+        _seal_staged_outputs(publication)
+    print(f"published {args.output_dir} ({page_count} track pages, "
+          f"{len(videos)} videos)")
+    assert publication.artifact_ref is not None
+    return publication.artifact_ref
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--frame_landmarks_dir", type=Path, required=True)
+    parser.add_argument("--pinhole_dir", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset_base", type=Path, required=True)
+    parser.add_argument("--k_start", type=int, required=True)
+    parser.add_argument("--k_end", type=int, required=True)
+    parser.add_argument("--build_config", type=Path, required=True)
+    parser.add_argument("--orchestration_config_digest", required=True)
+    parser.add_argument("--video", type=Path, default=None)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    arguments = tuple(sys.argv if argv is None
+                      else [GENERATOR, *(str(value) for value in argv)])
+    try:
+        return publish_tracking(args, arguments=arguments)
+    except (artifact_lib.ArtifactError, dataset.ContractViolation,
+            TrackingContractError, FileExistsError, OSError, ValueError) as error:
+        parser.error(str(error))
 
 
 if __name__ == "__main__":

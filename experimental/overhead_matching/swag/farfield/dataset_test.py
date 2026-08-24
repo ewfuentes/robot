@@ -76,43 +76,6 @@ class MetadataTest(unittest.TestCase):
             ds_lib.require_camera_frame_panoramas(
                 ds_lib.load_metadata(self.base), self.base)
 
-    def test_valid_mount_offset_parses(self):
-        testing.make_dataset(self.base)
-        record = ds_lib.mount_offset_record(
-            ds_lib.load_metadata(self.base), self.base)
-        self.assertAlmostEqual(record.offset_deg, 214.0)
-        self.assertTrue(record.accuracy_validated)
-        self.assertFalse(record.applied_to_heading_deg)
-
-    def test_absent_mount_offset_is_none(self):
-        meta = testing.default_metadata()
-        del meta["mount_offset"]
-        testing.make_dataset(self.base, metadata=meta)
-        self.assertIsNone(ds_lib.mount_offset_record(
-            ds_lib.load_metadata(self.base), self.base))
-
-    def test_unqualified_mount_offset_is_refused(self):
-        # The pre-migration shape: a bare number with no frame/applied
-        # qualifiers. Consuming it is how pohang shipped 180 deg out.
-        meta = testing.default_metadata()
-        meta["mount_offset"] = {"mount_offset_deg": 180.0, "status": "manual"}
-        testing.make_dataset(self.base, metadata=meta)
-        with self.assertRaises(ds_lib.ContractViolation) as ctx:
-            ds_lib.mount_offset_record(ds_lib.load_metadata(self.base),
-                                       self.base)
-        self.assertIn("frame", str(ctx.exception))
-        self.assertIn("applied_to_heading_deg", str(ctx.exception))
-
-    def test_wrong_frame_string_is_refused(self):
-        meta = testing.default_metadata()
-        meta["mount_offset"]["frame"] = "column_0"
-        testing.make_dataset(self.base, metadata=meta)
-        with self.assertRaises(ds_lib.ContractViolation) as ctx:
-            ds_lib.mount_offset_record(ds_lib.load_metadata(self.base),
-                                       self.base)
-        self.assertIn("180", str(ctx.exception))
-
-
 class IngestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -125,19 +88,33 @@ class IngestTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def make_predictions(self, populated=None, *, directory=None,
+                         dataset_name="ds"):
+        predictions = {stem: [] for stem in self.stems}
+        predictions.update(populated or {})
+        return testing.make_predictions(
+            directory or self.fl_dir, predictions,
+            dataset_name=dataset_name)
+
     def test_end_to_end_observation(self):
-        testing.make_predictions(self.fl_dir, {
+        self.make_predictions({
             self.stems[0]: [testing.landmark(
                 "Custom House Tower", [(0, 400, 100, 600, 500)])],
         })
         result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
         self.assertEqual(len(result.observations), 1)
         obs = result.observations[0]
-        self.assertEqual(obs.obs_id, "f0000__lm0__box0")
+        self.assertEqual(obs.local_obs_id, "f0000__lm0__box0")
+        self.assertTrue(obs.obs_id.startswith("obs-"))
+        self.assertEqual(obs.obs_id, obs.key.global_id)
+        self.assertEqual(obs.key.dataset, "ds")
+        self.assertEqual(obs.key.frame_landmarks_version, "v1")
+        self.assertEqual(result.dataset_name, "ds")
+        self.assertEqual(result.frame_landmarks_ref.kind, "frame_landmarks")
         self.assertFalse(obs.seam_merged)
         # Face 0, centered at x=500: camera azimuth 0.
-        self.assertAlmostEqual(obs.bearing_camera_deg,
-                               geo.bearing_camera_deg(0, 500.0), places=6)
+        self.assertAlmostEqual(obs.bearing_camera_cw_deg,
+                               geo.bearing_camera_cw_deg(0, 500.0), places=6)
         # Elevation matches the single definition at the bbox center.
         self.assertAlmostEqual(
             obs.elevation_deg,
@@ -147,7 +124,7 @@ class IngestTest(unittest.TestCase):
     def test_seam_continuation_merges_into_one_observation(self):
         # Face 0's right edge adjoins face 270's left edge (A - 90 rule):
         # one physical object spanning that seam is one observation.
-        testing.make_predictions(self.fl_dir, {
+        self.make_predictions({
             self.stems[0]: [testing.landmark("Long Wharf", [
                 (0, 950, 200, 1000, 400),
                 (270, 0, 210, 60, 410),
@@ -157,11 +134,11 @@ class IngestTest(unittest.TestCase):
         self.assertEqual(len(result.observations), 1)
         self.assertTrue(result.observations[0].seam_merged)
         # The merged bearing straddles the 45 deg seam between the faces.
-        self.assertAlmostEqual(result.observations[0].bearing_camera_deg,
+        self.assertAlmostEqual(result.observations[0].bearing_camera_cw_deg,
                                45.0, delta=5.0)
 
     def test_non_adjacent_boxes_stay_separate(self):
-        testing.make_predictions(self.fl_dir, {
+        self.make_predictions({
             self.stems[0]: [testing.landmark("Two Things", [
                 (0, 950, 200, 1000, 400),
                 (90, 0, 210, 60, 410),   # 90 is NOT adjacent to 0's right edge
@@ -170,29 +147,55 @@ class IngestTest(unittest.TestCase):
         result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
         self.assertEqual(len(result.observations), 2)
 
-    def test_invalid_yaw_boxes_are_counted_and_dropped(self):
-        testing.make_predictions(self.fl_dir, {
+    def test_invalid_yaw_is_a_contract_failure(self):
+        self.make_predictions({
             self.stems[0]: [testing.landmark(
                 "Bad Yaw", [(45, 100, 100, 200, 200)])],
         })
+        with self.assertRaisesRegex(ds_lib.ContractViolation, "yaw_angle"):
+            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+
+    def test_invalid_bbox_geometry_is_a_contract_failure(self):
+        self.make_predictions({
+            self.stems[0]: [testing.landmark(
+                "Inside Out", [(0, 600, 100, 400, 500)])],
+        })
+        with self.assertRaisesRegex(ds_lib.ContractViolation, "positive width"):
+            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+
+    def test_float_bbox_coordinates_are_not_truncated(self):
+        self.make_predictions({
+            self.stems[0]: [testing.landmark(
+                "Precise", [(0, 400.25, 100.5, 600.75, 500.25)])],
+        })
         result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
-        self.assertEqual(len(result.observations), 0)
-        self.assertEqual(result.stats.n_boxes_invalid_yaw, 1)
-        self.assertEqual(result.stats.n_landmarks_without_valid_boxes, 1)
+        self.assertEqual(result.observations[0].boxes[0].xmin, 400.25)
+
+    def test_incomplete_prediction_coverage_is_rejected(self):
+        testing.make_predictions(
+            self.fl_dir, {self.stems[0]: []}, dataset_name="ds")
+        with self.assertRaisesRegex(ds_lib.ContractViolation, "coverage"):
+            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+
+    def test_artifact_for_another_dataset_is_rejected(self):
+        self.make_predictions(dataset_name="another-dataset")
+        with self.assertRaisesRegex(ds_lib.ContractViolation, "dataset mismatch"):
+            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
 
     def test_north_aligned_dataset_is_refused_before_reading_pixels(self):
         meta = testing.default_metadata()
         meta["north_aligned"] = True
         base2 = testing.make_dataset(Path(self.tmp.name) / "ds2",
                                      metadata=meta)
-        testing.make_predictions(Path(self.tmp.name) / "fl2", {})
+        testing.make_predictions(
+            Path(self.tmp.name) / "fl2", {}, dataset_name="ds2")
         with self.assertRaises(ds_lib.ContractViolation):
             ds_lib.run_ingest(base2, Path(self.tmp.name) / "fl2", PARAMS)
 
     def test_missing_predictions_artifact_is_a_pointed_error(self):
-        with self.assertRaises(FileNotFoundError) as ctx:
+        with self.assertRaises(ds_lib.ContractViolation) as ctx:
             ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
-        self.assertIn("extraction stage", str(ctx.exception))
+        self.assertIn("frame_landmarks artifact", str(ctx.exception))
 
 
 if __name__ == "__main__":

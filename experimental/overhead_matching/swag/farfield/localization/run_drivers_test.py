@@ -1,14 +1,20 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import msgspec
 
-from common.python.serialization import msgspec_enc_hook
-from experimental.overhead_matching.swag.farfield import geometry as geo
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
+    geometry as geo,
+    paths as paths_lib,
+)
 from experimental.overhead_matching.swag.farfield.localization import (
+    export_ingest,
+    filter_catalog,
     run_export,
     run_io,
     run_localization,
@@ -16,62 +22,164 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 
 
-def write_tiny_export(export_dir: Path) -> None:
-    export_dir.mkdir(parents=True)
-    (export_dir / "export_meta.json").write_text(json.dumps({
-        "schema_version": structs.SCHEMA_VERSION,
-        "scenario_name": "tiny",
-        "anchor_lat_deg": 42.35, "anchor_lon_deg": -71.05,
-        "n_keyframes": 6, "matcher_version": "m",
-        "mount_offset_deg": 0.0, "mount_offset_source": "test",
-        "mount_offset_frame": geo.MOUNT_OFFSET_FRAME}))
-    landmarks = [structs.LandmarkEntry("osm:node:1", 42.36, -71.05, "x"),
-                 structs.LandmarkEntry("osm:node:2", 42.35, -71.03, "y")]
-    (export_dir / "landmarks.json").write_bytes(
-        msgspec.json.encode(landmarks, enc_hook=msgspec_enc_hook))
-    tables = [structs.CompatibilityTable(
-        "T1", "m", [structs.CompatibilityEntry("osm:node:1", 1.0)],
-        0.0, -4.0, 4.0, "fast")]
-    (export_dir / "tier1_tables.json").write_bytes(
-        msgspec.json.encode(tables, enc_hook=msgspec_enc_hook))
-    run_io.write_jsonl(export_dir / "tier1_measurements.jsonl", [
-        structs.TrackletMeasurement("T1", 2, 10.0, 100.0)])
-    run_io.write_jsonl(export_dir / "tier1_odometry.jsonl", [
+DATASET = "tiny_harbor"
+INPUT_DIGEST = "a" * 64
+
+
+def tiny_export(input_dir: Path, build_identity: str) \
+        -> export_ingest.ExportData:
+    frame = geo.RegionFrame(42.35, -71.05)
+    landmarks = [
+        structs.LandmarkEntry("osm:node:1", 42.36, -71.05, "x", 25.0),
+        structs.LandmarkEntry("osm:node:2", 42.35, -71.03, "y", 25.0),
+    ]
+    global_id = ("object_tracks:tiny_harbor:v1@sha256:" + "b" * 64
+                 + "#T1")
+    table = structs.CompatibilityTable(
+        global_id, "m", [structs.CompatibilityEntry("osm:node:1", 1.0)],
+        0.0, -4.0, 4.0, "fast")
+    odometry = [
         structs.OdometryDelta(k, 40.0, 0.0, 0.0, 1.0, 0.05)
-        for k in range(1, 6)])
-    run_io.write_jsonl(export_dir / "truth.jsonl", [
-        structs.TruthPose(k, 40.0 * k, 0.0, 90.0) for k in range(6)])
+        for k in range(1, 6)]
+    truth = [
+        structs.TruthPose(k, 40.0 * k, 0.0, 90.0) for k in range(6)]
+    meta = export_ingest.ExportMeta(
+        schema_version=export_ingest.EXPORT_SCHEMA,
+        message_schema_version=structs.SCHEMA_VERSION,
+        dataset=DATASET,
+        scenario_name="tiny",
+        anchor_lat_deg=42.35,
+        anchor_lon_deg=-71.05,
+        n_keyframes=6,
+        matcher_version="m",
+        matching_coverage="complete",
+        max_visible_range_m=10000.0,
+        landmark_position_sigma_m=25.0,
+        nominal_forward={
+            "bearing_camera_cw_deg": 0.0,
+            "mounting_id": "test-rig",
+            "approved_at": "2026-08-23T00:00:00Z",
+        },
+        motion={"course_heading_status": "gps_course_diagnostic_only"},
+        reducer={"name": "epoch_fused_compat_v1"})
+    reference = artifact.ArtifactRef(
+        kind=paths_lib.LOCALIZATION_INPUTS,
+        dataset=DATASET,
+        version="v1",
+        manifest_digest=INPUT_DIGEST,
+        content_digest="c" * 64,
+        path=str(input_dir))
+    return export_ingest.ExportData(
+        artifact_ref=reference,
+        manifest=SimpleNamespace(
+            config={"build_identity": build_identity}),
+        meta=meta,
+        frame=frame,
+        catalog=filter_catalog.LandmarkCatalog(
+            [item.landmark_id for item in landmarks],
+            [0.0, 1000.0], [1000.0, 0.0],
+            max_visible_range_m=10000.0, position_sigma_m=25.0),
+        landmarks=landmarks,
+        odometry=odometry,
+        measurements=[structs.TrackletMeasurement(
+            global_id, 2, 10.0, 100.0)],
+        tables={global_id: table},
+        truth=truth)
 
 
-def export_argv(export_dir, out_dir, *extra):
-    return ["run_export",
-            "--export_dir", str(export_dir),
-            "--output_dir", str(out_dir),
-            "--init", "uniform",
-            "--n_particles", "500",
-            "--margin_m", "500",
-            "--max_visible_range_m", "10000",
-            "--position_roughening_m", "25",
-            "--heading_roughening_deg", "1",
-            "--checkpoint_every", "2",
-            *extra]
+def localization_config(*, init="uniform", prior_sigma_m=None,
+                        bearings_enabled=True) -> dict:
+    template = structs.FilterConfig(
+        n_particles=500,
+        seed=3,
+        init=structs.UniformBoxInit(-1.0, 1.0, -1.0, 1.0),
+        position_roughening_m=25.0,
+        heading_roughening_deg=1.0,
+        checkpoint_every=2)
+    config = msgspec.to_builtins(template)
+    del config["init"]
+    config.pop("kind", None)
+    config["proposal"].pop("kind", None)
+    config["modes"].pop("kind", None)
+    config.update({
+        "run_name": "run",
+        "init": init,
+        "prior_sigma_m": prior_sigma_m,
+        "margin_m": 500.0,
+        "bearings_enabled": bearings_enabled,
+    })
+    return config
+
+
+def write_build_config(root: Path, localization: dict) \
+        -> tuple[Path, str, str]:
+    path = build_config.create(
+        root / "build",
+        dataset=DATASET,
+        config={
+            "artifacts": {"localization_inputs_version": "v1"},
+            "localization": localization,
+        },
+        generator="test",
+        inputs={})
+    document = build_config.load(path.parent)
+    return (path,
+            run_export.orchestration_contract(document)["config_digest"],
+            document["build_identity"])
+
+
+def export_argv(input_dir: Path, out_dir: Path, config_path: Path,
+                digest: str):
+    return [
+        "run_export",
+        "--input_dir", str(input_dir),
+        "--run_dir", str(out_dir),
+        "--build_config", str(config_path),
+        "--orchestration_config_digest", digest,
+    ]
 
 
 class RunExportTest(unittest.TestCase):
+    def test_rejects_cross_build_inputs_and_symlinked_build_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path, digest, build_identity = write_build_config(
+                root, localization_config())
+            data = tiny_export(root / "localization_inputs", build_identity)
+            data.manifest.config["build_identity"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "different immutable"):
+                run_export._load_config(config_path, data, digest)
+
+            data.manifest.config["build_identity"] = build_identity
+            linked_dir = root / "linked"
+            linked_dir.mkdir()
+            linked_config = linked_dir / build_config.BUILD_CONFIG_NAME
+            linked_config.symlink_to(config_path)
+            with self.assertRaisesRegex(ValueError, "non-symlink"):
+                run_export._load_config(linked_config, data, digest)
+
     def test_uniform_run_records_provenance_and_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            export_dir = Path(tmp) / "export"
-            out = Path(tmp) / "run"
-            write_tiny_export(export_dir)
-            with mock.patch("sys.argv",
-                            export_argv(export_dir, out, "--seed", "3")):
+            root = Path(tmp)
+            input_dir = root / "localization_inputs"
+            out = root / "run"
+            config_path, digest, build_identity = write_build_config(
+                root, localization_config())
+            data = tiny_export(input_dir, build_identity)
+            with mock.patch.object(run_export.export_ingest, "load",
+                                   return_value=data), mock.patch(
+                    "sys.argv", export_argv(
+                        input_dir, out, config_path, digest)):
                 run_export.main()
             data = run_io.read_run(out)
         manifest = data.manifest
-        self.assertEqual(manifest.export_dir, str(export_dir))
+        self.assertEqual(manifest.export_dir, str(input_dir))
         self.assertEqual(manifest.max_visible_range_m, 10000.0)
         self.assertTrue(manifest.git_commit)
-        self.assertIn("--seed", manifest.argv)
+        self.assertIn("--build_config", manifest.argv)
+        self.assertEqual(manifest.run_kind, "evaluation")
+        self.assertEqual(manifest.localization_inputs_manifest_sha256,
+                         INPUT_DIGEST)
         self.assertEqual(len(data.measurements), 1)
         self.assertEqual(len(data.health), 6)
 
@@ -80,24 +188,35 @@ class RunExportTest(unittest.TestCase):
         # --no_bearings, so every odometry-only control on disk described
         # a run that never happened.
         with tempfile.TemporaryDirectory() as tmp:
-            export_dir = Path(tmp) / "export"
-            out = Path(tmp) / "run"
-            write_tiny_export(export_dir)
-            with mock.patch("sys.argv",
-                            export_argv(export_dir, out, "--no_bearings")):
+            root = Path(tmp)
+            input_dir = root / "localization_inputs"
+            out = root / "run"
+            config_path, digest, build_identity = write_build_config(
+                root, localization_config(bearings_enabled=False))
+            data = tiny_export(input_dir, build_identity)
+            with mock.patch.object(run_export.export_ingest, "load",
+                                   return_value=data), mock.patch(
+                    "sys.argv", export_argv(
+                        input_dir, out, config_path, digest)):
                 run_export.main()
             data = run_io.read_run(out)
         self.assertEqual(data.measurements, [])
         self.assertEqual(data.tables, {})
         self.assertIn("bearings withheld", data.manifest.matcher_version)
+        self.assertEqual(data.manifest.run_kind, "diagnostic_control")
 
     def test_truth_init_requires_prior_sigma(self):
         with tempfile.TemporaryDirectory() as tmp:
-            export_dir = Path(tmp) / "export"
-            write_tiny_export(export_dir)
-            argv = export_argv(export_dir, Path(tmp) / "run")
-            argv[argv.index("uniform")] = "truth"
-            with mock.patch("sys.argv", argv), \
+            root = Path(tmp)
+            input_dir = root / "localization_inputs"
+            config_path, digest, build_identity = write_build_config(
+                root, localization_config(init="truth"))
+            data = tiny_export(input_dir, build_identity)
+            argv = export_argv(
+                input_dir, root / "run", config_path, digest)
+            with mock.patch.object(run_export.export_ingest, "load",
+                                   return_value=data), \
+                    mock.patch("sys.argv", argv), \
                     self.assertRaises(SystemExit):
                 run_export.main()
 

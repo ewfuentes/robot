@@ -54,6 +54,7 @@ from pathlib import Path
 import msgspec
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import artifact
 from common.python.serialization import MSGSPEC_STRUCT_OPTS, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
@@ -63,11 +64,12 @@ from experimental.overhead_matching.swag.farfield.localization import (
     structs,
 )
 
-# Where counterfactual replays land by default: INSIDE the run directory they
-# question (REORG rule: nothing writes outside the data root). This is the one
-# definition of the name; forensics_cli and viewer_server both build paths
-# through default_counterfactual_dir.
-COUNTERFACTUAL_DIRNAME = "counterfactuals"
+# Counterfactuals are mutable diagnostic products, not outputs declared by the
+# completed source-run artifact. Keep them in a deterministic sibling so a
+# replay never changes the source artifact's content digest or identity.
+# forensics_cli and viewer_server both build paths through
+# default_counterfactual_dir.
+COUNTERFACTUAL_DIR_SUFFIX = ".counterfactuals"
 
 
 class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -141,8 +143,10 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 
 
 def default_counterfactual_dir(run_dir: Path, edits: Edits) -> Path:
-    """<run_dir>/counterfactuals/<slug>: ghosts live with the run they haunt."""
-    return Path(run_dir) / COUNTERFACTUAL_DIRNAME / edits.slug()
+    """Return ``<run>.counterfactuals/<slug>`` beside the immutable run."""
+    run_dir = Path(run_dir)
+    root = run_dir.with_name(run_dir.name + COUNTERFACTUAL_DIR_SUFFIX)
+    return root / edits.slug()
 
 
 @dataclasses.dataclass
@@ -208,7 +212,8 @@ def replayability(run_dir: Path) -> Replayability:
     fields with present-day defaults.
     """
     run_dir = Path(run_dir)
-    raw = msgspec.json.decode((run_dir / "manifest.json").read_bytes())
+    raw = msgspec.json.decode(
+        (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
     stored_config = raw.get("filter_config", {})
     missing = tuple(_missing_keys(stored_config, structs.FilterConfig))
     notes = []
@@ -447,20 +452,46 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
     The manifest's scenario_name records what made it a ghost.
     """
     output_dir = Path(output_dir)
+    # A generated scenario has no LOCALIZATION_INPUTS artifact to claim. Its
+    # counterfactual therefore remains synthetic; only counterfactuals of real
+    # runs become diagnostic controls.
+    run_kind = ("synthetic"
+                if result.inputs.manifest.run_kind == "synthetic"
+                else "diagnostic_control")
     manifest = msgspec.structs.replace(
         result.inputs.manifest,
         scenario_name=f"{result.inputs.manifest.scenario_name}"
                       f" [{result.edits.describe()}]",
         filter_config=result.inputs.config,
         max_visible_range_m=result.inputs.max_visible_range_m,
-        particle_history_sha256=result.history.particle_history_sha256)
-    run_io.write_run(output_dir, manifest, result.inputs.data.truth,
-                     result.inputs.odometry, result.inputs.measurements,
-                     result.inputs.tables, result.history)
-    (output_dir / "counterfactual.json").write_bytes(msgspec.json.encode({
+        particle_history_sha256=result.history.particle_history_sha256,
+        run_kind=run_kind)
+    source_ref = artifact.open_artifact(source_run_dir)
+    source_artifact = artifact.load_manifest(source_run_dir)
+    counterfactual = msgspec.json.encode({
         "source_run_dir": str(Path(source_run_dir).resolve()),
         "edits": result.edits,
         "describe": result.edits.describe(),
         "elapsed_s": round(result.elapsed_s, 2),
-    }, enc_hook=msgspec_enc_hook))
+    }, enc_hook=msgspec_enc_hook)
+    consumed_tracklets = {
+        measurement.tracklet_id for measurement in result.inputs.measurements
+    }
+    consumed_tables = {
+        tracklet_id: table
+        for tracklet_id, table in result.inputs.tables.items()
+        if tracklet_id in consumed_tracklets
+    }
+    run_io.write_run(output_dir, manifest, result.inputs.data.truth,
+                     result.inputs.odometry, result.inputs.measurements,
+                     consumed_tables, result.history,
+                     dataset=manifest.dataset, version=output_dir.name,
+                     upstreams=(*source_artifact.upstreams, source_ref),
+                     artifact_config={
+                         "run_kind": run_kind,
+                         "source_run": source_ref.to_dict(),
+                     },
+                     generator=("//experimental/overhead_matching/swag/"
+                                "farfield/localization:replay"),
+                     extra_outputs={"counterfactual.json": counterfactual})
     return output_dir

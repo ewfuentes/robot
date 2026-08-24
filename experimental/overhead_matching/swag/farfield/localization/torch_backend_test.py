@@ -5,7 +5,7 @@ clips, priors, kappa_eff, and per-mode responsibility averaging. These tests
 run the two backends on the same belief and assert the log-weights and
 posteriors agree to float32 reduction error (and to ~1e-9 when the engine is
 run in float64), on a catalog large enough to exercise blocking on the numpy
-side and with map-accuracy classes exercising the per-pair kappa_eff path.
+side and with uniform map uncertainty exercising the range-dependent path.
 """
 
 import unittest

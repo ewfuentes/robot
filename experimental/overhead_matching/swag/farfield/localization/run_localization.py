@@ -64,8 +64,11 @@ def _catalog_landmarks(data) -> list:
     by_id = {lm.landmark_id: lm for lm in data.config.landmarks}
     return [structs.LandmarkEntry(landmark_id=lm_id, lat_deg=float(la),
                                   lon_deg=float(lo),
-                                  type_key=by_id[lm_id].type_key)
-            for lm_id, la, lo in zip(data.catalog.landmark_ids, lat, lon)]
+                                  type_key=by_id[lm_id].type_key,
+                                  position_sigma_m=float(sigma))
+            for lm_id, la, lo, sigma in zip(
+                data.catalog.landmark_ids, lat, lon,
+                data.catalog.position_sigma_m)]
 
 
 def main():
@@ -143,7 +146,13 @@ def main():
 
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION,
+        dataset="synthetic",
         scenario_name=scenario_config.name,
+        run_kind="synthetic",
+        initialization_kind=args.init,
+        bearings_consumed=True,
+        proposal_enabled=filter_config.proposal.enabled,
+        localization_inputs_manifest_sha256=None,
         anchor_lat_deg=scenario_config.anchor_lat_deg,
         anchor_lon_deg=scenario_config.anchor_lon_deg,
         n_keyframes=data.n_keyframes,
@@ -157,7 +166,15 @@ def main():
         created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         particle_history_sha256=history.particle_history_sha256)
     run_io.write_run(args.output_dir, manifest, data.truth, data.odometry,
-                     data.measurements, data.tables, history)
+                     data.measurements, data.tables, history,
+                     dataset="synthetic", version=args.output_dir.name,
+                     artifact_config={
+                         "run_kind": "synthetic",
+                         "scenario": scenario_config.name,
+                     },
+                     generator=("//experimental/overhead_matching/swag/"
+                                "farfield/localization:run_localization"),
+                     arguments=tuple(sys.argv))
 
     errors = metrics.position_errors_m(history.health, data.truth)
     heading_errors = metrics.heading_errors_deg(history.health, data.truth)

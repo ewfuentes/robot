@@ -142,12 +142,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);
 .notes li{margin:3px 0}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));
   gap:13px}
-.crop{width:100%;max-width:210px;border-radius:6px;border:1px solid var(--rule);
-  display:block;background:var(--sunk)}
 .bar{height:9px;border-radius:2px;background:var(--water);display:block}
-.chip{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;
-  background:var(--sunk);color:var(--ink-soft);margin:1px 3px 1px 0;
-  font-family:ui-monospace,Menlo,monospace}
 .empty{color:var(--ink-faint);font-size:12px;font-style:italic;padding:6px 0}
 .wf{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;
   font-size:12px}

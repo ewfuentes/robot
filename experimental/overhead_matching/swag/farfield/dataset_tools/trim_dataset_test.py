@@ -117,7 +117,6 @@ def build_dataset(root: Path, n=12, step=3.0, with_checksums=True,
     meta = {
         "num_images": n, "projection": "equirectangular",
         "trajectory_km": round(step * (n - 1) / 1000.0, 3),
-        "mount_offset": {"mount_offset_deg": 214.0, "status": "prior"},
     }
     meta.update(metadata_extra or {})
     (root / "pipeline_metadata.json").write_text(json.dumps(meta, indent=2))
@@ -198,19 +197,6 @@ class ApplyTrimTest(unittest.TestCase):
         self.assertEqual(second[:len(first)], first)
         self.assertEqual({r["reason"] for r in second[len(first):]},
                          {"thin again"})
-
-    def test_density_trim_leaves_mount_offset_alone(self):
-        self.density_trim()
-        meta = json.loads((self.ds / "pipeline_metadata.json").read_text())
-        self.assertNotIn("stale_after_trim", meta["mount_offset"])
-        self.assertEqual(meta["mount_offset"]["mount_offset_deg"], 214.0)
-
-    def test_range_trim_still_marks_mount_offset_stale(self):
-        trim_dataset.apply_trim(self.ds, list(range(0, 6)), "bad tail", None,
-                                trim_dir="trimmed_frames", kind="range")
-        meta = json.loads((self.ds / "pipeline_metadata.json").read_text())
-        self.assertTrue(meta["mount_offset"]["stale_after_trim"])
-        self.assertFalse(meta["mount_offset"]["self_consistent"])
 
     def test_metadata_records_the_trim_and_both_trajectory_lengths(self):
         keep, _ = self.density_trim()

@@ -1,4 +1,4 @@
-"""Shared tracking range runner: wires ingest + heading + video + SAM backend
+"""Shared tracking range runner: wires ingest + GPS course + video + SAM backend
 into TrackBuilder over a keyframe range, so the tracking loop exists exactly
 once (run_tracking is its production caller; dev board tools can reuse it)."""
 
@@ -154,7 +154,15 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
                 for _, t, frame_rgb in _frames:
                     az0, _el = geo.direction_from_pano_px(
                         track.center_x, track.center_y, pano_w, pano_h)
-                    az_w = az0 - model.delta(t, _t0)
+                    # GPS course is only a relative-rotation surrogate for
+                    # keeping the crop centered between keyframes.  It never
+                    # supplies absolute alignment.  Slow/stationary sequences
+                    # legitimately produce no model, in which case tracking
+                    # abstains from compensation instead of inventing heading.
+                    delta_course = (
+                        model.delta_course_cw_deg(t, _t0)
+                        if model is not None else 0.0)
+                    az_w = az0 - delta_course
                     wx, _ = geo.pano_px_from_direction(az_w, 0.0, pano_w,
                                                        pano_h)
                     crop, y0 = geo.extract_window(
@@ -190,11 +198,15 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
 
 
 def load_context(dataset_base, landmark_base, video_path, checkpoint,
-                 ingest_params, preview_size=None):
+                 ingest_params, *, course_min_displacement_m,
+                 course_smooth_window_s, preview_size=None):
     """Load everything a range run needs. Returns a dict of shared state.
 
     `ingest_params` is a dataset.IngestParams -- it carries no defaults
     (REORG.md rule 2), so the caller supplies the recorded values.
+    GPS-course fit parameters are required for the same reason.  The model
+    may still be ``None`` when displacement is inadequate; callers must treat
+    that as an explicit abstention, not a zero world heading.
     `video_path=None` means the dataset has no source video; the keyframe
     panoramas themselves become the tracking substrate (KeyframeProvider), so
     SAM2 propagates across the keyframe baseline with no intermediates.
@@ -219,9 +231,11 @@ def load_context(dataset_base, landmark_base, video_path, checkpoint,
         obs_by_id[obs.obs_id] = obs
         det_pano_boxes[obs.obs_id] = geo.pano_bbox_for_observation(
             obs.boxes, pano_w, pano_h)
-    model = heading_mod.heading_model_from_positions(
+    model = heading_mod.gps_course_model_from_positions(
         [f.x_m for f in result.frames], [f.y_m for f in result.frames],
-        [f.time_s for f in result.frames])
+        [f.time_s for f in result.frames],
+        min_displacement_m=course_min_displacement_m,
+        smooth_window_s=course_smooth_window_s)
     if video_path is None:
         provider = video_frames.KeyframeProvider(
             [f.time_s for f in result.frames],

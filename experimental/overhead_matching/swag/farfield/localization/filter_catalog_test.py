@@ -36,6 +36,12 @@ class ConstructionTest(unittest.TestCase):
             filter_catalog.LandmarkCatalog(
                 ["a", "b"], [0.0], [0.0, 1.0], max_visible_range_m=1000.0)
 
+    def test_position_sigma_is_one_uniform_finite_value(self):
+        with self.assertRaisesRegex(ValueError, "uniform recorded value"):
+            make_catalog(position_sigma_m=[10.0, 20.0, 10.0])
+        with self.assertRaisesRegex(ValueError, "finite"):
+            make_catalog(position_sigma_m=float("nan"))
+
     def test_uniform_prior(self):
         cat = make_catalog()
         np.testing.assert_allclose(cat.log_prior, -math.log(3))
@@ -78,7 +84,7 @@ class BearingsFromTest(unittest.TestCase):
 
 
 class PerturbedTest(unittest.TestCase):
-    def test_jitter_declares_its_accuracy_class(self):
+    def test_jitter_declares_its_uniform_uncertainty(self):
         cat = make_catalog()
         rng = np.random.default_rng(3)
         jittered = cat.perturbed(25.0, rng)

@@ -131,5 +131,6 @@ def heading_errors_deg(health: list, truth: list) -> np.ndarray:
     return np.array([
         abs(math.degrees(float(geo.wrap_rad(
             math.radians(r.mean_heading_deg)
-            - math.radians(truth_by_kf[r.keyframe_idx].heading_deg)))))
+            - math.radians(
+                truth_by_kf[r.keyframe_idx].course_world_cw_deg)))))
         for r in health if r.keyframe_idx in truth_by_kf])

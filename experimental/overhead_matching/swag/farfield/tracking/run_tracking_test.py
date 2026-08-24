@@ -1,119 +1,381 @@
+"""Strict immutable object-tracks producer tests."""
+
+import argparse
+import dataclasses
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-from experimental.overhead_matching.swag.farfield import dataset
+import numpy as np
+
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
+    paths as paths_lib,
+    testing,
+)
 from experimental.overhead_matching.swag.farfield.tracking import (
+    range_runner as rr,
     run_tracking as rt,
     track_builder as tb,
 )
 
-RANGES = [("legA", 0, 10), ("legB", 11, 20)]
+
+DATASET = "tracking_test"
+PANO_W = 64
+PANO_H = 32
+K_START = 0
+K_END = 1
 
 
-def make_run(run_dir: Path):
-    return rt.write_run_meta(
-        run_dir, run_name="r001", dataset_name="test_ds",
-        notes="unit test",
-        inputs={
-            "dataset_base": Path("/data/x/datasets/test_ds"),
-            "frame_landmarks": Path("/data/x/artifacts/frame_landmarks/v1"),
-            "video": None,  # keyframe-only dataset: recorded as known-absent
-            "sam2_checkpoint": Path("/data/x/models/sam2/ckpt.pt"),
+def write_artifact(path: Path, kind: str, version: str, *, upstreams=(),
+                   config=None) -> Path:
+    with artifact.ArtifactDirectoryBuilder(
+            path,
+            kind=kind,
+            dataset=DATASET,
+            version=version,
+            generator="run_tracking_test",
+            git_commit="test",
+            arguments=(),
+            upstreams=upstreams,
+            config=config or {},
+            declared_outputs=("payload.txt",)) as builder:
+        builder.output_path("payload.txt").write_text(kind)
+    return path
+
+
+def tracking_config(checkpoint: Path, *, clean_iou=0.67) -> dict:
+    builder = dataclasses.asdict(
+        tb.TrackBuilderConfig(reference_pano_width=PANO_W))
+    builder["clean_iou"] = clean_iou
+    return {
+        "artifacts": {
+            "frame_landmarks_version": "landmarks-v1",
+            "pinhole_images_version": "pinholes-v1",
+            "object_tracks_version": "tracks-v1",
         },
-        builder_cfg=tb.TrackBuilderConfig(reference_pano_width=7680),
-        ingest_params=dataset.IngestParams(fov_deg=90.0, seam_gap_norm=25.0,
-                                           seam_min_y_iou=0.3),
-        ranges=RANGES)
+        "ingest": {
+            "fov_deg": 91.0,
+            "seam_gap_norm": 24.0,
+            "seam_min_y_iou": 0.31,
+        },
+        "tracking": {
+            **builder,
+            "sam2_checkpoint": str(checkpoint.resolve()),
+            "range": {"k_start": K_START, "k_end": K_END},
+        },
+        "gps_course": {
+            "min_displacement_m": 2.5,
+            "smooth_window_s": 6.0,
+        },
+    }
 
 
-class RunMetaTest(unittest.TestCase):
+class ProducerFixture:
+    def __init__(self, root: Path):
+        self.root = root
+        self.dataset_base = testing.make_dataset(
+            root / "datasets" / DATASET, n_frames=2,
+            pano_size=(PANO_W, PANO_H))
+        self.checkpoint = root / "models" / "sam2.pt"
+        self.checkpoint.parent.mkdir(parents=True)
+        self.checkpoint.write_bytes(b"fixed-sam2-weights")
+        self.dataset_digests = paths_lib.dataset_source_digests(
+            self.dataset_base)
+        self.output = (
+            root / "artifacts" / paths_lib.OBJECT_TRACKS
+            / DATASET / "tracks-v1")
+        self.build_dir = root / "builds" / DATASET / "b001"
+        self.config = tracking_config(self.checkpoint)
+        self.build_path = build_config.create(
+            self.build_dir,
+            dataset=DATASET,
+            config=self.config,
+            generator="run_tracking_test",
+            inputs={
+                "dataset_base": str(self.dataset_base.resolve()),
+                "sam2_checkpoint": str(self.checkpoint.resolve()),
+                "sam2_checkpoint_sha256": artifact.sha256_file(
+                    self.checkpoint),
+                **self.dataset_digests,
+            })
+        document = build_config.load(self.build_dir)
+        self.build_identity = document["build_identity"]
+        self.digest = rt.orchestration_contract(document)["config_digest"]
+        extraction_config = {
+            "build_identity": self.build_identity,
+            "input_digests": {
+                "pipeline_metadata": self.dataset_digests[
+                    paths_lib.DATASET_PIPELINE_METADATA_SHA256],
+                "frames_gps": self.dataset_digests[
+                    paths_lib.DATASET_FRAMES_GPS_SHA256],
+                "panorama_directory": self.dataset_digests[
+                    paths_lib.DATASET_PANORAMA_SHA256],
+            },
+        }
+        self.pinholes = write_artifact(
+            root / "artifacts" / paths_lib.PINHOLE_IMAGES
+            / DATASET / "pinholes-v1",
+            paths_lib.PINHOLE_IMAGES, "pinholes-v1",
+            config=extraction_config)
+        pinhole_ref = artifact.open_artifact(self.pinholes)
+        self.frame_landmarks = write_artifact(
+            root / "artifacts" / paths_lib.FRAME_LANDMARKS
+            / DATASET / "landmarks-v1",
+            paths_lib.FRAME_LANDMARKS, "landmarks-v1",
+            upstreams=(pinhole_ref,),
+            config={"build_identity": self.build_identity})
+
+    def args(self, **updates):
+        values = {
+            "frame_landmarks_dir": self.frame_landmarks,
+            "pinhole_dir": self.pinholes,
+            "checkpoint": self.checkpoint,
+            "output_dir": self.output,
+            "dataset": DATASET,
+            "dataset_base": self.dataset_base,
+            "k_start": K_START,
+            "k_end": K_END,
+            "build_config": self.build_path,
+            "orchestration_config_digest": self.digest,
+            "video": None,
+        }
+        values.update(updates)
+        return argparse.Namespace(**values)
+
+    def context(self):
+        return {
+            "result": SimpleNamespace(frames=[
+                SimpleNamespace(frame_idx=K_START),
+                SimpleNamespace(frame_idx=K_END),
+            ]),
+            "pano_w": PANO_W,
+            "pano_h": PANO_H,
+            "obs_by_frame": {},
+            "obs_by_id": {},
+            "det_pano_boxes": {},
+            "model": None,
+            "provider": object(),
+            "backend": object(),
+        }
+
+    def payload(self):
+        return {
+            "range": {"name": "full", "k_start": K_START,
+                      "k_end": K_END},
+            "config": dataclasses.asdict(
+                tb.TrackBuilderConfig(reference_pano_width=PANO_W,
+                                      clean_iou=0.67)),
+            "tracks": [],
+            "rejected_births": [],
+            "track_overlaps": [],
+        }
+
+
+class TrackingConfigTest(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self._tmp.name) / "r001"
-        self.addCleanup(self._tmp.cleanup)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.fixture = ProducerFixture(Path(self.temporary.name))
 
-    def test_records_every_input_including_checkpoint(self):
-        # Audit finding B: the old stage omitted the SAM2 checkpoint from
-        # run_meta, so a run could not say which weights built its masks.
-        doc = json.loads(make_run(self.run_dir).read_text())
-        self.assertEqual(doc["inputs"]["sam2_checkpoint"],
-                         "/data/x/models/sam2/ckpt.pt")
-        self.assertEqual(doc["inputs"]["dataset_base"],
-                         "/data/x/datasets/test_ds")
-        self.assertEqual(doc["inputs"]["frame_landmarks"],
-                         "/data/x/artifacts/frame_landmarks/v1")
-        # video is recorded as known-absent, not silently omitted.
-        self.assertIn("video", doc["inputs"])
-        self.assertIsNone(doc["inputs"]["video"])
-        self.assertNotEqual(doc["git_commit"], "")
+    def test_all_scientific_values_come_from_build_config(self):
+        resolved = rt.load_tracking_config(self.fixture.args())
+        self.assertEqual(resolved["builder_cfg"].clean_iou, 0.67)
+        self.assertEqual(resolved["ingest_params"].fov_deg, 91.0)
+        self.assertEqual(resolved["course"], {
+            "min_displacement_m": 2.5,
+            "smooth_window_s": 6.0,
+        })
+        self.assertEqual(
+            [ref.kind for ref in resolved["upstreams"]],
+            [paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS])
+        self.assertRegex(resolved["dataset_source_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_records_full_configs_verbatim(self):
-        doc = json.loads(make_run(self.run_dir).read_text())
-        track_cfg = doc["config"]["track_builder"]
-        self.assertEqual(track_cfg["reference_pano_width"], 7680)
-        self.assertEqual(track_cfg["clean_iou"], 0.45)
-        # The recorded dict must round-trip into the dataclass (the reader
-        # contract): every field present, none extra.
-        self.assertEqual(tb.TrackBuilderConfig(**track_cfg),
-                         tb.TrackBuilderConfig(reference_pano_width=7680))
-        self.assertEqual(doc["config"]["ingest"],
-                         {"fov_deg": 90.0, "seam_gap_norm": 25.0,
-                          "seam_min_y_iou": 0.3})
-        self.assertEqual([r["name"] for r in doc["ranges"]],
-                         ["legA", "legB"])
+    def test_cli_range_must_equal_immutable_recipe(self):
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "k_start/--k_end disagree"):
+            rt.load_tracking_config(self.fixture.args(k_end=2))
 
-    def test_run_meta_makes_no_completion_claim(self):
-        # The P0 fix: run_meta.json is written BEFORE tracking and must never
-        # read as "done". It carries no completed-ranges field, and its
-        # completion note points at the real marker.
-        doc = json.loads(make_run(self.run_dir).read_text())
-        self.assertNotIn("completed", doc)
-        self.assertIn(rt.TRACKS_COMPLETE, doc["completion"])
+    def test_supplied_orchestration_digest_is_recomputed(self):
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "orchestration_config_digest"):
+            rt.load_tracking_config(self.fixture.args(
+                orchestration_config_digest="0" * 64))
+
+    def test_checkpoint_content_must_match_recorded_digest(self):
+        self.fixture.checkpoint.write_bytes(b"different weights")
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "checkpoint content digest"):
+            rt.load_tracking_config(self.fixture.args())
+
+    def test_dataset_mutation_cannot_mix_old_extraction_with_new_tracking(self):
+        panorama = next(self.fixture.dataset_base.glob("panorama/*.jpg"))
+        panorama.write_bytes(panorama.read_bytes() + b"changed")
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "dataset source bytes differ"):
+            rt.load_tracking_config(self.fixture.args())
+
+    def test_frame_landmarks_must_bind_the_exact_pinhole_artifact(self):
+        manifest_path = self.fixture.frame_landmarks / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["upstreams"] = []
+        artifact.atomic_write_json(manifest_path, document)
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "exact pinhole artifact"):
+            rt.load_tracking_config(self.fixture.args())
+
+    def test_upstreams_must_belong_to_the_immutable_build(self):
+        manifest_path = self.fixture.pinholes / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["build_identity"] = "0" * 64
+        artifact.atomic_write_json(manifest_path, document)
+        with self.assertRaisesRegex(
+                rt.TrackingContractError, "different immutable build"):
+            rt.load_tracking_config(self.fixture.args())
+
+    def test_upstream_artifact_identity_is_exact(self):
+        wrong = write_artifact(
+            Path(self.temporary.name) / "wrong-frame-version",
+            paths_lib.FRAME_LANDMARKS, "landmarks-v2")
+        with self.assertRaisesRegex(
+                artifact.ArtifactValidationError, "version mismatch"):
+            rt.load_tracking_config(
+                self.fixture.args(frame_landmarks_dir=wrong))
+
+    def test_only_new_explicit_cli_is_exposed(self):
+        options = rt.build_parser()._option_string_actions
+        required = {
+            "--frame_landmarks_dir", "--pinhole_dir", "--checkpoint",
+            "--output_dir", "--dataset", "--dataset_base", "--k_start",
+            "--k_end", "--build_config", "--orchestration_config_digest",
+        }
+        self.assertTrue(required.issubset(options))
+        self.assertIn("--video", options)
+        for retired in ("--run_name", "--runs_root", "--range",
+                        "--skip_existing_ranges", "--force", "--fov_deg"):
+            self.assertNotIn(retired, options)
 
 
-class CompletionMarkerTest(unittest.TestCase):
+class TrackingPublicationTest(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self._tmp.name) / "r001"
-        self.addCleanup(self._tmp.cleanup)
-        make_run(self.run_dir)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.fixture = ProducerFixture(Path(self.temporary.name))
 
-    def test_fresh_run_has_every_range_unfinished(self):
-        self.assertEqual(rt.completed_ranges(self.run_dir), {})
-        self.assertEqual(rt.unfinished_ranges(self.run_dir),
-                         ["legA", "legB"])
+    def test_one_full_payload_and_manifest_publish_atomically(self):
+        context = self.fixture.context()
+        payload = self.fixture.payload()
+        with mock.patch.object(rt.rr, "load_context", return_value=context) \
+                as load_context, \
+             mock.patch.object(rt.rr, "run_range",
+                               return_value=(object(), payload)) as run_range, \
+             mock.patch.object(rt.vc, "load_font", return_value=None):
+            reference = rt.publish_tracking(
+                self.fixture.args(), arguments=("run_tracking_test",))
 
-    def test_marks_accumulate_per_range(self):
-        rt.mark_range_complete(self.run_dir, "legA")
-        self.assertEqual(rt.unfinished_ranges(self.run_dir), ["legB"])
-        self.assertEqual(list(rt.completed_ranges(self.run_dir)), ["legA"])
-        rt.mark_range_complete(self.run_dir, "legB")
-        self.assertEqual(rt.unfinished_ranges(self.run_dir), [])
-        # Timestamps are per range, ISO-shaped.
-        completed = rt.completed_ranges(self.run_dir)
-        for name in ("legA", "legB"):
-            self.assertRegex(completed[name], r"^\d{4}-\d{2}-\d{2}T")
+        self.assertEqual(reference.kind, paths_lib.OBJECT_TRACKS)
+        self.assertFalse(Path(str(self.fixture.output) + ".incomplete").exists())
+        self.assertEqual(
+            [path.name for path in self.fixture.output.glob("tracks_*.json")],
+            ["tracks_full.json"])
+        self.assertEqual(
+            json.loads((self.fixture.output / "tracks_full.json").read_text()),
+            payload)
+        manifest = artifact.load_manifest(self.fixture.output)
+        self.assertEqual(
+            [ref.kind for ref in manifest.upstreams],
+            [paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS])
+        self.assertEqual(
+            manifest.config["orchestration"]["config_digest"],
+            self.fixture.digest)
+        self.assertEqual(manifest.config["range"], payload["range"])
+        self.assertIn("dataset_tracking_inputs",
+                      manifest.config["source_digests"])
+        self.assertEqual(set(manifest.declared_outputs),
+                         {"index.html", "tracks_full.json"})
 
-    def test_marking_is_idempotent(self):
-        rt.mark_range_complete(self.run_dir, "legA")
-        rt.mark_range_complete(self.run_dir, "legA")
-        self.assertEqual(list(rt.completed_ranges(self.run_dir)), ["legA"])
+        _, load_args, load_kwargs = load_context.mock_calls[0]
+        self.assertEqual(load_args[0], self.fixture.dataset_base)
+        self.assertEqual(load_kwargs["course_min_displacement_m"], 2.5)
+        self.assertEqual(load_kwargs["course_smooth_window_s"], 6.0)
+        _, range_args, _ = run_range.mock_calls[0]
+        self.assertEqual(range_args[:3], ("full", K_START, K_END))
+        self.assertEqual(range_args[3].clean_iou, 0.67)
 
-    def test_rerun_meta_write_does_not_erase_marks(self):
-        # A resumed run rewrites run_meta.json first; the completion marker
-        # must survive so --skip_existing_ranges can trust it.
-        rt.mark_range_complete(self.run_dir, "legA")
-        make_run(self.run_dir)
-        self.assertEqual(rt.unfinished_ranges(self.run_dir), ["legB"])
+    def test_crash_leaves_only_incomplete_directory(self):
+        with mock.patch.object(
+                rt.rr, "load_context", return_value=self.fixture.context()), \
+             mock.patch.object(rt.rr, "run_range",
+                               side_effect=RuntimeError("GPU failed")), \
+             mock.patch.object(rt.vc, "load_font", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "GPU failed"):
+                rt.publish_tracking(self.fixture.args())
+        self.assertFalse(self.fixture.output.exists())
+        incomplete = Path(str(self.fixture.output) + ".incomplete")
+        self.assertTrue(incomplete.is_dir())
+        self.assertFalse((incomplete / artifact.MANIFEST_NAME).exists())
 
-    def test_corrupt_marker_reads_as_nothing_done(self):
-        # Fail safe: an unreadable marker means "re-run", never "done".
-        (self.run_dir / rt.TRACKS_COMPLETE).write_text("{not json")
-        self.assertEqual(rt.completed_ranges(self.run_dir), {})
-        self.assertEqual(rt.unfinished_ranges(self.run_dir),
-                         ["legA", "legB"])
+    def test_existing_completed_artifact_is_never_reused(self):
+        self.fixture.output.mkdir(parents=True)
+        with mock.patch.object(
+                rt.rr, "load_context", return_value=self.fixture.context()):
+            with self.assertRaises(artifact.ArtifactExistsError):
+                rt.publish_tracking(self.fixture.args())
+
+
+class RangeRunnerCourseAbstentionTest(unittest.TestCase):
+    def test_no_course_model_means_zero_relative_rotation(self):
+        class Track:
+            track_id = 1
+            center_x = 8.0
+            center_y = 8.0
+            birth_obs_id = "obs"
+            birth_keyframe = 0
+            status = "alive"
+            close_reason = ""
+            end_keyframe = None
+            last_keyframe = 0
+            records = []
+
+            @staticmethod
+            def modal_label():
+                return "test"
+
+        class Builder:
+            def __init__(self, *_args, **_kwargs):
+                self.tracks = [Track()]
+                self.rejected_births = []
+                self.track_overlaps = []
+
+            def seed_unassigned(self, *_args):
+                pass
+
+            def alive_tracks(self):
+                return self.tracks
+
+            def step(self, _keyframe, crops_fn, *_args):
+                crops, origins = crops_fn(self.tracks[0], 8)
+                self.test_crops = crops
+                self.test_origins = origins
+
+        provider = SimpleNamespace(frames_between=lambda *_: [
+            (0, 0.5, np.zeros((PANO_H, PANO_W, 3), dtype=np.uint8))])
+        result = SimpleNamespace(frames=[
+            SimpleNamespace(frame_idx=0, time_s=0.0),
+            SimpleNamespace(frame_idx=1, time_s=1.0),
+        ])
+        with mock.patch.object(rr.tb, "TrackBuilder", Builder):
+            builder, _ = rr.run_range(
+                "full", 0, 1,
+                tb.TrackBuilderConfig(reference_pano_width=PANO_W),
+                object(), provider, None, result, {}, {}, PANO_W, PANO_H,
+                Path("unused"), log=lambda *_: None)
+        self.assertEqual(len(builder.test_crops), 1)
+        self.assertEqual(len(builder.test_origins), 1)
 
 
 if __name__ == "__main__":

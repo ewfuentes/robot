@@ -69,22 +69,22 @@ class DirectionFromFacePxTest(unittest.TestCase):
         for face_yaw, expected in ((0, 0.0), (90, 270.0),
                                    (180, 180.0), (270, 90.0)):
             self.assertAlmostEqual(
-                geo.bearing_camera_deg(face_yaw, 500.0), expected,
+                geo.bearing_camera_cw_deg(face_yaw, 500.0), expected,
                 msg=f"face {face_yaw}")
 
     def test_bearing_increases_image_right_on_every_face(self):
         for face_yaw in (0, 90, 180, 270):
-            a = geo.bearing_camera_deg(face_yaw, 400.0)
-            b = geo.bearing_camera_deg(face_yaw, 600.0)
+            a = geo.bearing_camera_cw_deg(face_yaw, 400.0)
+            b = geo.bearing_camera_cw_deg(face_yaw, 600.0)
             self.assertGreater(
                 float(geo.wrap_deg(b - a)), 0.0, msg=f"face {face_yaw}")
 
     def test_face_edges_are_half_fov(self):
         # Face 90 is centred on camera azimuth 270, so its edges are 225/315.
-        self.assertAlmostEqual(geo.bearing_camera_deg(90, 0.0), 225.0)
-        self.assertAlmostEqual(geo.bearing_camera_deg(90, 1000.0), 315.0)
-        self.assertAlmostEqual(geo.bearing_camera_deg(0, 0.0), 315.0)
-        self.assertAlmostEqual(geo.bearing_camera_deg(0, 1000.0), 45.0)
+        self.assertAlmostEqual(geo.bearing_camera_cw_deg(90, 0.0), 225.0)
+        self.assertAlmostEqual(geo.bearing_camera_cw_deg(90, 1000.0), 315.0)
+        self.assertAlmostEqual(geo.bearing_camera_cw_deg(0, 0.0), 315.0)
+        self.assertAlmostEqual(geo.bearing_camera_cw_deg(0, 1000.0), 45.0)
 
     def test_adjacent_faces_agree_at_shared_seam(self):
         # Face 0's left edge is the same physical direction as face 90's
@@ -130,7 +130,7 @@ class BBoxAnglesTest(unittest.TestCase):
     def test_bbox_center_bearing_wraps(self):
         center, _, _ = geo.bbox_angles(270, 900, 400, 1000, 600)
         self.assertAlmostEqual(
-            center, geo.bearing_camera_deg(270, 950.0))
+            center, geo.bearing_camera_cw_deg(270, 950.0))
         # Face 270 is centred on 90, so a box at its right edge sits above 90.
         self.assertGreater(center, 90.0)
 
@@ -202,17 +202,9 @@ class PanoBBoxTest(unittest.TestCase):
 
 
 class FrameChainTest(unittest.TestCase):
-    def test_apply_mount_offset(self):
-        # An object dead ahead of the vehicle: camera bearing equals the
-        # mount offset, body bearing is zero.
-        self.assertAlmostEqual(geo.apply_mount_offset(214.0, 214.0), 0.0)
-        self.assertAlmostEqual(geo.apply_mount_offset(10.0, 214.0), 156.0)
-        self.assertAlmostEqual(geo.apply_mount_offset(213.0, 214.0), 359.0)
-
-    def test_column_zero_misuse_is_half_a_turn_out(self):
-        # The trap MOUNT_OFFSET_CONVENTION documents: an offset reasoned in
-        # the column-0 frame differs from the centre-column frame by exactly
-        # 180 deg, for every column.
+    def test_camera_centre_and_column_zero_differ_by_half_turn(self):
+        # Camera-frame azimuth is measured from the centre column. A formula
+        # measured from column zero is therefore a different frame.
         for x in (0.0, 1000.0, 3000.0, 7000.0):
             centre_frame = geo.azimuth_of_pano_column(x, PANO_W)
             column0_frame = (x / PANO_W) * 360.0 % 360.0
@@ -220,16 +212,18 @@ class FrameChainTest(unittest.TestCase):
                 abs(float(geo.wrap_deg(centre_frame - column0_frame))),
                 180.0, places=9)
 
-    def test_body_world_round_trip(self):
-        for heading in (0.0, 91.5, 359.0):
-            for body in (0.0, 45.0, 300.0):
-                world = geo.body_to_world_bearing_deg(heading, body)
+    def test_forward_world_round_trip(self):
+        for forward_world in (0.0, 91.5, 359.0):
+            for bearing_forward in (0.0, 45.0, 300.0):
+                world = geo.forward_to_world_bearing_cw_deg(
+                    forward_world, bearing_forward)
                 self.assertAlmostEqual(
-                    float(geo.world_to_body_bearing_deg(heading, world)),
-                    body)
+                    float(geo.world_to_forward_bearing_cw_deg(
+                        forward_world, world)),
+                    bearing_forward)
 
-    def test_body_to_world_vectorized(self):
-        world = geo.body_to_world_bearing_deg(
+    def test_forward_to_world_vectorized(self):
+        world = geo.forward_to_world_bearing_cw_deg(
             np.array([350.0, 10.0]), np.array([20.0, 355.0]))
         np.testing.assert_allclose(world, np.array([10.0, 5.0]))
 

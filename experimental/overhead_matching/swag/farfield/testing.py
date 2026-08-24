@@ -10,27 +10,25 @@ import csv
 import json
 from pathlib import Path
 
-from experimental.overhead_matching.swag.farfield import geometry as geo
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    geometry as geo,
+    paths as paths_lib,
+)
 
 ANCHOR_LAT, ANCHOR_LON = 42.35, -71.05
 
 
 def default_metadata() -> dict:
     return {
+        "dataset_name": "test-dataset",
         "is_equirectangular": True,
         "north_aligned": False,
         "azimuth_convention": {
             "images_rotated": False,
+            "camera_frame": geo.CAMERA_FRAME,
             "heading_deg_is_bearing_of": "column_0",
             "formula": "azimuth = (heading_deg + 360*x/W) % 360",
-            "mount_offset_frame": geo.MOUNT_OFFSET_FRAME,
-        },
-        "mount_offset": {
-            "mount_offset_deg": 214.0,
-            "frame": geo.MOUNT_OFFSET_FRAME,
-            "applied_to_heading_deg": False,
-            "status": "sun_verified",
-            "accuracy_validated": True,
         },
     }
 
@@ -78,31 +76,44 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
                  "sequence_id": "seq0", "sequence_position": r["idx"]}
                 for r in kept])
     _write_csv(base / "intrinsics.csv",
-               ["idx", "heading_deg", "heading_reference", "hfov_deg"],
+               ["idx", "heading_deg", "heading_reference", "heading_source",
+                "hfov_deg"],
                [{"idx": r["idx"], "heading_deg": "45.0",
-                 "heading_reference": "column_0", "hfov_deg": "360.0"}
+                 "heading_reference": "column_0",
+                 "heading_source": "synthetic_diagnostic",
+                 "hfov_deg": "360.0"}
                 for r in kept])
+    resolved_metadata = dict(
+        metadata if metadata is not None else default_metadata())
+    resolved_metadata["dataset_name"] = base.name
     (base / "pipeline_metadata.json").write_text(
-        json.dumps(metadata if metadata is not None else default_metadata(),
-                   indent=1))
+        json.dumps(resolved_metadata, indent=1))
     return base
 
 
-def make_predictions(frame_landmarks_dir: Path, per_stem: dict) -> Path:
-    """A frame_landmarks-shaped artifact: {pano_stem: [landmark dicts]}."""
-    out = (Path(frame_landmarks_dir) / "sentences" / "results" / "batch0"
-           / "prediction-model-0")
-    out.mkdir(parents=True)
-    with open(out / "predictions.jsonl", "w") as f:
-        for stem, landmarks in per_stem.items():
-            record = {
-                "key": stem,
-                "response": {"candidates": [{"content": {"parts": [{
-                    "text": json.dumps({"location_type": "harbor",
-                                        "landmarks": landmarks}),
-                }]}}]},
-            }
-            f.write(json.dumps(record) + "\n")
+def make_predictions(frame_landmarks_dir: Path, per_stem: dict, *,
+                     dataset_name: str = "ds", version: str = "v1") -> Path:
+    """A completed canonical frame_landmarks test artifact."""
+    with artifact.transactional_directory(
+            frame_landmarks_dir,
+            kind=paths_lib.FRAME_LANDMARKS,
+            dataset=dataset_name,
+            version=version,
+            generator="farfield.testing.make_predictions",
+            git_commit="test",
+            arguments=(),
+            config={"expected_keys": sorted(per_stem)},
+            declared_outputs=["predictions.jsonl"]) as builder:
+        with builder.output_path("predictions.jsonl").open("w") as f:
+            for stem, landmarks in per_stem.items():
+                record = {
+                    "key": stem,
+                    "prediction": {
+                        "location_type": "harbor",
+                        "landmarks": landmarks,
+                    },
+                }
+                f.write(json.dumps(record, sort_keys=True) + "\n")
     return Path(frame_landmarks_dir)
 
 

@@ -1,50 +1,23 @@
-"""Build a localization export from a tracking run's primary artifacts.
+"""Publish the immutable inputs consumed by bearing-only localization.
 
-One tool replaces the old two-step (m11_base_export + m11_localization_export
-and their duplicated table plumbing): everything matcher-independent is
-derived from primary artifacts, and `--tables` selects where the
-compatibility tables come from —
+This is an artifact-to-artifact boundary.  It consumes lossless camera-frame
+bearing observations, a completely aggregated landmark-matching artifact, and
+one catalog artifact.  Camera bearings are rotated only by a human-approved,
+dataset-bound nominal-forward calibration.  GPS is used to manufacture an
+explicitly labelled dead-reckoning input and diagnostic truth; it is never a
+camera calibration source.
 
-  --tables uninformative   one flat table per tracklet (no matcher has
-                           spoken): the association-ambiguity floor, what
-                           bearings + dead reckoning can do with no matcher.
-  --tables <path.json>     the matcher's CompatibilityTable list (matching
-                           stage output), keyed by the same per-track
-                           tracklet ids the tracklets library emits.
-
-What gets written (the export_ingest.py contract):
-
-  tier1_measurements.jsonl  tracklets.build_measurements over tracks + audit,
-                            rotated into the body frame:
-                            geometry.apply_mount_offset. THE OFFSET IS BAKED
-                            IN HERE — this tool refuses to guess it and
-                            records which source it used.
-  tier1_odometry.jsonl      gps_to_odometry.derive_increments over the
-                            keyframe fixes (§5.2 body-frame derivation).
-  truth.jsonl               the same fixes; heading is GPS COURSE, not a
-                            measured heading — diagnostics only.
-  landmarks.json            every catalog row: the honest candidate universe
-                            is the whole map, no spatial shortlist.
-  tier1_tables.json         per --tables.
-  export_meta.json          anchor, matcher, mount-offset provenance
-                            (offset + source + frame), catalog path,
-                            git commit / argv / created.
-
-Tracklets the semantic audit dropped (verdict: drop) are excluded: the
-pipeline has already decided they are not landmarks, the matcher never
-queries them, and exporting them feeds the filter bearings classified as
-clutter. --keep_dropped_tracklets restores them for a control run.
-
-Keyframe indices stay the dataset's own. Since tracklets are per-track (no
-merge stage), one tracklet cannot produce two epochs on one keyframe; a
-duplicate (tracklet, keyframe) now indicates a bug and is an error.
-
-The export is read straight back through export_ingest.load at the end, so
-a broken export fails here rather than deep inside a filter run.
+There is deliberately no ``run_dir`` discovery, mount-offset override, or
+sidecar fallback.  Every scientific input is explicit and every published
+output is covered by the localization_inputs artifact manifest.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
+import math
+import shutil
 import sys
 from pathlib import Path
 
@@ -53,14 +26,18 @@ import numpy as np
 
 from common.python.serialization import msgspec_dec_hook, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
     dataset as dataset_lib,
     geometry as geo,
+    nominal_forward,
     paths as paths_lib,
+    publication,
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.calibration import (
     audit_io,
-    heading as heading_mod,
+    heading,
 )
 from experimental.overhead_matching.swag.farfield.catalog import (
     catalog as catalog_lib,
@@ -73,13 +50,30 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
-UNINFORMATIVE_MATCHER = "uninformative_v1"
 
-# Coarse display type for the viewer's glyphs; the filter itself only uses
-# ids and positions. THE single definition (previously mirrored in two m11
-# tools that had to be kept in sync by hand).
+GENERATOR = ("//experimental/overhead_matching/swag/farfield/"
+             "localization:build_export")
+OBSERVATIONS_NAME = "observations.jsonl"
+COMPATIBILITY_NAME = "compatibility.json"
+CATALOG_NAME = "catalog.feather"
+UNINFORMATIVE_MATCHER = "uninformative_v1"
+_OBSERVATION_KEYS = frozenset({
+    "tracklet_id",
+    "keyframe_idx",
+    "bearing_camera_cw_deg",
+    "angular_width_deg",
+    "sigma_deg",
+    "correlation_group",
+})
+
+# A coarse display type for viewer glyphs.  The localization likelihood uses
+# identity, geometry, and the one explicit positional sigma, not this label.
 TYPE_TAGS = ("seamark:type", "man_made", "leisure", "amenity", "natural",
              "building", "place", "highway")
+
+
+class LocalizationInputError(ValueError):
+    """An upstream cannot support a reproducible localization export."""
 
 
 def type_key(tags: dict) -> str:
@@ -89,316 +83,795 @@ def type_key(tags: dict) -> str:
     return "landmark"
 
 
-def load_tracks(run_dir: Path) -> dict:
-    """All tracks across every range file of the run, keyed by track_id.
+def _finite(value, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise LocalizationInputError(f"{name} must be numeric")
+    value = float(value)
+    if not math.isfinite(value) or (positive and value <= 0.0):
+        qualifier = "finite and positive" if positive else "finite"
+        raise LocalizationInputError(f"{name} must be {qualifier}")
+    return value
 
-    Reads every tracks_*.json (the old readers took next(glob(...)), which
-    silently picked one arbitrary range on multi-range runs and crashed with
-    a bare StopIteration when tracking had not run).
+
+def _exact_upstream(manifest: artifact.ArtifactManifest,
+                    kind: str) -> artifact.ArtifactRef:
+    matches = [ref for ref in manifest.upstreams if ref.kind == kind]
+    if len(matches) != 1:
+        raise LocalizationInputError(
+            f"{manifest.kind} manifest must contain exactly one {kind} "
+            f"upstream; found {len(matches)}")
+    return matches[0]
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise LocalizationInputError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _load_observation_records(path: Path) \
+        -> list[tracklets.CameraBearingObservation]:
+    records = []
+    try:
+        stream = path.open()
+    except OSError as exc:
+        raise LocalizationInputError(f"cannot read {path}: {exc}") from exc
+    with stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.strip():
+                raise LocalizationInputError(
+                    f"{path}:{line_number}: blank records are not canonical")
+            try:
+                value = json.loads(
+                    line, object_pairs_hook=_reject_duplicate_keys,
+                    parse_constant=lambda token: (_ for _ in ()).throw(
+                        LocalizationInputError(
+                            f"non-finite JSON constant {token!r}")))
+            except json.JSONDecodeError as exc:
+                raise LocalizationInputError(
+                    f"{path}:{line_number}: invalid JSON: {exc}") from exc
+            if not isinstance(value, dict) or set(value) != _OBSERVATION_KEYS:
+                actual = set(value) if isinstance(value, dict) else set()
+                raise LocalizationInputError(
+                    f"{path}:{line_number}: observation keys differ; "
+                    f"missing={sorted(_OBSERVATION_KEYS - actual)}, "
+                    f"unknown={sorted(actual - _OBSERVATION_KEYS)}")
+            try:
+                records.append(tracklets.CameraBearingObservation(**value))
+            except (TypeError, tracklets.TrackletContractError) as exc:
+                raise LocalizationInputError(
+                    f"{path}:{line_number}: {exc}") from exc
+    keys = [(item.tracklet_id, item.keyframe_idx) for item in records]
+    if keys != sorted(keys):
+        raise LocalizationInputError(
+            f"{path}: observations must be sorted by "
+            "(tracklet_id, keyframe_idx)")
+    if len(keys) != len(set(keys)):
+        raise LocalizationInputError(
+            f"{path}: duplicate (tracklet_id, keyframe_idx)")
+    return records
+
+
+def load_observations(observations_dir: Path, *, dataset_name: str,
+                      panorama_width: int, expected_versions: dict[str, str],
+                      build_identity: str):
+    """Load and independently verify a complete lossless bearing artifact.
+
+    Coverage and geometry are rebuilt from the bound tracks + audit, rather
+    than trusting a producer-supplied percentage or count.
     """
-    paths = sorted(Path(run_dir).glob("tracks_*.json"))
-    if not paths:
-        raise SystemExit(
-            f"no tracks_*.json under {run_dir} — run the tracking stage "
-            f"first.")
-    tracks = {}
-    for path in paths:
-        for track in json.loads(path.read_text())["tracks"]:
-            tid = track["track_id"]
-            if tid in tracks:
-                raise SystemExit(
-                    f"track_id {tid} appears in more than one range file "
-                    f"under {run_dir}; range files must partition tracks.")
-            tracks[tid] = track
-    return tracks
+    observations_dir = Path(observations_dir)
+    observations_ref = artifact.open_artifact(
+        observations_dir, expected_kind=paths_lib.BEARING_OBSERVATIONS,
+        expected_dataset=dataset_name,
+        expected_version=expected_versions[paths_lib.BEARING_OBSERVATIONS])
+    manifest = artifact.load_manifest(observations_dir)
+    if manifest.config.get("build_identity") != build_identity:
+        raise LocalizationInputError(
+            "bearing_observations belongs to a different immutable build")
+    expected_upstream_kinds = (
+        paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS)
+    if tuple(ref.kind for ref in manifest.upstreams) != expected_upstream_kinds:
+        raise LocalizationInputError(
+            "bearing_observations upstreams must be exactly object_tracks "
+            "then semantic_audits")
+    tracks_ref = _exact_upstream(manifest, paths_lib.OBJECT_TRACKS)
+    audits_ref = _exact_upstream(manifest, paths_lib.SEMANTIC_AUDITS)
+    for ref in (tracks_ref, audits_ref):
+        if ref.version != expected_versions[ref.kind]:
+            raise LocalizationInputError(
+                f"{ref.kind} version disagrees with immutable build config")
+    try:
+        audits = audit_io.load_audits(
+            Path(tracks_ref.path), Path(audits_ref.path))
+    except (audit_io.AuditArtifactError, artifact.ArtifactError) as exc:
+        raise LocalizationInputError(
+            f"bearing observations have invalid bound tracks/audits: {exc}") \
+            from exc
+    if audits.tracks_ref != tracks_ref or audits.semantic_audits_ref != audits_ref:
+        raise LocalizationInputError(
+            "bearing-observation upstream references do not resolve to their "
+            "recorded artifact identities")
+    for ref in (tracks_ref, audits_ref):
+        upstream_manifest = artifact.load_manifest(ref.path)
+        if upstream_manifest.config.get("build_identity") != build_identity:
+            raise LocalizationInputError(
+                f"{ref.kind} belongs to a different immutable build")
+
+    accepted = tracklets.build_accepted_tracklets(
+        audits.source_tracks, audits)
+    expected = {}
+    for item in accepted:
+        for segment in item.valid_segments:
+            raw_segment = [{"start_t": segment.start_t,
+                            "end_t": segment.end_t}]
+            group = f"{item.tracklet_id}/audit-segment-{segment.index}"
+            for keyframe, bearing, width in tracklets.bearing_series(
+                    item.source_track, panorama_width, raw_segment):
+                key = (item.tracklet_id, keyframe)
+                if key in expected:
+                    raise LocalizationInputError(
+                        f"accepted-track contract repeats observation {key}")
+                expected[key] = (bearing % 360.0, width, group)
+
+    records = _load_observation_records(
+        observations_dir / OBSERVATIONS_NAME)
+    actual = {(item.tracklet_id, item.keyframe_idx): item for item in records}
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    if missing or extra:
+        raise LocalizationInputError(
+            "bearing observations do not have complete accepted-tracklet "
+            f"coverage: missing={missing[:5]}, extra={extra[:5]}")
+    for key, (bearing, width, group) in expected.items():
+        item = actual[key]
+        if abs(float(geo.circular_diff_deg(
+                item.bearing_camera_cw_deg, bearing))) > 1e-9:
+            raise LocalizationInputError(
+                f"observation {key} bearing differs from its source track")
+        if not math.isclose(item.angular_width_deg, width,
+                            rel_tol=0.0, abs_tol=1e-9):
+            raise LocalizationInputError(
+                f"observation {key} angular width differs from its source track")
+        if item.correlation_group != group:
+            raise LocalizationInputError(
+                f"observation {key} has stale correlation-group identity")
+
+    sigmas = {item.sigma_deg for item in records}
+    if len(sigmas) > 1:
+        raise LocalizationInputError(
+            "bearing observation sigma must be uniform in this artifact")
+    return (observations_ref, records,
+            {item.tracklet_id for item in accepted}, tracks_ref, audits_ref)
 
 
-def body_frame_measurements(camera_measurements: list,
-                            mount_offset_deg: float) -> list:
-    """Camera-frame tracklet measurements -> body-frame TrackletMeasurement.
+def reduce_observations(
+        observations: list[tracklets.CameraBearingObservation],
+        epoch_keyframes: int) -> list[tracklets.Measurement]:
+    """Apply the named epoch_fused_compat_v1 reducer once, at this seam."""
+    if isinstance(epoch_keyframes, bool) or not isinstance(epoch_keyframes, int) \
+            or epoch_keyframes <= 0:
+        raise LocalizationInputError(
+            "reducer_epoch_keyframes must be a positive integer")
+    if not observations:
+        return []
+    sigmas = {item.sigma_deg for item in observations}
+    if len(sigmas) != 1:
+        raise LocalizationInputError(
+            "epoch_fused_compat_v1 requires one recorded observation sigma")
+    params = tracklets.TrackletParams(
+        epoch_keyframes=epoch_keyframes,
+        bearing_sigma_deg=next(iter(sigmas)))
+    return tracklets.epoch_fused_compat_v1(observations, params)
 
-    Kappa is carried verbatim; the offset is a pure rotation.
-    """
+
+def forward_frame_measurements(
+        camera_measurements: list[tracklets.Measurement],
+        calibration: nominal_forward.NominalForward) \
+        -> list[structs.TrackletMeasurement]:
+    """Rotate camera-CW bearings into human-approved nominal-forward CW."""
     seen = set()
-    out = []
-    for m in camera_measurements:
-        key = (m.tracklet_id, m.anchor_keyframe_idx)
+    result = []
+    for measurement in camera_measurements:
+        key = (measurement.tracklet_id, measurement.anchor_keyframe_idx)
         if key in seen:
-            raise SystemExit(
-                f"duplicate information epoch {key}: with per-track "
-                f"tracklets this cannot happen legitimately — the tracks "
-                f"files are corrupt or overlapping.")
+            raise LocalizationInputError(f"duplicate information epoch {key}")
         seen.add(key)
-        out.append(structs.TrackletMeasurement(
-            tracklet_id=m.tracklet_id,
-            anchor_keyframe_idx=m.anchor_keyframe_idx,
-            bearing_body_deg=float(geo.apply_mount_offset(
-                m.bearing_camera_deg, mount_offset_deg)),
-            kappa=m.kappa))
-    return out
+        result.append(structs.TrackletMeasurement(
+            tracklet_id=measurement.tracklet_id,
+            anchor_keyframe_idx=measurement.anchor_keyframe_idx,
+            bearing_forward_cw_deg=nominal_forward.camera_to_forward_cw_deg(
+                measurement.bearing_camera_cw_deg, calibration),
+            kappa=measurement.kappa))
+    return result
 
 
-def uninformative_tables(measurements: list, default_log_lr: float,
-                         clip: float) -> list:
-    """One flat table per measured tracklet: no matcher has spoken yet."""
+def _validate_table(table: structs.CompatibilityTable) -> None:
+    if not isinstance(table.tracklet_id, str) or not table.tracklet_id:
+        raise LocalizationInputError("compatibility tracklet_id is empty")
+    if not isinstance(table.matcher_version, str) or not table.matcher_version:
+        raise LocalizationInputError(
+            f"table {table.tracklet_id!r} has no matcher_version")
+    for value, name in ((table.default_log_lr, "default_log_lr"),
+                        (table.clip_lo, "clip_lo"),
+                        (table.clip_hi, "clip_hi")):
+        _finite(value, f"table {table.tracklet_id!r} {name}")
+    if table.clip_lo >= table.clip_hi:
+        raise LocalizationInputError(
+            f"table {table.tracklet_id!r} has an empty clip interval")
+    if table.status not in ("fast", "refined"):
+        raise LocalizationInputError(
+            f"table {table.tracklet_id!r} has invalid status {table.status!r}")
+    landmark_ids = []
+    for entry in table.entries:
+        if not isinstance(entry.landmark_id, str) or not entry.landmark_id:
+            raise LocalizationInputError(
+                f"table {table.tracklet_id!r} has an empty landmark id")
+        _finite(entry.log_lr,
+                f"table {table.tracklet_id!r} entry log_lr")
+        landmark_ids.append(entry.landmark_id)
+    if len(landmark_ids) != len(set(landmark_ids)):
+        raise LocalizationInputError(
+            f"table {table.tracklet_id!r} repeats a landmark id")
+
+
+def load_matching(matching_dir: Path, *, dataset_name: str,
+                  accepted_tracklet_ids: set[str],
+                  tracks_ref: artifact.ArtifactRef,
+                  audits_ref: artifact.ArtifactRef,
+                  catalog_ref: artifact.ArtifactRef,
+                  expected_version: str, build_identity: str):
+    """Load only a complete matcher result covering every accepted tracklet."""
+    matching_dir = Path(matching_dir)
+    matching_ref = artifact.open_artifact(
+        matching_dir, expected_kind=paths_lib.LANDMARK_MATCHES,
+        expected_dataset=dataset_name, expected_version=expected_version)
+    manifest = artifact.load_manifest(matching_dir)
+    if manifest.config.get("build_identity") != build_identity:
+        raise LocalizationInputError(
+            "landmark_matches belongs to a different immutable build")
+    expected_kinds = (paths_lib.OBJECT_TRACKS,
+                      paths_lib.SEMANTIC_AUDITS, paths_lib.CATALOGS)
+    if tuple(ref.kind for ref in manifest.upstreams) != expected_kinds:
+        raise LocalizationInputError(
+            "landmark_matches upstreams must be exactly object_tracks, "
+            "semantic_audits, then catalogs")
+    for expected in (tracks_ref, audits_ref, catalog_ref):
+        recorded = _exact_upstream(manifest, expected.kind)
+        if recorded != expected:
+            raise LocalizationInputError(
+                f"matching artifact is bound to a different {expected.kind} "
+                "artifact")
+    if manifest.config.get("coverage") != "complete":
+        raise LocalizationInputError(
+            "matching manifest must attest coverage='complete'")
+    n_expected = manifest.config.get("n_expected")
+    n_successful = manifest.config.get("n_successful")
+    if (isinstance(n_expected, bool) or not isinstance(n_expected, int)
+            or isinstance(n_successful, bool)
+            or not isinstance(n_successful, int)
+            or n_expected < 0 or n_successful != n_expected):
+        raise LocalizationInputError(
+            "matching manifest does not attest one successful result per "
+            "expected request")
+    try:
+        tables = msgspec.json.decode(
+            (matching_dir / COMPATIBILITY_NAME).read_bytes(),
+            type=list[structs.CompatibilityTable], dec_hook=msgspec_dec_hook)
+    except (OSError, msgspec.DecodeError, msgspec.ValidationError) as exc:
+        raise LocalizationInputError(
+            f"cannot decode matching compatibility tables: {exc}") from exc
+    table_ids = [table.tracklet_id for table in tables]
+    if len(table_ids) != len(set(table_ids)):
+        raise LocalizationInputError("matching repeats a compatibility table")
+    actual_ids = set(table_ids)
+    if actual_ids != accepted_tracklet_ids:
+        raise LocalizationInputError(
+            "matching tables do not completely cover accepted tracklets: "
+            f"missing={sorted(accepted_tracklet_ids - actual_ids)[:5]}, "
+            f"extra={sorted(actual_ids - accepted_tracklet_ids)[:5]}")
+    for table in tables:
+        _validate_table(table)
+    versions = {table.matcher_version for table in tables}
+    matcher_version = (next(iter(versions)) if len(versions) == 1
+                       else "empty" if not versions else None)
+    if matcher_version is None:
+        raise LocalizationInputError(
+            f"matching tables mix matcher versions {sorted(versions)}")
+    return matching_ref, tables, matcher_version
+
+
+def uninformative_tables(tracklet_ids: set[str], default_log_lr: float,
+                         clip: float) -> list[structs.CompatibilityTable]:
+    default_log_lr = _finite(default_log_lr, "default_log_compatibility")
+    clip = _finite(clip, "compatibility_clip", positive=True)
     return [structs.CompatibilityTable(
-        tracklet_id=tracklet_id, matcher_version=UNINFORMATIVE_MATCHER,
-        entries=[], default_log_lr=default_log_lr,
-        clip_lo=-clip, clip_hi=clip, status="fast")
-        for tracklet_id in sorted({m.tracklet_id for m in measurements})]
+        tracklet_id=tracklet_id,
+        matcher_version=UNINFORMATIVE_MATCHER,
+        entries=[],
+        default_log_lr=default_log_lr,
+        clip_lo=-clip,
+        clip_hi=clip,
+        status="fast") for tracklet_id in sorted(tracklet_ids)]
 
 
-def landmark_entries(feather_path: Path, anchor_lat: float,
-                     anchor_lon: float) -> list:
-    """Whole catalog as LandmarkEntry, positions round-tripped through ENU.
-
-    Goes through catalog.load_catalog so the ids, tag pruning and hull
-    handling are the same ones the matcher saw.
-    """
-    entries = catalog_lib.load_catalog(feather_path, anchor_lat, anchor_lon,
-                                       keep_hulls=False)
+def landmark_entries(catalog_path: Path, anchor_lat: float, anchor_lon: float,
+                     position_sigma_m: float) -> list[structs.LandmarkEntry]:
+    """Load the whole catalog with one uniform explicit map uncertainty."""
+    entries = catalog_lib.load_catalog(
+        catalog_path, anchor_lat, anchor_lon,
+        position_sigma_m=position_sigma_m, keep_hulls=False)
     frame = geo.RegionFrame(anchor_lat, anchor_lon)
-    landmarks = []
+    result = []
     for entry in entries:
         lat, lon = frame.latlon_from_enu(entry.east_m, entry.north_m)
-        landmarks.append(structs.LandmarkEntry(
-            landmark_id=entry.landmark_id, lat_deg=float(lat),
-            lon_deg=float(lon), type_key=type_key(entry.tags)))
-    return landmarks
+        result.append(structs.LandmarkEntry(
+            landmark_id=entry.landmark_id,
+            lat_deg=float(lat),
+            lon_deg=float(lon),
+            type_key=type_key(entry.tags),
+            position_sigma_m=entry.position_sigma_m))
+    return result
 
 
-def resolve_mount_offset(run_dir: Path, metadata: dict, dataset_base: Path,
-                         override: float | None) -> tuple[float, str]:
-    """The offset to bake in, and where it came from.
+def _panorama_width(dataset_base: Path, frames: list[dataset_lib.Frame]) -> int:
+    from PIL import Image
 
-    Order, best evidence first:
-      1. an explicit --mount_offset_deg;
-      2. a validated dataset record (dataset.mount_offset_record enforces
-         the frame + applied qualifiers) marked accuracy_validated — an
-         ABSOLUTE check: surveyed landmark, or the sun;
-      3. this run's sun_offset_check.json, when usable (also absolute);
-      4. this run's mount_offset_sweep.json, when usable. The sweep is
-         RELATIVE: it makes rays to unknown objects agree with each other,
-         so it reproduces any error the poses and heading model share —
-         including a 180 deg slip, which it fits perfectly;
-      5. an unvalidated dataset record, used but announced loudly.
-    """
-    if override is not None:
-        return float(override), "--mount_offset_deg"
-
-    record = dataset_lib.mount_offset_record(metadata, dataset_base)
-    if record is not None and record.accuracy_validated:
-        return record.offset_deg, (
-            f"pipeline_metadata.mount_offset ({record.status}, "
-            f"accuracy_validated)")
-
-    sun_path = run_dir / "sun_offset_check.json"
-    if sun_path.exists():
-        sun = json.loads(sun_path.read_text())
-        if sun.get("usable") and sun.get("frame") == geo.MOUNT_OFFSET_FRAME:
-            return (float(sun["mount_offset_deg"]),
-                    f"sun_offset_check.json ({sun.get('verdict')})")
-
-    sweep_path = run_dir / "mount_offset_sweep.json"
-    if sweep_path.exists():
-        sweep = json.loads(sweep_path.read_text())
-        if sweep.get("usable") and sweep.get("frame") == geo.MOUNT_OFFSET_FRAME:
-            return (float(sweep["mount_offset_deg"]),
-                    f"mount_offset_sweep.json ({sweep.get('verdict')}, "
-                    f"{sweep.get('tracklets_used')} tracklets)")
-        print(f"  sweep present but not usable ({sweep.get('verdict')}); "
-              f"falling back")
-
-    if record is None:
-        raise SystemExit(
-            f"no mount offset available: no usable sun_offset_check.json or "
-            f"mount_offset_sweep.json under {run_dir}, and the dataset "
-            f"records none. Run the calibration stage first, or pass "
-            f"--mount_offset_deg.")
-    print(f"  WARNING: dataset offset ({record.status or 'unvalidated'}) was "
-          f"never accuracy-validated; every bearing in this export "
-          f"inherits it")
-    return record.offset_deg, (
-        f"pipeline_metadata.mount_offset ({record.status or 'unvalidated'})")
+    widths = set()
+    for frame in frames:
+        path = Path(dataset_base) / "panorama" / f"{frame.pano_stem}.jpg"
+        try:
+            with Image.open(path) as image:
+                widths.add(image.size[0])
+        except OSError as exc:
+            raise LocalizationInputError(f"cannot inspect {path}: {exc}") \
+                from exc
+    if len(widths) != 1:
+        raise LocalizationInputError(
+            f"dataset panoramas do not have one width: {sorted(widths)}")
+    return widths.pop()
 
 
-def write_export(out_dir: Path, meta: dict, landmarks: list, tables: list,
-                 measurements: list, odometry: list, truth: list) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "export_meta.json").write_text(json.dumps(meta, indent=1))
-    for name, payload in (("landmarks.json", landmarks),
-                          ("tier1_tables.json", tables)):
-        (out_dir / name).write_bytes(
-            msgspec.json.encode(payload, enc_hook=msgspec_enc_hook))
-    for name, records in (("tier1_measurements.jsonl", measurements),
-                          ("tier1_odometry.jsonl", odometry),
-                          ("truth.jsonl", truth)):
-        run_io.write_jsonl(out_dir / name, records)
+def _load_build_document(path: Path, dataset_name: str) -> dict:
+    path = Path(path)
+    if (path.name != build_config.BUILD_CONFIG_NAME or not path.is_file()
+            or path.is_symlink()):
+        raise LocalizationInputError(
+            f"--build_config must name a regular, non-symlink "
+            f"{build_config.BUILD_CONFIG_NAME}")
+    document = build_config.load(path.parent)
+    if document["dataset"] != dataset_name:
+        raise LocalizationInputError(
+            f"build config belongs to {document['dataset']!r}, not "
+            f"{dataset_name!r}")
+    return document
+
+
+def _config(document: dict, key: str):
+    try:
+        return build_config.value(document, key)
+    except (build_config.MissingConfigValue,
+            build_config.InvalidConfigValue) as exc:
+        raise LocalizationInputError(str(exc)) from exc
+
+
+def _require_configured_path(document: dict, key: str, supplied: Path) -> None:
+    configured = Path(_config(document, key)).resolve()
+    if Path(supplied).resolve() != configured:
+        raise LocalizationInputError(
+            f"--{key.rsplit('.', 1)[-1]} resolves to {Path(supplied).resolve()}, "
+            f"but the immutable build config records {configured}")
+
+
+def _require_input_path(document: dict, key: str, supplied: Path) -> Path:
+    recorded = document["inputs"].get(key)
+    resolved = Path(supplied).resolve()
+    if not isinstance(recorded, str) or resolved != Path(recorded).resolve():
+        raise LocalizationInputError(
+            f"--{key} disagrees with immutable build input: {resolved} != "
+            f"{Path(recorded or '').resolve()}")
+    return resolved
+
+
+def _flatten_config(value, prefix: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not value:
+        return {prefix: value}
+    result = {}
+    for key, child in value.items():
+        if not isinstance(key, str) or not key:
+            raise LocalizationInputError(
+                f"{prefix} contains a non-string or empty key")
+        result.update(_flatten_config(child, f"{prefix}.{key}"))
+    return result
+
+
+def orchestration_contract(document: dict) -> dict:
+    """Recompute the pipeline's exact localization-input config selection."""
+    config = document.get("config")
+    if not isinstance(config, dict):
+        raise LocalizationInputError("build config has no config object")
+    selected = {}
+    for prefix in ("localization_inputs", "gps_course"):
+        value = config.get(prefix)
+        if not isinstance(value, dict):
+            raise LocalizationInputError(
+                f"build config does not record {prefix!r}")
+        selected.update(_flatten_config(value, prefix))
+    selected["artifacts.localization_inputs_version"] = build_config.value(
+        document, "artifacts.localization_inputs_version")
+    return {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "localization_inputs",
+        "config_digest": artifact.sha256_json(selected),
+    }
+
+
+def _nominal_forward_meta(path: Path,
+                          calibration: nominal_forward.NominalForward) -> dict:
+    return {
+        "file": "nominal_forward.json",
+        "source_path": str(Path(path).resolve()),
+        "content_sha256": artifact.sha256_file(path),
+        "schema": nominal_forward.SCHEMA,
+        "frame": nominal_forward.FRAME,
+        "dataset": calibration.dataset,
+        "version": calibration.version,
+        "mounting_id": calibration.mounting_id,
+        "panorama_column": calibration.panorama_column,
+        "panorama_width": calibration.panorama_width,
+        "bearing_camera_cw_deg": calibration.bearing_camera_cw_deg,
+        "uncertainty_deg": calibration.uncertainty_deg,
+        "evidence_frame_ids": list(calibration.evidence_frame_ids),
+        "operator": calibration.operator,
+        "approved_at": calibration.approved_at,
+        "notes": calibration.notes,
+    }
+
+
+def build(args) -> artifact.ArtifactRef:
+    """Build and publish one localization_inputs artifact."""
+    config_path = Path(args.build_config)
+    document = _load_build_document(config_path, args.dataset)
+    dataset_base = _require_input_path(
+        document, "dataset_base", args.dataset_base)
+    if dataset_base.is_symlink() or not dataset_base.is_dir():
+        raise LocalizationInputError(
+            f"--dataset_base must be a regular directory: {dataset_base}")
+    try:
+        dataset_digests = paths_lib.dataset_source_digests(dataset_base)
+    except paths_lib.MissingInput as exc:
+        raise LocalizationInputError(str(exc)) from exc
+    mismatched_sources = [
+        key for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS
+        if document["inputs"].get(key) != dataset_digests[key]
+    ]
+    if mismatched_sources:
+        raise LocalizationInputError(
+            "dataset source bytes differ from the immutable build recipe: "
+            f"{mismatched_sources}")
+    orchestration = orchestration_contract(document)
+    if args.orchestration_config_digest != orchestration["config_digest"]:
+        raise LocalizationInputError(
+            "--orchestration_config_digest does not match the immutable "
+            "localization-inputs stage config selection")
+    output_version = _config(
+        document, "artifacts.localization_inputs_version")
+    if Path(args.output_dir).name != output_version:
+        raise LocalizationInputError(
+            f"--output_dir must end in configured version {output_version!r}")
+
+    metadata = dataset_lib.load_metadata(dataset_base)
+    if metadata["dataset_name"] != args.dataset:
+        raise LocalizationInputError(
+            f"dataset metadata names {metadata['dataset_name']!r}, expected "
+            f"{args.dataset!r}")
+    dataset_lib.require_camera_frame_panoramas(metadata, dataset_base)
+    _require_configured_path(
+        document, "localization_inputs.motion_source", args.motion_source)
+    _require_configured_path(
+        document, "localization_inputs.nominal_forward_calibration",
+        args.nominal_forward_calibration)
+    motion_source = _require_input_path(
+        document, "motion_source", args.motion_source)
+    calibration_source = _require_input_path(
+        document, "nominal_forward_calibration",
+        args.nominal_forward_calibration)
+    expected_motion = (dataset_base / "frames_gps.csv").resolve()
+    if Path(args.motion_source).resolve() != expected_motion:
+        raise LocalizationInputError(
+            "the current motion contract consumes dataset frames_gps.csv; "
+            f"the explicit source resolves to {Path(args.motion_source).resolve()}")
+
+    motion_sha = artifact.sha256_file(motion_source)
+    if motion_sha != document["inputs"].get("motion_source_sha256"):
+        raise LocalizationInputError(
+            "motion source bytes disagree with immutable build input")
+    calibration_sha = artifact.sha256_file(calibration_source)
+    if calibration_sha != document["inputs"].get("nominal_forward_sha256"):
+        raise LocalizationInputError(
+            "nominal-forward bytes disagree with immutable build input")
+
+    frames = sorted(dataset_lib.load_frames(dataset_base),
+                    key=lambda frame: frame.frame_idx)
+    if len(frames) < 2:
+        raise LocalizationInputError("localization needs at least two frames")
+    if [frame.frame_idx for frame in frames] != list(range(len(frames))):
+        raise LocalizationInputError("frame indices must be contiguous 0..N")
+    if any(frame.time_s is None for frame in frames):
+        raise LocalizationInputError("motion frames must carry timestamps")
+    times = np.asarray([frame.time_s for frame in frames], dtype=np.float64)
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0.0):
+        raise LocalizationInputError(
+            "motion timestamps must be finite and strictly increasing")
+    anchor_lat, anchor_lon = dataset_lib.fill_enu(frames)
+    east = np.asarray([frame.x_m for frame in frames], dtype=np.float64)
+    north = np.asarray([frame.y_m for frame in frames], dtype=np.float64)
+
+    calibration = nominal_forward.load(
+        args.nominal_forward_calibration, expected_dataset=args.dataset)
+    panorama_width = _panorama_width(dataset_base, frames)
+    if calibration.panorama_width != panorama_width:
+        raise LocalizationInputError(
+            "nominal-forward panorama_width does not match this dataset: "
+            f"{calibration.panorama_width} != {panorama_width}")
+
+    observations_ref, observations, accepted_ids, tracks_ref, audits_ref = \
+        load_observations(
+            args.observations_dir, dataset_name=args.dataset,
+            panorama_width=panorama_width,
+            expected_versions={
+                kind: _config(document, f"artifacts.{kind}_version")
+                for kind in (paths_lib.BEARING_OBSERVATIONS,
+                             paths_lib.OBJECT_TRACKS,
+                             paths_lib.SEMANTIC_AUDITS)
+            }, build_identity=document["build_identity"])
+    for observation in observations:
+        if observation.keyframe_idx >= len(frames):
+            raise LocalizationInputError(
+                f"observation keyframe {observation.keyframe_idx} lies "
+                f"outside 0..{len(frames) - 1}")
+
+    catalog_ref = artifact.open_artifact(
+        args.catalog_dir, expected_kind=paths_lib.CATALOGS,
+        expected_dataset=args.dataset,
+        expected_version=_config(document, "artifacts.catalogs_version"))
+    if (catalog_ref.manifest_digest
+            != document["inputs"].get("catalog_manifest_digest")
+            or catalog_ref.content_digest
+            != document["inputs"].get("catalog_content_digest")):
+        raise LocalizationInputError(
+            "catalog artifact identity disagrees with immutable build input")
+    matching_ref, matched_tables, matched_version = load_matching(
+        args.matching_dir,
+        dataset_name=args.dataset,
+        accepted_tracklet_ids=accepted_ids,
+        tracks_ref=tracks_ref,
+        audits_ref=audits_ref,
+        catalog_ref=catalog_ref,
+        expected_version=_config(
+            document, "artifacts.landmark_matches_version"),
+        build_identity=document["build_identity"])
+
+    config = dict(document["config"]["localization_inputs"])
+    epoch_keyframes = _config(
+        document, "localization_inputs.reducer_epoch_keyframes")
+    camera_measurements = reduce_observations(observations, epoch_keyframes)
+    measurements = forward_frame_measurements(
+        camera_measurements, calibration)
+
+    if _config(document, "localization_inputs.use_uninformative_tables"):
+        tables = uninformative_tables(
+            accepted_ids,
+            _config(document,
+                    "localization_inputs.default_log_compatibility"),
+            _config(document, "localization_inputs.compatibility_clip"))
+        matcher_version = UNINFORMATIVE_MATCHER
+    else:
+        tables = matched_tables
+        matcher_version = matched_version
+
+    sigma_pair_m = _finite(
+        _config(document, "localization_inputs.odometry_sigma_pair_m"),
+        "odometry_sigma_pair_m", positive=True)
+    displacement_gate_m = _finite(
+        _config(document, "localization_inputs.displacement_gate_m"),
+        "displacement_gate_m", positive=True)
+    stationary_sigma_m = _finite(
+        _config(document, "localization_inputs.stationary_sigma_m"),
+        "stationary_sigma_m", positive=True)
+    slow_yaw_sigma_deg = _finite(
+        _config(document, "localization_inputs.slow_yaw_sigma_deg"),
+        "slow_yaw_sigma_deg", positive=True)
+    reverse_ranges = _config(
+        document, "localization_inputs.reverse_keyframe_ranges")
+    reverse_source = _config(
+        document, "localization_inputs.reverse_annotation_source")
+    course_min_displacement_m = _finite(
+        _config(document, "gps_course.min_displacement_m"),
+        "course_min_displacement_m", positive=True)
+    course_smooth_window_s = _finite(
+        _config(document, "gps_course.smooth_window_s"),
+        "course_smooth_window_s")
+    if course_smooth_window_s < 0.0:
+        raise LocalizationInputError(
+            "course_smooth_window_s must be nonnegative")
+
+    odometry = gps_to_odometry.derive_increments(
+        east, north,
+        sigma_pair_m=sigma_pair_m,
+        displacement_gate_m=displacement_gate_m,
+        stationary_sigma_m=stationary_sigma_m,
+        slow_yaw_sigma_deg=slow_yaw_sigma_deg,
+        reverse_keyframe_ranges=reverse_ranges,
+        extra_sigma_m=0.0,
+        extra_yaw_sigma_deg=0.0,
+        noise_seed=0)
+    course_model = heading.gps_course_model_from_positions(
+        east, north, times,
+        min_displacement_m=course_min_displacement_m,
+        smooth_window_s=course_smooth_window_s)
+    if course_model is None:
+        truth = []
+        course_status = "abstained_insufficient_displacement"
+    else:
+        truth = [structs.TruthPose(
+            keyframe_idx=index,
+            east_m=float(east[index]),
+            north_m=float(north[index]),
+            course_world_cw_deg=float(course_model.course_world_cw_deg_at(
+                times[index])) % 360.0)
+                 for index in range(len(frames))]
+        course_status = "gps_course_diagnostic_only"
+
+    position_sigma_m = _finite(
+        args.landmark_position_sigma_m,
+        "landmark_position_sigma_m", positive=True)
+    configured_position_sigma_m = _finite(
+        _config(document, "localization_inputs.landmark_position_sigma_m"),
+        "configured landmark_position_sigma_m", positive=True)
+    if position_sigma_m != configured_position_sigma_m:
+        raise LocalizationInputError(
+            "--landmark_position_sigma_m disagrees with the immutable build "
+            f"config: {position_sigma_m} != {configured_position_sigma_m}")
+    landmarks = landmark_entries(
+        Path(args.catalog_dir) / CATALOG_NAME, anchor_lat, anchor_lon,
+        position_sigma_m)
+    known_landmarks = {entry.landmark_id for entry in landmarks}
+    for table in tables:
+        unknown = [entry.landmark_id for entry in table.entries
+                   if entry.landmark_id not in known_landmarks]
+        if unknown:
+            raise LocalizationInputError(
+                f"table {table.tracklet_id!r} refers to catalog-absent "
+                f"landmark {unknown[0]!r}")
+
+    max_visible_range_m = _finite(
+        _config(document, "localization_inputs.max_visible_range_m"),
+        "max_visible_range_m", positive=True)
+    nominal_meta = _nominal_forward_meta(
+        args.nominal_forward_calibration, calibration)
+    meta = {
+        "schema_version": export_ingest.EXPORT_SCHEMA,
+        "message_schema_version": structs.SCHEMA_VERSION,
+        "dataset": args.dataset,
+        "scenario_name": _config(document, "experiment.name"),
+        "anchor_lat_deg": anchor_lat,
+        "anchor_lon_deg": anchor_lon,
+        "n_keyframes": len(frames),
+        "matcher_version": matcher_version,
+        "matching_coverage": "complete",
+        "max_visible_range_m": max_visible_range_m,
+        "landmark_position_sigma_m": position_sigma_m,
+        "nominal_forward": nominal_meta,
+        "motion": {
+            "file": "motion_source.csv",
+            "source_path": str(Path(args.motion_source).resolve()),
+            "content_sha256": motion_sha,
+            "course_heading_status": course_status,
+            "reverse_annotation_source": reverse_source,
+        },
+        "reducer": {
+            "name": "epoch_fused_compat_v1",
+            "epoch_keyframes": epoch_keyframes,
+            "input_frame": "camera_cw_deg",
+            "output_frame": "nominal_forward_cw_deg",
+        },
+    }
+    outputs = (
+        "export_meta.json",
+        "landmarks.json",
+        "motion_source.csv",
+        "nominal_forward.json",
+        "tier1_measurements.jsonl",
+        "tier1_odometry.jsonl",
+        "tier1_tables.json",
+        "truth.jsonl",
+    )
+    with publication.published_artifact(
+            args.output_dir,
+            kind=paths_lib.LOCALIZATION_INPUTS,
+            dataset=args.dataset,
+            version=output_version,
+            generator=GENERATOR,
+            git_commit=provenance.git_commit(),
+            arguments=sys.argv,
+            upstreams=(observations_ref, matching_ref, catalog_ref),
+            config={
+                "orchestration": orchestration,
+                "build_identity": document["build_identity"],
+                "localization_inputs": config,
+                "gps_course": dict(document["config"]["gps_course"]),
+                "nominal_forward_sha256": nominal_meta["content_sha256"],
+                "motion_source_sha256": motion_sha,
+                "source_digests": {
+                    "build_config": artifact.sha256_file(config_path),
+                    **dataset_digests,
+                    "motion_source": motion_sha,
+                    "nominal_forward": calibration_sha,
+                    paths_lib.BEARING_OBSERVATIONS:
+                        observations_ref.content_digest,
+                    paths_lib.LANDMARK_MATCHES:
+                        matching_ref.content_digest,
+                    paths_lib.CATALOGS: catalog_ref.content_digest,
+                },
+                "matching_coverage": "complete",
+                "matching_n_expected": artifact.load_manifest(
+                    args.matching_dir).config["n_expected"],
+                "matching_n_successful": artifact.load_manifest(
+                    args.matching_dir).config["n_successful"],
+                "reducer": meta["reducer"],
+            },
+            declared_outputs=outputs) as builder:
+        artifact.atomic_write_json(builder.output_path("export_meta.json"), meta)
+        artifact.atomic_write_file(
+            builder.output_path("landmarks.json"),
+            msgspec.json.encode(landmarks, enc_hook=msgspec_enc_hook))
+        artifact.atomic_write_file(
+            builder.output_path("tier1_tables.json"),
+            msgspec.json.encode(tables, enc_hook=msgspec_enc_hook))
+        for name, records in (
+                ("tier1_measurements.jsonl", measurements),
+                ("tier1_odometry.jsonl", odometry),
+                ("truth.jsonl", truth)):
+            run_io.write_jsonl(builder.output_path(name), records)
+        shutil.copyfile(
+            motion_source, builder.output_path("motion_source.csv"))
+        shutil.copyfile(
+            calibration_source,
+            builder.output_path("nominal_forward.json"))
+    assert builder.artifact_ref is not None
+    # Exercise the consumer boundary before reporting success.
+    export_ingest.load(args.output_dir, expected_dataset=args.dataset)
+    return builder.artifact_ref
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    paths_lib.add_arguments(parser, feather=True)
-    parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, required=True,
-                        help="e.g. <run_dir>/localization_export")
-    parser.add_argument("--tables", required=True,
-                        help="'uninformative', or the path to a matching "
-                             "stage's compatibility.json")
-    parser.add_argument("--mount_offset_deg", type=float, default=None,
-                        help="override every recorded offset source")
-    parser.add_argument("--scenario_name", default=None,
-                        help="default: <dataset>_<run dir name>")
-    parser.add_argument("--keep_dropped_tracklets", action="store_true",
-                        help="export bearings the audit returned "
-                             "verdict=drop for (controls only)")
-    # Modeling parameters: required, recorded into the meta (REORG.md rule 2).
-    parser.add_argument("--epoch_keyframes", type=int, required=True,
-                        help="keyframes fused per bearing (previously 5)")
-    parser.add_argument("--bearing_sigma_deg", type=float, required=True,
-                        help="per-observation bearing noise floor "
-                             "(previously 1.0)")
-    parser.add_argument("--default_log_lr", type=float, required=True,
-                        help="flat score in uninformative tables "
-                             "(previously 0.0)")
-    parser.add_argument("--clip", type=float, required=True,
-                        help="log-LR clip the filter applies (previously 4)")
-    parser.add_argument("--min_step_m", type=float, required=True,
-                        help="odometry speed gate (previously 2.0)")
-    parser.add_argument("--sigma_pair_m", type=float, required=True,
-                        help="per-fix-pair GPS sigma (previously 1.0)")
-    parser.add_argument("--max_visible_range_m", type=float, required=True,
-                        help="catalog visibility radius, recorded for "
-                             "replay (previously 15000 in one place and "
-                             "10000 in another — which is why it is now "
-                             "required)")
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset_base", type=Path, required=True)
+    parser.add_argument("--observations_dir", type=Path, required=True)
+    parser.add_argument("--matching_dir", type=Path, required=True)
+    parser.add_argument("--catalog_dir", type=Path, required=True)
+    parser.add_argument("--motion_source", type=Path, required=True)
+    parser.add_argument("--nominal_forward_calibration", type=Path,
+                        required=True)
+    parser.add_argument("--landmark_position_sigma_m", type=float,
+                        required=True)
+    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--build_config", type=Path, required=True)
+    parser.add_argument("--orchestration_config_digest", required=True)
     args = parser.parse_args()
-    paths = paths_lib.resolve(
-        parser, args, infer_from=args.run_dir,
-        require=("dataset_base", "feather"))
-
-    metadata = dataset_lib.load_metadata(paths.dataset_base)
-    dataset_lib.require_camera_frame_panoramas(metadata, paths.dataset_base)
-    offset_deg, offset_source = resolve_mount_offset(
-        args.run_dir, metadata, paths.dataset_base, args.mount_offset_deg)
-    print(f"mount offset: {offset_deg} deg from {offset_source}")
-
-    frames = dataset_lib.load_frames(paths.dataset_base)
-    anchor_lat, anchor_lon = dataset_lib.fill_enu(frames)
-    frames = sorted(frames, key=lambda f: f.frame_idx)
-    if any(f.time_s is None for f in frames):
-        raise SystemExit("frames without time_s: the heading model and the "
-                         "odometry speed gate both need timestamps")
-
-    tracks = load_tracks(args.run_dir)
-    audits = audit_io.load_audits(args.run_dir)
-    if not audits:
-        raise SystemExit(
-            f"no semantic audit under {args.run_dir}: audit membership is "
-            f"the tracklet gate, so an unaudited run has nothing to export. "
-            f"Run the audit stage first.")
-    if not args.keep_dropped_tracklets:
-        dropped = sorted(tid for tid, a in audits.items()
-                         if (a or {}).get("verdict") == "drop")
-        audits = {tid: a for tid, a in audits.items()
-                  if (a or {}).get("verdict") != "drop"}
-        if dropped:
-            print(f"audit verdict=drop: excluded {len(dropped)} tracks "
-                  f"({dropped[:5]}{'...' if len(dropped) > 5 else ''})")
-    else:
-        dropped = []
-
-    probe = sorted((paths.dataset_base / "panorama").glob("*.jpg"))[0]
-    from PIL import Image
-    pano_w = Image.open(probe).size[0]
-
-    camera_measurements = tracklets.build_measurements(
-        tracks, audits, pano_w,
-        tracklets.TrackletParams(epoch_keyframes=args.epoch_keyframes,
-                                 bearing_sigma_deg=args.bearing_sigma_deg))
-    measurements = body_frame_measurements(camera_measurements, offset_deg)
-
-    east = np.array([f.x_m for f in frames], dtype=np.float64)
-    north = np.array([f.y_m for f in frames], dtype=np.float64)
-    model = heading_mod.heading_model_from_positions(
-        [f.x_m for f in frames], [f.y_m for f in frames],
-        [f.time_s for f in frames])
-    course = [model.at(f.time_s) for f in frames]
-    odometry = gps_to_odometry.derive_increments(
-        east, north, sigma_pair_m=args.sigma_pair_m,
-        min_step_m=args.min_step_m)
-    truth = [structs.TruthPose(keyframe_idx=i, east_m=float(east[i]),
-                               north_m=float(north[i]),
-                               heading_deg=float(course[i]) % 360.0)
-             for i in range(len(frames))]
-
-    if args.tables == "uninformative":
-        tables = uninformative_tables(measurements, args.default_log_lr,
-                                      args.clip)
-        matcher_version = UNINFORMATIVE_MATCHER
-        log_lr_scheme = {"source": "no matcher; flat tables",
-                         "default_log_lr": args.default_log_lr,
-                         "clip": args.clip}
-    else:
-        tables_path = Path(args.tables)
-        tables = msgspec.json.decode(
-            tables_path.read_bytes(), type=list[structs.CompatibilityTable],
-            dec_hook=msgspec_dec_hook)
-        versions = {t.matcher_version for t in tables}
-        if len(versions) != 1:
-            raise SystemExit(f"{tables_path} mixes matcher versions "
-                             f"{sorted(versions)}")
-        matcher_version = versions.pop()
-        log_lr_scheme = {"source": str(tables_path)}
-        have = {t.tracklet_id for t in tables}
-        need = {m.tracklet_id for m in measurements}
-        if need - have:
-            raise SystemExit(
-                f"{len(need - have)} measured tracklets have no table in "
-                f"{tables_path} (e.g. {sorted(need - have)[:3]}): the "
-                f"matching run and this export disagree about which tracks "
-                f"exist. Re-run matching on this run's tracks.")
-
-    landmarks = landmark_entries(paths.feather, anchor_lat, anchor_lon)
-
-    scenario = args.scenario_name or f"{paths.dataset}_{args.run_dir.name}"
-    meta = {
-        "schema_version": structs.SCHEMA_VERSION,
-        "scenario_name": scenario,
-        "anchor_lat_deg": anchor_lat,
-        "anchor_lon_deg": anchor_lon,
-        "n_keyframes": len(frames),
-        "matcher_version": matcher_version,
-        "mount_offset_deg": offset_deg,
-        "mount_offset_source": offset_source,
-        "mount_offset_frame": geo.MOUNT_OFFSET_FRAME,
-        "log_lr_scheme": log_lr_scheme,
-        # Provenance extras (ExportMeta ignores unknown fields; readers of
-        # the raw JSON get the full record).
-        "audit_dropped_tracklets": dropped,
-        "epoch_keyframes": args.epoch_keyframes,
-        "bearing_sigma_deg": args.bearing_sigma_deg,
-        "min_step_m": args.min_step_m,
-        "sigma_pair_m": args.sigma_pair_m,
-        "max_visible_range_m": args.max_visible_range_m,
-        "truth_heading_note": "GPS course, not a measured heading",
-        "catalog": str(paths.feather),
-        "run_dir": str(args.run_dir),
-        "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
-    }
-    write_export(args.output_dir, meta, landmarks, tables, measurements,
-                 odometry, truth)
-    print(f"{len(measurements)} measurements over "
-          f"{len({m.tracklet_id for m in measurements})} tracklets, "
-          f"{len(odometry)} odometry steps, {len(landmarks)} landmarks")
-    print(f"export written to {args.output_dir}\n")
-    # Read it straight back through the filter's own loader: validate() is
-    # the boundary that would otherwise fail deep inside a run.
-    print(export_ingest.describe(export_ingest.load(
-        args.output_dir, max_visible_range_m=args.max_visible_range_m)))
+    try:
+        ref = build(args)
+    except (LocalizationInputError, artifact.ArtifactError,
+            dataset_lib.ContractViolation, ValueError) as exc:
+        parser.error(str(exc))
+    print(f"published immutable localization inputs: {ref.path}")
 
 
 if __name__ == "__main__":

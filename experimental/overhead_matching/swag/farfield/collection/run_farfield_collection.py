@@ -6,10 +6,10 @@ Stages, per trajectory:
   2 DOWNLOAD  manifest -> ordered jpg+json staging       (extract_stitch, in-process)
   3 CONVERT   staging -> dataset dir                     (mapillary_to_vigor, in-process)
   4 TIMELAPSE trajectory.png + gps_timelapse.mp4         (dataset_tools.make_dataset_timelapse)
-  5 OSM       landmark feather (+ENC where NOAA covers)  (extract_landmarks_* via bazel)
+  5 OSM       publish full typed catalog (+ENC where covered)
   6 PINHOLE   4 yaw faces, equirectangular only          (panorama_to_pinhole via bazel)
-  7 TRIM      observable-from-water catalog subset       (dataset_tools.trim_catalog)
-  8 PLOT      landmark coverage figure + gap checks      (dataset_tools.plot_landmarks)
+  7 TRIM      full catalog -> matchable typed catalog     (trim_catalog)
+  8 PLOT      full-catalog coverage diagnostic artifact  (plot_landmarks)
   9 AUDIT     dataset contract audit                     (farfield.audit_dataset, in-process)
 
 Stages that are collection code run IN-PROCESS by importing the ported modules
@@ -18,9 +18,12 @@ Stages that are collection code run IN-PROCESS by importing the ported modules
 survives only where it is genuinely needed — the landmark extractors run under
 a cgroup memory cap, and panorama_to_pinhole lives in another package — and
 those resolve the repo root from $BUILD_WORKSPACE_DIRECTORY (set by `bazel
-run`) and error when it is absent. The dataset_tools stages (4, 7, 8) import
-`farfield.dataset_tools.*`; until that PR lands in this stack they fail with a
-pointed message rather than running some stale copy.
+run`) and error when it is absent. Stage 4 imports its dataset tool directly.
+Stage 5 publishes the full catalog in the typed artifact lane, stage 7
+publishes its trimmed descendant before matching, and stage 8 evaluates the
+full source catalog independently of that semantic trim. Matching-derived
+evidence may guard a later revision, but is not required to construct the
+first trimmed catalog or its coverage diagnostic.
 
 TIMELAPSE sits directly after CONVERT (moved 2026-08-17, was stage 8) because
 it is the input to the human triage pass, and triage is the cheapest gate:
@@ -30,13 +33,18 @@ the landmark stages means a rejected trajectory costs one mp4, not an
 Overpass catalog + pinhole render.
 
 Stage 6 is deliberately skipped for perspective captures: a limited-FOV frame
-is already a single view, and its azimuth mapping comes from intrinsics.csv
-rather than from four fixed 90-degree faces.
+is already a single view. The converter records its optical-axis convention in
+intrinsics.csv, but the current downstream extraction pipeline supports only
+equirectangular inputs; perspective collection is not an end-to-end far-field
+localization path yet.
 
 Layout (lifecycle lanes; defaults derive from farfield.paths.default_root()):
-    <output_base>/<name>/       dataset (panorama/, frames_gps.csv, landmarks/, ...)
+    <output_base>/<name>/       dataset (panorama/, frames_gps.csv, ...)
     <manifest_dir>/<name>.json  stage-1 stitched manifest
     <raw_dir>/<name>/           staged originals, prunable after stage 3
+    <catalog_sources_base>/<name>/<version>/  loose OSM/ENC build material
+    <catalog_base>/<name>/<version>/          typed full/trimmed catalogs
+    <catalog_coverage_base>/<name>/<version>/ typed coverage diagnostics
 """
 
 import argparse
@@ -50,9 +58,14 @@ import sys
 from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
     audit_dataset,
     paths as paths_lib,
+    publication,
     provenance,
+)
+from experimental.overhead_matching.swag.farfield.catalog import (
+    schema as catalog_schema,
 )
 from experimental.overhead_matching.swag.farfield.collection import (
     extract_stitch,
@@ -68,18 +81,22 @@ from experimental.overhead_matching.swag.farfield.collection.geometry_helpers im
 from experimental.overhead_matching.swag.farfield.collection.pbf_coverage import (
     check_coverage,
 )
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    plot_landmarks,
+    trim_catalog,
+)
 
 SCRIPTS = "//experimental/overhead_matching/swag/scripts"
+DATASET_TOOLS = "//experimental/overhead_matching/swag/farfield/dataset_tools"
 
 # `bazel run` must be invoked from the source workspace, not the runfiles
 # tree. Only the stages that genuinely need a subprocess consult this.
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 
-# extract_landmarks_historical builds a node-location index for the WHOLE pbf in
-# RAM before it can filter by bbox, so peak memory tracks file size and not the
-# area requested. Whole-France (4.7 GB) reached 28 GB RSS growing 1.2 GB/min and
-# took the machine down. Two independent guards, because one is advisory and the
-# other is enforced:
+# The common libosmium extractor can build a node-location index for the whole
+# PBF, so peak memory tracks file size rather than the requested bbox unless an
+# explicit bounded node margin is used. Whole-France (4.7 GB) reached 28 GB RSS
+# growing 1.2 GB/min and took the machine down. Two independent guards remain:
 #   * refuse files over --max_pbf_mb (generous now: with the dict schema and the
 #     bounded node index a 4.7 GB national extract peaks at 3.0 GB);
 #   * run the extraction inside a cgroup with a hard memory ceiling, so a
@@ -151,18 +168,16 @@ def run_module(main_fn, argv, desc, args):
 def dataset_tools_module(module_name: str):
     """Import farfield.dataset_tools.<module>, or explain why it is absent.
 
-    Stages 4/7/8 belong to the dataset-tools PR, which lands in the same
-    stack. Until it does, this errors loudly instead of silently running a
-    stale script from the checkpoint branch.
+    Optional dataset-tool stages error loudly instead of silently running a
+    stale script from another package.
     """
     qualified = ("experimental.overhead_matching.swag.farfield.dataset_tools."
                  + module_name)
     try:
         return importlib.import_module(qualified)
     except ImportError as exc:
-        print(f"  ERROR: cannot import {qualified}: dataset-tools PR not yet "
-              f"merged ({exc}). This stage runs once reorg/14-dataset-tools "
-              f"lands in the stack.")
+        print(f"  ERROR: cannot import {qualified}: this optional stage has "
+              f"no active far-field implementation ({exc})")
         return None
 
 
@@ -255,6 +270,67 @@ def stage_timelapse(name, cfg, args):
         f"[4 TIMELAPSE] {name}", args)
 
 
+def _catalog_artifact_dir(args, name: str, version: str) -> Path:
+    return args.catalog_base / name / version
+
+
+def _publish_full_catalog(name: str, source: Path, args, config: dict) -> bool:
+    """Publish stage 5's selected compact Feather as the full typed catalog."""
+    output_dir = _catalog_artifact_dir(args, name, args.catalog_version)
+    try:
+        frame = catalog_schema.read_frame(source)
+        source_digest = artifact.sha256_file(source)
+        manifest_config = {
+            **config,
+            "schema": catalog_schema.FULL_ARTIFACT_SCHEMA,
+            "selected_source_feather": str(source.resolve()),
+            "selected_source_sha256": source_digest,
+            "rows": int(len(frame)),
+        }
+        with publication.published_artifact(
+                output_dir,
+                kind=paths_lib.CATALOGS,
+                dataset=name,
+                version=args.catalog_version,
+                generator=("//experimental/overhead_matching/swag/farfield/"
+                           "collection:run_farfield_collection (stage 5)"),
+                git_commit=provenance.git_commit(),
+                config=manifest_config,
+                declared_outputs=("catalog.feather",)) as builder:
+            shutil.copyfile(source, builder.output_path("catalog.feather"))
+    except (artifact.ArtifactError, artifact.ArtifactExistsError,
+            catalog_schema.CatalogSchemaError,
+            publication.PublicationValidationError, OSError) as exc:
+        print(f"  ERROR: failed to publish full catalog {output_dir}: {exc}")
+        return False
+    print(f"  published full catalog: {output_dir}")
+    return True
+
+
+def _finish_landmark_stage(name: str, selected: Path, pbf_paths, bbox,
+                           osm_specs, enc_state, merged: bool, args,
+                           source_coverage: dict, cells=None) -> bool:
+    source_dir = args.catalog_sources_base / name / args.catalog_version
+    _write_provenance(source_dir, name, pbf_paths, bbox,
+                      osm_specs=osm_specs, enc_state=enc_state,
+                      merged=merged, cells=cells, args=args)
+    return _publish_full_catalog(
+        name,
+        selected,
+        args,
+        config={
+            "bbox_wsen": list(bbox),
+            "osm_specs": list(osm_specs),
+            "enc_state": enc_state,
+            "enc_cells": list(cells or []),
+            "enc_available": merged,
+            "dedupe_tolerance_m": args.dedupe_tolerance_m,
+            "node_margin_deg": args.node_margin_deg,
+            "source_coverage": source_coverage,
+        },
+    )
+
+
 def stage_landmarks(name, cfg, args):
     """OSM landmarks, plus ENC and a merge where NOAA has coverage."""
     dataset_dir = args.output_base / name
@@ -305,6 +381,13 @@ def stage_landmarks(name, cfg, args):
     # `from pbf_coverage import check_coverage` never resolved under bazel, so
     # this gate — the one that catches the 99.6%-catalog-loss case — was
     # unreachable in exactly the environment the orchestrator runs in.)
+    source_coverage = {
+        "schema": "farfield_catalog_source_coverage/v1",
+        "status": "skipped_by_operator",
+        "message": "collection ran with --skip_coverage_check",
+        "details": [],
+        "reference_specs": list(cfg.get("osm_reference") or []),
+    }
     if not args.skip_coverage_check:
         ok, msg, cov_details = check_coverage(
             osm_specs, (west, south, east, north),
@@ -320,8 +403,15 @@ def stage_landmarks(name, cfg, args):
                   f"Fix the registry's osm list, or pass --skip_coverage_check to "
                   f"accept it.")
             return False
+        source_coverage = {
+            "schema": "farfield_catalog_source_coverage/v1",
+            "status": "passed",
+            "message": msg,
+            "details": cov_details,
+            "reference_specs": list(cfg.get("osm_reference") or []),
+        }
 
-    sources = dataset_dir / "landmarks" / "sources"
+    sources = args.catalog_sources_base / name / args.catalog_version
     if not args.dry_run:
         sources.mkdir(parents=True, exist_ok=True)
 
@@ -338,7 +428,7 @@ def stage_landmarks(name, cfg, args):
         # the canonical boston_harbor invocation).
         size_mb = pbf_path.stat().st_size / 1e6 if pbf_path.exists() else 0
         ok = run_bazel(
-            f"{SCRIPTS}:extract_landmarks_historical",
+            f"{DATASET_TOOLS}:extract_landmarks_from_osm",
             ["--pbf_file", pbf_path,
              "--bbox", west, south, east, north,
              "--node_margin_deg", args.node_margin_deg,
@@ -351,9 +441,9 @@ def stage_landmarks(name, cfg, args):
         osm_feathers.append(out.with_suffix(".feather"))
 
     if len(osm_feathers) > 1:
-        combined = sources / f"osm_{name}_v1.feather"
+        combined = sources / f"osm_{name}.feather"
         ok = run_bazel(
-            f"{SCRIPTS}:merge_landmark_feathers",
+            f"{DATASET_TOOLS}:merge_landmark_feathers",
             ["--inputs", *osm_feathers, "--output", combined,
              "--dedupe_tolerance_m", args.dedupe_tolerance_m],
             f"[5 OSM merge] {name} ({len(osm_feathers)} extracts)", args)
@@ -365,19 +455,20 @@ def stage_landmarks(name, cfg, args):
 
     if not cfg.get("enc_state"):
         print(f"  no NOAA ENC coverage for {name} (non-US waters) — OSM-only catalog. "
-              f"Fixed navaids will be sparser here; recorded in the landmarks manifest")
-        if not args.dry_run:
-            _write_provenance(dataset_dir, name, pbf_paths, (west, south, east, north),
-                              osm_specs=osm_specs,
-                              enc_state=None, merged=False, args=args)
-            _link_pipeline_feather(dataset_dir, osm_out.with_suffix(".feather"), args)
-        return True
+              f"Fixed navaids will be sparser here; recorded in source provenance")
+        if args.dry_run:
+            return True
+        return _finish_landmark_stage(
+            name, osm_out.with_suffix(".feather"), pbf_paths,
+            (west, south, east, north), osm_specs, None, False, args,
+            source_coverage)
 
     enc_out = sources / f"enc_{name}_v1"
     ok = run_bazel(
-        f"{SCRIPTS}:download_enc_cells",
+        f"{DATASET_TOOLS}:download_enc_cells",
         ["--catalog_state", cfg["enc_state"],
-         "--bbox", west, south, east, north],
+         "--bbox", west, south, east, north,
+         "--output_dir", args.enc_root],
         f"[5 ENC dl] {name} ({cfg['enc_state']})", args)
     if not ok:
         return False
@@ -388,39 +479,38 @@ def stage_landmarks(name, cfg, args):
     if not cells:
         print(f"  WARNING: no ENC cells found covering {name}'s bbox; "
               f"continuing with an OSM-only catalog")
-        if not args.dry_run:
-            _write_provenance(dataset_dir, name, pbf_paths, (west, south, east, north),
-                              osm_specs=osm_specs,
-                              enc_state=cfg["enc_state"], merged=False, args=args)
-            _link_pipeline_feather(dataset_dir, osm_out.with_suffix(".feather"), args)
-        return True
+        if args.dry_run:
+            return True
+        return _finish_landmark_stage(
+            name, osm_out.with_suffix(".feather"), pbf_paths,
+            (west, south, east, north), osm_specs, cfg["enc_state"], False,
+            args, source_coverage)
     print(f"  ENC cells: {' '.join(cells)}")
 
     ok = run_bazel(
-        f"{SCRIPTS}:extract_landmarks_from_enc",
+        f"{DATASET_TOOLS}:extract_landmarks_from_enc",
         ["--enc_root", args.enc_root, "--cells", *cells,
          "--bbox", west, south, east, north,
+         "--dedupe_tolerance_m", args.dedupe_tolerance_m,
          "--output_path", enc_out],
         f"[5 ENC extract] {name}", args)
     if not ok:
         return False
 
-    merged = dataset_dir / "landmarks" / f"{name}_osm_enc_v1.feather"
+    merged = sources / f"{name}_osm_enc.feather"
     ok = run_bazel(
-        f"{SCRIPTS}:merge_landmark_feathers",
+        f"{DATASET_TOOLS}:merge_landmark_feathers",
         ["--inputs", osm_out.with_suffix(".feather"), enc_out.with_suffix(".feather"),
          "--output", merged,
          "--dedupe_tolerance_m", args.dedupe_tolerance_m],
         f"[5 MERGE] {name}", args)
     if not ok:
         return False
-    if not args.dry_run:
-        _write_provenance(dataset_dir, name, pbf_paths, (west, south, east, north),
-                          osm_specs=osm_specs,
-                          enc_state=cfg["enc_state"], merged=True, cells=cells,
-                          args=args)
-        _link_pipeline_feather(dataset_dir, merged, args)
-    return True
+    if args.dry_run:
+        return True
+    return _finish_landmark_stage(
+        name, merged, pbf_paths, (west, south, east, north), osm_specs,
+        cfg["enc_state"], True, args, source_coverage, cells=cells)
 
 
 def _cells_for_bbox(enc_root: Path, bbox, dry_run: bool):
@@ -439,27 +529,11 @@ def _cells_for_bbox(enc_root: Path, bbox, dry_run: bool):
                   and d.name.startswith("US5"))
 
 
-def _link_pipeline_feather(dataset_dir: Path, feather: Path, args):
-    """Expose the chosen catalog as landmarks/<landmark_version>.feather.
-
-    Dataset loaders open landmarks/<version>.feather by exact name, so give it
-    a stable one instead of requiring a per-dataset --landmark_version.
-    """
-    if not feather.exists():
-        print(f"  WARNING: expected {feather} to exist; not linking")
-        return
-    link = dataset_dir / "landmarks" / f"{args.landmark_version}.feather"
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(Path(feather).relative_to(link.parent))
-    print(f"  linked landmarks/{link.name} -> {link.readlink()}")
-
-
-def _write_provenance(dataset_dir: Path, name: str, pbf_paths, bbox,
+def _write_provenance(source_dir: Path, name: str, pbf_paths, bbox,
                       enc_state, merged: bool, args, cells=None, osm_specs=None):
-    """Record how landmarks/ was produced, via the one manifest writer."""
+    """Record how the loose raw-material catalog sources were produced."""
     provenance.write(
-        dataset_dir / "landmarks",
+        source_dir,
         generator="//experimental/overhead_matching/swag/farfield/"
                   "collection:run_farfield_collection (stage 5)",
         inputs={f"pbf_{i}": Path(p).name for i, p in enumerate(
@@ -481,7 +555,7 @@ def _write_provenance(dataset_dir: Path, name: str, pbf_paths, bbox,
                "navaids (beacons, buoys, lights) are substantially less "
                "complete here than in the US datasets"),
     )
-    print(f"  wrote {dataset_dir / 'landmarks' / provenance.MANIFEST_NAME}")
+    print(f"  wrote {source_dir / provenance.MANIFEST_NAME}")
 
 
 def stage_pinhole(name, cfg, args):
@@ -494,8 +568,9 @@ def stage_pinhole(name, cfg, args):
         is_equirect = json.loads(meta_path.read_text()).get("is_equirectangular", is_equirect)
     if not is_equirect:
         print(f"\n=== [6 PINHOLE] {name}: skipped (perspective capture — a "
-              f"limited-FOV frame is already a single view; bearings come from "
-              f"intrinsics.csv)")
+              f"limited-FOV frame is already a single view; intrinsics.csv "
+              f"records its optical-axis convention, but downstream far-field "
+              f"extraction does not support perspective inputs yet)")
         return True
     # Pinhole faces are a versioned artifact (artifacts/pinhole_images/<name>/
     # <version>/ + manifest.json), not part of the frozen dataset contract.
@@ -521,69 +596,53 @@ def stage_pinhole(name, cfg, args):
 
 
 def stage_trim(name, cfg, args):
-    """Trim the catalog to landmarks plausibly observable from the water.
-
-    Runs on the merged feather and writes a sibling `<version>_trimmed.feather`,
-    leaving the untrimmed catalog in place: the trim encodes judgement about what
-    is visible at range, and that is worth being able to revisit without
-    re-extracting.
-
-    The recall guard is mandatory: the trim tool measures every rule against a
-    matched set (--matched_from) and/or a pairing positive set (--positive_set)
-    and refuses rules that drop either. Running with neither reference silently
-    skips the one check that has killed two "obviously right" rules, so this
-    stage refuses outright rather than trimming unguarded. (The old
-    orchestrator passed neither, so the guard never ran on a collected
-    dataset.)
-    """
-    if not args.matched_from and not args.positive_set:
-        print(f"\n=== [7 TRIM] {name}: REFUSING to trim without a recall "
-              f"reference. Pass --matched_from <m9 run dir> (repeatable) "
-              f"and/or --positive_set <positive_set.json>; the recall guard "
-              f"is load-bearing and does not run without them.")
+    """Publish the matchable catalog from stage 5's full typed catalog."""
+    del cfg
+    input_dir = _catalog_artifact_dir(args, name, args.catalog_version)
+    output_dir = _catalog_artifact_dir(
+        args, name, args.trimmed_catalog_version)
+    if not input_dir.exists() and not args.dry_run:
+        print(f"  ERROR: {input_dir} missing — run stage 5 (OSM) first")
         return False
-    ds = args.output_base / name
-    link = ds / "landmarks" / f"{args.landmark_version}.feather"
-    if not link.exists() and not args.dry_run:
-        print(f"  ERROR: {link} missing — run stage 5 (OSM) first")
-        return False
-    target = link.resolve() if link.exists() else link
-    out = target.with_name(target.stem + "_trimmed.feather")
-    print(f"\n{'[DRY RUN] ' if args.dry_run else ''}=== [7 TRIM] {name}")
-    if args.dry_run:
-        return True
-    mod = dataset_tools_module("trim_catalog")
-    if mod is None:
-        return False
-    argv = ["--input", target, "--output", out,
-            "--min_building_area_m2", args.trim_min_building_area_m2,
-            "--min_building_levels", args.trim_min_building_levels,
-            "--confidence_floor", args.trim_confidence_floor]
+    argv = [
+        "--input_catalog_dir", input_dir,
+        "--output_dir", output_dir,
+        "--min_building_area_m2", args.trim_min_building_area_m2,
+        "--min_building_levels", args.trim_min_building_levels,
+    ]
     for matched in args.matched_from or []:
         argv += ["--matched_from", matched]
+    if args.matched_from:
+        argv += ["--confidence_floor", args.trim_confidence_floor]
     if args.positive_set:
         argv += ["--positive_set", args.positive_set]
-    ok = run_module(mod.main, argv, f"[7 TRIM] {name}", args)
-    if ok and out.exists():
-        trimmed_link = ds / "landmarks" / f"{args.landmark_version}_trimmed.feather"
-        if trimmed_link.exists() or trimmed_link.is_symlink():
-            trimmed_link.unlink()
-        trimmed_link.symlink_to(out.relative_to(trimmed_link.parent))
-        print(f"  linked landmarks/{trimmed_link.name} -> {trimmed_link.readlink()}")
-    return ok
+    return run_module(trim_catalog.cli, argv, f"[7 TRIM] {name}", args)
 
 
 def stage_plot(name, cfg, args):
-    """Render the landmark coverage figure and run the emptiness checks."""
-    ds = args.output_base / name
-    out = ds / "landmarks" / "landmark_coverage.png"
-    print(f"\n{'[DRY RUN] ' if args.dry_run else ''}=== [8 PLOT] {name}")
-    if args.dry_run:
-        return True
-    mod = dataset_tools_module("plot_landmarks")
-    if mod is None:
+    """Publish a review artifact for the full pre-trim catalog."""
+    del cfg
+    catalog_dir = _catalog_artifact_dir(args, name, args.catalog_version)
+    if not catalog_dir.exists() and not args.dry_run:
+        print(f"  ERROR: {catalog_dir} missing — run stage 5 (OSM) first")
         return False
-    return run_module(mod.main, [ds, "-o", out], f"[8 PLOT] {name}", args)
+    output_dir = (
+        args.catalog_coverage_base / name / args.catalog_coverage_version)
+    argv = [
+        "--dataset", name,
+        "--dataset_dir", args.output_base / name,
+        "--catalog_dir", catalog_dir,
+        "--poly_cache_dir", args.osm_cache_dir / "poly",
+        "--output_dir", output_dir,
+        "--grid_cells", args.coverage_grid_cells,
+        "--max_empty_run", args.coverage_max_empty_run,
+        "--empty_fraction_warning", args.coverage_empty_fraction_warning,
+        "--far_range_km", args.coverage_far_range_km,
+        "--min_far_fraction", args.coverage_min_far_fraction,
+        "--max_track_samples", args.coverage_max_track_samples,
+    ]
+    return run_module(
+        plot_landmarks.cli, argv, f"[8 PLOT] {name}", args)
 
 
 def stage_audit(name, cfg, args):
@@ -596,6 +655,7 @@ def stage_audit(name, cfg, args):
 STAGES = {1: stage_resolve, 2: stage_download, 3: stage_convert,
           4: stage_timelapse, 5: stage_landmarks, 6: stage_pinhole,
           7: stage_trim, 8: stage_plot, 9: stage_audit}
+DEFAULT_STAGES = (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 
 def main(argv=None) -> int:
@@ -606,8 +666,8 @@ def main(argv=None) -> int:
                    help="'all', 'pilot', 'pano', 'perspective', or "
                         "comma-separated registry names (the old default was "
                         "'pilot')")
-    p.add_argument("--stages", default="1,2,3,4,5,6,7,8,9",
-                   help="Comma-separated stage numbers (default: all)")
+    p.add_argument("--stages", default=",".join(map(str, DEFAULT_STAGES)),
+                   help="Comma-separated stage numbers (default: all stages)")
 
     # Lifecycle lanes: defaults derive from the one disk-layout owner
     # (farfield.paths), overridable per flag; no hardcoded /data literals.
@@ -622,6 +682,18 @@ def main(argv=None) -> int:
                    help="Stage-2 staged originals (default: "
                         "<farfield_root>/raw_material/mapillary_raw; "
                         "--prune_raw removes them after conversion)")
+    p.add_argument("--catalog_sources_base", type=Path,
+                   default=root / "raw_material" / "catalog_sources",
+                   help="Loose OSM/ENC source-build lane (default: "
+                        "<farfield_root>/raw_material/catalog_sources)")
+    p.add_argument("--catalog_base", type=Path,
+                   default=root / "artifacts" / paths_lib.CATALOGS,
+                   help="Typed catalog artifact lane (default: "
+                        "<farfield_root>/artifacts/catalogs)")
+    p.add_argument("--catalog_coverage_base", type=Path,
+                   default=root / "artifacts" / paths_lib.CATALOG_COVERAGE,
+                   help="Typed catalog-coverage diagnostic lane (default: "
+                        "<farfield_root>/artifacts/catalog_coverage)")
     p.add_argument("--pinhole_base", type=Path,
                    default=root / "artifacts" / paths_lib.PINHOLE_IMAGES,
                    help="Pinhole artifact lane (default: "
@@ -687,9 +759,12 @@ def main(argv=None) -> int:
                         "well beyond the track — from a ferry deck the sea "
                         "horizon is ~11 km but a 100 m cliff or harbour crane "
                         "stays visible 30-40 km out (the old default was 25)")
-    p.add_argument("--landmark_version", required=True,
-                   help="Name of the landmarks/<version>.feather link (the "
-                        "old default was 'v1')")
+    p.add_argument("--catalog_version", required=True,
+                   help="Full typed CATALOGS version published by stage 5")
+    p.add_argument("--trimmed_catalog_version", required=True,
+                   help="Trimmed typed CATALOGS version published by stage 7")
+    p.add_argument("--catalog_coverage_version", required=True,
+                   help="Typed catalog_coverage version published by stage 8")
     p.add_argument("--dedupe_tolerance_m", type=float, required=True,
                    help="Merge identical-tag features whose geometries touch "
                         "within this distance (the old default was 10, as "
@@ -699,10 +774,10 @@ def main(argv=None) -> int:
                         "bbox + this margin. This is what makes a national "
                         "extract cheap: whole France goes from 28 GB and "
                         "climbing to 3.0 GB, at the cost of a couple of "
-                        "multipolygons whose rings cross the margin. One "
-                        "default story: required here, forwarded verbatim to "
-                        "the extractor — no -1 sentinel (the old default was "
-                        "0.1, ~11 km)")
+                        "multipolygons whose rings cross the margin. Required "
+                        "and forwarded verbatim: -1 explicitly retains the "
+                        "full index; a nonnegative value selects bounded mode "
+                        "(the old default was 0.1, ~11 km)")
     p.add_argument("--trim_min_building_area_m2", type=float, required=True,
                    help="Stage-7 trim: drop untagged buildings smaller than "
                         "this footprint (the old, Boston-tuned default was "
@@ -710,17 +785,34 @@ def main(argv=None) -> int:
     p.add_argument("--trim_min_building_levels", type=float, required=True,
                    help="Stage-7 trim: keep small buildings only at/above "
                         "this many levels (the old, Boston-tuned default was 6)")
-    p.add_argument("--trim_confidence_floor", type=float, required=True,
-                   help="Stage-7 trim: positive-set confidence floor (the "
-                        "old default was 0.5)")
+    p.add_argument("--trim_confidence_floor", type=float, default=0.5,
+                   help="Stage-7 optional matched-result guard: ignore matches "
+                        "below this confidence (default 0.5)")
     p.add_argument("--matched_from", type=Path, action="append",
-                   help="Matching run dir(s) whose chosen signatures the trim "
-                        "must not drop (repeatable). Stage 7 REFUSES to run "
-                        "with neither this nor --positive_set")
+                   help="Complete typed LANDMARK_MATCHES artifact(s) whose "
+                        "chosen signatures trim_catalog must not drop "
+                        "(optional, repeatable)")
     p.add_argument("--positive_set", type=Path,
-                   help="landmark_positive_set.py output the trim must retain. "
-                        "Stage 7 REFUSES to run with neither this nor "
-                        "--matched_from")
+                   help="Schema-v2 landmark_positive_set.py output that "
+                        "trim_catalog must retain (optional)")
+    p.add_argument("--coverage_grid_cells", type=int, required=True,
+                   help="Stage-8 square density-grid resolution (old value 24)")
+    p.add_argument("--coverage_max_empty_run", type=int, required=True,
+                   help="Stage-8 failing interior empty-band run length "
+                        "(old value 6)")
+    p.add_argument("--coverage_empty_fraction_warning", type=float,
+                   required=True,
+                   help="Stage-8 warning threshold for the empty grid "
+                        "fraction (old value 0.9)")
+    p.add_argument("--coverage_far_range_km", type=float, required=True,
+                   help="Stage-8 distance defining the far-field tail "
+                        "(old value 5)")
+    p.add_argument("--coverage_min_far_fraction", type=float, required=True,
+                   help="Stage-8 warning threshold for the fraction beyond "
+                        "the far-range distance (old value 0.02)")
+    p.add_argument("--coverage_max_track_samples", type=int, required=True,
+                   help="Stage-8 deterministic trajectory sample cap used by "
+                        "distance calculations (old value 400)")
 
     # Mechanical knobs and guards.
     p.add_argument("--workers", type=int, default=8)

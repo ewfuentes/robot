@@ -10,19 +10,16 @@ This is the ground level of the viewer hierarchy (leg -> track -> keyframe):
 track pages and the semantic-audit review link into these pages so any
 detection mentioned elsewhere can be inspected in full context.
 
-Reads EVERY tracks_*.json in the run (a run may be split across ranges; the
-old viewer globbed the first file and silently dropped the rest), takes each
-range's name from the artifact's own record (never a literal default), and
-re-classifies supports under each artifact's RECORDED TrackBuilderConfig --
-never a freshly-constructed default one, which would silently re-render an
-old run with today's thresholds.
+Reads one completed ``object_tracks`` artifact with its required
+``tracks_full.json`` payload. Ingest and tracking settings come from that
+artifact's recorded manifest; the viewer has no scientific-setting flags.
 
-Outputs <run_dir>/keyframes/f####.html (+ index.html + assets).
+Outputs a separate derived directory and never mutates the tracks artifact.
 
 Run:
   bazel run //experimental/overhead_matching/swag/farfield/tracking:keyframe_viewer -- \\
-      --run_dir <runs>/r002 --fov_deg ... --seam_gap_norm ... \\
-      --seam_min_y_iou ... [--kf_start N --kf_end M]
+      --tracks_dir <object_tracks> --dataset_base <dataset> \\
+      --frame_landmarks_dir <frame_landmarks> --output_dir <derived>
 """
 
 import argparse
@@ -32,12 +29,14 @@ import json
 import os
 import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact as artifact_lib,
     dataset,
     geometry as geo,
     paths as paths_lib,
@@ -75,37 +74,135 @@ td img{height:200px;border-radius:3px;display:block}
 """
 
 
-def load_track_artifacts(run_dir: Path) -> dict:
-    """{range_name: artifact} from every tracks_*.json in the run.
+@dataclass(frozen=True)
+class ViewerInputs:
+    tracks_ref: artifact_lib.ArtifactRef
+    artifacts: dict
+    ingest_params: dataset.IngestParams
+    dataset_base: Path
+    frame_landmarks_dir: Path
 
-    The range name comes from each artifact's OWN record ("range"/"name") --
-    there is deliberately no filename parsing and no literal fallback (the old
-    viewer defaulted a missing name to "full_leg1", which then aimed every
-    track link at pages of a range that never existed). Missing names and
-    duplicate names are errors, and an empty run dir is a pointed one.
-    """
-    run_dir = Path(run_dir)
-    paths = sorted(run_dir.glob("tracks_*.json"))
-    if not paths:
+
+def _load_tracks_contract(tracks_dir: Path):
+    tracks_dir = Path(tracks_dir)
+    try:
+        tracks_ref = artifact_lib.open_artifact(
+            tracks_dir, expected_kind=paths_lib.OBJECT_TRACKS)
+        manifest = artifact_lib.load_manifest(tracks_dir)
+    except artifact_lib.ArtifactError as exc:
         raise SystemExit(
-            f"no tracks_*.json under {run_dir} -- run the tracking stage "
-            f"(farfield/tracking:run_tracking) first")
-    artifacts = {}
-    for path in paths:
-        artifact = json.loads(path.read_text())
-        name = (artifact.get("range") or {}).get("name")
-        if not name:
-            raise SystemExit(
-                f"{path} records no range name ('range'/'name'); every "
-                f"tracking artifact carries its own range record, and the "
-                f"viewer refuses to guess one")
-        if name in artifacts:
-            raise SystemExit(
-                f"range name {name!r} appears in more than one tracks_*.json "
-                f"under {run_dir} (again in {path.name}); range names must "
-                f"be unique within a run")
-        artifacts[name] = artifact
-    return artifacts
+            f"invalid completed object_tracks artifact {tracks_dir}: {exc}") \
+            from exc
+    if (manifest.config.get("schema") != "farfield_object_tracks/v1"
+            or manifest.config.get("coverage") != "complete"):
+        raise SystemExit(
+            f"{tracks_dir} is not a complete farfield_object_tracks/v1 artifact")
+    payloads = sorted(tracks_dir.glob("tracks_*.json"))
+    if [path.name for path in payloads] != ["tracks_full.json"]:
+        raise SystemExit(
+            f"{tracks_dir} must contain exactly one tracks_full.json payload")
+    try:
+        document = json.loads(payloads[0].read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid tracks_full.json: {exc}") from exc
+    if not isinstance(document, dict):
+        raise SystemExit("tracks_full.json must contain a JSON object")
+    range_record = document.get("range")
+    if (not isinstance(range_record, dict)
+            or range_record.get("name") != "full"
+            or range_record != manifest.config.get("range")):
+        raise SystemExit(
+            "tracks_full.json must bind the manifest's single full range")
+    return tracks_ref, manifest, {"full": document}
+
+
+def load_track_artifacts(tracks_dir: Path) -> dict:
+    """Load the single payload from a validated ``object_tracks`` artifact."""
+    return _load_tracks_contract(tracks_dir)[2]
+
+
+def load_viewer_inputs(tracks_dir: Path, dataset_base: Path,
+                       frame_landmarks_dir: Path) -> ViewerInputs:
+    tracks_ref, manifest, artifacts = _load_tracks_contract(tracks_dir)
+    dataset_base = Path(dataset_base)
+    if dataset_base.is_symlink() or not dataset_base.is_dir():
+        raise SystemExit(
+            f"--dataset_base must be a regular directory: {dataset_base}")
+    dataset_base = dataset_base.resolve()
+    try:
+        source_digest = artifact_lib.sha256_json(
+            paths_lib.dataset_source_digests(dataset_base))
+    except paths_lib.MissingInput as exc:
+        raise SystemExit(str(exc)) from exc
+    expected_source = (manifest.config.get("source_digests") or {}).get(
+        "dataset_tracking_inputs")
+    if source_digest != expected_source:
+        raise SystemExit(
+            "--dataset_base bytes do not match the object_tracks artifact")
+    metadata = dataset.load_metadata(dataset_base)
+    if metadata.get("dataset_name") != tracks_ref.dataset:
+        raise SystemExit(
+            "--dataset_base metadata names a different dataset")
+
+    frame_refs = tuple(
+        ref for ref in manifest.upstreams
+        if ref.kind == paths_lib.FRAME_LANDMARKS)
+    if len(frame_refs) != 1:
+        raise SystemExit(
+            "object_tracks must bind exactly one frame_landmarks artifact")
+    try:
+        supplied_frame_ref = artifact_lib.open_artifact(
+            frame_landmarks_dir,
+            expected_kind=paths_lib.FRAME_LANDMARKS,
+            expected_dataset=tracks_ref.dataset,
+            expected_version=frame_refs[0].version)
+    except artifact_lib.ArtifactError as exc:
+        raise SystemExit(
+            f"invalid --frame_landmarks_dir artifact: {exc}") from exc
+    if supplied_frame_ref != frame_refs[0]:
+        raise SystemExit(
+            "--frame_landmarks_dir is not the exact artifact bound by tracks")
+
+    resolved = manifest.config.get("resolved")
+    ingest = resolved.get("ingest") if isinstance(resolved, dict) else None
+    expected_ingest_keys = {"fov_deg", "seam_gap_norm", "seam_min_y_iou"}
+    if not isinstance(ingest, dict) or set(ingest) != expected_ingest_keys:
+        raise SystemExit(
+            "object_tracks manifest has no exact recorded ingest configuration")
+    try:
+        ingest_params = dataset.IngestParams(**ingest)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"object_tracks recorded invalid ingest configuration: {exc}") \
+            from exc
+    return ViewerInputs(
+        tracks_ref=tracks_ref,
+        artifacts=artifacts,
+        ingest_params=ingest_params,
+        dataset_base=dataset_base,
+        frame_landmarks_dir=Path(frame_landmarks_dir).resolve(),
+    )
+
+
+def prepare_output_directory(tracks_dir: Path,
+                             output_dir: Path) -> tuple[Path, Path]:
+    tracks_dir = Path(tracks_dir).resolve()
+    output_dir = Path(output_dir)
+    resolved_output = output_dir.resolve(strict=False)
+    if (resolved_output == tracks_dir or tracks_dir in resolved_output.parents):
+        raise SystemExit(
+            "--output_dir must not be the tracks artifact or a directory inside it")
+    if output_dir.exists() or output_dir.is_symlink():
+        raise SystemExit(f"--output_dir already exists: {output_dir}")
+    if output_dir.parent.is_symlink():
+        raise SystemExit(
+            f"--output_dir parent must not be a symlink: {output_dir.parent}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = output_dir.with_name(output_dir.name + ".incomplete")
+    if staging.exists() or staging.is_symlink():
+        raise SystemExit(f"incomplete viewer output already exists: {staging}")
+    staging.mkdir()
+    return output_dir, staging
 
 
 def recorded_config(artifact) -> tb.TrackBuilderConfig:
@@ -250,38 +347,28 @@ def render_keyframe_images(frame, obs_list, masks, dataset_base, out,
                            CHIP_H)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    paths_lib.add_arguments(parser)
-    parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--tracks_dir", type=Path, required=True)
+    parser.add_argument("--dataset_base", type=Path, required=True)
+    parser.add_argument("--frame_landmarks_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--pano_width", type=int, default=3072)
     parser.add_argument("--kf_start", type=int, default=None)
     parser.add_argument("--kf_end", type=int, default=None)
     parser.add_argument("--image_workers", type=int, default=IMAGE_WORKERS,
                         help="threads rendering keyframe images (default: "
                              f"{IMAGE_WORKERS}); 1 to render serially")
-    # TODO(run_config): the ingest values move into the run's recorded config
-    # (run_config.json, REORG.md PR 12); required on the CLI until then.
-    parser.add_argument("--fov_deg", type=float, required=True,
-                        help="Pinhole-face FOV the extraction rendered with, "
-                             "degrees (previously 90.0 on all datasets)")
-    parser.add_argument("--seam_gap_norm", type=float, required=True,
-                        help="Seam-merge margin in bbox units 0-1000 "
-                             "(previously 25)")
-    parser.add_argument("--seam_min_y_iou", type=float, required=True,
-                        help="Vertical IoU to accept a seam continuation "
-                             "(previously 0.3)")
-    args = parser.parse_args()
-    paths = paths_lib.resolve(
-        parser, args, infer_from=args.run_dir,
-        require=("dataset_base", "frame_landmarks"))
+    return parser
 
-    artifacts = load_track_artifacts(args.run_dir)
-    ingest_params = dataset.IngestParams(
-        fov_deg=args.fov_deg, seam_gap_norm=args.seam_gap_norm,
-        seam_min_y_iou=args.seam_min_y_iou)
-    result = dataset.run_ingest(paths.dataset_base, paths.frame_landmarks,
-                                ingest_params)
+
+def main():
+    args = build_parser().parse_args()
+    inputs = load_viewer_inputs(
+        args.tracks_dir, args.dataset_base, args.frame_landmarks_dir)
+    artifacts = inputs.artifacts
+    result = dataset.run_ingest(
+        inputs.dataset_base, inputs.frame_landmarks_dir, inputs.ingest_params)
     obs_by_frame = defaultdict(list)
     for o in result.observations:
         obs_by_frame[o.frame_idx].append(o)
@@ -294,7 +381,11 @@ def main():
     assoc_by_obs, masks_by_kf, seeded_by_obs, rejected_births = \
         track_associations(artifacts)
 
-    out = args.run_dir / "keyframes"
+    final_out, out = prepare_output_directory(
+        args.tracks_dir, args.output_dir)
+    tracks_href = html.escape(os.path.relpath(
+        Path(args.tracks_dir).resolve(), final_out.resolve(strict=False)),
+        quote=True)
     (out / "img").mkdir(parents=True, exist_ok=True)
 
     index_rows = []
@@ -304,7 +395,7 @@ def main():
                sorted(masks_by_kf.get(frame.frame_idx, [])))
               for frame in frames]
     workers = max(1, min(args.image_workers, os.cpu_count() or 4))
-    tasks = [(frame, obs_list, masks, paths.dataset_base, out, args.pano_width)
+    tasks = [(frame, obs_list, masks, inputs.dataset_base, out, args.pano_width)
              for frame, obs_list, masks in per_kf]
     print(f"rendering {len(tasks)} keyframe image sets over {workers} "
           f"process(es)")
@@ -331,7 +422,7 @@ def main():
                if prev_kf else "")
             + (f" | <a href='{next_kf}.html'>{next_kf} &rarr;</a>"
                if next_kf else "")
-            + " | <a href='../index.html'>track boards</a></p>",
+            + f" | <a href='{tracks_href}/index.html'>track boards</a></p>",
             f"<p>{len(obs_list)} detections | {len(masks)} track masks "
             "(red). Scroll the panorama horizontally; box colors are stable "
             "per (tag, name) identity.</p>",
@@ -347,7 +438,7 @@ def main():
             lines = []
             for seeded_key in seeded_by_obs.get(o.obs_id, []):
                 lines.append(
-                    f"<a href='../track_{seeded_key}.html' "
+                    f"<a href='{tracks_href}/track_{seeded_key}.html' "
                     f"class='seeds'>&#9733; seeds "
                     f"T{seeded_key.split('_T')[-1]}</a>")
             if o.obs_id in rejected_births:
@@ -363,7 +454,7 @@ def main():
                 note = "" if cls in tb.SUPPORT_CLASSES else " (not support)"
                 tid = track_key.split("_T")[-1]
                 lines.append(
-                    f"<a href='../track_{track_key}.html'>T{tid}</a> "
+                    f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a> "
                     f"<span class='cls_{cls}'>{cls}{note}</span>")
             if not lines:
                 lines.append("<span class='cls_none'>unclaimed</span>")
@@ -387,7 +478,8 @@ def main():
                 tid = track_key.split("_T")[-1]
                 parts.append(
                     f"<tr id='{track_key}'><td class='masklab'>"
-                    f"<a href='../track_{track_key}.html'>T{tid}</a></td>"
+                    f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a>"
+                    "</td>"
                     f"<td>{action}</td><td>{bb}</td></tr>")
             parts.append("</table>")
         (out / f"{kf_name(kf)}.html").write_text(page_lib.page(
@@ -398,7 +490,7 @@ def main():
             print(f"[{n + 1}/{len(frames)}] {kf_name(kf)}")
 
     parts = [
-        "<p><a href='../index.html'>track boards</a></p>",
+        f"<p><a href='{tracks_href}/index.html'>track boards</a></p>",
         "<table><tr><th>keyframe</th><th>detections</th>"
         "<th>track masks</th></tr>"]
     for kf, n_obs, n_masks in index_rows:
@@ -409,7 +501,8 @@ def main():
     (out / "index.html").write_text(page_lib.page(
         "keyframes", "\n".join(parts), generator=GENERATOR,
         extra_style=EXTRA_STYLE))
-    print(f"wrote {len(index_rows)} keyframe pages to {out}")
+    artifact_lib.publish_directory_no_clobber(out, final_out)
+    print(f"wrote {len(index_rows)} keyframe pages to {final_out}")
 
 
 if __name__ == "__main__":

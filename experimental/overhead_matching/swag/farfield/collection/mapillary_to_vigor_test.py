@@ -10,7 +10,6 @@ the pohang 180-degree mount-offset incident.
 
 import unittest
 
-from experimental.overhead_matching.swag.farfield import geometry
 from experimental.overhead_matching.swag.farfield.collection import (
     mapillary_to_vigor as mtv,
 )
@@ -86,7 +85,7 @@ class AzimuthConventionTest(unittest.TestCase):
         # Verbatim, so a reader of the dataset alone gets the full contract —
         # convention strings are exported constants, never restated.
         self.assertEqual(convention["mount_offset_frame"],
-                         geometry.MOUNT_OFFSET_CONVENTION)
+                         mtv.LEGACY_ALIGNMENT_FRAME_WARNING)
         self.assertEqual(convention["frame_if_derived_from_formula"],
                          "column_0_NOT_usable_as_mount_offset")
 
@@ -99,7 +98,7 @@ class AzimuthConventionTest(unittest.TestCase):
     def test_perspective_carries_the_note_with_its_own_frame_tag(self):
         convention = _build(is_equirect=False)["azimuth_convention"]
         self.assertEqual(convention["mount_offset_frame"],
-                         geometry.MOUNT_OFFSET_CONVENTION)
+                         mtv.LEGACY_ALIGNMENT_FRAME_WARNING)
         self.assertEqual(convention["frame_if_derived_from_formula"],
                          "optical_axis_NOT_usable_as_mount_offset")
         self.assertEqual(convention["heading_deg_is_bearing_of"],

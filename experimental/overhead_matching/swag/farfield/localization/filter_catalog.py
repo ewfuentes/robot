@@ -1,4 +1,4 @@
-"""Filter-side landmark catalog: positions, accuracy classes, priors.
+"""Filter-side landmark catalog: positions, uniform uncertainty, priors.
 
 One place that owns everything the measurement update needs to know about
 landmarks, so ids and coordinates cannot drift out of sync and the candidate
@@ -20,10 +20,10 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 class LandmarkCatalog:
     """Known-position landmarks in region-frame ENU metres.
 
-    `position_sigma_m` is the map-accuracy class of each landmark (ENC
-    surveyed << OSM); it is projected into the angular domain per
-    observation by `kappa_eff`. `log_prior` is the per-candidate prior
-    log w_j; uniform by default.
+    `position_sigma_m` is one source-independent value applied uniformly to
+    every landmark; it is projected into the angular domain per observation
+    by `kappa_eff`. `log_prior` is the per-candidate prior log w_j; uniform by
+    default.
     """
 
     def __init__(self, landmark_ids, east_m, north_m, *,
@@ -45,8 +45,14 @@ class LandmarkCatalog:
         else:
             self.position_sigma_m = np.broadcast_to(
                 np.asarray(position_sigma_m, dtype=np.float64), (n,)).copy()
-        if np.any(self.position_sigma_m < 0.0):
-            raise ValueError("position_sigma_m must be non-negative")
+        if (not np.all(np.isfinite(self.position_sigma_m))
+                or np.any(self.position_sigma_m < 0.0)):
+            raise ValueError("position_sigma_m must be finite and non-negative")
+        if (n and np.any(
+                self.position_sigma_m != self.position_sigma_m[0])):
+            raise ValueError(
+                "position_sigma_m must equal one uniform recorded value for "
+                "all landmarks")
 
         if max_visible_range_m is None:
             raise ValueError(
@@ -110,8 +116,7 @@ class LandmarkCatalog:
 
     def perturbed(self, sigma_m: float,
                   rng: np.random.Generator) -> "LandmarkCatalog":
-        """Copy with positions jittered — models map error. The accuracy
-        class is set to match, so kappa_eff can absorb it."""
+        """Copy with positions jittered and one matching uniform uncertainty."""
         return LandmarkCatalog(
             self.landmark_ids,
             self.east_m + rng.normal(0.0, sigma_m, self.n),

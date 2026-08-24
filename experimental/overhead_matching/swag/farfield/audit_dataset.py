@@ -1,10 +1,10 @@
 """Audit a farfield dataset against the contracts that consume it.
 
 Checks the things that fail silently rather than loudly: filename parsing,
-frame ordering, table agreement, convention metadata (north_aligned, azimuth
-formula, mount-offset qualifiers), image integrity, GPS plausibility, and
-video addressing. Exits non-zero if any FAIL is found; a path that is not a
-dataset directory is itself an error, never silently skipped.
+frame ordering, table agreement, camera-storage convention metadata, image
+integrity, GPS plausibility, and video addressing. Exits non-zero if any FAIL
+is found; a path that is not a dataset directory is itself an error, never
+silently skipped.
 
     bazel run //experimental/overhead_matching/swag/farfield:audit_dataset -- \
         /data/farfield_matching/datasets/folkestone_dover [more dirs...]
@@ -12,11 +12,11 @@ dataset directory is itself an error, never silently skipped.
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
 
-from experimental.overhead_matching.swag.farfield import dataset as ds_lib
 from experimental.overhead_matching.swag.farfield import geometry as geo
 
 # Above this implied speed a consecutive-frame jump is not a vehicle.
@@ -177,31 +177,9 @@ def audit(ds: Path) -> Audit:
                f"{conv.get('images_rotated')} north_aligned="
                f"{meta.get('north_aligned')} — the tracking pipeline refuses "
                f"datasets whose orientation is rotated or unrecorded")
-    if not conv.get("formula"):
-        a.fail("pipeline_metadata.azimuth_convention has no column->azimuth formula")
-    if conv.get("heading_deg_is_bearing_of") not in ("column_0", "optical_axis"):
-        a.fail(f"azimuth_convention.heading_deg_is_bearing_of is "
-               f"{conv.get('heading_deg_is_bearing_of')!r}")
-    if "mount_offset_frame" not in conv:
-        a.warn("azimuth_convention carries no mount_offset_frame note; a "
-               "reader deriving an offset from this formula lands in the "
-               "column-0 frame, 180 deg out (the pohang incident)")
-
-    # -- mount offset qualifiers (the 180-degree contract) ---------------------
-    try:
-        record = ds_lib.mount_offset_record(meta, ds)
-    except ds_lib.ContractViolation as exc:
-        a.fail(str(exc).replace("\n", " "))
-    else:
-        if record is None:
-            a.warn("no mount_offset recorded (fine for an uncalibrated "
-                   "dataset; localization export will require one)")
-        else:
-            flag = ("accuracy-validated" if record.accuracy_validated
-                    else f"status={record.status or 'unvalidated'}")
-            a.ok(f"mount_offset {record.offset_deg:.1f} deg, frame OK, "
-                 f"applied_to_heading_deg={record.applied_to_heading_deg}, "
-                 f"{flag}")
+    if conv.get("camera_frame") != geo.CAMERA_FRAME:
+        a.fail("pipeline_metadata.azimuth_convention does not stamp the "
+               "canonical camera-frame contract")
 
     # -- panorama/ symlink -----------------------------------------------------
     pano = ds / "panorama"
@@ -377,26 +355,45 @@ def audit(ds: Path) -> Audit:
                    "captured_at")
 
     # -- intrinsics ------------------------------------------------------------------
-    want_ref = "column_0" if is_equirect else "optical_axis"
-    refs = {r.get("heading_reference") for r in intr}
-    if refs != {want_ref}:
-        a.fail(f"intrinsics heading_reference is {refs}, expected "
-               f"{{{want_ref}}}")
+    required_intrinsics = {"heading_deg", "heading_reference",
+                           "heading_source"}
+    missing_intrinsics = [
+        name for name in sorted(required_intrinsics)
+        if any(name not in row for row in intr)
+    ]
+    if missing_intrinsics:
+        a.fail(f"intrinsics table lacks required shape columns "
+               f"{missing_intrinsics}")
+    headings = [r.get("heading_deg", "").strip() for r in intr]
+    if any(headings) and not all(headings):
+        a.fail("intrinsics heading_deg must be populated for every row or "
+               "left unset for every row")
+    elif headings and all(headings):
+        try:
+            values = [float(value) for value in headings]
+        except ValueError:
+            a.fail("intrinsics heading_deg contains a non-numeric value")
+        else:
+            if not all(math.isfinite(value) for value in values):
+                a.fail("intrinsics heading_deg contains a non-finite value")
+            else:
+                want_ref = "column_0" if is_equirect else "optical_axis"
+                refs = {r.get("heading_reference") for r in intr}
+                if refs != {want_ref}:
+                    a.fail(f"populated intrinsics heading_reference is "
+                           f"{refs}, expected {{{want_ref}}}")
+                else:
+                    a.warn("intrinsics heading_deg is populated for display/"
+                           "source diagnostics only; localization rotation "
+                           "requires a separate approved nominal-forward "
+                           "record")
     else:
-        a.ok(f"intrinsics heading_reference = {want_ref}")
-    if any(r["heading_deg"] in ("", None) for r in intr):
-        a.fail("some intrinsics rows have no heading_deg")
+        a.ok("intrinsics heading columns preserve the table shape but are "
+             "unset; no camera/world orientation is claimed")
 
-    # Heading quality. Equirectangular frames are scored against GPS course
-    # (`heading_reliable`); a perspective camera need not point along the
-    # direction of travel, so those are cross-checked between Mapillary's two
-    # heading fields instead -- the ONLY heading-quality signal they have.
-    if is_equirect:
-        if meta.get("heading_reliable") is False:
-            a.warn("heading_reliable=false: heading disagrees with GPS "
-                   "course by more than the tolerance, so bearings need "
-                   "external calibration before use")
-    else:
+    # Perspective-source heading disagreement remains useful acquisition
+    # diagnostics, but never supplies localization rotation authority.
+    if not is_equirect:
         spread = meta.get("heading_sources_median_disagreement_deg")
         if meta.get("heading_sources_disagree"):
             a.warn(f"the two heading sources disagree by {spread} deg "

@@ -1,532 +1,905 @@
-"""Run a dataset end to end: frames -> tracks -> matches -> localization.
+"""Build immutable farfield artifacts and then run localization.
 
-One command for the whole sequence, in two steps:
+``build_dir`` is mutable orchestration state.  It contains one immutable,
+fully resolved ``build_config.json`` and may contain operational logs, but no
+scientific outputs.  Every scientific stage publishes a typed artifact in its
+own versioned lane.  ``run_dir`` is reserved for the completed localization
+execution under ``runs/<experiment>/<localization_run>/``.
 
-  # 1. Create a run: validates the config (every result-shaping value
-  #    explicit — see configs/harbor_example.yaml) and records it.
-  bazel run //experimental/overhead_matching/swag/farfield:pipeline -- new-run \\
-      --dataset boston_harbor_leg2 --run_name r001 \\
-      --config $PWD/experimental/overhead_matching/swag/farfield/configs/harbor_example.yaml
+Create and execute a build with::
 
-  # 2. Execute stages. Parameters come from the run's recorded config;
-  #    the only knobs here select WHICH stages run.
-  bazel run //...farfield:pipeline -- run --run_dir <object_tracks>/runs/r001
-  bazel run //...farfield:pipeline -- run --run_dir ... --from offset
-  bazel run //...farfield:pipeline -- status --run_dir ...
+  bazel run //experimental/overhead_matching/swag/farfield:pipeline -- \\
+      new-build --dataset boston_harbor_leg2 --build_name b001 \\
+      --config /path/to/harbor_example.yaml
+  bazel run //experimental/overhead_matching/swag/farfield:pipeline -- \\
+      run --build_dir /data/farfield_matching/builds/boston_harbor_leg2/b001
 
-The sequence is cheap (a full harbor leg bills ~$26 of LLM at list price),
-so nothing blocks on a human: every stage writes its viewer, and the index
-chain refreshes after every stage so the data root stays fully browsable.
-
-Two conditions stop the run, because continuing past either produces
-confident nonsense rather than an error:
-
-- an INCOMPLETE EXTRACTION — frames with no VLM response are read downstream
-  as frames containing no objects, so tracks crossing them starve. Checked
-  before ANY detection-consuming stage (the old orchestrator only checked it
-  on one early stage, so --from bypassed the gate).
-- NO USABLE MOUNT OFFSET at export time — the export bakes the offset into
-  every bearing; with no validated dataset record and no usable sidecar,
-  exporting would aim every bearing somewhere else entirely.
-
-A stage whose completion marker exists is skipped (--force to redo). The
-tracking stage's marker is tracks_complete.json covering every declared
-range — written per range AFTER it finishes, so a mid-tracking crash resumes
-instead of silently skipping the GPU stage (the old marker was written
-before the work started).
+There is no ``--force`` mode.  Published artifacts are immutable.  A changed
+stage configuration or changed upstream identity requires a new downstream
+artifact version; orchestration refuses to reuse a stale descendant.
 """
 
+from __future__ import annotations
+
 import argparse
-import json
+import copy
+import math
 import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
+    nominal_forward,
     paths as paths_lib,
-    run_config,
 )
-from experimental.overhead_matching.swag.farfield.extraction import llm_cost
-from experimental.overhead_matching.swag.farfield.viewers import indexes
+
 
 FF = "//experimental/overhead_matching/swag/farfield"
-
-# bazel run must be invoked from the source workspace, not the runfiles tree.
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
-
-STAGES = ("extract", "track", "keyframes", "audit", "review", "offset",
-          "match", "matchview", "export", "localize", "plots", "viewer")
-
-# Stages that read the VLM detections and therefore sit behind the
-# extraction-completeness gate.
-DETECTION_CONSUMERS = ("track", "keyframes", "audit", "review", "offset",
-                       "match", "matchview", "export")
-
-# Every result-shaping value a run must record before any stage runs
-# (run_config.create validates the whole list at once).
-REQUIRED_CONFIG = (
-    "experiment.name",
-    "artifacts.frame_landmarks_version",
-    "artifacts.pinhole_images_version",
-    "artifacts.object_tracks_version",
-    "catalog.name",
-    "extraction.model",
-    "extraction.prompt_type",
-    "extraction.pinhole_resolution",
-    "extraction.media_resolution",
-    "extraction.thinking_level",
-    "ingest.fov_deg",
-    "ingest.seam_gap_norm",
-    "ingest.seam_min_y_iou",
-    "tracking.sam2_checkpoint",
-    "audit.model",
-    "audit.min_supports",
-    "audit.thinking_level",
-    "audit.max_support_chips",
-    "audit.max_context_chips",
-    "audit.max_description_samples",
-    "audit.chip_height_px",
-    "matching.model",
-    "matching.query_batch",
-    "matching.chunk_size",
-    "matching.thinking_level",
-    "matching.confidence_floor",
-    "matching.instance_max_rows",
-    "calibration.sun.n_frames",
-    "calibration.sun.min_speed_mps",
-    "calibration.sun.elevation_tolerance_deg",
-    "calibration.sun.work_width",
-    "calibration.sweep.coarse_step",
-    "calibration.sweep.fine_step",
-    "calibration.sweep.fine_halfwidth",
-    "calibration.sweep.min_observations",
-    "calibration.sweep.min_arc_deg",
-    "calibration.sweep.max_condition",
-    "calibration.sweep.min_tracklets",
-    "calibration.sweep.min_support_frac",
-    "fusion.epoch_keyframes",
-    "fusion.bearing_sigma_deg",
-    "export.default_log_lr",
-    "export.clip",
-    "export.min_step_m",
-    "export.sigma_pair_m",
-    "export.max_visible_range_m",
-    "localization.n_particles",
-    "localization.margin_m",
-    "localization.position_roughening_m",
-    "localization.heading_roughening_deg",
-    "cost.limit_usd",
-)
+LOCALIZATION_RUN_KIND = "localization_run"
 
 
-def run(cmd, description, dry_run=False, check=True):
-    """Run one stage as a subprocess, streaming its output."""
+def _text(*, choices: tuple[str, ...] | None = None
+          ) -> build_config.ValueSpec:
+    return build_config.ValueSpec((str,), choices=choices, nonempty=True)
+
+
+def _integer(*, minimum: int = 0,
+             maximum: int | None = None) -> build_config.ValueSpec:
+    return build_config.ValueSpec((int,), minimum=minimum, maximum=maximum)
+
+
+def _number(*, minimum: float = 0.0,
+            maximum: float | None = None) -> build_config.ValueSpec:
+    return build_config.ValueSpec(
+        (int, float), minimum=minimum, maximum=maximum)
+
+
+def _boolean() -> build_config.ValueSpec:
+    return build_config.ValueSpec((bool,))
+
+
+# Exact leaf schema: an unknown key is an error, not an ignored pseudo-setting.
+CONFIG_SCHEMA = {
+    "experiment.name": _text(),
+    "artifacts.frame_landmarks_version": _text(),
+    "artifacts.pinhole_images_version": _text(),
+    "artifacts.object_tracks_version": _text(),
+    "artifacts.semantic_audits_version": _text(),
+    "artifacts.bearing_observations_version": _text(),
+    "artifacts.landmark_matches_version": _text(),
+    "artifacts.alignment_diagnostics_version": _text(),
+    "artifacts.localization_inputs_version": _text(),
+    "artifacts.catalogs_version": _text(),
+    "extraction.model": _text(),
+    "extraction.prompt_type": _text(),
+    "extraction.pinhole_resolution": _integer(minimum=1),
+    "extraction.media_resolution": _text(),
+    "extraction.thinking_level": _text(),
+    "execution.llm_transport": _text(choices=("batch", "on_demand")),
+    "execution.batch_gcs_prefix": build_config.ValueSpec(
+        (str,), allow_none=True, nonempty=True),
+    "execution.approve_cost": _boolean(),
+    "cost.limit_usd": _number(),
+    "ingest.fov_deg": _number(maximum=180.0),
+    "ingest.seam_gap_norm": _number(maximum=1000.0),
+    "ingest.seam_min_y_iou": _number(maximum=1.0),
+    "tracking.sam2_checkpoint": _text(),
+    "tracking.range.k_start": _integer(),
+    "tracking.range.k_end": _integer(),
+    "tracking.reference_pano_width": _integer(minimum=1),
+    "tracking.window_px": _integer(minimum=1),
+    "tracking.window_extent_factor": _number(),
+    "tracking.window_quantum": _integer(minimum=1),
+    "tracking.window_max_px": _integer(minimum=1),
+    "tracking.clean_iou": _number(maximum=1.0),
+    "tracking.superset_min_inter_over_box": _number(maximum=1.0),
+    "tracking.reanchor_min_inter_over_mask": _number(maximum=1.0),
+    "tracking.superset_inter_over_mask": _number(maximum=1.0),
+    "tracking.superset_max_inter_over_box": _number(maximum=1.0),
+    "tracking.child_inter_over_box": _number(maximum=1.0),
+    "tracking.child_max_inter_over_mask": _number(maximum=1.0),
+    "tracking.weak_min_iou": _number(maximum=1.0),
+    "tracking.weak_min_containment": _number(maximum=1.0),
+    "tracking.weak_min_complement": _number(maximum=1.0),
+    "tracking.birth_min_coverage": _number(maximum=1.0),
+    "tracking.birth_max_spill": _number(maximum=1.0),
+    "tracking.birth_min_dominant_cc": _number(maximum=1.0),
+    "tracking.patience_keyframes": _integer(minimum=1),
+    "tracking.patience_unsupported_keyframes": _integer(minimum=1),
+    "tracking.min_mask_area_px": _integer(minimum=1),
+    "tracking.drift_gate_px": _number(),
+    "tracking.drift_patience": _integer(minimum=1),
+    "audit.model": _text(),
+    "audit.min_supports": _integer(minimum=1),
+    "audit.thinking_level": _text(),
+    "audit.max_support_chips": _integer(minimum=1),
+    "audit.max_context_chips": _integer(),
+    "audit.max_description_samples": _integer(minimum=1),
+    "audit.chip_height_px": _integer(minimum=1),
+    "matching.model": _text(),
+    "matching.query_batch": _integer(minimum=1),
+    "matching.chunk_size": _integer(minimum=1),
+    "matching.thinking_level": _text(),
+    "matching.confidence_floor": _number(maximum=1.0),
+    "matching.instance_max_rows": _integer(minimum=1),
+    "bearing_observations.bearing_sigma_deg": _number(),
+    "gps_course.min_displacement_m": _number(),
+    "gps_course.smooth_window_s": _number(),
+    "alignment_diagnostics.sun.n_frames": _integer(minimum=1),
+    "alignment_diagnostics.sun.min_speed_mps": _number(),
+    "alignment_diagnostics.sun.elevation_tolerance_deg": _number(),
+    "alignment_diagnostics.sun.work_width": _integer(minimum=1),
+    "alignment_diagnostics.sweep.coarse_step_deg": _number(),
+    "alignment_diagnostics.sweep.fine_step_deg": _number(),
+    "alignment_diagnostics.sweep.fine_halfwidth_deg": _number(),
+    "alignment_diagnostics.sweep.min_observations": _integer(minimum=1),
+    "alignment_diagnostics.sweep.min_arc_deg": _number(),
+    "alignment_diagnostics.sweep.max_condition": _number(),
+    "alignment_diagnostics.sweep.min_tracklets": _integer(minimum=1),
+    "alignment_diagnostics.sweep.min_support_frac": _number(maximum=1.0),
+    "localization_inputs.motion_source": _text(),
+    "localization_inputs.nominal_forward_calibration": _text(),
+    "localization_inputs.use_uninformative_tables": _boolean(),
+    "localization_inputs.default_log_compatibility": build_config.ValueSpec(
+        (int, float)),
+    "localization_inputs.compatibility_clip": _number(),
+    "localization_inputs.reducer_epoch_keyframes": _integer(minimum=1),
+    "localization_inputs.odometry_sigma_pair_m": _number(),
+    "localization_inputs.displacement_gate_m": _number(),
+    "localization_inputs.stationary_sigma_m": _number(),
+    "localization_inputs.slow_yaw_sigma_deg": _number(),
+    "localization_inputs.reverse_keyframe_ranges": build_config.ValueSpec(
+        (list,)),
+    "localization_inputs.reverse_annotation_source": _text(),
+    "localization_inputs.max_visible_range_m": _number(),
+    "localization_inputs.landmark_position_sigma_m": _number(),
+    "localization.run_name": _text(),
+    "localization.init": _text(choices=("uniform", "truth")),
+    "localization.prior_sigma_m": build_config.ValueSpec(
+        (int, float), allow_none=True, minimum=0.0),
+    "localization.n_particles": _integer(minimum=1),
+    "localization.seed": _integer(),
+    "localization.margin_m": _number(),
+    "localization.pi0": _number(maximum=1.0),
+    "localization.ess_resample_frac": _number(maximum=1.0),
+    "localization.heading_random_walk_deg": _number(),
+    "localization.resample_regularization": _number(),
+    "localization.position_roughening_m": _number(),
+    "localization.heading_roughening_deg": _number(),
+    "localization.map_cell_size_m": _number(),
+    "localization.checkpoint_every": _integer(minimum=1),
+    "localization.measurement_backend": _text(choices=("numpy", "torch")),
+    "localization.association_persistence": _boolean(),
+    "localization.association_renewal_rate": _number(maximum=1.0),
+    "localization.association_outlier_rate": _number(maximum=1.0),
+    "localization.matcher_recall": _number(maximum=1.0),
+    "localization.min_reported_responsibility": _number(maximum=1.0),
+    "localization.bearings_enabled": _boolean(),
+    "localization.proposal.enabled": _boolean(),
+    "localization.proposal.on_init": _boolean(),
+    "localization.proposal.null_share_threshold": _number(maximum=1.0),
+    "localization.proposal.null_share_window": _integer(minimum=1),
+    "localization.proposal.null_share_min_fraction": _number(maximum=1.0),
+    "localization.proposal.ess_floor_frac": _number(maximum=1.0),
+    "localization.proposal.ess_floor_keyframes": _integer(minimum=1),
+    "localization.proposal.refractory_keyframes": _integer(),
+    "localization.proposal.top_k_landmarks": _integer(minimum=1),
+    "localization.proposal.max_tracklets": _integer(minimum=1),
+    "localization.proposal.max_combinations_single": _integer(minimum=1),
+    "localization.proposal.max_combinations_pair": _integer(minimum=1),
+    "localization.proposal.max_combinations_triple": _integer(minimum=1),
+    "localization.proposal.max_hypotheses_per_kind": _integer(minimum=1),
+    "localization.proposal.residual_tolerance_sigma": _number(),
+    "localization.proposal.max_residual_tolerance_deg": _number(),
+    "localization.proposal.window_keyframes": _integer(minimum=1),
+    "localization.proposal.evidence_gate": _boolean(),
+    "localization.proposal.evidence_gate_margin_nats": build_config.ValueSpec(
+        (int, float)),
+    "localization.proposal.evidence_gate_selection_charge": _boolean(),
+    "localization.proposal.min_tracklets_for_injection": _integer(minimum=1),
+    "localization.proposal.init_max_wait_keyframes": _integer(minimum=1),
+    "localization.proposal.evidence_gate_samples": _integer(minimum=1),
+    "localization.proposal.share_triple": _number(maximum=1.0),
+    "localization.proposal.share_pair": _number(maximum=1.0),
+    "localization.proposal.share_single": _number(maximum=1.0),
+    "localization.proposal.inject_fraction": _number(maximum=1.0),
+    "localization.proposal.injection_sigma_m": _number(),
+    "localization.proposal.injection_heading_sigma_deg": _number(),
+    "localization.proposal.max_injection_sigma_m": _number(),
+    "localization.modes.enabled": _boolean(),
+    "localization.modes.cell_size_m": _number(),
+    "localization.modes.heading_cell_deg": _number(),
+    "localization.modes.min_cell_weight": _number(maximum=1.0),
+    "localization.modes.min_mode_weight": _number(maximum=1.0),
+}
+
+
+def _value(config: dict, key: str) -> Any:
+    return build_config.value({"config": config}, key)
+
+
+def validate_pipeline_config(config: dict) -> None:
+    """Validate exact types, scalar domains, and cross-field invariants."""
+    build_config.validate_resolved(config, CONFIG_SCHEMA)
+    start = _value(config, "tracking.range.k_start")
+    end = _value(config, "tracking.range.k_end")
+    if start > end:
+        raise build_config.InvalidConfigValue(
+            "tracking.range.k_start must be <= tracking.range.k_end")
+    if _value(config, "tracking.window_px") > _value(
+            config, "tracking.window_max_px"):
+        raise build_config.InvalidConfigValue(
+            "tracking.window_px must be <= tracking.window_max_px")
+    sigma_pair = _value(config, "localization_inputs.odometry_sigma_pair_m")
+    stationary_sigma = _value(
+        config, "localization_inputs.stationary_sigma_m")
+    if stationary_sigma < sigma_pair:
+        raise build_config.InvalidConfigValue(
+            "localization_inputs.stationary_sigma_m must be >= "
+            "localization_inputs.odometry_sigma_pair_m")
+    reverse_ranges = _value(
+        config, "localization_inputs.reverse_keyframe_ranges")
+    previous_end = 0
+    for index, interval in enumerate(reverse_ranges):
+        if (not isinstance(interval, list) or len(interval) != 2
+                or any(type(value) is not int for value in interval)):
+            raise build_config.InvalidConfigValue(
+                "localization_inputs.reverse_keyframe_ranges"
+                f"[{index}] must be [start, end] integers")
+        range_start, range_end = interval
+        if range_start < 1 or range_end < range_start:
+            raise build_config.InvalidConfigValue(
+                "localization_inputs.reverse_keyframe_ranges"
+                f"[{index}] is not a positive inclusive range")
+        if range_start <= previous_end:
+            raise build_config.InvalidConfigValue(
+                "localization_inputs.reverse_keyframe_ranges must be sorted "
+                "and non-overlapping")
+        previous_end = range_end
+    transport = _value(config, "execution.llm_transport")
+    gcs_prefix = _value(config, "execution.batch_gcs_prefix")
+    if transport == "batch" and (not isinstance(gcs_prefix, str)
+                                  or not gcs_prefix.startswith("gs://")):
+        raise build_config.InvalidConfigValue(
+            "execution.batch_gcs_prefix must be a gs:// URI for batch mode")
+    if transport == "on_demand" and gcs_prefix is not None:
+        raise build_config.InvalidConfigValue(
+            "execution.batch_gcs_prefix must be null for on_demand mode")
+    init = _value(config, "localization.init")
+    prior_sigma = _value(config, "localization.prior_sigma_m")
+    if init == "truth" and (prior_sigma is None or prior_sigma <= 0):
+        raise build_config.InvalidConfigValue(
+            "localization.prior_sigma_m must be positive for truth init")
+    if init == "uniform" and prior_sigma is not None:
+        raise build_config.InvalidConfigValue(
+            "localization.prior_sigma_m must be null for uniform init")
+    shares = sum(_value(config, f"localization.proposal.{name}")
+                 for name in ("share_single", "share_pair", "share_triple"))
+    if not math.isclose(shares, 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise build_config.InvalidConfigValue(
+            "localization proposal shares must sum to 1.0")
+    identifier_keys = [
+        "experiment.name",
+        "localization.run_name",
+        *(f"artifacts.{kind}_version" for kind in paths_lib.ARTIFACT_KINDS),
+    ]
+    for key in identifier_keys:
+        try:
+            paths_lib.require_identifier(_value(config, key), key)
+        except paths_lib.PathContractError as exc:
+            raise build_config.InvalidConfigValue(str(exc)) from exc
+
+
+def load_pipeline_config(path: Path) -> dict:
+    """Load YAML without permitting ambiguous duplicate mapping keys."""
+    import yaml
+
+    class UniqueKeySafeLoader(yaml.SafeLoader):
+        pass
+
+    def construct_unique_mapping(loader, node, deep=False):
+        loader.flatten_mapping(node)
+        result = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in result
+            except TypeError as exc:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    "found an unhashable mapping key", key_node.start_mark,
+                ) from exc
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found duplicate key {key!r}", key_node.start_mark,
+                )
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    UniqueKeySafeLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_unique_mapping)
+    try:
+        raw = yaml.load(Path(path).read_text(), Loader=UniqueKeySafeLoader)
+    except yaml.YAMLError as exc:
+        raise build_config.InvalidConfigValue(
+            f"invalid pipeline config YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise build_config.InvalidConfigValue(
+            "pipeline config YAML must contain a top-level mapping")
+    return raw
+
+
+VERSION_KEYS = {
+    kind: f"artifacts.{kind}_version"
+    for kind in paths_lib.ARTIFACT_KINDS
+}
+
+
+@dataclass(frozen=True)
+class StageSpec:
+    outputs: tuple[str, ...]
+    upstreams: tuple[str, ...]
+    config_prefixes: tuple[str, ...]
+    target: str
+
+
+STAGE_SPECS = {
+    "extract": StageSpec(
+        outputs=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
+        upstreams=(),
+        config_prefixes=("extraction", "execution", "cost"),
+        target=f"{FF}/extraction:extract_landmarks"),
+    "track": StageSpec(
+        outputs=(paths_lib.OBJECT_TRACKS,),
+        upstreams=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
+        config_prefixes=("ingest", "tracking", "gps_course"),
+        target=f"{FF}/tracking:run_tracking"),
+    "audit": StageSpec(
+        outputs=(paths_lib.SEMANTIC_AUDITS,),
+        upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.FRAME_LANDMARKS),
+        config_prefixes=("ingest", "audit", "execution", "cost"),
+        target=f"{FF}/tracking:audit_requests"),
+    "bearings": StageSpec(
+        outputs=(paths_lib.BEARING_OBSERVATIONS,),
+        upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS),
+        config_prefixes=("bearing_observations",
+                         "tracking.reference_pano_width"),
+        target=f"{FF}/tracking:build_bearing_observations"),
+    "match": StageSpec(
+        outputs=(paths_lib.LANDMARK_MATCHES,),
+        upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
+                   paths_lib.CATALOGS),
+        config_prefixes=("matching", "execution", "cost"),
+        target=f"{FF}/matching:match_landmarks"),
+    "diagnostics": StageSpec(
+        outputs=(paths_lib.ALIGNMENT_DIAGNOSTICS,),
+        upstreams=(paths_lib.BEARING_OBSERVATIONS,),
+        config_prefixes=("alignment_diagnostics",),
+        target=f"{FF}/calibration:build_alignment_diagnostics"),
+    "localization_inputs": StageSpec(
+        outputs=(paths_lib.LOCALIZATION_INPUTS,),
+        upstreams=(paths_lib.BEARING_OBSERVATIONS,
+                   paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS),
+        config_prefixes=("localization_inputs", "gps_course"),
+        target=f"{FF}/localization:build_export"),
+    "localize": StageSpec(
+        outputs=(LOCALIZATION_RUN_KIND,),
+        upstreams=(paths_lib.LOCALIZATION_INPUTS,),
+        config_prefixes=("localization",),
+        target=f"{FF}/localization:run_export"),
+}
+STAGES = tuple(STAGE_SPECS)
+PIPELINE_ARTIFACT_OWNER = {
+    kind: stage
+    for stage, spec in STAGE_SPECS.items()
+    for kind in spec.outputs
+    if kind in VERSION_KEYS
+}
+
+
+class StageContractError(ValueError):
+    """A published stage output is partial, invalid, or stale."""
+
+
+class StageDependencyError(ValueError):
+    """A stage cannot start because a configured upstream is incomplete."""
+
+
+def _prefixed_keys(prefixes: tuple[str, ...]) -> list[str]:
+    return sorted(key for key in CONFIG_SCHEMA
+                  if any(key == prefix or key.startswith(prefix + ".")
+                         for prefix in prefixes))
+
+
+def stage_contract(stage: str, config: dict) -> dict:
+    """Small manifest value proving which resolved settings shaped a stage."""
+    spec = STAGE_SPECS[stage]
+    selected = {key: _value(config, key)
+                for key in _prefixed_keys(spec.config_prefixes)}
+    for kind in spec.outputs:
+        if kind in VERSION_KEYS:
+            selected[VERSION_KEYS[kind]] = _value(config, VERSION_KEYS[kind])
+    return {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": stage,
+        "config_digest": artifact.sha256_json(selected),
+    }
+
+
+def versions_from_config(config: dict) -> dict[str, str]:
+    return {kind: _value(config, key) for kind, key in VERSION_KEYS.items()}
+
+
+def localization_run_dir(paths: paths_lib.FarfieldPaths, config: dict) -> Path:
+    return (paths.experiment_dir(_value(config, "experiment.name")) /
+            paths_lib.require_identifier(
+                _value(config, "localization.run_name"),
+                "localization.run_name"))
+
+
+def _output_descriptors(paths: paths_lib.FarfieldPaths, config: dict,
+                        stage: str) -> list[tuple[str, str, Path]]:
+    output = []
+    for kind in STAGE_SPECS[stage].outputs:
+        if kind == LOCALIZATION_RUN_KIND:
+            output.append((kind, _value(config, "localization.run_name"),
+                           localization_run_dir(paths, config)))
+        else:
+            version = _value(config, VERSION_KEYS[kind])
+            output.append((kind, version, paths.artifact(kind, version)))
+    return output
+
+
+def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
+                    kind: str, *,
+                    build_identity: str | None = None) -> artifact.ArtifactRef:
+    version = _value(config, VERSION_KEYS[kind])
+    path = paths.artifact(kind, version)
+    if not path.exists():
+        raise StageDependencyError(
+            f"required {kind} artifact is not published: {path}")
+    try:
+        ref = artifact.open_artifact(
+            path, expected_kind=kind, expected_dataset=paths.dataset,
+            expected_version=version)
+    except artifact.ArtifactError as exc:
+        raise StageDependencyError(
+            f"required {kind} artifact is invalid: {exc}") from exc
+    owner = PIPELINE_ARTIFACT_OWNER.get(kind)
+    if build_identity is not None and owner is not None:
+        manifest = artifact.load_manifest(path)
+        if manifest.config.get("orchestration") != stage_contract(owner, config):
+            raise StageDependencyError(
+                f"required {kind} artifact has a different resolved "
+                "configuration; publish the configured upstream stage first")
+        if manifest.config.get("build_identity") != build_identity:
+            raise StageDependencyError(
+                f"required {kind} artifact belongs to a different immutable "
+                "build identity; publish a new upstream version")
+    return ref
+
+
+def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
+                           stage: str, *,
+                           build_identity: str
+                           ) -> tuple[artifact.ArtifactRef, ...]:
+    return tuple(_configured_ref(
+        paths, config, kind, build_identity=build_identity)
+                 for kind in STAGE_SPECS[stage].upstreams)
+
+
+def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
+                         stage: str, *,
+                         build_identity: str) -> tuple[artifact.ArtifactRef, ...]:
+    """Return validated outputs, ``()`` when absent, or reject stale output."""
+    descriptors = _output_descriptors(paths, config, stage)
+    present = [path.exists() or path.is_symlink()
+               for _, _, path in descriptors]
+    if not any(present):
+        return ()
+    upstreams = expected_upstream_refs(
+        paths, config, stage, build_identity=build_identity)
+    contract = stage_contract(stage, config)
+    refs = []
+    for (kind, version, path), exists in zip(descriptors, present):
+        if not exists:
+            continue
+        try:
+            ref = artifact.open_artifact(
+                path, expected_kind=kind, expected_dataset=paths.dataset,
+                expected_version=version)
+            manifest = artifact.load_manifest(path)
+        except artifact.ArtifactError as exc:
+            raise StageContractError(
+                f"stage {stage!r} output {path} is not complete: {exc}") from exc
+        missing_upstreams = [
+            expected for expected in upstreams
+            if manifest.upstreams.count(expected) != 1]
+        if missing_upstreams:
+            raise StageContractError(
+                f"stage {stage!r} output {path} was built from different "
+                "upstream artifact identities; choose a new output version")
+        if manifest.config.get("orchestration") != contract:
+            raise StageContractError(
+                f"stage {stage!r} output {path} has a different resolved "
+                "configuration; choose a new output version")
+        if manifest.config.get("build_identity") != build_identity:
+            raise StageContractError(
+                f"stage {stage!r} output {path} belongs to a different "
+                "immutable build identity; choose a new output version")
+        refs.append(ref)
+    # Extraction publishes pinhole images first and frame landmarks second.
+    # A crash between the two leaves one valid immutable artifact that must be
+    # reusable; it is pending, not corrupt.  Every present output was still
+    # validated above, so a stale partial publication fails closed.
+    if not all(present):
+        return ()
+    return tuple(refs)
+
+
+def stage_done(stage: str, paths: paths_lib.FarfieldPaths,
+               config: dict, *, build_identity: str) -> bool:
+    """Completion is a validated typed manifest, never an existence marker."""
+    return bool(completed_stage_refs(
+        paths, config, stage, build_identity=build_identity))
+
+
+def _resolved_path(value: str, base: Path) -> str:
+    path = Path(value)
+    if not path.is_absolute():
+        path = base / path
+    return str(path.resolve())
+
+
+def resolve_config_paths(config: dict, paths: paths_lib.FarfieldPaths) -> dict:
+    """Return a deep copy with every external filesystem input absolute."""
+    result = copy.deepcopy(config)
+    tracking = result.get("tracking")
+    inputs = result.get("localization_inputs")
+    if isinstance(tracking, dict) and isinstance(
+            tracking.get("sam2_checkpoint"), str):
+        tracking["sam2_checkpoint"] = _resolved_path(
+            tracking["sam2_checkpoint"], paths.models_root)
+    if isinstance(inputs, dict):
+        for key in ("motion_source", "nominal_forward_calibration"):
+            if isinstance(inputs.get(key), str):
+                inputs[key] = _resolved_path(inputs[key], paths.dataset_base)
+    return result
+
+
+def _source_video_inputs(paths: paths_lib.FarfieldPaths) -> dict[str, str]:
+    try:
+        video = paths.video
+    except paths_lib.MissingInput:
+        return {}
+    if video.is_symlink() or not video.is_file():
+        raise FileNotFoundError(
+            f"source video must be a regular, non-symlink file: {video}")
+    return {
+        "video": str(video.resolve()),
+        "video_sha256": artifact.sha256_file(video),
+    }
+
+
+def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
+                           source_config: Path) -> dict[str, str]:
+    if not paths.dataset_base.is_dir():
+        raise FileNotFoundError(f"dataset directory does not exist: "
+                                f"{paths.dataset_base}")
+    try:
+        dataset_digests = paths_lib.dataset_source_digests(paths.dataset_base)
+    except paths_lib.MissingInput as exc:
+        raise FileNotFoundError(str(exc)) from exc
+    checkpoint = Path(_value(config, "tracking.sam2_checkpoint"))
+    motion = Path(_value(config, "localization_inputs.motion_source"))
+    calibration = Path(_value(
+        config, "localization_inputs.nominal_forward_calibration"))
+    for label, path in (("SAM2 checkpoint", checkpoint),
+                        ("motion source", motion),
+                        ("nominal-forward calibration", calibration)):
+        if not path.is_file():
+            raise FileNotFoundError(f"{label} does not exist: {path}")
+    nominal_forward.load(calibration, expected_dataset=paths.dataset)
+    catalog = _configured_ref(paths, config, paths_lib.CATALOGS)
+    result = {
+        "farfield_root": str(paths.root.resolve()),
+        "dataset_base": str(paths.dataset_base.resolve()),
+        "source_config": str(source_config.resolve()),
+        "source_config_sha256": artifact.sha256_file(source_config),
+        "sam2_checkpoint": str(checkpoint),
+        "sam2_checkpoint_sha256": artifact.sha256_file(checkpoint),
+        "motion_source": str(motion),
+        "motion_source_sha256": artifact.sha256_file(motion),
+        "nominal_forward_calibration": str(calibration),
+        "nominal_forward_sha256": artifact.sha256_file(calibration),
+        "catalog_manifest_digest": catalog.manifest_digest,
+        "catalog_content_digest": catalog.content_digest,
+        **dataset_digests,
+        **_source_video_inputs(paths),
+    }
+    return result
+
+
+def cmd_new_build(args) -> None:
+    try:
+        paths_lib.require_identifier(args.dataset, "--dataset")
+        paths_lib.require_identifier(args.build_name, "--build_name")
+    except paths_lib.PathContractError as exc:
+        raise SystemExit(str(exc)) from exc
+    root = Path(args.farfield_root or paths_lib.default_root())
+    overrides = ({"dataset_base": Path(args.dataset_base)}
+                 if args.dataset_base else {})
+    paths = paths_lib.FarfieldPaths(
+        dataset=args.dataset, root=root, overrides=overrides)
+    source_config = Path(args.config)
+    try:
+        raw = load_pipeline_config(source_config)
+    except FileNotFoundError:
+        raise SystemExit(f"config file {source_config} not found") from None
+    except build_config.InvalidConfigValue as exc:
+        raise SystemExit(str(exc)) from exc
+    config = resolve_config_paths(raw, paths)
+    validate_pipeline_config(config)
+    paths.versions.update(versions_from_config(config))
+    inputs = _validate_build_inputs(paths, config, source_config)
+    build_dir = paths.build_dir(args.build_name)
+    path = build_config.create(
+        build_dir, dataset=paths.dataset, config=config, schema=CONFIG_SCHEMA,
+        generator="farfield.pipeline new-build", inputs=inputs,
+        notes=args.notes)
+    print(f"build created: {build_dir}")
+    print(f"config recorded: {path}")
+    print(f"next: bazel run {FF}:pipeline -- run --build_dir {build_dir}")
+
+
+def resolve_build(build_dir: Path) -> tuple[paths_lib.FarfieldPaths, dict]:
+    build_dir = Path(build_dir)
+    document = build_config.load(build_dir)
+    config = document["config"]
+    validate_pipeline_config(config)
+    root = Path(document["inputs"]["farfield_root"])
+    dataset_base = Path(document["inputs"]["dataset_base"])
+    paths = paths_lib.FarfieldPaths(
+        dataset=document["dataset"], root=root,
+        versions=versions_from_config(config),
+        overrides={"dataset_base": dataset_base})
+    expected = paths.build_dir(build_dir.name).resolve()
+    if build_dir.resolve() != expected:
+        raise ValueError(
+            f"build config says dataset/root resolve to {expected}, not "
+            f"{build_dir.resolve()}")
+    return paths, document
+
+
+def _execution_flags(config: dict) -> list[Any]:
+    flags: list[Any] = ["--cost_limit", _value(config, "cost.limit_usd")]
+    if _value(config, "execution.approve_cost"):
+        flags.append("--approve_cost")
+    if _value(config, "execution.llm_transport") == "on_demand":
+        flags.append("--online")
+    else:
+        flags.extend(["--gcs_prefix",
+                      _value(config, "execution.batch_gcs_prefix")])
+    return flags
+
+
+def _stage_base(build_dir: Path, config: dict, stage: str) -> list[Any]:
+    return ["--build_config", build_dir / build_config.BUILD_CONFIG_NAME,
+            "--orchestration_config_digest",
+            stage_contract(stage, config)["config_digest"]]
+
+
+def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
+                   config: dict) -> dict[str, list[Any]]:
+    """Construct explicit artifact-to-artifact stage commands.
+
+    Result-shaping values live in ``build_config.json``.  Child tools receive
+    that immutable file plus explicit input/output directories, so no stage
+    can resolve a different root, version, range, or calibration by accident.
+    """
+    outputs = {
+        kind: paths.artifact(kind, _value(config, VERSION_KEYS[kind]))
+        for kind in paths_lib.ARTIFACT_KINDS
+    }
+    common = ["--dataset", paths.dataset,
+              "--dataset_base", paths.dataset_base]
+    llm = _execution_flags(config)
+    range_flags = ["--k_start", _value(config, "tracking.range.k_start"),
+                   "--k_end", _value(config, "tracking.range.k_end")]
+    track = common + [
+        "--frame_landmarks_dir", outputs[paths_lib.FRAME_LANDMARKS],
+        "--pinhole_dir", outputs[paths_lib.PINHOLE_IMAGES],
+        "--checkpoint", _value(config, "tracking.sam2_checkpoint"),
+        "--output_dir", outputs[paths_lib.OBJECT_TRACKS],
+    ] + range_flags
+    try:
+        video = paths.video
+        if video.is_file() and not video.is_symlink():
+            track += ["--video", video]
+    except paths_lib.MissingInput:
+        pass
+    commands = {
+        "extract": [
+            "bazel", "run", STAGE_SPECS["extract"].target, "--",
+        ] + common + [
+            "--pinhole_output_dir", outputs[paths_lib.PINHOLE_IMAGES],
+            "--output_dir", outputs[paths_lib.FRAME_LANDMARKS],
+        ] + _stage_base(build_dir, config, "extract") + llm,
+        "track": [
+            "bazel", "run", STAGE_SPECS["track"].target, "--",
+        ] + track + _stage_base(build_dir, config, "track"),
+        "audit": [
+            "bazel", "run", STAGE_SPECS["audit"].target, "--",
+            "--tracks_dir", outputs[paths_lib.OBJECT_TRACKS],
+            "--frame_landmarks_dir", outputs[paths_lib.FRAME_LANDMARKS],
+            "--output_dir", outputs[paths_lib.SEMANTIC_AUDITS], "--submit",
+        ] + common + _stage_base(build_dir, config, "audit") + llm,
+        "bearings": [
+            "bazel", "run", STAGE_SPECS["bearings"].target, "--",
+            "--tracks_dir", outputs[paths_lib.OBJECT_TRACKS],
+            "--audit_dir", outputs[paths_lib.SEMANTIC_AUDITS],
+            "--output_dir", outputs[paths_lib.BEARING_OBSERVATIONS],
+        ] + common + _stage_base(build_dir, config, "bearings"),
+        "match": [
+            "bazel", "run", STAGE_SPECS["match"].target, "--",
+            "--tracks_dir", outputs[paths_lib.OBJECT_TRACKS],
+            "--audit_dir", outputs[paths_lib.SEMANTIC_AUDITS],
+            "--catalog_dir", outputs[paths_lib.CATALOGS],
+            "--output_dir", outputs[paths_lib.LANDMARK_MATCHES], "--submit",
+        ] + common + _stage_base(build_dir, config, "match") + llm,
+        "diagnostics": [
+            "bazel", "run", STAGE_SPECS["diagnostics"].target, "--",
+            "--observations_dir", outputs[paths_lib.BEARING_OBSERVATIONS],
+            "--output_dir", outputs[paths_lib.ALIGNMENT_DIAGNOSTICS],
+        ] + common + _stage_base(build_dir, config, "diagnostics"),
+        "localization_inputs": [
+            "bazel", "run", STAGE_SPECS["localization_inputs"].target, "--",
+            "--observations_dir", outputs[paths_lib.BEARING_OBSERVATIONS],
+            "--matching_dir", outputs[paths_lib.LANDMARK_MATCHES],
+            "--catalog_dir", outputs[paths_lib.CATALOGS],
+            "--motion_source",
+            _value(config, "localization_inputs.motion_source"),
+            "--nominal_forward_calibration",
+            _value(config, "localization_inputs.nominal_forward_calibration"),
+            "--landmark_position_sigma_m",
+            _value(config, "localization_inputs.landmark_position_sigma_m"),
+            "--output_dir", outputs[paths_lib.LOCALIZATION_INPUTS],
+        ] + common + _stage_base(build_dir, config, "localization_inputs"),
+        "localize": [
+            "bazel", "run", STAGE_SPECS["localize"].target, "--",
+            "--input_dir", outputs[paths_lib.LOCALIZATION_INPUTS],
+            "--run_dir", localization_run_dir(paths, config),
+        ] + _stage_base(build_dir, config, "localize"),
+    }
+    return commands
+
+
+def run(command: list[Any], description: str, *, dry_run: bool = False) -> None:
     print(f"\n{'=' * 72}\n{description}\n{'=' * 72}")
-    print("  $ " + " ".join(str(c) for c in cmd), flush=True)
+    print("  $ " + " ".join(str(value) for value in command), flush=True)
     if dry_run:
         print("  [DRY RUN] skipped")
-        return 0
+        return
     if WORKSPACE is None:
-        sys.exit("BUILD_WORKSPACE_DIRECTORY is unset: run the pipeline via "
-                 "`bazel run`, not directly from the runfiles tree.")
+        raise SystemExit(
+            "BUILD_WORKSPACE_DIRECTORY is unset: invoke through `bazel run`")
     started = time.time()
-    result = subprocess.run([str(c) for c in cmd], cwd=WORKSPACE)
-    elapsed = time.time() - started
-    print(f"\n  {description}: exit {result.returncode} in {elapsed:.0f}s",
-          flush=True)
-    if check and result.returncode != 0:
-        sys.exit(f"\n{description} failed; stopping.")
-    return result.returncode
+    result = subprocess.run([str(value) for value in command], cwd=WORKSPACE)
+    print(f"\n  {description}: exit {result.returncode} in "
+          f"{time.time() - started:.0f}s", flush=True)
+    if result.returncode:
+        raise SystemExit(f"{description} failed; stopping")
 
 
-def token_cost(paths_to_results, model: str) -> dict:
-    """Tally tokens and list-price cost from stored `usageMetadata`.
-
-    Every response the pipeline stores carries its own usage block, so what
-    a run cost is a measurement rather than an estimate.
-    """
-    prompt = output = thinking = calls = 0
-    for path in paths_to_results:
-        if not Path(path).exists():
-            continue
-        with open(path) as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                response = record.get("response")
-                usage = (response or {}).get("usageMetadata") if isinstance(
-                    response, dict) else None
-                if not usage:
-                    continue
-                calls += 1
-                prompt += usage.get("promptTokenCount", 0) or 0
-                output += usage.get("candidatesTokenCount", 0) or 0
-                thinking += usage.get("thoughtsTokenCount", 0) or 0
-    out_tokens = output + thinking
-    input_usd, output_usd, rate_label = llm_cost.rates_for(model)
-    return {
-        "calls": calls, "prompt_tokens": prompt,
-        "output_tokens": out_tokens, "total_tokens": prompt + out_tokens,
-        "usd_on_demand": round(prompt * input_usd["small"]
-                               + out_tokens * output_usd["small"], 2),
-        "rate_label": rate_label,
-    }
-
-
-def stage_done(stage: str, paths, run_dir: Path, loc_run: Path) -> bool:
-    """Whether a stage's completion marker exists."""
-    if stage == "extract":
-        manifest = paths.frame_landmarks / "manifest.json"
-        if not manifest.exists():
-            return False
-        return json.loads(manifest.read_text()).get(
-            "config", {}).get("complete", False) is not False
-    if stage == "track":
-        # Import here: pulls torch transitively, and only this marker needs it.
-        from experimental.overhead_matching.swag.farfield.tracking import (
-            run_tracking,
-        )
-        return (run_dir / "tracks_complete.json").exists() and \
-            not run_tracking.unfinished_ranges(run_dir)
-    markers = {
-        "keyframes": run_dir / "keyframes" / "index.html",
-        "audit": run_dir / "semantic_audit" / "results.jsonl",
-        "review": run_dir / "semantic_audit" / "review" / "index.html",
-        "offset": run_dir / "mount_offset_sweep.json",
-        "match": run_dir / "matching" / "matches.json",
-        "matchview": run_dir / "matching" / "review" / "index.html",
-        "export": run_dir / "localization_export" / "export_meta.json",
-        "localize": loc_run / "manifest.json",
-        "plots": loc_run / "plots" / "map.png",
-        "viewer": loc_run / "viewer.html",
-    }
-    return markers[stage].exists()
-
-
-def check_extraction(paths, dry_run: bool):
-    """Stop if any panorama lacks a usable VLM response (see module doc)."""
-    if dry_run:
-        return
-    manifest = paths.frame_landmarks / "manifest.json"
-    if not manifest.exists():
-        sys.exit(f"\nSTOPPING: no extraction manifest at {manifest}; run the "
-                 f"extract stage first.")
-    coverage = json.loads(manifest.read_text()).get("config", {})
-    if coverage.get("complete") is False:
-        n = coverage.get("n_no_usable_response", "?")
-        sys.exit(
-            f"\nSTOPPING: {paths.frame_landmarks} is an incomplete "
-            f"extraction ({n} panoramas with no usable response). Downstream "
-            f"would read those frames as containing no objects. Repair with "
-            f"the extract stage's --retry_failed (never --force: that "
-            f"re-bills the whole extraction).")
-
-
-def check_offset(run_dir: Path, dry_run: bool):
-    """Stop before the export if no usable offset exists anywhere."""
-    if dry_run:
-        return
-    for name in ("sun_offset_check.json", "mount_offset_sweep.json"):
-        path = run_dir / name
-        if path.exists() and json.loads(path.read_text()).get("usable"):
-            return
-    # build_export itself falls back to a validated dataset record; let it
-    # decide — but warn that both run-local estimates abstained.
-    print("\n  NOTE: neither offset sidecar is usable; the export will "
-          "accept only a validated dataset record or --mount_offset_deg.")
-
-
-def cmd_new_run(args):
-    paths = paths_lib.from_args(args)
-    try:
-        import yaml
-        config = yaml.safe_load(Path(args.config).read_text())
-    except FileNotFoundError:
-        sys.exit(f"config file {args.config} not found")
-    run_dir = paths.tracks_runs_root / args.run_name
-    path = run_config.create(
-        run_dir, config, required=REQUIRED_CONFIG,
-        generator="farfield.pipeline new-run",
-        inputs={"dataset_base": paths.dataset_base,
-                "config_file": str(Path(args.config).resolve())},
-        notes=args.notes)
-    print(f"run created: {run_dir}")
-    print(f"config recorded: {path}")
-    print(f"next: bazel run {FF}:pipeline -- run --run_dir {run_dir}")
-
-
-def resolve_run(parser, args):
-    """(paths, run_dir, config doc, loc_run dir) for an existing run."""
-    run_dir = Path(args.run_dir)
-    doc = run_config.load(run_dir)  # pointed error if not a run
-    paths = paths_lib.resolve(parser, args, infer_from=run_dir)
-    cfg = doc["config"]
-    # Version/catalog resolution comes from the recorded config.
-    paths.versions.setdefault(
-        paths_lib.FRAME_LANDMARKS, cfg["artifacts"]["frame_landmarks_version"])
-    paths.versions.setdefault(
-        paths_lib.PINHOLE_IMAGES, cfg["artifacts"]["pinhole_images_version"])
-    if paths.catalog is None:
-        paths.catalog = cfg["catalog"]["name"]
-    experiment = paths.experiment_dir(cfg["experiment"]["name"])
-    loc_run = experiment / f"{paths.dataset}_{run_dir.name}"
-    return paths, run_dir, doc, loc_run
-
-
-def build_commands(paths, run_dir: Path, cfg: dict, loc_run: Path,
-                   args) -> dict:
-    v = lambda key: run_config.value({"config": cfg}, key)  # noqa: E731
-    ingest = ["--fov_deg", v("ingest.fov_deg"),
-              "--seam_gap_norm", v("ingest.seam_gap_norm"),
-              "--seam_min_y_iou", v("ingest.seam_min_y_iou")]
-    guard = ["--cost_limit", v("cost.limit_usd")]
-    if args.approve_cost:
-        guard.append("--approve_cost")
-    transport = ["--online"] if args.online else []
-    fusion = ["--epoch_keyframes", v("fusion.epoch_keyframes"),
-              "--bearing_sigma_deg", v("fusion.bearing_sigma_deg")]
-    export_dir = run_dir / "localization_export"
-    tables = (run_dir / "matching" / "compatibility.json"
-              if not args.uninformative_tables else "uninformative")
-
-    return {
-        "extract": ["bazel", "run", f"{FF}/extraction:extract_landmarks",
-                    "--", "--dataset", paths.dataset,
-                    "--prompt_type", v("extraction.prompt_type"),
-                    "--pinhole_resolution", v("extraction.pinhole_resolution"),
-                    "--media_resolution", v("extraction.media_resolution"),
-                    "--model", v("extraction.model"),
-                    "--thinking_level", v("extraction.thinking_level"),
-                    "--frame_landmarks_version",
-                    v("artifacts.frame_landmarks_version"),
-                    "--pinhole_version",
-                    v("artifacts.pinhole_images_version"),
-                    ] + guard + transport,
-        "track": ["bazel", "run", f"{FF}/tracking:run_tracking", "--",
-                  "--dataset", paths.dataset,
-                  "--frame_landmarks_version",
-                  v("artifacts.frame_landmarks_version"),
-                  "--run_name", run_dir.name,
-                  "--runs_root", run_dir.parent,
-                  "--checkpoint", paths.sam2_checkpoint
-                  if "sam2_checkpoint" in paths.overrides
-                  else paths.models_root / v("tracking.sam2_checkpoint"),
-                  "--notes", args.notes or f"pipeline {run_dir.name}",
-                  "--skip_existing_ranges"] + ingest
-                 + [a for r in (args.range or []) for a in ("--range", *r)],
-        "keyframes": ["bazel", "run", f"{FF}/tracking:keyframe_viewer", "--",
-                      "--run_dir", run_dir] + ingest,
-        "audit": ["bazel", "run", f"{FF}/tracking:audit_requests", "--",
-                  "--run_dir", run_dir, "--submit",
-                  "--model", v("audit.model"),
-                  "--min_supports", v("audit.min_supports"),
-                  "--thinking_level", v("audit.thinking_level"),
-                  "--max_support_chips", v("audit.max_support_chips"),
-                  "--max_context_chips", v("audit.max_context_chips"),
-                  "--max_description_samples",
-                  v("audit.max_description_samples"),
-                  "--chip_height_px", v("audit.chip_height_px"),
-                  ] + ingest + guard + transport,
-        "review": ["bazel", "run", f"{FF}/tracking:audit_review", "--",
-                   "--run_dir", run_dir] + ingest,
-        "offset": ["bazel", "run", f"{FF}/calibration:mount_offset_sweep",
-                   "--", "--run_dir", run_dir,
-                   "--coarse_step", v("calibration.sweep.coarse_step"),
-                   "--fine_step", v("calibration.sweep.fine_step"),
-                   "--fine_halfwidth", v("calibration.sweep.fine_halfwidth"),
-                   "--min_observations",
-                   v("calibration.sweep.min_observations"),
-                   "--min_arc_deg", v("calibration.sweep.min_arc_deg"),
-                   "--max_condition", v("calibration.sweep.max_condition"),
-                   "--min_tracklets", v("calibration.sweep.min_tracklets"),
-                   "--min_support_frac",
-                   v("calibration.sweep.min_support_frac")] + fusion,
-        "match": ["bazel", "run", f"{FF}/matching:match_landmarks", "--",
-                  "--run_dir", run_dir, "--submit",
-                  "--catalog", v("catalog.name"),
-                  "--model", v("matching.model"),
-                  "--query_batch", v("matching.query_batch"),
-                  "--chunk_size", v("matching.chunk_size"),
-                  "--thinking_level", v("matching.thinking_level"),
-                  "--confidence_floor", v("matching.confidence_floor"),
-                  "--instance_max_rows", v("matching.instance_max_rows"),
-                  ] + guard + transport,
-        "matchview": ["bazel", "run", f"{FF}/matching:match_viewer", "--",
-                      "--run_dir", run_dir] + fusion,
-        "export": ["bazel", "run", f"{FF}/localization:build_export", "--",
-                   "--run_dir", run_dir,
-                   "--output_dir", export_dir,
-                   "--tables", tables,
-                   "--catalog", v("catalog.name"),
-                   "--default_log_lr", v("export.default_log_lr"),
-                   "--clip", v("export.clip"),
-                   "--min_step_m", v("export.min_step_m"),
-                   "--sigma_pair_m", v("export.sigma_pair_m"),
-                   "--max_visible_range_m", v("export.max_visible_range_m"),
-                   ] + fusion,
-        "localize": ["bazel", "run", f"{FF}/localization:run_export", "--",
-                     "--export_dir", export_dir,
-                     "--output_dir", loc_run,
-                     "--init", "uniform",
-                     "--n_particles", v("localization.n_particles"),
-                     "--margin_m", v("localization.margin_m"),
-                     "--max_visible_range_m", v("export.max_visible_range_m"),
-                     "--position_roughening_m",
-                     v("localization.position_roughening_m"),
-                     "--heading_roughening_deg",
-                     v("localization.heading_roughening_deg")],
-        "plots": ["bazel", "run", f"{FF}/localization:plot_run", "--",
-                  "--run_dir", loc_run, "--animate"],
-        "viewer": ["bazel", "run", f"{FF}/localization:viewer", "--",
-                   "--run_dir", loc_run],
-    }
-
-
-def cmd_run(args, parser):
-    sys.stdout.reconfigure(line_buffering=True)
-    paths, run_dir, doc, loc_run = resolve_run(parser, args)
-    cfg = doc["config"]
-
+def _selected_stages(args, parser: argparse.ArgumentParser) -> list[str]:
     if args.only:
-        selected = [args.only]
-    else:
-        lo, hi = STAGES.index(args.from_stage), STAGES.index(args.to_stage)
-        if lo > hi:
-            parser.error(f"--from {args.from_stage} comes after --to "
-                         f"{args.to_stage}")
-        selected = [s for s in STAGES[lo:hi + 1] if s not in args.skip]
+        return [args.only]
+    lo, hi = STAGES.index(args.from_stage), STAGES.index(args.to_stage)
+    if lo > hi:
+        parser.error(f"--from {args.from_stage} comes after --to "
+                     f"{args.to_stage}")
+    return [stage for stage in STAGES[lo:hi + 1] if stage not in args.skip]
 
-    sun_cmd = ["bazel", "run", f"{FF}/calibration:sun_offset_check", "--",
-               "--run_dir", run_dir,
-               "--n_frames", cfg["calibration"]["sun"]["n_frames"],
-               "--min_speed_mps", cfg["calibration"]["sun"]["min_speed_mps"],
-               "--elevation_tolerance_deg",
-               cfg["calibration"]["sun"]["elevation_tolerance_deg"],
-               "--work_width", cfg["calibration"]["sun"]["work_width"]]
-    commands = build_commands(paths, run_dir, cfg, loc_run, args)
 
-    experiment = loc_run.parent
-    if any(s in selected for s in ("localize", "plots", "viewer")):
-        experiment.mkdir(parents=True, exist_ok=True)
-        if not (experiment / "experiment.md").exists():
-            print(f"NOTE: {experiment}/experiment.md does not exist yet — "
-                  f"every experiment directory carries one (what is being "
-                  f"explored, status, conclusions).")
-
-    print(f"dataset:    {paths.dataset}")
-    print(f"run:        {run_dir}")
-    print(f"experiment: {experiment}")
-    print(f"stages:     {' -> '.join(selected)}")
-    print(f"transport:  "
-          f"{'on-demand (--online)' if args.online else 'Batch API'}")
-
-    started = time.time()
-    ran, skipped = [], []
-    gated_extraction = False
+def cmd_run(args, parser: argparse.ArgumentParser) -> None:
+    sys.stdout.reconfigure(line_buffering=True)
+    try:
+        paths, document = resolve_build(args.build_dir)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    config = document["config"]
+    commands = build_commands(paths, Path(args.build_dir), config)
+    selected = _selected_stages(args, parser)
+    print(f"dataset:          {paths.dataset}")
+    print(f"build_dir:        {args.build_dir}")
+    print(f"localization run: {localization_run_dir(paths, config)}")
+    print(f"stages:           {' -> '.join(selected)}")
     for stage in selected:
-        if stage in DETECTION_CONSUMERS and not gated_extraction:
-            check_extraction(paths, args.dry_run)
-            gated_extraction = True
-        if stage == "offset":
-            # Absolute estimate first, relative after. Not `check`ed: the
-            # sun check abstains on overcast, and abstaining is a correct
-            # outcome that must not stop the pipeline.
-            run(sun_cmd, "offset (sun, absolute)", dry_run=args.dry_run,
-                check=False)
-        if stage == "export":
-            check_offset(run_dir, args.dry_run)
-        if stage_done(stage, paths, run_dir, loc_run) and not args.force:
-            print(f"\n-- {stage}: already done; --force to redo")
-            skipped.append(stage)
-            continue
+        try:
+            if stage_done(
+                    stage, paths, config,
+                    build_identity=document["build_identity"]):
+                print(f"\n-- {stage}: validated complete")
+                continue
+            expected_upstream_refs(
+                paths, config, stage,
+                build_identity=document["build_identity"])
+        except (StageContractError, StageDependencyError) as exc:
+            raise SystemExit(str(exc)) from exc
         run(commands[stage], stage, dry_run=args.dry_run)
-        ran.append(stage)
         if not args.dry_run:
-            result = indexes.refresh(paths.root)
-            print(f"  [indexes refreshed: {len(result['written'])} pages]")
-
-    print(f"\n{'=' * 72}")
-    print(f"pipeline finished in {(time.time() - started) / 60:.1f} min")
-    print(f"  ran:     {', '.join(ran) or 'nothing'}")
-    print(f"  skipped: {', '.join(skipped) or 'nothing'}")
-    if not args.dry_run:
-        extract_cost = token_cost(
-            list(paths.frame_landmarks.rglob("predictions.jsonl")),
-            cfg["extraction"]["model"])
-        llm_cost_totals = token_cost(
-            [run_dir / "semantic_audit" / "results.jsonl",
-             run_dir / "matching" / "results.jsonl"],
-            cfg["matching"]["model"])
-        total = extract_cost["usd_on_demand"] + \
-            llm_cost_totals["usd_on_demand"]
-        print(f"  model spend to date (measured, on-demand list price): "
-              f"${total:.2f}")
-        print(f"  serve everything: cd {paths.root} && "
-              f"python3 -m http.server 8935")
-    print(f"{'=' * 72}")
+            try:
+                if not stage_done(
+                        stage, paths, config,
+                        build_identity=document["build_identity"]):
+                    raise StageContractError(
+                        f"{stage} exited successfully without publishing its "
+                        "complete artifact manifest")
+            except (StageContractError, StageDependencyError) as exc:
+                raise SystemExit(str(exc)) from exc
 
 
-def cmd_status(args, parser):
-    paths, run_dir, doc, loc_run = resolve_run(parser, args)
-    print(f"run {run_dir}\nexperiment output: {loc_run}")
+def cmd_status(args, parser: argparse.ArgumentParser) -> None:
+    try:
+        paths, document = resolve_build(args.build_dir)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    config = document["config"]
+    print(f"build {args.build_dir}")
+    print(f"localization run: {localization_run_dir(paths, config)}")
     for stage in STAGES:
         try:
-            done = stage_done(stage, paths, run_dir, loc_run)
-        except Exception as exc:  # a marker probe must never crash status
-            print(f"  {stage:<10} ?  ({exc})")
-            continue
-        print(f"  {stage:<10} {'done' if done else '—'}")
+            state = ("done" if stage_done(
+                stage, paths, config,
+                build_identity=document["build_identity"]) else "pending")
+            detail = ""
+        except (StageContractError, StageDependencyError) as exc:
+            state, detail = "INVALID", f" ({exc})"
+        print(f"  {stage:<20} {state}{detail}")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_new = sub.add_parser("new-run", help="create + record a run config")
-    paths_lib.add_arguments(p_new, dataset_required=True)
-    p_new.add_argument("--run_name", required=True)
-    p_new.add_argument("--config", required=True,
-                       help="YAML with every result-shaping value (see "
-                            "farfield/configs/)")
-    p_new.add_argument("--notes", default="")
+    new = sub.add_parser("new-build", help="record one resolved build recipe")
+    new.add_argument("--dataset", required=True)
+    new.add_argument("--farfield_root", type=Path, default=None)
+    new.add_argument("--dataset_base", type=Path, default=None)
+    new.add_argument("--build_name", required=True)
+    new.add_argument("--config", type=Path, required=True)
+    new.add_argument("--notes", default="")
 
-    p_run = sub.add_parser("run", help="execute stages of an existing run")
-    paths_lib.add_arguments(p_run, checkpoint=True, feather=True, video=True)
-    p_run.add_argument("--run_dir", type=Path, required=True)
-    p_run.add_argument("--from", dest="from_stage", choices=STAGES,
-                       default=STAGES[0])
-    p_run.add_argument("--to", dest="to_stage", choices=STAGES,
-                       default=STAGES[-1])
-    p_run.add_argument("--only", choices=STAGES, default=None)
-    p_run.add_argument("--skip", action="append", default=[], choices=STAGES)
-    p_run.add_argument("--force", action="store_true",
-                       help="re-run stages whose marker exists")
-    p_run.add_argument("--online", action="store_true",
-                       help="on-demand model calls instead of the Batch API")
-    p_run.add_argument("--approve_cost", action="store_true")
-    p_run.add_argument("--uninformative_tables", action="store_true",
-                       help="export with flat tables (association-ambiguity "
-                            "floor) instead of the matching stage's")
-    p_run.add_argument("--range", nargs=3, action="append", default=None,
-                       metavar=("NAME", "K_START", "K_END"))
-    p_run.add_argument("--notes", default="")
-    p_run.add_argument("--dry_run", action="store_true")
+    execute = sub.add_parser("run", help="execute an existing build")
+    execute.add_argument("--build_dir", type=Path, required=True)
+    execute.add_argument("--from", dest="from_stage", choices=STAGES,
+                         default=STAGES[0])
+    execute.add_argument("--to", dest="to_stage", choices=STAGES,
+                         default=STAGES[-1])
+    execute.add_argument("--only", choices=STAGES, default=None)
+    execute.add_argument("--skip", action="append", default=[], choices=STAGES)
+    execute.add_argument("--dry_run", action="store_true")
 
-    p_status = sub.add_parser("status", help="stage markers for a run")
-    paths_lib.add_arguments(p_status)
-    p_status.add_argument("--run_dir", type=Path, required=True)
+    status = sub.add_parser("status", help="validate build stage manifests")
+    status.add_argument("--build_dir", type=Path, required=True)
+    return parser
 
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
-    if args.command == "new-run":
-        cmd_new_run(args)
+    if args.command == "new-build":
+        cmd_new_build(args)
     elif args.command == "run":
         cmd_run(args, parser)
     else:

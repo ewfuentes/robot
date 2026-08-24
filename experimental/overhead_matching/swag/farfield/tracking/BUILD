@@ -20,6 +20,43 @@ py_test(
 )
 
 py_library(
+    name = "build_bearing_observations_lib",
+    srcs = ["build_bearing_observations.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":tracklets",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
+    ],
+)
+
+py_binary(
+    name = "build_bearing_observations",
+    srcs = ["build_bearing_observations.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":build_bearing_observations_lib"],
+)
+
+py_test(
+    name = "build_bearing_observations_test",
+    srcs = ["build_bearing_observations_test.py"],
+    deps = [
+        ":build_bearing_observations_lib",
+        ":tracklets",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:testing",
+    ],
+)
+
+py_library(
     name = "perf_profile",
     srcs = ["perf_profile.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -93,6 +130,7 @@ py_library(
         ":track_builder",
         ":video_frames",
         ":viz_common",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield/calibration:heading",
@@ -111,10 +149,13 @@ py_library(
         ":range_runner",
         ":track_builder",
         ":viz_common",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
@@ -130,9 +171,14 @@ py_test(
     name = "run_tracking_test",
     srcs = ["run_tracking_test.py"],
     deps = [
+        requirement("numpy"),
+        ":range_runner",
         ":run_tracking_lib",
         ":track_builder",
-        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:testing",
     ],
 )
 
@@ -146,6 +192,7 @@ py_library(
         ":perf_profile",
         ":track_builder",
         ":viz_common",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
@@ -166,6 +213,10 @@ py_test(
     deps = [
         ":keyframe_viewer_lib",
         ":track_builder",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:testing",
     ],
 )
 
@@ -201,9 +252,13 @@ py_library(
         requirement("pillow"),
         ":keyframe_viewer_lib",
         ":semantic_audit",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
         "//experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager_lib",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
@@ -221,8 +276,14 @@ py_test(
     srcs = ["audit_requests_test.py"],
     deps = [
         ":audit_requests_lib",
+        ":semantic_audit",
         ":track_builder",
-        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:pipeline_lib",
         "//experimental/overhead_matching/swag/farfield:testing",
     ],
 )
@@ -257,6 +318,11 @@ py_test(
         ":audit_requests_lib",
         ":audit_review_lib",
         ":track_builder",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
+        "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
     ],
 )

@@ -1,15 +1,23 @@
+import dataclasses
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
-from unittest import mock
 
+import msgspec
 import shapely
 
+from common.python.serialization import msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
     geometry as geo,
+    nominal_forward,
+    paths as paths_lib,
     testing,
 )
+from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.localization import (
     build_export,
@@ -18,249 +26,390 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
-PANO_W = 64  # testing.make_dataset default pano size
+
+DATASET = "tiny_harbor"
+PANO_W = 64
 
 
-def write_tracks(run_dir: Path, name: str, tracks: list) -> None:
-    (run_dir / f"tracks_{name}.json").write_text(json.dumps(
-        {"range": {"name": name}, "tracks": tracks, "config": {}}))
-
-
-def write_audits(run_dir: Path, verdict_by_track: dict) -> None:
-    audit_dir = run_dir / "semantic_audit"
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    meta, lines = {}, []
-    for track_id, verdict in verdict_by_track.items():
-        key = f"audit_{track_id}"
-        meta[key] = {"track_id": track_id}
-        payload = {"verdict": verdict, "valid_segments": None}
-        lines.append(json.dumps({
-            "key": key,
-            "response": {"candidates": [{"content": {"parts": [{
-                "text": json.dumps(payload)}]}}]}}))
-    (audit_dir / "audit_meta.json").write_text(json.dumps(meta))
-    (audit_dir / "results.jsonl").write_text("\n".join(lines) + "\n")
-
-
-def simple_track(track_id: int, pano_x: float, n_keyframes: int = 3) -> dict:
+def source_track():
     return {
-        "track_id": track_id,
+        "track_id": 1,
         "birth_keyframe": 0,
-        "end_keyframe": n_keyframes - 1,
-        "close_reason": "end_of_range",
-        "records": [
-            {"keyframe": kf, "mask_bbox_window": [pano_x - 4, 10,
-                                                  pano_x + 4, 20],
-             "window_origin": [0, 0], "action": "propagate"}
-            for kf in range(n_keyframes)],
+        "end_keyframe": 3,
+        "records": [{
+            "keyframe": keyframe,
+            "mask_bbox_window": [28.0, 5.0, 36.0, 15.0],
+            "window_origin": [0.0, 0.0],
+        } for keyframe in range(4)],
     }
 
 
-class ResolveMountOffsetTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self.tmp.name) / "run"
-        self.run_dir.mkdir()
-        self.base = Path(self.tmp.name) / "ds"
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_override_wins(self):
-        offset, source = build_export.resolve_mount_offset(
-            self.run_dir, {}, self.base, 123.0)
-        self.assertEqual(offset, 123.0)
-        self.assertEqual(source, "--mount_offset_deg")
-
-    def test_validated_metadata_outranks_sidecars(self):
-        meta = testing.default_metadata()  # 214.0, accuracy_validated
-        (self.run_dir / "mount_offset_sweep.json").write_text(json.dumps(
-            {"usable": True, "frame": geo.MOUNT_OFFSET_FRAME,
-             "mount_offset_deg": 30.0, "verdict": "STRONG",
-             "tracklets_used": 9}))
-        offset, source = build_export.resolve_mount_offset(
-            self.run_dir, meta, self.base, None)
-        self.assertEqual(offset, 214.0)
-        self.assertIn("accuracy_validated", source)
-
-    def test_sun_sidecar_outranks_sweep(self):
-        (self.run_dir / "sun_offset_check.json").write_text(json.dumps(
-            {"usable": True, "frame": geo.MOUNT_OFFSET_FRAME,
-             "mount_offset_deg": 215.0, "verdict": "AGREEING"}))
-        (self.run_dir / "mount_offset_sweep.json").write_text(json.dumps(
-            {"usable": True, "frame": geo.MOUNT_OFFSET_FRAME,
-             "mount_offset_deg": 30.0, "verdict": "STRONG",
-             "tracklets_used": 9}))
-        offset, source = build_export.resolve_mount_offset(
-            self.run_dir, {}, self.base, None)
-        self.assertEqual(offset, 215.0)
-        self.assertIn("sun_offset_check", source)
-
-    def test_unusable_or_wrong_frame_sidecars_are_ignored(self):
-        # The FIXED-OBJECT abstention and a column-0-frame sidecar both must
-        # not reach the export.
-        (self.run_dir / "sun_offset_check.json").write_text(json.dumps(
-            {"usable": False, "frame": geo.MOUNT_OFFSET_FRAME,
-             "mount_offset_deg": 35.0, "verdict": "FIXED-OBJECT"}))
-        (self.run_dir / "mount_offset_sweep.json").write_text(json.dumps(
-            {"usable": True, "frame": "column_0",
-             "mount_offset_deg": 30.0, "verdict": "STRONG",
-             "tracklets_used": 9}))
-        with self.assertRaises(SystemExit):
-            build_export.resolve_mount_offset(self.run_dir, {}, self.base,
-                                              None)
-
-    def test_unvalidated_metadata_is_last_resort(self):
-        meta = testing.default_metadata()
-        meta["mount_offset"]["accuracy_validated"] = False
-        offset, source = build_export.resolve_mount_offset(
-            self.run_dir, meta, self.base, None)
-        self.assertEqual(offset, 214.0)
-        self.assertIn("pipeline_metadata", source)
+def audit_payload():
+    return {
+        "landmark_kind": "fixed_structure",
+        "single_object": True,
+        "valid_segments": [{"start_t": 0, "end_t": 3}],
+        "verdict": "keep",
+        "drop_reason": "none",
+        "primary_object": {
+            "tags": [{"tag": "man_made=lighthouse", "weight": 0.9}],
+            "name_candidates": [{
+                "name": "Example Light",
+                "weight": 0.8,
+                "basis": "reported_by_detections",
+            }],
+            "name_aliases": [],
+            "description": "A fixed lighthouse.",
+            "distinctive_features": ["white tower"],
+            "extent": "point_like",
+        },
+        "strike_votes": [],
+        "secondary_objects": [],
+        "confidence": "high",
+        "unresolved": "",
+    }
 
 
-class LoadTracksTest(unittest.TestCase):
-    def test_loads_all_ranges_and_refuses_duplicates(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp)
-            write_tracks(run_dir, "a", [simple_track(1, 30.0)])
-            write_tracks(run_dir, "b", [simple_track(2, 40.0)])
-            tracks = build_export.load_tracks(run_dir)
-            self.assertEqual(set(tracks), {1, 2})
-            write_tracks(run_dir, "c", [simple_track(2, 50.0)])
-            with self.assertRaises(SystemExit):
-                build_export.load_tracks(run_dir)
-
-    def test_missing_tracks_is_a_pointed_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit) as ctx:
-                build_export.load_tracks(Path(tmp))
-            self.assertIn("tracking stage", str(ctx.exception))
+def result_line(payload):
+    return json.dumps({
+        "key": "T1",
+        "response": {"candidates": [{"content": {"parts": [{
+            "text": json.dumps(payload),
+        }]}}]},
+    })
 
 
-class BodyFrameTest(unittest.TestCase):
-    def test_offset_applied_and_duplicates_refused(self):
-        m = tracklets.Measurement("T1", 3, 220.0, 50.0)
-        out = build_export.body_frame_measurements([m], 214.0)
-        self.assertAlmostEqual(out[0].bearing_body_deg, 6.0)
-        self.assertEqual(out[0].kappa, 50.0)
-        with self.assertRaises(SystemExit):
-            build_export.body_frame_measurements([m, m], 214.0)
+def write_tracks_and_audits(root: Path, build_identity: str,
+                            dataset_source_digest: str):
+    track = source_track()
+    tracks_dir = root / "tracks"
+    tracks_document = {
+        "range": {"name": "full", "k_start": 0, "k_end": 3},
+        "tracks": [track],
+    }
+    with artifact.ArtifactDirectoryBuilder(
+            tracks_dir, kind=paths_lib.OBJECT_TRACKS, dataset=DATASET,
+            version="v1", generator="test", git_commit="test",
+            arguments=(), config={
+                "build_identity": build_identity,
+                "source_digests": {
+                    "dataset_tracking_inputs": dataset_source_digest,
+                },
+            }, declared_outputs=("tracks_full.json",)) as builder:
+        artifact.atomic_write_json(
+            builder.output_path("tracks_full.json"), tracks_document)
+    tracks_ref = artifact.open_artifact(tracks_dir)
+    tracks_path = tracks_dir / "tracks_full.json"
+    meta = {
+        "schema": audit_io.META_SCHEMA,
+        "source_tracks": {
+            "artifact_id": audit_io.source_artifact_id(tracks_ref),
+            "file": tracks_path.name,
+            "sha256": artifact.sha256_file(tracks_path),
+        },
+        "requests": {
+            "T1": {
+                "track_id": 1,
+                "range": "full",
+                "birth_keyframe": 0,
+                "source_track_sha256": artifact.sha256_json(track),
+            },
+        },
+    }
+    audits_dir = root / "audits"
+    with artifact.ArtifactDirectoryBuilder(
+            audits_dir, kind=paths_lib.SEMANTIC_AUDITS, dataset=DATASET,
+            version="v1", generator="test", git_commit="test", arguments=(),
+            upstreams=(tracks_ref,), config={
+                "phase": "canonical_results", "coverage": "complete",
+                "n_expected": 1, "n_successful": 1,
+                "build_identity": build_identity,
+            }, declared_outputs=("audit_meta.json", "results.jsonl")) as builder:
+        artifact.atomic_write_json(builder.output_path("audit_meta.json"), meta)
+        artifact.atomic_write_file(
+            builder.output_path("results.jsonl"),
+            (result_line(audit_payload()) + "\n").encode())
+    return tracks_dir, audits_dir
+
+
+def write_observations(root: Path, tracks_dir: Path, audits_dir: Path,
+                       build_identity: str):
+    audits = audit_io.load_audits(tracks_dir, audits_dir)
+    accepted = tracklets.build_accepted_tracklets(audits.source_tracks, audits)
+    observations = tracklets.build_camera_bearing_observations(
+        accepted, PANO_W, 1.0)
+    observations.sort(key=lambda item: (item.tracklet_id, item.keyframe_idx))
+    observations_dir = root / "observations"
+    payload = b"".join(
+        artifact.canonical_json_bytes(dataclasses.asdict(item)) + b"\n"
+        for item in observations)
+    with artifact.ArtifactDirectoryBuilder(
+            observations_dir, kind=paths_lib.BEARING_OBSERVATIONS,
+            dataset=DATASET, version="v1", generator="test",
+            git_commit="test", arguments=(),
+            upstreams=(audits.tracks_ref, audits.semantic_audits_ref),
+            config={
+                "coverage": "complete", "bearing_sigma_deg": 1.0,
+                "build_identity": build_identity,
+            },
+            declared_outputs=("observations.jsonl",)) as builder:
+        artifact.atomic_write_file(
+            builder.output_path("observations.jsonl"), payload)
+    return observations_dir, accepted[0].tracklet_id
+
+
+def write_catalog(root: Path, *, node_id="node:1"):
+    catalog_dir = root / "catalog"
+    with artifact.ArtifactDirectoryBuilder(
+            catalog_dir, kind=paths_lib.CATALOGS, dataset=DATASET,
+            version="v1", generator="test", git_commit="test", arguments=(),
+            declared_outputs=("catalog.feather",)) as builder:
+        schema.build_frame(
+            ids=[node_id],
+            geometries=[shapely.Point(testing.ANCHOR_LON,
+                                      testing.ANCHOR_LAT + 0.01)],
+            landmark_types=["osm"],
+            tags=[{"man_made": "lighthouse"}],
+        ).to_feather(builder.output_path("catalog.feather"))
+    return catalog_dir, artifact.open_artifact(catalog_dir)
+
+
+def write_matching(root: Path, tracks_dir: Path, audits_dir: Path,
+                   catalog_ref, tracklet_id: str, *, coverage="complete",
+                   table_tracklet_id=None, build_identity=None):
+    tracks_ref = artifact.open_artifact(tracks_dir)
+    audits_ref = artifact.open_artifact(audits_dir)
+    if build_identity is None:
+        build_identity = artifact.load_manifest(
+            tracks_dir).config["build_identity"]
+    matching_dir = root / f"matching_{coverage}_{len(list(root.iterdir()))}"
+    table = structs.CompatibilityTable(
+        tracklet_id=table_tracklet_id or tracklet_id,
+        matcher_version="matcher-v1",
+        entries=[structs.CompatibilityEntry("osm:node:1", 1.0)],
+        default_log_lr=-1.0,
+        clip_lo=-4.0,
+        clip_hi=4.0,
+        status="fast")
+    with artifact.ArtifactDirectoryBuilder(
+            matching_dir, kind=paths_lib.LANDMARK_MATCHES, dataset=DATASET,
+            version="v1", generator="test", git_commit="test", arguments=(),
+            upstreams=(tracks_ref, audits_ref, catalog_ref),
+            config={"phase": "canonical_results", "coverage": coverage,
+                    "n_expected": 1, "n_successful": 1,
+                    "build_identity": build_identity},
+            declared_outputs=("compatibility.json",)) as builder:
+        artifact.atomic_write_file(
+            builder.output_path("compatibility.json"),
+            msgspec.json.encode([table], enc_hook=msgspec_enc_hook))
+    return matching_dir
+
+
+def write_nominal_forward(path: Path):
+    document = {
+        "schema": nominal_forward.SCHEMA,
+        "frame": nominal_forward.FRAME,
+        "approved": True,
+        "dataset": DATASET,
+        "version": "v1",
+        "mounting_id": "rig-a",
+        "panorama_column": 16.0,
+        "panorama_width": PANO_W,
+        "bearing_camera_cw_deg": float(
+            geo.azimuth_of_pano_column(16.0, PANO_W)) % 360.0,
+        "uncertainty_deg": 0.5,
+        "evidence_frame_ids": ["f0000"],
+        "operator": "reviewer",
+        "approved_at": "2026-08-23T00:00:00Z",
+        "notes": "human annotation",
+    }
+    path.write_text(json.dumps(document))
+    return path
+
+
+def build_fixture(root: Path):
+    base = testing.make_dataset(
+        root / "datasets" / DATASET, n_frames=4,
+        pano_size=(PANO_W, PANO_W // 2))
+    catalog_dir, catalog_ref = write_catalog(root)
+    calibration = write_nominal_forward(base / "nominal_forward.json")
+    config = {
+        "experiment": {"name": "test-experiment"},
+        "artifacts": {
+            "object_tracks_version": "v1",
+            "semantic_audits_version": "v1",
+            "bearing_observations_version": "v1",
+            "landmark_matches_version": "v1",
+            "catalogs_version": "v1",
+            "localization_inputs_version": "v1",
+        },
+        "gps_course": {"min_displacement_m": 2.0,
+                       "smooth_window_s": 0.0},
+        "localization_inputs": {
+            "motion_source": str((base / "frames_gps.csv").resolve()),
+            "nominal_forward_calibration": str(calibration.resolve()),
+            "use_uninformative_tables": False,
+            "default_log_compatibility": 0.0,
+            "compatibility_clip": 4.0,
+            "reducer_epoch_keyframes": 2,
+            "odometry_sigma_pair_m": 1.0,
+            "displacement_gate_m": 2.0,
+            "stationary_sigma_m": 3.0,
+            "slow_yaw_sigma_deg": 30.0,
+            "reverse_keyframe_ranges": [],
+            "reverse_annotation_source": "reviewer: no reverse motion",
+            "max_visible_range_m": 10000.0,
+            "landmark_position_sigma_m": 25.0,
+        },
+    }
+    dataset_digests = paths_lib.dataset_source_digests(base)
+    build_dir = root / "builds" / DATASET / "b001"
+    config_path = build_config.create(
+        build_dir, dataset=DATASET, config=config, generator="test",
+        inputs={
+            "dataset_base": base,
+            "motion_source": str((base / "frames_gps.csv").resolve()),
+            "motion_source_sha256": artifact.sha256_file(
+                base / "frames_gps.csv"),
+            "nominal_forward_calibration": str(calibration.resolve()),
+            "nominal_forward_sha256": artifact.sha256_file(calibration),
+            "catalog_manifest_digest": catalog_ref.manifest_digest,
+            "catalog_content_digest": catalog_ref.content_digest,
+            **dataset_digests,
+        })
+    document = build_config.load(build_dir)
+    build_identity = document["build_identity"]
+    tracks_dir, audits_dir = write_tracks_and_audits(
+        root, build_identity, artifact.sha256_json(dataset_digests))
+    observations_dir, tracklet_id = write_observations(
+        root, tracks_dir, audits_dir, build_identity)
+    matching_dir = write_matching(
+        root, tracks_dir, audits_dir, catalog_ref, tracklet_id,
+        build_identity=build_identity)
+    output = root / "v1"
+    args = types.SimpleNamespace(
+        dataset=DATASET,
+        dataset_base=base,
+        observations_dir=observations_dir,
+        matching_dir=matching_dir,
+        catalog_dir=catalog_dir,
+        motion_source=base / "frames_gps.csv",
+        nominal_forward_calibration=calibration,
+        landmark_position_sigma_m=25.0,
+        output_dir=output,
+        build_config=config_path,
+        orchestration_config_digest=(
+            build_export.orchestration_contract(document)["config_digest"]),
+    )
+    return args, tracklet_id
+
+
+class ReducerTest(unittest.TestCase):
+    def test_rotation_uses_approved_nominal_forward(self):
+        record = nominal_forward.parse({
+            "schema": nominal_forward.SCHEMA,
+            "frame": nominal_forward.FRAME,
+            "approved": True,
+            "dataset": DATASET,
+            "version": "v1",
+            "mounting_id": "rig",
+            "panorama_column": 16.0,
+            "panorama_width": PANO_W,
+            "bearing_camera_cw_deg": float(
+                geo.azimuth_of_pano_column(16.0, PANO_W)) % 360.0,
+            "uncertainty_deg": 1.0,
+            "evidence_frame_ids": ["f0"],
+            "operator": "reviewer",
+            "approved_at": "2026-08-23T00:00:00Z",
+            "notes": "human annotation",
+        })
+        measurement = tracklets.Measurement(
+            "artifact@sha256:" + "1" * 64 + "#T1", 3, 0.0, 10.0)
+        result = build_export.forward_frame_measurements(
+            [measurement], record)
+        self.assertAlmostEqual(
+            result[0].bearing_forward_cw_deg,
+            nominal_forward.camera_to_forward_cw_deg(0.0, record))
 
 
 class EndToEndTest(unittest.TestCase):
-    """Full synthetic pipeline: dataset + tracks + audit + sun sidecar +
-    feather -> export directory that export_ingest.load accepts."""
+    def test_publishes_valid_strict_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args, tracklet_id = build_fixture(Path(temporary))
+            reference = build_export.build(args)
+            data = export_ingest.load(
+                args.output_dir, expected_dataset=DATASET)
+            self.assertEqual(reference.kind, paths_lib.LOCALIZATION_INPUTS)
+            self.assertEqual(set(data.tables), {tracklet_id})
+            self.assertEqual({item.tracklet_id for item in data.measurements},
+                             {tracklet_id})
+            self.assertTrue(all(
+                item.position_sigma_m == 25.0 for item in data.landmarks))
+            self.assertTrue(all(
+                0.0 <= item.bearing_forward_cw_deg < 360.0
+                for item in data.measurements))
+            manifest = artifact.load_manifest(args.output_dir)
+            self.assertEqual(
+                [item.kind for item in manifest.upstreams],
+                [paths_lib.BEARING_OBSERVATIONS,
+                 paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS])
+            self.assertEqual(manifest.config["matching_coverage"], "complete")
+            self.assertEqual(
+                manifest.config["orchestration"],
+                build_export.orchestration_contract(
+                    build_config.load(args.build_config.parent)))
 
-    def test_build_and_read_back(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            # No metadata offset: the run's own sun sidecar must drive
-            # (a validated metadata offset would outrank it by design).
-            meta = testing.default_metadata()
-            del meta["mount_offset"]
-            base = testing.make_dataset(root / "datasets" / "tiny_harbor",
-                                        n_frames=4, metadata=meta)
-            run_dir = root / "run"
-            run_dir.mkdir()
-            write_tracks(run_dir, "full",
-                         [simple_track(1, PANO_W / 2, 4),
-                          simple_track(2, PANO_W * 0.75, 4),
-                          simple_track(3, 10.0, 4)])
-            write_audits(run_dir, {1: "keep", 2: "keep", 3: "drop"})
-            (run_dir / "sun_offset_check.json").write_text(json.dumps(
-                {"usable": True, "frame": geo.MOUNT_OFFSET_FRAME,
-                 "mount_offset_deg": 0.0, "verdict": "AGREEING"}))
+    def test_stale_recipe_digest_and_wrong_output_version_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args, _ = build_fixture(Path(temporary))
+            args.orchestration_config_digest = "0" * 64
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError,
+                    "orchestration_config_digest"):
+                build_export.build(args)
+            args.orchestration_config_digest = (
+                build_export.orchestration_contract(
+                    build_config.load(args.build_config.parent))[
+                        "config_digest"])
+            args.output_dir = Path(temporary) / "wrong-version"
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError, "output_dir"):
+                build_export.build(args)
 
-            feather = root / "cat.feather"
-            schema.build_frame(
-                ids=["('node', 1)"],
-                geometries=[shapely.Point(testing.ANCHOR_LON,
-                                          testing.ANCHOR_LAT + 0.01)],
-                landmark_types=["osm"],
-                tags=[{"man_made": "lighthouse"}],
-            ).to_feather(feather)
+    def test_dataset_mutation_is_rejected_against_build_recipe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args, _ = build_fixture(Path(temporary))
+            with Path(args.motion_source).open("a") as stream:
+                stream.write("\n")
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError,
+                    "dataset source bytes"):
+                build_export.build(args)
 
-            out = run_dir / "localization_export"
-            argv = ["build_export",
-                    "--dataset_base", str(base),
-                    "--run_dir", str(run_dir),
-                    "--output_dir", str(out),
-                    "--tables", "uninformative",
-                    "--feather", str(feather),
-                    "--epoch_keyframes", "5",
-                    "--bearing_sigma_deg", "1.0",
-                    "--default_log_lr", "0.0",
-                    "--clip", "4.0",
-                    "--min_step_m", "2.0",
-                    "--sigma_pair_m", "1.0",
-                    "--max_visible_range_m", "10000"]
-            with mock.patch("sys.argv", argv):
-                build_export.main()
+    def test_substituted_catalog_identity_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _ = build_fixture(root)
+            substitute_dir, _ = write_catalog(
+                root / "substitute", node_id="node:other")
+            args.catalog_dir = substitute_dir
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError,
+                    "catalog artifact identity"):
+                build_export.build(args)
 
-            data = export_ingest.load(out, max_visible_range_m=10000.0)
-            raw = json.loads((out / "export_meta.json").read_text())
-        # Track 3 had verdict=drop: only T1 and T2 export.
-        self.assertEqual({m.tracklet_id for m in data.measurements},
-                         {"T1", "T2"})
-        self.assertEqual(data.meta.mount_offset_frame,
-                         geo.MOUNT_OFFSET_FRAME)
-        self.assertEqual(data.meta.matcher_version,
-                         build_export.UNINFORMATIVE_MATCHER)
-        self.assertEqual(len(data.tables), 2)
-        self.assertEqual(data.n_keyframes, 4)
-        # Offset 0 -> body == camera bearing; T1 was pano-centred (az 0).
-        t1 = [m for m in data.measurements if m.tracklet_id == "T1"][0]
-        self.assertAlmostEqual(t1.bearing_body_deg, 0.0, places=6)
-        # Provenance extras land in the raw meta JSON.
-        self.assertIn("git_commit", raw)
-        self.assertIn("argv", raw)
-        self.assertEqual(raw["epoch_keyframes"], 5)
-        self.assertEqual(raw["audit_dropped_tracklets"], [3])
-
-    def test_matching_tables_mode_requires_coverage(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            base = testing.make_dataset(root / "datasets" / "tiny_harbor",
-                                        n_frames=4)
-            run_dir = root / "run"
-            run_dir.mkdir()
-            write_tracks(run_dir, "full", [simple_track(1, PANO_W / 2, 4)])
-            write_audits(run_dir, {1: "keep"})
-            feather = root / "cat.feather"
-            schema.build_frame(
-                ids=["('node', 1)"],
-                geometries=[shapely.Point(testing.ANCHOR_LON,
-                                          testing.ANCHOR_LAT + 0.01)],
-                landmark_types=["osm"],
-                tags=[{"man_made": "lighthouse"}],
-            ).to_feather(feather)
-            # A tables file covering the WRONG tracklet id.
-            import msgspec
-            from common.python.serialization import msgspec_enc_hook
-            tables_path = root / "compatibility.json"
-            tables_path.write_bytes(msgspec.json.encode(
-                [structs.CompatibilityTable("T99", "llm_v1", [], 0.0, -4.0,
-                                            4.0, "fast")],
-                enc_hook=msgspec_enc_hook))
-            argv = ["build_export",
-                    "--dataset_base", str(base),
-                    "--run_dir", str(run_dir),
-                    "--output_dir", str(root / "out"),
-                    "--tables", str(tables_path),
-                    "--feather", str(feather),
-                    "--mount_offset_deg", "0.0",
-                    "--epoch_keyframes", "5",
-                    "--bearing_sigma_deg", "1.0",
-                    "--default_log_lr", "0.0",
-                    "--clip", "4.0",
-                    "--min_step_m", "2.0",
-                    "--sigma_pair_m", "1.0",
-                    "--max_visible_range_m", "10000"]
-            with mock.patch("sys.argv", argv), \
-                    self.assertRaises(SystemExit) as ctx:
-                build_export.main()
-            self.assertIn("no table", str(ctx.exception))
+    def test_matching_partial_coverage_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, tracklet_id = build_fixture(root)
+            args.matching_dir = write_matching(
+                root, artifact.load_manifest(args.observations_dir).upstreams[0].path,
+                artifact.load_manifest(args.observations_dir).upstreams[1].path,
+                artifact.open_artifact(args.catalog_dir), tracklet_id,
+                coverage="partial")
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError, "coverage='complete'"):
+                build_export.build(args)
 
 
 if __name__ == "__main__":

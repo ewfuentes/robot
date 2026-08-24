@@ -1,13 +1,13 @@
-"""Vehicle heading over time from GPS positions.
+"""GPS course over time from positions.
 
-GPS-derived course stands in for whatever odometry is available at
-deployment (SLAM, compass); everything downstream consumes only
-"heading in degrees, clockwise from north, at time t". Course is undefined
-while the vehicle is stationary (e.g. at the dock), so headings are computed
-between anchor points spaced a minimum displacement apart and interpolated /
-held elsewhere.
+GPS-derived course stands in for relative odometry available at deployment;
+it is not a rigid camera calibration and is not true platform heading. Course
+is measured in degrees clockwise from true north. It is undefined
+while the vehicle is stationary (e.g. at the dock), so course samples are
+computed between anchor points spaced a minimum displacement apart and
+interpolated / held elsewhere.
 
-Heading here is always derived from POSITIONS. The intrinsics' `heading_deg`
+Course here is always derived from POSITIONS. The intrinsics' `heading_deg`
 column is never consulted: its meaning varies per dataset (compass vs camera
 yaw, mount offset sometimes already folded in), while positions mean one
 thing everywhere.
@@ -20,38 +20,58 @@ import numpy as np
 from experimental.overhead_matching.swag.farfield import geometry as geo
 
 
-class HeadingModel:
-    """Piecewise-linear heading vs time, built from sparse position fixes.
+class GpsCourseModel:
+    """Piecewise-linear GPS course vs time from sparse moving fixes.
 
-    Headings are stored unwrapped (continuous, may exceed [0, 360)) so
+    Courses are stored unwrapped (continuous, may exceed [0, 360)) so
     interpolation never takes the long way around the circle.
     """
 
-    def __init__(self, times_s: np.ndarray, headings_unwrapped_deg: np.ndarray):
+    def __init__(self, times_s: np.ndarray,
+                 course_world_cw_unwrapped_deg: np.ndarray):
         self.times_s = times_s
-        self.headings_unwrapped_deg = headings_unwrapped_deg
+        self.course_world_cw_unwrapped_deg = course_world_cw_unwrapped_deg
 
-    def at(self, t_s):
-        """Heading (unwrapped degrees, CW from north) at time(s) t_s."""
-        return np.interp(t_s, self.times_s, self.headings_unwrapped_deg)
+    def course_world_cw_deg_at(self, t_s):
+        """Unwrapped course degrees CW from true north at time(s) ``t_s``."""
+        return np.interp(
+            t_s, self.times_s, self.course_world_cw_unwrapped_deg)
 
-    def delta(self, t_s, t_ref_s) -> float:
-        """Signed heading change from t_ref_s to t_s in degrees."""
-        return float(self.at(t_s) - self.at(t_ref_s))
+    def delta_course_cw_deg(self, t_s, t_ref_s) -> float:
+        """Signed clockwise course change from ``t_ref_s`` to ``t_s``."""
+        return float(self.course_world_cw_deg_at(t_s)
+                     - self.course_world_cw_deg_at(t_ref_s))
 
 
-def heading_model_from_positions(east_m, north_m, times_s,
-                                 min_displacement_m: float = 3.0,
-                                 smooth_window_s: float = 10.0) -> HeadingModel:
-    """Fit a HeadingModel to a position track.
+def gps_course_model_from_positions(east_m, north_m, times_s,
+                                    *, min_displacement_m: float,
+                                    smooth_window_s: float) \
+        -> GpsCourseModel | None:
+    """Fit a course model, or abstain when displacement is inadequate.
 
     Anchor points are spaced at least min_displacement_m apart along the
-    track; each inter-anchor segment contributes one heading sample at its
+    track; each inter-anchor segment contributes one course sample at its
     midpoint time. A moving average over ~smooth_window_s smooths GPS jitter.
     """
     east_m = np.asarray(east_m, dtype=np.float64)
     north_m = np.asarray(north_m, dtype=np.float64)
     times_s = np.asarray(times_s, dtype=np.float64)
+    if (east_m.ndim != 1 or east_m.shape != north_m.shape
+            or east_m.shape != times_s.shape or east_m.size < 2
+            or not np.all(np.isfinite(east_m))
+            or not np.all(np.isfinite(north_m))
+            or not np.all(np.isfinite(times_s))):
+        raise ValueError("positions/times must be matching finite 1-D arrays")
+    if np.any(np.diff(times_s) <= 0.0):
+        raise ValueError("times_s must be strictly increasing")
+    for value, name, allow_zero in (
+            (min_displacement_m, "min_displacement_m", False),
+            (smooth_window_s, "smooth_window_s", True)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0.0
+                or (not allow_zero and value == 0.0)):
+            qualifier = "nonnegative" if allow_zero else "positive"
+            raise ValueError(f"{name} must be finite and {qualifier}")
 
     anchors = [0]
     for i in range(1, len(east_m)):
@@ -60,9 +80,7 @@ def heading_model_from_positions(east_m, north_m, times_s,
         if d >= min_displacement_m:
             anchors.append(i)
     if len(anchors) < 2:
-        # Never moved far enough: heading is arbitrary but defined.
-        return HeadingModel(np.array([times_s[0], times_s[-1]]),
-                            np.array([0.0, 0.0]))
+        return None
 
     seg_times, seg_headings = [], []
     for a, b in zip(anchors[:-1], anchors[1:]):
@@ -85,4 +103,4 @@ def heading_model_from_positions(east_m, north_m, times_s,
                 np.full(n - 1 - n // 2, seg_headings[-1])])
             seg_headings = np.convolve(padded, kernel, mode="valid")
 
-    return HeadingModel(seg_times, seg_headings)
+    return GpsCourseModel(seg_times, seg_headings)

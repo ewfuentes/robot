@@ -1,9 +1,10 @@
-"""Shared helpers for landmark feathers (merge, dedupe, collision report).
+"""Shared helpers for compact landmark feathers.
 
-All feather reading and construction goes through `farfield.catalog.schema`
-(the ONLY feather reader in the farfield tree), so both the dict-tags layout
-and the legacy one-column-per-key layout work everywhere here. Geometry
-constants come from `farfield.geometry` (one owner per convention).
+All Feather reading and construction goes through `farfield.catalog.schema`,
+the only reader in the farfield tree. Catalogs have exactly four persisted
+columns; source-specific metadata such as ENC's ``object_class`` lives in the
+canonical JSON ``tags`` object. Geometry constants come from
+`farfield.geometry` (one owner per convention).
 """
 
 import math
@@ -15,23 +16,23 @@ import shapely
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.catalog import schema
 
-# Columns that describe the record rather than the landmark's tags.
-# `object_class` (ENC feature class) is provenance at the frame level even
-# though the ENC extractor also mirrors it into the tag dict for consumers.
-META_COLUMNS = tuple(schema.META_COLUMNS) + ("object_class",)
+# Tags that carry source provenance rather than observable identity. They are
+# persisted in the compact tag object, but deliberately excluded when deciding
+# whether two source features describe the same physical landmark.
+DEDUPE_METADATA_TAGS = frozenset({"object_class"})
 
 
 def tag_signatures(gdf: gpd.GeoDataFrame) -> list[tuple]:
     """Hashable tag set per row: populated string tags only, sorted.
 
-    Handles both the `tags` dict layout and the legacy one-column-per-key one.
-    object_class is excluded either way (it is provenance, not a tag), which
-    is what makes dedup compare like with like across the two layouts.
+    ``object_class`` is decoded from the compact tags object and excluded as
+    source provenance. Thus an ENC layer split does not prevent otherwise
+    identical, touching features from deduplicating.
     """
-    skip = set(META_COLUMNS)
     return [
         tuple(sorted((k, v) for k, v in props.items()
-                     if k not in skip and isinstance(v, str) and v))
+                     if k not in DEDUPE_METADATA_TAGS
+                     and isinstance(v, str) and v))
         for props in schema.tag_dicts(gdf)
     ]
 
@@ -208,9 +209,8 @@ def report_cross_source_collisions(
     usually carry different tags, and which one matches better is the
     correspondence model's call, not ours.
     """
-    # Read names through the schema helper so this works for the dict layout
-    # as well as the legacy one-column-per-tag frames. Assign before slicing,
-    # or the slice has no name column to group by.
+    # Names live inside the compact tags object. Assign before slicing, or the
+    # slice has no name column to group by.
     names = pd.Series([t.get("name") for t in schema.tag_dicts(gdf)],
                       index=gdf.index)
     if names.isna().all():

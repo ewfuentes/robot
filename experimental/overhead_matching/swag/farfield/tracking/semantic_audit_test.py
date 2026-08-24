@@ -25,13 +25,19 @@ def make_cfg(**overrides):
 
 def make_obs(obs_id, primary=("man_made", "tower"), name="",
              confidence="high", description="a tower", frame_idx=0):
+    key = dataset.ObservationKey(
+        dataset="synthetic",
+        frame_landmarks_version="semantic-audit-test",
+        frame_landmarks_content_digest="0" * 64,
+        local_obs_id=obs_id)
     return dataset.Observation(
-        obs_id=obs_id, pano_id=f"f{frame_idx:04d}", frame_idx=frame_idx,
+        key=key, obs_id=obs_id, local_obs_id=obs_id,
+        pano_id=f"f{frame_idx:04d}", frame_idx=frame_idx,
         landmark_idx=0, embedding_id="",
         primary_tag_key=primary[0], primary_tag_value=primary[1],
         additional_tags=[["name", name]] if name else [],
         confidence=confidence, description=description, boxes=[],
-        seam_merged=False, bearing_camera_deg=0.0, elevation_deg=0.0,
+        seam_merged=False, bearing_camera_cw_deg=0.0, elevation_deg=0.0,
         angular_width_deg=5.0)
 
 

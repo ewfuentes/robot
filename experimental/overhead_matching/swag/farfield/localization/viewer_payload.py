@@ -10,7 +10,6 @@ Inputs, in decreasing order of necessity:
   run_dir      required. Tier 0/1 + checkpoints + the manifest.
   attribution  the Tier-3 cache if present (`forensics attribute` writes it).
                Absent, every view still works except the waterfalls.
-  sources_dir  the object-track run, for crops and matcher payload.
   feather      landmark geometry, for the offline vector basemap.
   ghosts       counterfactual run directories to overlay.
 
@@ -42,7 +41,6 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics,
     replay as replay_mod,
     run_io,
-    sources as sources_mod,
 )
 
 # Enough particles to read a cloud's shape, few enough to inline for every
@@ -220,7 +218,7 @@ def _mode_trajectories(data) -> list:
     return sorted(trajectories.values(), key=lambda m: m["id"])
 
 
-def _tracklet_dossiers(data, cache, triage, bundle,
+def _tracklet_dossiers(data, cache, triage,
                        max_table_entries: int = 40) -> list:
     """The §7.4 view-3 payload: one tracklet's whole life in one object."""
     epochs_by_tracklet: dict[str, list] = {}
@@ -249,7 +247,7 @@ def _tracklet_dossiers(data, cache, triage, bundle,
             "id": tracklet_id,
             "epochs": [{
                 "kf": m.anchor_keyframe_idx,
-                "bearing": round(m.bearing_body_deg, 2),
+                "bearing": round(m.bearing_forward_cw_deg, 2),
                 "sigma": round(math.degrees(
                     1.0 / math.sqrt(max(m.kappa, 1e-9))), 2),
             } for m in epochs],
@@ -288,26 +286,6 @@ def _tracklet_dossiers(data, cache, triage, bundle,
         verdict = triage.get(tracklet_id)
         if verdict is not None:
             entry["triage"] = _triage_payload(verdict)
-        source = bundle.get(tracklet_id) if bundle else None
-        if source is not None:
-            entry["source"] = {
-                "name": source.best_name,
-                "tags": source.best_tags,
-                "nameContested": source.name_contested,
-                "description": source.description,
-                "features": list(source.features),
-                "unresolved": source.unresolved,
-                "nSupports": source.n_supports,
-                "span": list(source.keyframe_span or ()),
-                "trackIds": list(source.track_ids),
-                "handoffs": [{"with": w, "gap": g, "status": s}
-                             for w, g, s in source.handoff_proposals[:6]],
-                "noMatchRate": (round(source.no_match_rate, 3)
-                                if source.no_match_rate is not None else None),
-                "uniqueness": source.median_uniqueness,
-                "nChunks": source.n_matcher_chunks,
-                "thumb": source.thumbnail_data_uri,
-            }
         out.append(entry)
     return out
 
@@ -344,7 +322,7 @@ def _triage_payload(verdict) -> dict:
         "bestFilterShare": round(verdict.best_filter_share, 3),
         "epochs": [{
             "kf": e.keyframe_idx,
-            "bearing": round(e.bearing_body_deg, 2),
+            "bearing": round(e.bearing_forward_cw_deg, 2),
             "sigma": round(e.sigma_deg, 2),
             "worldBearing": round(e.true_world_bearing_deg, 1),
             "bestRes": (round(e.best_fit_residual_deg, 2)
@@ -478,10 +456,8 @@ def _satellite_payload(directory, notes) -> dict | None:
     return {"layers": layers, "source": spec.get("source", "unstated")}
 
 
-def build(run_dir: Path, sources_dir: Path | None = None,
-          feather: Path | None = None, ghost_dirs=(),
+def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
           max_particles: int = MAX_PARTICLES_PER_FRAME,
-          embed_thumbnails: bool = True,
           with_basemap: bool = True,
           basemap_detail: float = 1.0,
           satellite: Path | None = None) -> dict:
@@ -521,11 +497,6 @@ def build(run_dir: Path, sources_dir: Path | None = None,
     triage = forensics.triage_tracklets(data, catalog)
     events = forensics.derive_events(data)
 
-    tracklet_ids = {m.tracklet_id for m in data.measurements}
-    bundle = sources_mod.load(sources_dir, tracklet_ids,
-                              embed_thumbnails=embed_thumbnails)
-    notes.extend(bundle.notes)
-
     referenced = referenced_landmark_ids(data)
     truth_by_kf = {t.keyframe_idx: t for t in data.truth}
 
@@ -561,7 +532,7 @@ def build(run_dir: Path, sources_dir: Path | None = None,
         top = max(endorsed, key=endorsed.get) if endorsed else None
         measurements.setdefault(str(meas.anchor_keyframe_idx), []).append({
             "trk": meas.tracklet_id,
-            "bearing": round(meas.bearing_body_deg, 2),
+            "bearing": round(meas.bearing_forward_cw_deg, 2),
             "sigma": round(math.degrees(
                 1.0 / math.sqrt(max(meas.kappa, 1e-9))), 2),
             # The matcher's best claim, so the map can red-flag the case where
@@ -604,7 +575,7 @@ def build(run_dir: Path, sources_dir: Path | None = None,
         "checkpoints": checkpoints,
         "measurements": measurements,
         "modes": _mode_trajectories(data),
-        "tracklets": _tracklet_dossiers(data, cache, triage, bundle),
+        "tracklets": _tracklet_dossiers(data, cache, triage),
         "attribution": _attribution_payload(cache, data),
         "events": [dataclasses.asdict(e) for e in events],
         "triageSummary": forensics.triage_summary(triage),

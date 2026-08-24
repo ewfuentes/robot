@@ -34,7 +34,6 @@ from experimental.overhead_matching.swag.farfield.localization import (
     filter_catalog as catalog_mod,
     forensics,
     run_io,
-    sources,
     structs,
 )
 
@@ -59,7 +58,10 @@ def _table(tracklet_id, entries, default_log_lr=-4.0, status="fast"):
 def _manifest(scenario_name, n_keyframes, n_particles=1000):
     """A schema-0.3 manifest: every provenance field explicit."""
     return structs.RunManifest(
-        schema_version=structs.SCHEMA_VERSION, scenario_name=scenario_name,
+        schema_version=structs.SCHEMA_VERSION, dataset="synthetic",
+        scenario_name=scenario_name, run_kind="synthetic",
+        initialization_kind="test", bearings_consumed=True,
+        proposal_enabled=True, localization_inputs_manifest_sha256=None,
         anchor_lat_deg=42.0, anchor_lon_deg=-71.0, n_keyframes=n_keyframes,
         filter_config=structs.FilterConfig(
             n_particles=n_particles, seed=0,
@@ -140,7 +142,8 @@ class TriageVerdictTest(unittest.TestCase):
                                  "decoy_lm": (0.0, 4000.0)})
         self.truth = [
             structs.TruthPose(keyframe_idx=k, east_m=0.0,
-                              north_m=300.0 * k, heading_deg=0.0)
+                              north_m=300.0 * k,
+                              course_world_cw_deg=0.0)
             for k in range(self.N_EPOCHS)]
 
     def _bearing_to(self, landmark_id, keyframe_idx):
@@ -149,12 +152,13 @@ class TriageVerdictTest(unittest.TestCase):
         pose = self.truth[keyframe_idx]
         east = self.catalog.east_m[index] - pose.east_m
         north = self.catalog.north_m[index] - pose.north_m
-        return (math.degrees(math.atan2(east, north)) - pose.heading_deg) % 360.0
+        return (math.degrees(math.atan2(east, north))
+                - pose.course_world_cw_deg) % 360.0
 
     def _measurements(self, bearings):
         return [structs.TrackletMeasurement(
             tracklet_id="trk", anchor_keyframe_idx=k,
-            bearing_body_deg=bearings[k], kappa=3000.0)
+            bearing_forward_cw_deg=bearings[k], kappa=3000.0)
             for k in range(self.N_EPOCHS)]
 
     def _triage(self, bearings, entries, responsibilities, catalog=None,
@@ -235,7 +239,8 @@ class TriageVerdictTest(unittest.TestCase):
         must yield `ambiguous`, not a confident verdict."""
         # Vessel stationary: every landmark along the bearing ray fits.
         stationary = [structs.TruthPose(keyframe_idx=k, east_m=0.0,
-                                        north_m=0.0, heading_deg=0.0)
+                                        north_m=0.0,
+                                        course_world_cw_deg=0.0)
                       for k in range(self.N_EPOCHS)]
         ring = {f"lm{i}": (2000.0 + 40.0 * i, 0.0) for i in range(60)}
         catalog = _catalog(ring)
@@ -257,7 +262,7 @@ class TriageVerdictTest(unittest.TestCase):
             self.catalog,
             [structs.TrackletMeasurement(
                 tracklet_id="trk", anchor_keyframe_idx=k,
-                bearing_body_deg=self._true_bearings()[k],
+                bearing_forward_cw_deg=self._true_bearings()[k],
                 kappa=1.0 / math.radians(20.0) ** 2)
              for k in range(self.N_EPOCHS)],
             {"trk": _table("trk", [("true_lm", 4.0)])}, self.truth,
@@ -424,52 +429,6 @@ class DerivedEventTest(unittest.TestCase):
         events = forensics.derive_events(self._data(health))
         self.assertEqual([e.keyframe_idx for e in events],
                          sorted(e.keyframe_idx for e in events))
-
-
-class SourcesTest(unittest.TestCase):
-    def test_absent_sources_directory_degrades_with_a_note(self):
-        bundle = sources.load(None, ["LT0"])
-        self.assertEqual(bundle.tracklets, {})
-        self.assertTrue(bundle.notes)
-        self.assertIsNone(bundle.get("LT0"))
-
-    def test_missing_directory_is_reported_not_raised(self):
-        bundle = sources.load("/nonexistent/path/xyz", ["LT0"])
-        self.assertEqual(bundle.tracklets, {})
-        self.assertIn("does not exist", bundle.notes[0])
-
-    def test_set1_prompt_parsing_extracts_per_entry_payload(self):
-        prompt = (
-            "Set 1 (observed from the vessel):\n"
-            " 0. tags: building=commercial (0.90)\n"
-            "    names: Custom House Tower (1.00, both)\n"
-            "    description: \"Tall historic stone skyscraper.\"\n"
-            "    features: pointed roof; clock faces\n"
-            " 1. tags: man_made=chimney (0.90)\n"
-            "    description: \"A thin vertical stack.\"\n"
-            "    unresolved: \"The mask drifted.\"\n"
-            "Set 2 (from the map):\n 0. something else\n")
-        entries = sources._parse_set1_entries(prompt)  # noqa: SLF001
-        self.assertEqual(sorted(entries), [0, 1])
-        self.assertEqual(sources._field(entries[0], "description"),  # noqa: SLF001
-                         "Tall historic stone skyscraper.")
-        self.assertEqual(sources._field(entries[1], "unresolved"),  # noqa: SLF001
-                         "The mask drifted.")
-        self.assertIsNone(sources._field(entries[0], "unresolved"))  # noqa: SLF001
-        # Set 2 must not leak into the parsed entries.
-        self.assertNotIn("something else", entries[1])
-
-    def test_matches_are_recovered_from_a_fenced_response(self):
-        response = {"candidates": [{"content": {"parts": [{"text":
-            "```json\n{\"matches\": [{\"set_1_id\": 0, "
-            "\"no_match_confidence\": 1.0}]}\n```"}]}}]}
-        matches = sources._extract_matches(response)  # noqa: SLF001
-        self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0]["set_1_id"], 0)
-
-    def test_unparseable_response_yields_no_matches(self):
-        self.assertEqual(sources._extract_matches(None), [])  # noqa: SLF001
-        self.assertEqual(sources._extract_matches({"candidates": []}), [])  # noqa: SLF001
 
 
 if __name__ == "__main__":

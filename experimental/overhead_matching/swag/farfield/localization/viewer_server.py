@@ -3,20 +3,19 @@
 `viewer.py` writes a self-contained page — the frozen record, shareable and
 immune to code drift. This serves the *same* payload from
 `viewer_payload.build`, with the same HTML and the same JavaScript, and adds the
-three things a static file structurally cannot have:
+two things a static file structurally cannot have:
 
   GET /checkpoint/<kf>       every particle at that keyframe, not a 900-point
                              sample. Reading whether a mode has a real tail or
                              three stragglers needs all 20,000 of them, and
                              77 checkpoints x 20k particles is 83 MB — fine to
                              stream one at a time, impossible to inline.
-  GET /crop/<tracklet>       the full-resolution crop rather than an 8 KB
-                             thumbnail.
   POST /replay               a live counterfactual: apply `Edits`, run the
                              production filter, return the ghost trajectory.
-                             Ghosts are written under <run_dir>/counterfactuals/
-                             (replay.default_counterfactual_dir) — with the run
-                             they question, never outside the data root.
+                             Ghosts are written to the deterministic sibling
+                             <run>.counterfactuals/ directory
+                             (replay.default_counterfactual_dir), leaving the
+                             completed source artifact immutable.
 
 The page feature-detects this server (`GET /api/health`) and lights up the
 extra affordances when it answers, so one HTML/JS implementation covers both
@@ -28,7 +27,7 @@ would be handing out arbitrary compute.
 
 Usage:
   bazel run //experimental/overhead_matching/swag/farfield/localization:viewer_server -- \\
-    --run_dir RUN --sources_dir SRC --feather F --port 8765
+    --run_dir RUN --feather F --port 8765
 """
 
 import argparse
@@ -43,14 +42,13 @@ from flask import Flask, Response, jsonify, request
 from experimental.overhead_matching.swag.farfield.localization import (
     replay as replay_mod,
     run_io,
-    sources as sources_mod,
     viewer,
     viewer_payload,
 )
 
 
-def create_app(run_dir: Path, sources_dir: Path | None = None,
-               feather: Path | None = None, ghost_dirs=()) -> Flask:
+def create_app(run_dir: Path, feather: Path | None = None,
+               ghost_dirs=()) -> Flask:
     app = Flask(__name__)
     state = {
         "payload": None,
@@ -65,7 +63,7 @@ def create_app(run_dir: Path, sources_dir: Path | None = None,
     def payload(rebuild: bool = False) -> dict:
         if state["payload"] is None or rebuild:
             state["payload"] = viewer_payload.build(
-                run_dir, sources_dir=sources_dir, feather=feather,
+                run_dir, feather=feather,
                 ghost_dirs=state["ghosts"])
             state["payload"]["server"] = True
         return state["payload"]
@@ -84,7 +82,7 @@ def create_app(run_dir: Path, sources_dir: Path | None = None,
         """What the page probes to decide whether to offer live features."""
         return jsonify({
             "ok": True, "run_dir": str(run_dir),
-            "features": ["checkpoint", "crop", "replay"],
+            "features": ["checkpoint", "replay"],
             "n_checkpoints": len(checkpoints()),
             "busy": state["lock"].locked(),
         })
@@ -123,27 +121,6 @@ def create_app(run_dir: Path, sources_dir: Path | None = None,
             "mode": [int(v) for v in arrays["mode_id"]],
             "event": [int(v) for v in arrays["proposal_event_id"]],
         })
-
-    @app.get("/api/crop/<tracklet_id>")
-    def api_crop(tracklet_id: str):
-        """The full-resolution crop for a tracklet, straight off disk."""
-        if sources_dir is None:
-            return jsonify({"error": "no sources directory configured"}), 404
-        bundle = sources_mod.load(sources_dir, [tracklet_id],
-                                  embed_thumbnails=False)
-        source = bundle.get(tracklet_id)
-        if source is None or not source.track_ids:
-            return jsonify({"error": f"no source track for {tracklet_id}",
-                            "notes": list(bundle.notes)}), 404
-        index = sources_mod._thumbnail_index(Path(sources_dir))  # noqa: SLF001
-        for track_id in source.track_ids:
-            path = index.get(track_id)
-            if path is None:
-                continue
-            suffix = ("image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg")
-                      else "image/png")
-            return Response(path.read_bytes(), mimetype=suffix)
-        return jsonify({"error": f"no crop file for {tracklet_id}"}), 404
 
     @app.post("/api/replay")
     def api_replay():
@@ -197,7 +174,6 @@ def create_app(run_dir: Path, sources_dir: Path | None = None,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--sources_dir", type=Path, default=None)
     parser.add_argument("--feather", type=Path, default=None)
     parser.add_argument("--ghost", type=Path, action="append", default=[])
     parser.add_argument("--port", type=int, default=8765)
@@ -206,10 +182,9 @@ def main():
                              "filter on request")
     args = parser.parse_args()
 
-    app = create_app(args.run_dir, args.sources_dir, args.feather, args.ghost)
+    app = create_app(args.run_dir, args.feather, args.ghost)
     print(f"serving {args.run_dir} at http://{args.host}:{args.port}/")
     print("  /api/checkpoint/<kf>  every particle at that keyframe")
-    print("  /api/crop/<tracklet>  full-resolution crop")
     print("  /api/replay           live counterfactual (POST {\"edits\": ...})")
     app.run(host=args.host, port=args.port, threaded=True)
 

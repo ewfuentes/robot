@@ -1,9 +1,14 @@
 import dataclasses
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from experimental.overhead_matching.swag.farfield import (
+    artifact as artifact_lib,
+    dataset,
+    paths as paths_lib,
+    testing,
+)
 from experimental.overhead_matching.swag.farfield.tracking import (
     keyframe_viewer as kv,
     track_builder as tb,
@@ -54,49 +59,129 @@ def support(obs_id, iou, iom, iob):
 class LoadTrackArtifactsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self._tmp.name)
+        self.root = Path(self._tmp.name)
+        self.tracks_dir = self.root / "tracks"
         self.addCleanup(self._tmp.cleanup)
 
-    def write(self, filename, artifact):
-        (self.run_dir / filename).write_text(json.dumps(artifact))
+    def publish(self, payloads, *, range_record=None, kind=None,
+                upstreams=(), config_extra=None):
+        range_record = range_record or {
+            "name": "full", "k_start": 0, "k_end": 20}
+        config = {
+            "schema": "farfield_object_tracks/v1",
+            "coverage": "complete",
+            "range": range_record,
+        }
+        config.update(config_extra or {})
+        with artifact_lib.ArtifactDirectoryBuilder(
+                self.tracks_dir,
+                kind=kind or paths_lib.OBJECT_TRACKS,
+                dataset="viewer_test",
+                version="v1",
+                generator="keyframe_viewer_test",
+                git_commit="test",
+                upstreams=upstreams,
+                config=config,
+                declared_outputs=tuple(payloads)) as builder:
+            for filename, document in payloads.items():
+                artifact_lib.atomic_write_json(
+                    builder.output_path(filename), document)
 
-    def test_empty_run_dir_is_a_pointed_error(self):
+    def test_raw_directory_is_not_accepted_as_tracks(self):
+        self.tracks_dir.mkdir()
         with self.assertRaises(SystemExit) as ctx:
-            kv.load_track_artifacts(self.run_dir)
-        self.assertIn(str(self.run_dir), str(ctx.exception))
-        self.assertIn("tracks_*.json", str(ctx.exception))
+            kv.load_track_artifacts(self.tracks_dir)
+        self.assertIn("completed object_tracks", str(ctx.exception))
 
-    def test_loads_every_range_file(self):
-        # The old viewer took next(glob) -- the FIRST file only -- silently
-        # dropping every other range.
-        self.write("tracks_a.json", make_artifact("legA", []))
-        self.write("tracks_b.json", make_artifact("legB", []))
-        self.assertEqual(set(kv.load_track_artifacts(self.run_dir)),
-                         {"legA", "legB"})
+    def test_loads_exact_single_full_payload(self):
+        self.publish({"tracks_full.json": make_artifact("full", [])})
+        self.assertEqual(list(kv.load_track_artifacts(self.tracks_dir)),
+                         ["full"])
 
-    def test_range_name_comes_from_the_record_not_a_default(self):
-        # The old viewer defaulted a missing name to the literal "full_leg1"
-        # and aimed every link at pages that never existed. A missing name is
-        # an error now.
-        artifact = make_artifact("x", [])
-        del artifact["range"]["name"]
-        self.write("tracks_full_leg1.json", artifact)
+    def test_missing_payload_is_rejected(self):
+        self.publish({})
         with self.assertRaises(SystemExit) as ctx:
-            kv.load_track_artifacts(self.run_dir)
-        self.assertIn("range name", str(ctx.exception))
+            kv.load_track_artifacts(self.tracks_dir)
+        self.assertIn("exactly one tracks_full.json", str(ctx.exception))
 
-    def test_filename_never_supplies_the_range_name(self):
-        # Names key off the artifact record even when the filename disagrees.
-        self.write("tracks_misnamed.json", make_artifact("real_name", []))
-        self.assertEqual(list(kv.load_track_artifacts(self.run_dir)),
-                         ["real_name"])
+    def test_legacy_multi_range_payloads_are_rejected(self):
+        self.publish({
+            "tracks_a.json": make_artifact("a", []),
+            "tracks_b.json": make_artifact("b", []),
+        })
+        with self.assertRaisesRegex(SystemExit, "exactly one tracks_full"):
+            kv.load_track_artifacts(self.tracks_dir)
 
-    def test_duplicate_range_names_are_refused(self):
-        self.write("tracks_a.json", make_artifact("leg", []))
-        self.write("tracks_b.json", make_artifact("leg", []))
+    def test_payload_range_must_equal_manifest_range(self):
+        self.publish({"tracks_full.json": make_artifact("other", [])})
         with self.assertRaises(SystemExit) as ctx:
-            kv.load_track_artifacts(self.run_dir)
-        self.assertIn("leg", str(ctx.exception))
+            kv.load_track_artifacts(self.tracks_dir)
+        self.assertIn("single full range", str(ctx.exception))
+
+    def test_wrong_artifact_kind_is_rejected(self):
+        self.publish(
+            {"tracks_full.json": make_artifact("full", [])}, kind="other")
+        with self.assertRaisesRegex(SystemExit, "kind mismatch"):
+            kv.load_track_artifacts(self.tracks_dir)
+
+    def test_viewer_inputs_come_from_bound_artifacts_and_manifest_config(self):
+        dataset_base = testing.make_dataset(
+            self.root / "viewer_test", n_frames=1)
+        stem = next((dataset_base / "panorama").glob("*.jpg")).stem
+        frames_dir = testing.make_predictions(
+            self.root / "frames", {stem: []}, dataset_name="viewer_test")
+        frame_ref = artifact_lib.open_artifact(frames_dir)
+        source_digest = artifact_lib.sha256_json(
+            paths_lib.dataset_source_digests(dataset_base))
+        self.publish(
+            {"tracks_full.json": make_artifact("full", [])},
+            upstreams=(frame_ref,),
+            config_extra={
+                "source_digests": {
+                    "dataset_tracking_inputs": source_digest,
+                },
+                "resolved": {
+                    "ingest": {
+                        "fov_deg": 91.0,
+                        "seam_gap_norm": 24.0,
+                        "seam_min_y_iou": 0.31,
+                    },
+                },
+            })
+        inputs = kv.load_viewer_inputs(
+            self.tracks_dir, dataset_base, frames_dir)
+        self.assertEqual(
+            inputs.ingest_params,
+            dataset.IngestParams(
+                fov_deg=91.0, seam_gap_norm=24.0,
+                seam_min_y_iou=0.31))
+        self.assertEqual(inputs.frame_landmarks_dir, frames_dir.resolve())
+
+        panorama = next((dataset_base / "panorama").glob("*.jpg"))
+        panorama.write_bytes(panorama.read_bytes() + b"changed")
+        with self.assertRaisesRegex(SystemExit, "bytes do not match"):
+            kv.load_viewer_inputs(self.tracks_dir, dataset_base, frames_dir)
+
+
+class CliContractTest(unittest.TestCase):
+    def test_cli_has_explicit_typed_inputs_and_no_legacy_run_or_ingest_flags(self):
+        args = kv.build_parser().parse_args([
+            "--tracks_dir", "/artifacts/tracks",
+            "--dataset_base", "/datasets/ds",
+            "--frame_landmarks_dir", "/artifacts/frames",
+            "--output_dir", "/derived/keyframes",
+        ])
+        self.assertFalse(hasattr(args, "run_dir"))
+        self.assertFalse(hasattr(args, "fov_deg"))
+        self.assertEqual(args.tracks_dir, Path("/artifacts/tracks"))
+
+    def test_output_inside_completed_tracks_artifact_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            tracks_dir = Path(temp) / "tracks"
+            tracks_dir.mkdir()
+            with self.assertRaisesRegex(SystemExit, "inside it"):
+                kv.prepare_output_directory(
+                    tracks_dir, tracks_dir / "keyframes")
 
 
 class RecordedConfigTest(unittest.TestCase):

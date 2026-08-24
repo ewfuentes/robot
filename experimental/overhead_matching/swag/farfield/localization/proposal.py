@@ -266,7 +266,7 @@ def propose(measurements, tables, catalog, config: structs.ProposalConfig,
                 tracklet_ids=(meas.tracklet_id,),
                 landmark_ids=(landmark_id,),
                 landmark=_position(catalog, landmark_id),
-                bearing_rad=math.radians(meas.bearing_body_deg),
+                bearing_rad=math.radians(meas.bearing_forward_cw_deg),
                 max_range_m=float(catalog.max_visible_range_m[
                     catalog.index_of(landmark_id)])))
 
@@ -276,8 +276,8 @@ def propose(measurements, tables, catalog, config: structs.ProposalConfig,
         if not afford(PAIR, len(ids_a) * len(ids_b)):
             continue
         subtended = resection.subtended_angle_rad(
-            math.radians(meas_a.bearing_body_deg),
-            math.radians(meas_b.bearing_body_deg))
+            math.radians(meas_a.bearing_forward_cw_deg),
+            math.radians(meas_b.bearing_forward_cw_deg))
         for landmark_a, landmark_b in itertools.product(ids_a, ids_b):
             if landmark_a == landmark_b:
                 continue
@@ -294,7 +294,7 @@ def propose(measurements, tables, catalog, config: structs.ProposalConfig,
                     tracklet_ids=(meas_a.tracklet_id, meas_b.tracklet_id),
                     landmark_ids=(landmark_a, landmark_b),
                     arc=arc, landmark_a=position_a, landmark_b=position_b,
-                    bearing_a_rad=math.radians(meas_a.bearing_body_deg)))
+                    bearing_a_rad=math.radians(meas_a.bearing_forward_cw_deg)))
 
     # --- three landmarks: discrete fixes ---
     for trio in itertools.combinations(candidates, 3):
@@ -309,7 +309,7 @@ def propose(measurements, tables, catalog, config: structs.ProposalConfig,
             if len(set(landmark_trio)) < 3:
                 continue  # two tracklets cannot be the same landmark
             positions = [_position(catalog, lm) for lm in landmark_trio]
-            bearings = [math.radians(m.bearing_body_deg)
+            bearings = [math.radians(m.bearing_forward_cw_deg)
                         for m in trio_measurements]
             for solution in resection.resect_three(positions, bearings,
                                                    tolerance):
