@@ -91,6 +91,7 @@ recall <b>{run['matcherRecall']}</b> &middot;
 backend <b>{_escape(run['backend'])}</b> &middot;
 matcher <b>{_escape(run['matcher'])}</b> &middot;
 history <code>{_escape(run['historyHash'])}</code>
+<span class="pill info" id="liveStatus">static viewer</span>
 <span class="pill {replay_pill}">{replay_text}</span></div>
 <div class="meta" style="margin-top:4px">triage (truth-privileged):
 {_escape(payload.get('triageSummary', ''))}</div>
@@ -220,6 +221,12 @@ def main():
     parser.add_argument("--output_dir", type=Path, default=None,
                         help="defaults to the sibling <run_dir>.viewer; the "
                              "immutable run directory is never modified")
+    parser.add_argument("--tracks_dir", type=Path, default=None,
+                        help="exact object_tracks artifact that produced the run")
+    parser.add_argument("--audit_dir", type=Path, default=None,
+                        help="exact semantic_audits artifact bound to tracks_dir")
+    parser.add_argument("--no_source_chips", action="store_true",
+                        help="validate sources without embedding audit chips")
     parser.add_argument("--feather", type=Path, default=None,
                         help="landmark feather, for the offline vector "
                              "basemap")
@@ -245,10 +252,14 @@ def main():
     args = parser.parse_args()
 
     payload = viewer_payload.build(
-        args.run_dir, feather=args.feather,
+        args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
+        feather=args.feather,
         ghost_dirs=args.ghost, max_particles=args.max_particles,
+        embed_source_chips=not args.no_source_chips,
         basemap_detail=args.basemap_detail,
         satellite=args.satellite)
+    run_ref = artifact.open_artifact(
+        args.run_dir, expected_kind="localization_run")
     output = write_viewer(
         args.run_dir,
         payload,
@@ -256,8 +267,21 @@ def main():
         body_only=args.body_only,
         inputs={
             "run_dir": args.run_dir.resolve(),
+            "run_manifest_digest": run_ref.manifest_digest,
+            "tracks_dir": (args.tracks_dir.resolve()
+                           if args.tracks_dir is not None else ""),
+            "tracks_manifest_digest": (
+                artifact.open_artifact(args.tracks_dir).manifest_digest
+                if args.tracks_dir is not None else ""),
+            "audit_dir": (args.audit_dir.resolve()
+                          if args.audit_dir is not None else ""),
+            "audit_manifest_digest": (
+                artifact.open_artifact(args.audit_dir).manifest_digest
+                if args.audit_dir is not None else ""),
             "feather": (args.feather.resolve()
                         if args.feather is not None else ""),
+            "feather_sha256": (artifact.sha256_file(args.feather)
+                               if args.feather is not None else ""),
             "ghosts": [path.resolve() for path in args.ghost],
             "satellite": (args.satellite.resolve()
                           if args.satellite is not None else ""),
@@ -266,6 +290,7 @@ def main():
             "max_particles": args.max_particles,
             "basemap_detail": args.basemap_detail,
             "body_only": args.body_only,
+            "embed_source_chips": not args.no_source_chips,
         })
 
     size_kb = output.stat().st_size / 1024

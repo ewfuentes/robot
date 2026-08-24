@@ -25,12 +25,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     build_config,
     dataset,
+    geometry,
+    nominal_forward,
     paths as paths_lib,
     publication,
     provenance,
@@ -46,6 +48,10 @@ GENERATOR = ("//experimental/overhead_matching/swag/farfield/calibration:"
              "build_alignment_diagnostics")
 SCHEMA = "farfield_alignment_diagnostics/v1"
 OUTPUT_NAME = "alignment_diagnostics.json"
+SUN_REVIEW_NAME = "sun_review_contact_sheet.jpg"
+RESULT_KIND = "effective_camera_to_course_v1"
+RESULT_FRAME = "camera_centre_column_cw_positive"
+RESULT_FIELD = "effective_camera_to_course_offset_deg"
 AUTHORITY = {
     "classification": "diagnostic_only",
     "calibration_use": "prohibited",
@@ -149,6 +155,9 @@ def orchestration_contract(document: dict) -> dict:
         raise AlignmentDiagnosticError(
             "build config does not record alignment_diagnostics")
     selected = _flatten(diagnostics, "alignment_diagnostics")
+    selected["localization_inputs.nominal_forward_calibration"] = \
+        build_config.value(
+            document, "localization_inputs.nominal_forward_calibration")
     selected["artifacts.alignment_diagnostics_version"] = build_config.value(
         document, "artifacts.alignment_diagnostics_version")
     return {
@@ -428,6 +437,22 @@ def _load_inputs(args) -> dict:
         raise AlignmentDiagnosticError(
             "--orchestration_config_digest does not match the immutable "
             "diagnostics-stage config selection")
+    calibration_path = _same_path(
+        args.nominal_forward_calibration,
+        build_config.value(
+            document, "localization_inputs.nominal_forward_calibration"),
+        "--nominal_forward_calibration")
+    if calibration_path.is_symlink() or not calibration_path.is_file():
+        raise AlignmentDiagnosticError(
+            "--nominal_forward_calibration must be a regular, non-symlink "
+            f"file: {calibration_path}")
+    try:
+        approved_nominal_forward = nominal_forward.load(
+            calibration_path, expected_dataset=args.dataset)
+    except ValueError as error:
+        raise AlignmentDiagnosticError(
+            f"invalid approved nominal-forward record: {error}") from error
+    calibration_sha256 = artifact.sha256_file(calibration_path)
 
     observations_ref = artifact.open_artifact(
         args.observations_dir,
@@ -537,6 +562,9 @@ def _load_inputs(args) -> dict:
         "dataset_source_sha256": current_dataset_digest,
         "output_version": output_version,
         "orchestration": orchestration,
+        "nominal_forward": approved_nominal_forward,
+        "nominal_forward_path": calibration_path,
+        "nominal_forward_sha256": calibration_sha256,
     }
 
 
@@ -551,6 +579,8 @@ def _course_model(frames: list[dataset.Frame], course: dict):
 def _no_candidate(method: str, reason: str, evidence: dict) -> dict:
     return {
         "method": method,
+        "result_kind": RESULT_KIND,
+        "frame": RESULT_FRAME,
         "status": "no_candidate",
         "reason": reason,
         "evidence": evidence,
@@ -638,13 +668,13 @@ def build_sweep_candidate(records: list[dict], frames: list[dataset.Frame],
             "detail": detail,
         },
         "coarse_curve": [{
-            "effective_camera_to_gps_course_cw_deg": round(angle, 9),
+            RESULT_FIELD: round(angle, 9),
             "median_bearing_residual_deg": round(value, 9),
             "n_well_conditioned_tracklets": count,
             "meets_support_gate": count >= support_floor,
         } for angle, value, count in coarse],
         "fine_curve": [{
-            "effective_camera_to_gps_course_cw_deg": round(angle, 9),
+            RESULT_FIELD: round(angle, 9),
             "median_bearing_residual_deg": round(value, 9),
             "n_well_conditioned_tracklets": count,
             "meets_support_gate": count >= support_floor,
@@ -652,8 +682,10 @@ def build_sweep_candidate(records: list[dict], frames: list[dataset.Frame],
     })
     return {
         "method": "static_landmark_triangulation",
+        "result_kind": RESULT_KIND,
+        "frame": RESULT_FRAME,
         "status": "candidate_reported",
-        "effective_camera_to_gps_course_cw_deg": round(candidate % 360.0, 9),
+        RESULT_FIELD: round(candidate % 360.0, 9),
         "evidence": evidence,
     }
 
@@ -705,6 +737,7 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
         image_path = dataset_base / "panorama" / f"{frame.pano_stem}.jpg"
         try:
             with Image.open(image_path) as source:
+                source_width, source_height = source.size
                 grey = source.convert("L").resize(
                     (config["work_width"], config["work_width"] // 2),
                     Image.Resampling.BILINEAR)
@@ -714,7 +747,8 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
                 f"cannot read diagnostic panorama {image_path}: {error}") \
                 from error
         loaded.append((frame, when, sun_world_cw_deg,
-                       sun_elevation_deg, pixels))
+                       sun_elevation_deg, pixels,
+                       source_width, source_height))
     if not loaded:
         return _no_candidate(
             "solar_ephemeris",
@@ -726,16 +760,20 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
     courses = [float(model.course_world_cw_deg_at(item[0].time_s))
                for item in loaded]
     _, course_concentration = sun_lib.circular_stats(courses)
-    mask = sun_lib.rig_mask([item[-1] for item in loaded])
+    mask = sun_lib.rig_mask([item[4] for item in loaded])
     internal_rows = []
     output_rows = []
-    for frame, when, sun_world, sun_elevation, pixels in loaded:
+    for (frame, when, sun_world, sun_elevation, pixels,
+         source_width, source_height) in loaded:
         found = sun_lib.brightest_blob_in_band(
             pixels, sun_elevation, config["elevation_tolerance_deg"],
             mask=mask)
         if found is None:
             continue
-        sun_camera, measured_elevation, n_pixels = found
+        (sun_camera, measured_elevation, n_pixels,
+         work_x, work_y) = found
+        source_x = work_x * source_width / pixels.shape[1]
+        source_y = work_y * source_height / pixels.shape[0]
         course_world = float(model.course_world_cw_deg_at(frame.time_s))
         candidate = (course_world + sun_camera - sun_world) % 360.0
         internal_rows.append({
@@ -744,13 +782,21 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
         })
         output_rows.append({
             "keyframe_idx": frame.frame_idx,
+            "pano_id": frame.pano_id,
+            "pano_stem": frame.pano_stem,
             "utc": when.isoformat(),
             "gps_course_world_cw_deg": round(course_world, 9),
             "sun_world_cw_deg": round(sun_world, 9),
             "sun_camera_cw_deg": round(sun_camera, 9),
             "sun_elevation_world_deg": round(sun_elevation, 9),
             "sun_elevation_camera_deg": round(measured_elevation, 9),
-            "effective_camera_to_gps_course_cw_deg": round(candidate, 9),
+            RESULT_FIELD: round(candidate, 9),
+            "bright_blob_center_px": {
+                "x": round(source_x, 3),
+                "y": round(source_y, 3),
+                "image_width": source_width,
+                "image_height": source_height,
+            },
             "bright_blob_pixels": n_pixels,
         })
     if not internal_rows:
@@ -786,8 +832,10 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
         detail = "bright blobs do not support one camera-to-course candidate"
     return {
         "method": "solar_ephemeris",
+        "result_kind": RESULT_KIND,
+        "frame": RESULT_FRAME,
         "status": "candidate_reported",
-        "effective_camera_to_gps_course_cw_deg": round(candidate, 9),
+        RESULT_FIELD: round(candidate, 9),
         "evidence": {
             "n_dataset_frames": len(frames),
             "n_frames_meeting_speed": len(moving),
@@ -807,6 +855,81 @@ def build_sun_candidate(dataset_base: Path, metadata: dict,
     }
 
 
+def _attach_nominal_forward_comparison(
+        method: dict,
+        calibration: nominal_forward.NominalForward) -> None:
+    if method.get("status") != "candidate_reported":
+        return
+    candidate = method[RESULT_FIELD]
+    method["comparison_to_approved_nominal_forward"] = {
+        "nominal_forward_bearing_camera_cw_deg": round(
+            calibration.bearing_camera_cw_deg, 9),
+        "candidate_minus_nominal_forward_cw_deg": round(float(
+            geometry.circular_diff_deg(
+                candidate, calibration.bearing_camera_cw_deg)), 9),
+        "interpretation": (
+            "diagnostic only; this difference may include GPS-course error, "
+            "crab/current, timing error, or diagnostic error and cannot "
+            "modify the approved nominal-forward record"),
+    }
+
+
+def _write_sun_contact_sheet(report: dict, dataset_base: Path,
+                             output_path: Path) -> None:
+    """Write review crops for the exact solar detections in the report."""
+    solar = next(
+        (method for method in report["methods"]
+         if method["method"] == "solar_ephemeris"), None)
+    rows = [] if solar is None else solar.get("evidence", {}).get("frames", [])
+    cards = []
+    for row in rows:
+        source_path = (Path(dataset_base) / "panorama" /
+                       f"{row['pano_stem']}.jpg")
+        try:
+            with Image.open(source_path) as opened:
+                source = opened.convert("RGB")
+        except OSError as error:
+            raise AlignmentDiagnosticError(
+                f"cannot create sun review crop from {source_path}: {error}") \
+                from error
+        location = row["bright_blob_center_px"]
+        x, y = float(location["x"]), float(location["y"])
+        width, height = source.size
+        crop_width = min(320, width)
+        crop_height = min(180, height)
+        wrapped = Image.new("RGB", (width * 3, height))
+        for offset in range(3):
+            wrapped.paste(source, (offset * width, 0))
+        centre_x = x + width
+        crop = wrapped.crop((
+            round(centre_x - crop_width / 2),
+            round(y - crop_height / 2),
+            round(centre_x + crop_width / 2),
+            round(y + crop_height / 2),
+        ))
+        card = Image.new("RGB", (340, 225), color=(18, 24, 31))
+        card.paste(crop, ((340 - crop.width) // 2, 30))
+        draw = ImageDraw.Draw(card)
+        draw.text((8, 7),
+                  f"{row['pano_id']}  kf {row['keyframe_idx']}  "
+                  f"x={x:.1f}, y={y:.1f}", fill=(235, 240, 245))
+        draw.text((8, 210),
+                  f"predicted elevation {row['sun_elevation_world_deg']:.1f}°",
+                  fill=(190, 205, 220))
+        cards.append(card)
+    if not cards:
+        sheet = Image.new("RGB", (640, 100), color=(18, 24, 31))
+        ImageDraw.Draw(sheet).text(
+            (12, 38), "No reviewable solar detections were produced.",
+            fill=(235, 240, 245))
+    else:
+        sheet = Image.new("RGB", (340, 225 * len(cards)),
+                          color=(18, 24, 31))
+        for index, card in enumerate(cards):
+            sheet.paste(card, (0, 225 * index))
+    sheet.save(output_path, format="JPEG", quality=92)
+
+
 def build_report(resolved: dict) -> dict:
     model = _course_model(resolved["frames"], resolved["course"])
     methods = [
@@ -817,13 +940,18 @@ def build_report(resolved: dict) -> dict:
             resolved["dataset_base"], resolved["metadata"],
             resolved["frames"], model, resolved["diagnostics"]["sun"]),
     ]
+    for method in methods:
+        _attach_nominal_forward_comparison(
+            method, resolved["nominal_forward"])
     observation_ref = resolved["observations_ref"]
     return {
         "schema": SCHEMA,
         "dataset": observation_ref.dataset,
         "authority": dict(AUTHORITY),
         "quantity": {
-            "name": "effective_camera_to_gps_course_cw_deg",
+            "kind": RESULT_KIND,
+            "name": RESULT_FIELD,
+            "frame": RESULT_FRAME,
             "definition": (
                 "GPS course axis expressed as a clockwise camera-frame "
                 "bearing; diagnostic proxy, not fixed nominal forward"),
@@ -838,6 +966,14 @@ def build_report(resolved: dict) -> dict:
                 "content_digest": observation_ref.content_digest,
             },
             "dataset_source_sha256": resolved["dataset_source_sha256"],
+            "approved_nominal_forward": {
+                "path": str(resolved["nominal_forward_path"]),
+                "sha256": resolved["nominal_forward_sha256"],
+                "version": resolved["nominal_forward"].version,
+                "mounting_id": resolved["nominal_forward"].mounting_id,
+                "bearing_camera_cw_deg":
+                    resolved["nominal_forward"].bearing_camera_cw_deg,
+            },
             "gps_course": {
                 "source": "bound_object_tracks_manifest",
                 "object_tracks_manifest_digest":
@@ -845,6 +981,7 @@ def build_report(resolved: dict) -> dict:
                 "parameters": dict(resolved["course"]),
             },
         },
+        "review_media": {"sun_contact_sheet": SUN_REVIEW_NAME},
         "methods": methods,
     }
 
@@ -861,10 +998,19 @@ def publish(resolved: dict, output_dir: Path, *,
         "resolved": {
             "alignment_diagnostics": resolved["diagnostics"],
             "gps_course_from_object_tracks": resolved["course"],
+            "approved_nominal_forward": {
+                "path": str(resolved["nominal_forward_path"]),
+                "sha256": resolved["nominal_forward_sha256"],
+                "version": resolved["nominal_forward"].version,
+                "mounting_id": resolved["nominal_forward"].mounting_id,
+                "bearing_camera_cw_deg":
+                    resolved["nominal_forward"].bearing_camera_cw_deg,
+            },
         },
         "source_digests": {
             "build_config": resolved["build_config_sha256"],
             "dataset_tracking_inputs": resolved["dataset_source_sha256"],
+            "nominal_forward": resolved["nominal_forward_sha256"],
         },
     }
     with publication.published_artifact(
@@ -874,8 +1020,11 @@ def publish(resolved: dict, output_dir: Path, *,
             git_commit=provenance.git_commit(), arguments=arguments,
             upstreams=(resolved["observations_ref"],),
             config=manifest_config,
-            declared_outputs=(OUTPUT_NAME,)) as builder:
+            declared_outputs=(OUTPUT_NAME, SUN_REVIEW_NAME)) as builder:
         artifact.atomic_write_json(builder.output_path(OUTPUT_NAME), report)
+        _write_sun_contact_sheet(
+            report, resolved["dataset_base"],
+            builder.output_path(SUN_REVIEW_NAME))
     return builder.artifact_ref
 
 
@@ -884,6 +1033,8 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--dataset_base", type=Path, required=True)
     parser.add_argument("--observations_dir", type=Path, required=True)
+    parser.add_argument(
+        "--nominal_forward_calibration", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)

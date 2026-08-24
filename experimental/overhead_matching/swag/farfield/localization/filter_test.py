@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -355,6 +356,38 @@ class ResamplerTest(unittest.TestCase):
         log_w = np.full(100, -np.inf)
         log_w[0] = 0.0
         self.assertAlmostEqual(pf.ess(log_w), 1.0, places=6)
+
+
+class ProposalInjectionInvariantTest(unittest.TestCase):
+    def test_actual_injection_count_owns_retention_and_mass(self):
+        belief = pf.ParticleBelief(
+            east_m=np.arange(10, dtype=float),
+            north_m=np.zeros(10), heading_rad=np.zeros(10),
+            log_weight=np.zeros(10))
+        config = structs.FilterConfig(
+            n_particles=10, seed=0,
+            init=structs.GaussianInit(0.0, 0.0, 1.0),
+            proposal=structs.ProposalConfig(inject_fraction=0.5))
+        result = type("Result", (), {
+            "hypotheses": [object()], "event_id": 7})()
+        returned = (
+            np.array([100.0, 200.0]), np.array([300.0, 400.0]),
+            np.array([0.1, 0.2]), np.array([0, 0], dtype=np.int64))
+
+        with mock.patch.object(
+                pf.proposal_mod, "sample_particles", return_value=returned):
+            n_injected, kept = pf.inject_proposal(
+                belief, result, config, np.random.default_rng(2))
+
+        self.assertEqual(n_injected, 2)
+        self.assertEqual(kept.size, 8)
+        self.assertEqual(belief.n, 10)
+        self.assertAlmostEqual(
+            float(np.exp(belief.log_weight[:8]).sum()), 0.8)
+        self.assertAlmostEqual(
+            float(np.exp(belief.log_weight[8:]).sum()), 0.2)
+        np.testing.assert_array_equal(belief.proposal_event_id[8:], [7, 7])
+
 
 
 class PerModeAssociationTest(unittest.TestCase):
@@ -748,8 +781,13 @@ class EvidenceGateTest(unittest.TestCase):
     def _result(self, hypotheses):
         return self.proposal_mod.ProposalResult(
             event_id=0, keyframe_idx=5, trigger="null_share",
-            hypotheses=hypotheses, n_tracklets_considered=1,
-            n_combinations_examined=1, n_combinations_skipped=0)
+            hypotheses=hypotheses, particle_budget=2,
+            n_tracklets_considered=1, n_combinations_total=1,
+            n_combinations_enumerated=1, n_combinations_sampled=0,
+            n_combinations_geometry_pruned=0,
+            n_partially_represented_ties=0,
+            n_solution_clusters_merged=0,
+            represented_compatibility_mass=1.0)
 
     @staticmethod
     def _belief_at(east, north, heading_rad):

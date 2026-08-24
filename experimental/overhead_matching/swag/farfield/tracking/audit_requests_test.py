@@ -18,6 +18,9 @@ from experimental.overhead_matching.swag.farfield import (
     pipeline,
     testing,
 )
+from experimental.overhead_matching.swag.farfield.extraction import (
+    prompts as request_adapter,
+)
 from experimental.overhead_matching.swag.farfield.tracking import (
     audit_requests as ar,
     semantic_audit as sa,
@@ -311,6 +314,14 @@ class AuditRequestsTest(unittest.TestCase):
         self.assertGreaterEqual(len(images), 1)
         self.assertEqual(self.request_set.stage, "semantic_audit")
         self.assertEqual(self.request_set.model, "test-model")
+        online = request_adapter.online_request_from_batch("T1", request)
+        self.assertEqual(
+            online["config"]["system_instruction"], sa.SYSTEM_PROMPT)
+        self.assertEqual(
+            online["config"]["thinking_config"], {
+                "thinking_level": "LOW",
+            })
+        self.assertNotIn("media_resolution", online["config"])
 
     def test_meta_is_v2_and_binds_file_artifact_and_each_track(self):
         self.assertEqual(self.meta["schema"], ar.AUDIT_META_SCHEMA)

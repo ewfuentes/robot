@@ -81,7 +81,8 @@ class PayloadTest(unittest.TestCase):
             payload = viewer_payload.build(run_dir)
 
             for key in ("run", "health", "checkpoints", "landmarks",
-                        "backdrop", "basemap", "truth", "measurements",
+                        "backdrop", "landmarkGeometry", "basemap", "truth",
+                        "measurements",
                         "modes", "tracklets", "events", "triageSummary",
                         "ghosts", "notes", "colors"):
                 self.assertIn(key, payload, f"payload lacks {key!r}")
@@ -92,6 +93,29 @@ class PayloadTest(unittest.TestCase):
             # Every absent panel is explained.
             notes = " ".join(payload["notes"])
             self.assertIn("attribution cache", notes)
+
+    def test_exact_landmark_geometry_and_bounds_are_not_truncated(self):
+        line = structs.LandmarkEntry(
+            "line", 0.0, 0.0, "pier", 2.0,
+            hull_east_m=[-25.25, 10.5, 80.75],
+            hull_north_m=[5.125, -4.5, 7.25])
+        polygon = structs.LandmarkEntry(
+            "polygon", 0.0, 0.0, "island", 2.0,
+            hull_east_m=[0.0, 10.0, 10.0, 0.0, 0.0],
+            hull_north_m=[0.0, 0.0, 10.0, 10.0, 0.0])
+
+        line_payload = viewer_payload._landmark_geometry(line)  # noqa: SLF001
+        polygon_payload = viewer_payload._landmark_geometry(  # noqa: SLF001
+            polygon)
+        self.assertEqual(line_payload["kind"], "linestring")
+        self.assertEqual(line_payload["points"], [
+            [-25.25, 5.125], [10.5, -4.5], [80.75, 7.25]])
+        self.assertEqual(polygon_payload["kind"], "polygon")
+        self.assertEqual(len(polygon_payload["points"]), 5)
+        self.assertEqual(
+            viewer_payload._catalog_bounds(  # noqa: SLF001
+                np.array([0.0]), np.array([0.0]), [line], margin=0.0),
+            (-25.25, 80.75, -4.5, 7.25))
 
     def test_visible_range_comes_from_the_manifest(self):
         """No override parameter, no fallback: the page shows the geometry
@@ -254,6 +278,14 @@ class PayloadTest(unittest.TestCase):
             self.assertTrue(any("does not exist" in note
                                 for note in payload["notes"]))
 
+    def test_source_artifacts_must_be_supplied_as_an_exact_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            with self.assertRaisesRegex(ValueError, "supplied together"):
+                viewer_payload.build(
+                    run_dir, tracks_dir=Path(tmp) / "tracks")
+
 
 class PageTest(unittest.TestCase):
     def test_page_is_self_contained(self):
@@ -277,6 +309,16 @@ class PageTest(unittest.TestCase):
                               re.S)
             self.assertIsNotNone(match)
             json.loads(match.group(1))
+
+    def test_page_feature_detects_the_live_server_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+            self.assertIn('id="liveStatus"', html)
+            self.assertIn('apiJson("/api/health")', html)
+            self.assertIn('apiJson("/api/checkpoint/" + keyframe)', html)
+            self.assertIn('apiJson("/api/replay"', html)
 
     def test_assets_are_inlined_from_the_asset_files(self):
         """The CSS/JS live as viewer_assets/ files (data deps) and are inlined

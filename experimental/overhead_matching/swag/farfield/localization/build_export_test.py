@@ -24,6 +24,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     export_ingest,
     structs,
 )
+from experimental.overhead_matching.swag.farfield.matching import identity_review
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
 
@@ -166,8 +167,18 @@ def write_catalog(root: Path, *, node_id="node:1"):
             declared_outputs=("catalog.feather",)) as builder:
         schema.build_frame(
             ids=[node_id],
-            geometries=[shapely.Point(testing.ANCHOR_LON,
-                                      testing.ANCHOR_LAT + 0.01)],
+            geometries=[shapely.Polygon([
+                (testing.ANCHOR_LON - 0.0001,
+                 testing.ANCHOR_LAT + 0.0099),
+                (testing.ANCHOR_LON + 0.0001,
+                 testing.ANCHOR_LAT + 0.0099),
+                (testing.ANCHOR_LON + 0.0001,
+                 testing.ANCHOR_LAT + 0.0101),
+                (testing.ANCHOR_LON - 0.0001,
+                 testing.ANCHOR_LAT + 0.0101),
+                (testing.ANCHOR_LON - 0.0001,
+                 testing.ANCHOR_LAT + 0.0099),
+            ])],
             landmark_types=["osm"],
             tags=[{"man_made": "lighthouse"}],
         ).to_feather(builder.output_path("catalog.feather"))
@@ -176,7 +187,7 @@ def write_catalog(root: Path, *, node_id="node:1"):
 
 def write_matching(root: Path, tracks_dir: Path, audits_dir: Path,
                    catalog_ref, tracklet_id: str, *, coverage="complete",
-                   table_tracklet_id=None, build_identity=None):
+                   table_tracklet_id=None, build_identity=None, empty=False):
     tracks_ref = artifact.open_artifact(tracks_dir)
     audits_ref = artifact.open_artifact(audits_dir)
     if build_identity is None:
@@ -197,11 +208,20 @@ def write_matching(root: Path, tracks_dir: Path, audits_dir: Path,
             upstreams=(tracks_ref, audits_ref, catalog_ref),
             config={"phase": "canonical_results", "coverage": coverage,
                     "n_expected": 1, "n_successful": 1,
+                    "n_tracklets_expected": 1,
+                    "n_tracklets_successful": 1,
                     "build_identity": build_identity},
-            declared_outputs=("compatibility.json",)) as builder:
+            declared_outputs=("compatibility.json", "matches.json")) as builder:
         artifact.atomic_write_file(
             builder.output_path("compatibility.json"),
-            msgspec.json.encode([table], enc_hook=msgspec_enc_hook))
+            msgspec.json.encode([] if empty else [table],
+                                enc_hook=msgspec_enc_hook))
+        artifact.atomic_write_json(
+            builder.output_path("matches.json"), {} if empty else {
+                table.tracklet_id: {
+                    "matches": [{"landmark_id": "osm:node:1"}],
+                },
+            })
     return matching_dir
 
 
@@ -292,6 +312,7 @@ def build_fixture(root: Path):
         dataset_base=base,
         observations_dir=observations_dir,
         matching_dir=matching_dir,
+        identity_review_dir=None,
         catalog_dir=catalog_dir,
         motion_source=base / "frames_gps.csv",
         nominal_forward_calibration=calibration,
@@ -333,6 +354,26 @@ class ReducerTest(unittest.TestCase):
 
 
 class EndToEndTest(unittest.TestCase):
+    def test_empty_matching_tables_have_pointed_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, tracklet_id = build_fixture(root)
+            manifest = artifact.load_manifest(args.matching_dir)
+            tracks_ref, audits_ref, catalog_ref = manifest.upstreams
+            empty_matching = write_matching(
+                root, Path(tracks_ref.path), Path(audits_ref.path),
+                catalog_ref, tracklet_id,
+                build_identity=manifest.config["build_identity"], empty=True)
+            with self.assertRaisesRegex(
+                    build_export.LocalizationInputError,
+                    "compatibility table list is empty"):
+                build_export.load_matching(
+                    empty_matching, dataset_name=DATASET,
+                    accepted_tracklet_ids={tracklet_id},
+                    tracks_ref=tracks_ref, audits_ref=audits_ref,
+                    catalog_ref=catalog_ref, expected_version="v1",
+                    build_identity=manifest.config["build_identity"])
+
     def test_publishes_valid_strict_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             args, tracklet_id = build_fixture(Path(temporary))
@@ -345,6 +386,8 @@ class EndToEndTest(unittest.TestCase):
                              {tracklet_id})
             self.assertTrue(all(
                 item.position_sigma_m == 25.0 for item in data.landmarks))
+            self.assertEqual(len(data.landmarks[0].hull_east_m), 5)
+            self.assertEqual(len(data.landmarks[0].hull_north_m), 5)
             self.assertTrue(all(
                 0.0 <= item.bearing_forward_cw_deg < 360.0
                 for item in data.measurements))
@@ -376,6 +419,48 @@ class EndToEndTest(unittest.TestCase):
                     build_export.LocalizationInputError, "output_dir"):
                 build_export.build(args)
 
+    def test_confirmed_human_review_overrides_machine_and_records_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, tracklet_id = build_fixture(root)
+            matching_ref, candidates = identity_review.matching_candidates(
+                args.matching_dir)
+            draft = identity_review.draft_document(matching_ref, candidates)
+            row = draft["rows"][0]
+            row.update({
+                "decision": "confirmed",
+                "landmark_ids": ["osm:node:1"],
+                "reviewer": "reviewer",
+                "timestamp": "2026-08-24T16:00:00Z",
+                "notes": "visual identity confirmed",
+            })
+            draft_path = root / "identity-draft.json"
+            draft_path.write_text(json.dumps(draft))
+            review_dir = root / "identity-review"
+            review_ref = identity_review.publish(
+                dataset=DATASET, matching_dir=args.matching_dir,
+                input_json=draft_path, output_dir=review_dir, version="r1")
+            args.identity_review_dir = review_dir
+
+            build_export.build(args)
+            data = export_ingest.load(
+                args.output_dir, expected_dataset=DATASET)
+            table = data.tables[tracklet_id]
+            self.assertEqual(table.status, "refined")
+            self.assertEqual(table.entries[0].log_lr, table.clip_hi)
+            self.assertIn("+human_identity_review_v1:r1",
+                          table.matcher_version)
+            manifest = artifact.load_manifest(args.output_dir)
+            self.assertEqual(
+                manifest.config["identity_review"]["content_digest"],
+                review_ref.content_digest)
+            self.assertEqual(
+                manifest.config["identity_review"]["precedence_policy"],
+                "human_identity_over_machine_v1")
+            self.assertEqual(
+                json.loads((args.output_dir / identity_review.REVIEW_NAME)
+                           .read_text())["schema"],
+                identity_review.REVIEW_SCHEMA)
     def test_dataset_mutation_is_rejected_against_build_recipe(self):
         with tempfile.TemporaryDirectory() as temporary:
             args, _ = build_fixture(Path(temporary))

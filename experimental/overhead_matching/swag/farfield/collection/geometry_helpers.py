@@ -1,25 +1,9 @@
-"""The one buffered-bbox helper for collection tooling.
+"""Shared buffered-bbox helpers for collection tooling.
 
-There were three `bbox_from_dataset`-shaped functions on the checkpoint branch,
-two of them incompatible with this one:
-
-  * `run_farfield_collection.bbox_from_dataset` — trajectory GPS from the
-    converted dataset, expanded by a metric buffer with the longitude scale
-    corrected by cos(mid latitude), returned as (west, south, east, north).
-  * `extract_landmarks_historical.compute_bbox_from_dataset` and
-    `extract_landmarks_from_enc.bbox_from_dataset_path` — read VIGOR
-    *satellite* metadata / satellite_bbox.json and pad by a FRACTIONAL 10% of
-    the bbox extent. Those answer "what area do the satellite tiles span",
-    not "what could the trajectory see", and a fractional pad of a small bbox
-    is metres where the far-field needs tens of kilometres.
-
-The first definition won, because it is the one the collection pipeline's
-consumers (Overpass/ENC extraction and the pbf coverage gate) were validated
-against: the buffer is a physical sighting range, so it must be metric, and
-the WSEN order matches Mapillary, the extractors' --bbox, and pbf_coverage.
-The satellite-metadata variants stay with their own tools; they are not this
-function. The only change from the original: degree-per-km scaling now comes
-from `geometry.METERS_PER_DEG_LAT` instead of a restated 111.0.
+The bbox is derived from trajectory GPS and expanded by a metric sighting
+range, with longitude scaled by cosine of the midpoint latitude. Results use
+(west, south, east, north), matching Mapillary, the extractors, and the PBF
+coverage gate. Degree scaling comes from `geometry.METERS_PER_DEG_LAT`.
 """
 
 import csv

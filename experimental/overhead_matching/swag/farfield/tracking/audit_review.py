@@ -47,10 +47,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from experimental.overhead_matching.swag.farfield import (
-    dataset,
-    paths as paths_lib,
-)
+from experimental.overhead_matching.swag.farfield import dataset
 from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.tracking import (
     keyframe_viewer as kv,
@@ -106,9 +103,8 @@ def load_settings(audit_dir: Path) -> dict:
     """The audit's recorded settings (written by audit_requests).
 
     Refused when absent: this viewer classifies supports and renders chips
-    under the RECORDED values, and an audit with no record predates the
-    provenance fix (or was built by the retired m5 stage) -- rebuild the
-    requests with farfield/tracking:audit_requests rather than guessing.
+    under the recorded values. Rebuild incomplete requests with
+    farfield/tracking:audit_requests rather than guessing.
     """
     path = audit_dir / "settings.json"
     if not path.exists():
@@ -119,6 +115,22 @@ def load_settings(audit_dir: Path) -> dict:
             f"//experimental/overhead_matching/swag/farfield/tracking:"
             f"audit_requests (which records them).")
     return json.loads(path.read_text())
+
+
+def recorded_ingest(settings: dict) -> dataset.IngestParams:
+    """Reconstruct the result-shaping ingest settings saved with requests."""
+    ingest = settings.get("ingest")
+    expected = {"fov_deg", "seam_gap_norm", "seam_min_y_iou"}
+    if not isinstance(ingest, dict) or set(ingest) != expected:
+        raise SystemExit(
+            "semantic audit settings have no exact recorded ingest "
+            "configuration")
+    try:
+        return dataset.IngestParams(**ingest)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"semantic audit settings record invalid ingest values: {exc}") \
+            from exc
 
 
 def load_request_texts(audit_dir: Path):
@@ -351,26 +363,23 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
     return parts
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    paths_lib.add_arguments(parser)
     parser.add_argument("--tracks_dir", type=Path, required=True)
     parser.add_argument("--semantic_audits_dir", type=Path, required=True)
+    parser.add_argument("--dataset_base", type=Path, required=True)
+    parser.add_argument("--frame_landmarks_dir", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True,
                         help="Disposable review site destination; must be "
                              "outside both immutable input artifacts")
     parser.add_argument("--no_extra_chips", action="store_true",
                         help="Skip rendering chips for strikes/secondaries")
-    parser.add_argument("--fov_deg", type=float, required=True,
-                        help="Pinhole-face FOV recorded for extraction")
-    parser.add_argument("--seam_gap_norm", type=float, required=True,
-                        help="Seam-merge margin in bbox units 0-1000")
-    parser.add_argument("--seam_min_y_iou", type=float, required=True,
-                        help="Vertical IoU to accept a seam continuation")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
-    paths = paths_lib.resolve(
-        parser, args, infer_from=args.tracks_dir,
-        require=("dataset_base", "frame_landmarks"))
 
     audit_dir = args.semantic_audits_dir
     output_dir = args.output_dir
@@ -388,23 +397,26 @@ def main():
     settings = load_settings(audit_dir)
     meta_document = json.loads((audit_dir / "audit_meta.json").read_text())
     meta = meta_document["requests"]
+    inputs = kv.load_viewer_inputs(
+        args.tracks_dir, args.dataset_base, args.frame_landmarks_dir)
+    ingest_params = recorded_ingest(settings)
+    if ingest_params != inputs.ingest_params:
+        raise SystemExit(
+            "semantic audit ingest settings disagree with the exact "
+            "configuration recorded by object_tracks")
     audits = {key: audits_by_tid[m["track_id"]] for key, m in meta.items()
               if m["track_id"] in audits_by_tid}
     texts = load_request_texts(audit_dir)
 
     # The one source artifact is classified under its recorded config plus
     # the audit's recorded knobs -- never a freshly-defaulted AuditConfig.
-    artifacts = kv.load_track_artifacts(args.tracks_dir)
+    artifacts = inputs.artifacts
     tracks_by_id, range_by_track = sa.merge_tracks(artifacts)
     cfg_by_range = {
         rn: sa.AuditConfig(**settings["audit_config"],
                            classifier=kv.recorded_config(artifact))
         for rn, artifact in artifacts.items()}
     chip_height_px = settings["audit_config"]["chip_height_px"]
-    ingest_params = dataset.IngestParams(
-        fov_deg=args.fov_deg, seam_gap_norm=args.seam_gap_norm,
-        seam_min_y_iou=args.seam_min_y_iou)
-
     # ts already chipped in the request (avoid re-rendering those).
     for key, m in meta.items():
         m["chipped_ts"] = [int(Path(p).stem.split("_t")[1].split("_")[0])
@@ -426,7 +438,7 @@ def main():
               f"(strikes/secondaries) for {len(wants)} tracks")
         extra_chips = render_extra_chips(
             wants, tracks_by_id, range_by_track, cfg_by_range, meta,
-            paths.dataset_base, paths.frame_landmarks, chips_dir,
+            inputs.dataset_base, inputs.frame_landmarks_dir, chips_dir,
             ingest_params, chip_height_px)
         print(f"rendered {len(extra_chips)}")
 
@@ -439,8 +451,7 @@ def main():
     parts = [
         f"<p>{len(audits)} tracks audited with complete canonical "
         "coverage</p>",
-        # The recorded provenance, so the page states what produced what it
-        # shows (model/thresholds were previously recorded nowhere at all).
+        # State the provenance for everything shown on the page.
         f"<p class='muted'>model {esc(settings['model'])} | thinking "
         f"{esc(settings['thinking_level'])} | support bar "
         f">= {esc(settings['min_supports'])} | prompt sha256 "

@@ -4,7 +4,7 @@ The triage assigns blame, so it has to be tested against worlds where blame is
 known by construction rather than inferred. Each test builds one specific fault
 and asserts that exactly that fault is named:
 
-  T-F-A  bearings no catalog landmark can explain -> tracker-fault
+  T-F-A  bearings no catalog landmark can explain -> geometry-unexplained
   T-F-B  explicable bearings the matcher endorses nothing for -> no-evidence
   T-F-C  explicable bearings whose endorsed set excludes the explanation ->
          matcher-fault
@@ -182,12 +182,12 @@ class TriageVerdictTest(unittest.TestCase):
                            "the vessel must move enough for the bearing to "
                            "sweep, or nothing is identifiable")
 
-    def test_inconsistent_bearings_are_tracker_fault(self):
+    def test_inconsistent_bearings_are_geometry_unexplained(self):
         """T-F-A. A constant 45 deg bearing while the vessel moves 1.2 km
         cannot be a fixed object: no catalog row explains all five epochs."""
         triage = self._triage([45.0] * self.N_EPOCHS, [("true_lm", 4.0)],
                               {"true_lm": 0.9})
-        self.assertEqual(triage.verdict, "tracker-fault")
+        self.assertEqual(triage.verdict, "geometry-unexplained")
         self.assertFalse(triage.geometry_explicable)
         self.assertGreater(triage.best_fit.rms_deg, triage.tolerance_deg)
 
@@ -255,7 +255,7 @@ class TriageVerdictTest(unittest.TestCase):
 
     def test_tolerance_scales_with_declared_precision(self):
         """A tracklet that says sigma 20 deg cannot be held to 5 deg: doing so
-        would manufacture tracker faults out of admitted imprecision."""
+        would manufacture unexplained geometry out of admitted imprecision."""
         sharp = self._triage(self._true_bearings(), [("true_lm", 4.0)],
                              {"true_lm": 0.9})
         vague_data = _run_data(
@@ -283,7 +283,18 @@ class TriageVerdictTest(unittest.TestCase):
             max_visible_range_m=15000.0)
         triage = self._triage([90.0] * self.N_EPOCHS, [("far_lm", 4.0)],
                               {"far_lm": 0.9}, catalog=catalog)
-        self.assertEqual(triage.verdict, "tracker-fault")
+        self.assertEqual(triage.verdict, "geometry-unexplained")
+        self.assertIsNone(triage.best_fit)
+
+    def test_candidate_must_be_visible_at_every_epoch(self):
+        """One close epoch cannot excuse a candidate absent for the rest."""
+        catalog = catalog_mod.LandmarkCatalog(
+            ["true_lm"], np.array([2000.0]), np.array([0.0]),
+            max_visible_range_m=2100.0)
+        triage = self._triage(
+            self._true_bearings(), [("true_lm", 4.0)],
+            {"true_lm": 0.9}, catalog=catalog)
+        self.assertEqual(triage.verdict, "geometry-unexplained")
         self.assertIsNone(triage.best_fit)
 
     def test_triage_is_empty_without_truth(self):

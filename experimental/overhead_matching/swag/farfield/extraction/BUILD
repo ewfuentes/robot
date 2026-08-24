@@ -20,6 +20,7 @@ py_library(
         requirement("google-cloud-storage"),
         requirement("google-genai"),
         ":llm_cost",
+        ":prompts",
     ],
 )
 
@@ -35,6 +36,7 @@ py_test(
     srcs = ["vertex_batch_manager_test.py"],
     deps = [
         ":llm_cost",
+        ":prompts",
         ":vertex_batch_manager_lib",
     ],
 )
@@ -65,6 +67,7 @@ py_library(
     deps = [
         requirement("pydantic"),
         requirement("tqdm"),
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
 
@@ -79,6 +82,8 @@ py_library(
     srcs = ["extract_landmarks.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        requirement("numpy"),
+        requirement("pillow"),
         ":llm_cost",
         ":panorama_to_pinhole_lib",
         ":prompts",
@@ -112,5 +117,6 @@ py_test(
         "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/collection:run_farfield_collection_lib",
     ],
 )

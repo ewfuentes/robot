@@ -6,8 +6,8 @@ live here so calibration, matching, and localization cannot quietly choose
 different subsets of the data.
 
 Bearings are camera-frame azimuths, clockwise positive. They remain attached
-to their real keyframes. epoch_fused_compat_v1 is the named compatibility
-reducer for consumers that have not yet migrated to observation-level input.
+to their real keyframes. `epoch_fused_compat_v1` is the named reducer for
+consumers whose contract requires one fused measurement per information epoch.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ class CameraBearingObservation:
 
 @dataclass(frozen=True)
 class Measurement:
-    """The legacy epoch-fused shape returned only at the v1 boundary."""
+    """Epoch-fused compatibility shape returned at the export boundary."""
 
     tracklet_id: str
     anchor_keyframe_idx: int
@@ -480,7 +480,7 @@ def epoch_fused_compat_v1(
 
 
 def fuse_bearings(series: list, params: TrackletParams) -> list:
-    """Tuple-form adapter for tests/tools still at the old fusion boundary."""
+    """Tuple-form representation of the compatibility reducer output."""
     observations = [CameraBearingObservation(
         tracklet_id="compat", keyframe_idx=keyframe,
         bearing_camera_cw_deg=azimuth, angular_width_deg=width,

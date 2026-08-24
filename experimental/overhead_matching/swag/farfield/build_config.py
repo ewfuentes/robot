@@ -56,13 +56,16 @@ class ValueSpec:
     """Type and scalar-domain contract for one resolved config leaf.
 
     Types are checked exactly, so ``True`` is never accepted as the integer
-    ``1``.  Numeric bounds are inclusive.  ``None`` is accepted only when the
-    schema explicitly opts into it.
+    ``1``.  ``minimum`` and ``maximum`` are inclusive; their
+    ``exclusive_*`` counterparts express strict bounds.  ``None`` is
+    accepted only when the schema explicitly opts into it.
     """
 
     types: tuple[type, ...]
     minimum: float | None = None
+    exclusive_minimum: float | None = None
     maximum: float | None = None
+    exclusive_maximum: float | None = None
     choices: tuple[Any, ...] | None = None
     allow_none: bool = False
     nonempty: bool = False
@@ -71,9 +74,27 @@ class ValueSpec:
         if not self.types or not all(isinstance(kind, type)
                                      for kind in self.types):
             raise TypeError("ValueSpec.types must be a non-empty tuple of types")
+        if self.minimum is not None and self.exclusive_minimum is not None:
+            raise ValueError(
+                "ValueSpec cannot combine minimum and exclusive_minimum")
+        if self.maximum is not None and self.exclusive_maximum is not None:
+            raise ValueError(
+                "ValueSpec cannot combine maximum and exclusive_maximum")
         if (self.minimum is not None and self.maximum is not None
                 and self.minimum > self.maximum):
             raise ValueError("ValueSpec minimum exceeds maximum")
+        if (self.exclusive_minimum is not None and self.maximum is not None
+                and self.exclusive_minimum >= self.maximum):
+            raise ValueError("ValueSpec exclusive_minimum must be below maximum")
+
+        if (self.minimum is not None
+                and self.exclusive_maximum is not None
+                and self.minimum >= self.exclusive_maximum):
+            raise ValueError("ValueSpec minimum must be below exclusive_maximum")
+        if (self.exclusive_minimum is not None
+                and self.exclusive_maximum is not None
+                and self.exclusive_minimum >= self.exclusive_maximum):
+            raise ValueError("ValueSpec exclusive bounds are empty")
 
     def validate(self, path: str, value: Any) -> None:
         if value is None and self.allow_none:
@@ -88,9 +109,17 @@ class ValueSpec:
             if self.minimum is not None and value < self.minimum:
                 raise InvalidConfigValue(
                     f"{path} must be >= {self.minimum}, found {value}")
+            if (self.exclusive_minimum is not None
+                    and value <= self.exclusive_minimum):
+                raise InvalidConfigValue(
+                    f"{path} must be > {self.exclusive_minimum}, found {value}")
             if self.maximum is not None and value > self.maximum:
                 raise InvalidConfigValue(
                     f"{path} must be <= {self.maximum}, found {value}")
+            if (self.exclusive_maximum is not None
+                    and value >= self.exclusive_maximum):
+                raise InvalidConfigValue(
+                    f"{path} must be < {self.exclusive_maximum}, found {value}")
         if self.nonempty and isinstance(value, str) and not value.strip():
             raise InvalidConfigValue(f"{path} must be a non-empty string")
         if self.choices is not None and value not in self.choices:
@@ -163,9 +192,8 @@ def create(build_dir: Path, *, dataset: str, config: dict,
            generator: str, inputs: dict, notes: str = "") -> Path:
     """Validate and immutably record a new build recipe.
 
-    The target must not already contain data.  Attaching a new recipe to an
-    old workspace would let stale stage products masquerade as descendants of
-    the new configuration.
+    The target must not already contain data. This prevents stage products
+    from being attributed to a different configuration.
     """
     build_dir = Path(build_dir)
     path = build_dir / BUILD_CONFIG_NAME

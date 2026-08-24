@@ -4,10 +4,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from PIL import Image
+
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     checksums,
+    make_dataset_timelapse as timelapse,
     trim_dataset,
 )
 
@@ -106,7 +111,8 @@ def build_dataset(root: Path, n=12, step=3.0, with_checksums=True,
                          "gps_quality": "fix", "gps_valid": "1"})
         intr_rows.append({"idx": i, "pano_id": f"f{i:04d}",
                           "projection": "equirectangular", "width": "7680",
-                          "height": "3840", "heading_deg": "0"})
+                          "height": "3840", "heading_deg": "0",
+                          "future_source_column": f"raw-{i}"})
         map_rows.append({"pano_id": f"f{i:04d}", "lat": f"{lat:.7f}",
                          "lon": f"{lon:.7f}", "filename": name})
     for name, rows in (("frames_gps.csv", gps_rows),
@@ -131,6 +137,19 @@ def read_rows(path):
         return list(csv.DictReader(handle))
 
 
+def snapshot_tree(root: Path):
+    records = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            records.append((relative, "symlink", path.readlink().as_posix()))
+        elif path.is_file():
+            records.append((relative, "file", path.read_bytes()))
+        elif path.is_dir():
+            records.append((relative, "dir", None))
+    return records
+
+
 class ApplyTrimTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -145,6 +164,22 @@ class ApplyTrimTest(unittest.TestCase):
             trim_dir=kwargs.pop("trim_dir", "trimmed_frames_for_density"),
             kind=kwargs.pop("kind", "density"))
         return keep, info
+
+    def publish_timelapse(self, *, color=(20, 40, 60)):
+        def plot(dataset, lats, lons, times, dists, out):
+            del dataset, lats, lons, times, dists
+            out.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (8, 8), color).save(out, format="PNG")
+
+        def video(paths, lats, lons, out, width, fps, max_frames):
+            del paths, lats, lons, width, fps, max_frames
+            out.write_bytes(b"\x00\x00\x00\x18ftypmp42video")
+
+        with mock.patch.object(timelapse, "stage_plot", side_effect=plot), \
+             mock.patch.object(timelapse, "stage_video", side_effect=video):
+            return timelapse.render(
+                self.ds, width=640, fps=12,
+                max_frames=100, skip_video=False)
 
     def test_tables_stay_consistent_after_a_density_trim(self):
         keep, _ = self.density_trim()
@@ -180,23 +215,112 @@ class ApplyTrimTest(unittest.TestCase):
         self.assertEqual(dropped_idx,
                          [i for i in range(12) if i not in set(keep)])
 
-    def test_dropped_csv_appends_across_successive_trims(self):
+    def test_existing_trim_output_is_a_no_clobber_error(self):
         self.density_trim(spacing=6.0)
-        first = read_rows(self.ds / "trimmed_frames_for_density"
-                          / "dropped_frames.csv")
+        before = snapshot_tree(self.ds)
         rows, _ = trim_dataset.read_csv(self.ds / "frames_gps.csv")
         keep2 = trim_dataset.keep_by_spacing(rows, 15.0)
-        trim_dataset.apply_trim(self.ds, keep2, "thin again", None,
-                                trim_dir="trimmed_frames_for_density",
-                                kind="density")
-        second = read_rows(self.ds / "trimmed_frames_for_density"
-                           / "dropped_frames.csv")
-        self.assertGreater(len(second), len(first))
-        # Earlier rows survive verbatim, so the file stays a full history
-        # rather than a record of only the most recent trim.
-        self.assertEqual(second[:len(first)], first)
-        self.assertEqual({r["reason"] for r in second[len(first):]},
-                         {"thin again"})
+        with self.assertRaises(FileExistsError):
+            trim_dataset.apply_trim(
+                self.ds, keep2, "thin again", None,
+                trim_dir="trimmed_frames_for_density", kind="density")
+        self.assertEqual(snapshot_tree(self.ds), before)
+
+    def test_short_intrinsics_fails_preflight_without_mutation(self):
+        rows, fields = trim_dataset.read_csv(self.ds / "intrinsics.csv")
+        trim_dataset.write_csv(self.ds / "intrinsics.csv", rows[:-1], fields)
+        before = snapshot_tree(self.ds)
+        with self.assertRaisesRegex(ValueError, "intrinsics.csv has 11 rows"):
+            trim_dataset.apply_trim(
+                self.ds, [0, 1, 2], "tail", None,
+                trim_dir="short-table", kind="range")
+        self.assertEqual(snapshot_tree(self.ds), before)
+        self.assertFalse((self.ds / "short-table").exists())
+        self.assertFalse(
+            (self.ds.parent / f".{self.ds.name}.trim_dataset.incomplete")
+            .exists())
+
+    def test_commit_failure_rolls_back_every_dataset_byte(self):
+        before = snapshot_tree(self.ds)
+
+        def fail_checksum(dataset):
+            (dataset / checksums.CHECKSUM_FILE).write_text("partial\n")
+            raise RuntimeError("injected checksum failure")
+
+        with mock.patch.object(trim_dataset.checksums, "regenerate",
+                               side_effect=fail_checksum):
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                trim_dataset.apply_trim(
+                    self.ds, [0, 1, 2], "tail", None,
+                    trim_dir="rollback-test", kind="range")
+        self.assertEqual(snapshot_tree(self.ds), before)
+        self.assertFalse((self.ds / "rollback-test").exists())
+        self.assertTrue(
+            (self.ds.parent / f".{self.ds.name}.trim_dataset.incomplete")
+            .is_dir())
+
+    def test_trim_archives_old_timelapse_and_publishes_new_pair(self):
+        old_reference = self.publish_timelapse(color=(10, 20, 30))
+
+        def regenerate():
+            self.publish_timelapse(color=(30, 20, 10))
+
+        trim_dataset.apply_trim(
+            self.ds, [0, 1, 2], "tail", None,
+            trim_dir="timelapse-swap", kind="range",
+            regenerate=regenerate)
+
+        new_reference = timelapse.validate_completed(self.ds)
+        archived = self.ds / "timelapse-swap" / "pre_trim_timelapse"
+        archived_reference = artifact.open_artifact(
+            archived,
+            expected_kind=timelapse.REVIEW_KIND,
+            expected_dataset=self.ds.name,
+            expected_version=timelapse.REVIEW_VERSION)
+        self.assertEqual(archived_reference, old_reference)
+        self.assertNotEqual(new_reference, old_reference)
+        self.assertFalse(
+            timelapse.view_output_dir(self.ds).with_name(
+                "timelapse.incomplete").exists())
+
+    def test_timelapse_regeneration_failure_restores_every_dataset_byte(self):
+        old_reference = self.publish_timelapse()
+        before = snapshot_tree(self.ds)
+
+        def fail_regeneration():
+            def plot(dataset, lats, lons, times, dists, out):
+                del dataset, lats, lons, times, dists
+                out.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (8, 8)).save(out, format="PNG")
+
+            with mock.patch.object(
+                    timelapse, "stage_plot", side_effect=plot), \
+                 mock.patch.object(
+                     timelapse, "stage_video",
+                     side_effect=RuntimeError("injected encoder failure")):
+                timelapse.render(
+                    self.ds, width=640, fps=12,
+                    max_frames=100, skip_video=False)
+
+        with self.assertRaisesRegex(RuntimeError, "injected encoder failure"):
+            trim_dataset.apply_trim(
+                self.ds, [0, 1, 2], "tail", None,
+                trim_dir="timelapse-rollback", kind="range",
+                regenerate=fail_regeneration)
+
+        self.assertEqual(snapshot_tree(self.ds), before)
+        self.assertEqual(timelapse.validate_completed(self.ds), old_reference)
+        self.assertFalse((self.ds / "timelapse-rollback").exists())
+        transaction = (
+            self.ds.parent / f".{self.ds.name}.trim_dataset.incomplete")
+        self.assertTrue(
+            (transaction / "failed_timelapse" / "incomplete").is_dir())
+
+    def test_arbitrary_intrinsics_columns_survive(self):
+        keep, _ = self.density_trim()
+        rows = read_rows(self.ds / "intrinsics.csv")
+        self.assertEqual([row["future_source_column"] for row in rows],
+                         [f"raw-{old}" for old in keep])
 
     def test_metadata_records_the_trim_and_both_trajectory_lengths(self):
         keep, _ = self.density_trim()

@@ -12,25 +12,20 @@ Stages, per trajectory:
   8 PLOT      full-catalog coverage diagnostic artifact  (plot_landmarks)
   9 AUDIT     dataset contract audit                     (farfield.audit_dataset, in-process)
 
-Stages that are collection code run IN-PROCESS by importing the ported modules
-(the old orchestrator shelled out to `bazel run` inside a hardcoded
-~/code/robot-farfield-crossview checkout, which does not exist). A subprocess
-survives only where it is genuinely needed — the landmark extractors run under
-a cgroup memory cap, and panorama_to_pinhole lives in another package — and
-those resolve the repo root from $BUILD_WORKSPACE_DIRECTORY (set by `bazel
-run`) and error when it is absent. Stage 4 imports its dataset tool directly.
+Collection stages run in-process when they expose a Python entry point. The
+landmark extractors run as subprocesses under a cgroup memory cap, and
+panorama_to_pinhole is invoked through its Bazel target. Those subprocesses
+resolve the repository root from $BUILD_WORKSPACE_DIRECTORY and fail when it is
+absent. Stage 4 imports its dataset tool directly.
 Stage 5 publishes the full catalog in the typed artifact lane, stage 7
 publishes its trimmed descendant before matching, and stage 8 evaluates the
 full source catalog independently of that semantic trim. Matching-derived
 evidence may guard a later revision, but is not required to construct the
 first trimmed catalog or its coverage diagnostic.
 
-TIMELAPSE sits directly after CONVERT (moved 2026-08-17, was stage 8) because
-it is the input to the human triage pass, and triage is the cheapest gate:
-7 of the first 21 collected trajectories were rejected on the timelapse for
-faults no audit sees (unfixed mounts, panning cameras). Rendering it before
-the landmark stages means a rejected trajectory costs one mp4, not an
-Overpass catalog + pinhole render.
+TIMELAPSE sits directly after CONVERT because it is the input to the human
+triage pass. Rendering it before the landmark stages catches capture defects
+such as moving or panning cameras before catalog extraction and pinhole render.
 
 Stage 6 is deliberately skipped for perspective captures: a limited-FOV frame
 is already a single view. The converter records its optical-axis convention in
@@ -48,7 +43,6 @@ Layout (lifecycle lanes; defaults derive from farfield.paths.default_root()):
 """
 
 import argparse
-import importlib
 import json
 import os
 import re
@@ -56,6 +50,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
@@ -82,6 +78,8 @@ from experimental.overhead_matching.swag.farfield.collection.pbf_coverage import
     check_coverage,
 )
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    download_enc_cells,
+    make_dataset_timelapse,
     plot_landmarks,
     trim_catalog,
 )
@@ -93,16 +91,12 @@ DATASET_TOOLS = "//experimental/overhead_matching/swag/farfield/dataset_tools"
 # tree. Only the stages that genuinely need a subprocess consult this.
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 
-# The common libosmium extractor can build a node-location index for the whole
-# PBF, so peak memory tracks file size rather than the requested bbox unless an
-# explicit bounded node margin is used. Whole-France (4.7 GB) reached 28 GB RSS
-# growing 1.2 GB/min and took the machine down. Two independent guards remain:
-#   * refuse files over --max_pbf_mb (generous now: with the dict schema and the
-#     bounded node index a 4.7 GB national extract peaks at 3.0 GB);
-#   * run the extraction inside a cgroup with a hard memory ceiling, so a
-#     surprise gets killed in its own scope instead of exhausting the host.
-MAX_PBF_MB = 6000
+# The OSM writer first runs an osmium smart pre-extract, then gives the bounded
+# result to the common extractor with its complete node index.  Keep a cgroup
+# ceiling as a final host-safety guard, independent of source PBF size.
 EXTRACT_MEM_CAP_GB = 24
+
+PINHOLE_FACES = paths_lib.PINHOLE_FACES
 
 
 def mem_capped(cmd, cap_gb):
@@ -165,28 +159,34 @@ def run_module(main_fn, argv, desc, args):
     return True
 
 
-def dataset_tools_module(module_name: str):
-    """Import farfield.dataset_tools.<module>, or explain why it is absent.
-
-    Optional dataset-tool stages error loudly instead of silently running a
-    stale script from another package.
-    """
-    qualified = ("experimental.overhead_matching.swag.farfield.dataset_tools."
-                 + module_name)
-    try:
-        return importlib.import_module(qualified)
-    except ImportError as exc:
-        print(f"  ERROR: cannot import {qualified}: this optional stage has "
-              f"no active far-field implementation ({exc})")
-        return None
-
-
 def stage_resolve(name, cfg, args):
     manifest = args.manifest_dir / f"{name}.json"
-    if manifest.exists() and not args.force:
-        print(f"\n=== [1 RESOLVE] {name}: manifest exists, skipping "
-              f"(--force to redo)")
+    expected_config = {
+        "name": name,
+        "window_hours": args.window_hours,
+        "stitch_time_s": args.stitch_time,
+        "stitch_dist_m": args.stitch_dist,
+    }
+    if manifest.exists() or manifest.is_symlink():
+        try:
+            document = seed_to_trajectory.validate_sequence_manifest(
+                manifest,
+                expected_sequence_id=name,
+                expected_seed_pkey=cfg["seed_pkey"],
+            )
+            if document["provenance"]["config"] != expected_config:
+                raise ValueError(
+                    "recorded stitch recipe does not match the requested recipe")
+        except (OSError, ValueError) as exc:
+            print(f"  ERROR: invalid completed stage-1 manifest {manifest}: {exc}")
+            return False
+        print(f"\n=== [1 RESOLVE] {name}: validated completed manifest")
         return True
+    incomplete = manifest.with_name(
+        manifest.name + seed_to_trajectory.MANIFEST_INCOMPLETE_SUFFIX)
+    if incomplete.exists() or incomplete.is_symlink():
+        print(f"  ERROR: incomplete stage-1 manifest exists: {incomplete}")
+        return False
     return run_module(
         seed_to_trajectory.main,
         ["--seed_pkey", cfg["seed_pkey"], "--name", name,
@@ -259,11 +259,8 @@ def stage_timelapse(name, cfg, args):
     print(f"\n{'[DRY RUN] ' if args.dry_run else ''}=== [4 TIMELAPSE] {name}")
     if args.dry_run:
         return True
-    mod = dataset_tools_module("make_dataset_timelapse")
-    if mod is None:
-        return False
     return run_module(
-        mod.main,
+        make_dataset_timelapse.main,
         ["--dataset_path", args.output_base / name,
          "--fps", args.timelapse_fps,
          "--max_frames", args.timelapse_max_frames],
@@ -280,6 +277,8 @@ def _publish_full_catalog(name: str, source: Path, args, config: dict) -> bool:
     try:
         frame = catalog_schema.read_frame(source)
         source_digest = artifact.sha256_file(source)
+        generator = ("//experimental/overhead_matching/swag/farfield/"
+                     "collection:run_farfield_collection (stage 5)")
         manifest_config = {
             **config,
             "schema": catalog_schema.FULL_ARTIFACT_SCHEMA,
@@ -287,13 +286,32 @@ def _publish_full_catalog(name: str, source: Path, args, config: dict) -> bool:
             "selected_source_sha256": source_digest,
             "rows": int(len(frame)),
         }
+        if output_dir.exists() or output_dir.is_symlink():
+            artifact.open_artifact(
+                output_dir,
+                expected_kind=paths_lib.CATALOGS,
+                expected_dataset=name,
+                expected_version=args.catalog_version)
+            manifest = artifact.load_manifest(output_dir)
+            payload = output_dir / "catalog.feather"
+            if (manifest.generator != generator
+                    or manifest.git_commit != provenance.git_commit()
+                    or manifest.upstreams
+                    or dict(manifest.config) != manifest_config
+                    or manifest.declared_outputs != ("catalog.feather",)
+                    or artifact.sha256_file(payload) != source_digest):
+                raise artifact.ArtifactValidationError(
+                    "completed full catalog has a different source, recipe, "
+                    "or payload")
+            catalog_schema.read_frame(payload)
+            print(f"  reusing exact full catalog: {output_dir}")
+            return True
         with publication.published_artifact(
                 output_dir,
                 kind=paths_lib.CATALOGS,
                 dataset=name,
                 version=args.catalog_version,
-                generator=("//experimental/overhead_matching/swag/farfield/"
-                           "collection:run_farfield_collection (stage 5)"),
+                generator=generator,
                 git_commit=provenance.git_commit(),
                 config=manifest_config,
                 declared_outputs=("catalog.feather",)) as builder:
@@ -309,11 +327,13 @@ def _publish_full_catalog(name: str, source: Path, args, config: dict) -> bool:
 
 def _finish_landmark_stage(name: str, selected: Path, pbf_paths, bbox,
                            osm_specs, enc_state, merged: bool, args,
-                           source_coverage: dict, cells=None) -> bool:
+                           source_coverage: dict, cells=None,
+                           enc_selection: Path | None = None) -> bool:
     source_dir = args.catalog_sources_base / name / args.catalog_version
     _write_provenance(source_dir, name, pbf_paths, bbox,
                       osm_specs=osm_specs, enc_state=enc_state,
-                      merged=merged, cells=cells, args=args)
+                      merged=merged, cells=cells, args=args,
+                      enc_selection=enc_selection)
     return _publish_full_catalog(
         name,
         selected,
@@ -324,8 +344,15 @@ def _finish_landmark_stage(name: str, selected: Path, pbf_paths, bbox,
             "enc_state": enc_state,
             "enc_cells": list(cells or []),
             "enc_available": merged,
+            "enc_selection": (
+                {
+                    "path": str(enc_selection.resolve()),
+                    "sha256": artifact.sha256_file(enc_selection),
+                }
+                if enc_selection is not None else None
+            ),
             "dedupe_tolerance_m": args.dedupe_tolerance_m,
-            "node_margin_deg": args.node_margin_deg,
+            "osm_preextract_strategy": "smart",
             "source_coverage": source_coverage,
         },
     )
@@ -334,15 +361,18 @@ def _finish_landmark_stage(name: str, selected: Path, pbf_paths, bbox,
 def stage_landmarks(name, cfg, args):
     """OSM landmarks, plus ENC and a merge where NOAA has coverage."""
     dataset_dir = args.output_base / name
-    if not (dataset_dir / "pano_id_mapping.csv").exists() and not args.dry_run:
+    if args.dry_run:
+        osm_specs = (cfg["osm"] if isinstance(cfg["osm"], (list, tuple))
+                     else [cfg["osm"]])
+        print(f"  [DRY RUN] would validate and extract {len(osm_specs)} "
+              f"OSM source(s) for {name}; no cache, network, or dataset I/O")
+        return True
+    if not (dataset_dir / "pano_id_mapping.csv").exists():
         print(f"  ERROR: {dataset_dir}/pano_id_mapping.csv missing — run stage 3 first")
         return False
 
     buffer_km = cfg.get("landmark_buffer_km", args.landmark_buffer_km)
-    if args.dry_run:
-        west = south = east = north = 0.0
-    else:
-        west, south, east, north = bbox_from_dataset(dataset_dir, buffer_km)
+    west, south, east, north = bbox_from_dataset(dataset_dir, buffer_km)
     print(f"  landmark bbox (buffer {buffer_km} km): "
           f"{west:.6f} {south:.6f} {east:.6f} {north:.6f}")
 
@@ -354,84 +384,49 @@ def stage_landmarks(name, cfg, args):
         wanted = spec.split("/")[-1]
         matches = sorted(args.osm_cache_dir.glob(wanted.replace("-latest", "-*")))
         if not matches:
-            if args.dry_run:
-                pbf_paths.append(args.osm_cache_dir / wanted)
-                continue
             print(f"  ERROR: no OSM extract for {spec} in {args.osm_cache_dir} "
                   f"(looked for {wanted.replace('-latest', '-*')})")
             return False
         pbf = matches[-1]
-        size_mb = pbf.stat().st_size / 1e6
-        if size_mb > args.max_pbf_mb and not args.allow_large_pbf:
-            print(f"  ERROR: {pbf.name} is {size_mb:.0f} MB, over the "
-                  f"{args.max_pbf_mb} MB limit. The extractor holds a whole-file "
-                  f"node index in RAM, so this risks an out-of-memory kill "
-                  f"regardless of how small the bbox is.")
-            print(f"  Use a smaller Geofabrik sub-extract covering the bbox "
-                  f"(e.g. europe/united-kingdom/england/kent at 53 MB instead of "
-                  f"europe/united-kingdom at 1925 MB), or pass --allow_large_pbf "
-                  f"if you have verified there is headroom.")
-            return False
         pbf_paths.append(pbf)
 
-    # Pre-flight: a sub-extract that does not reach the whole bbox yields a
-    # partial catalog with no error from the extractor itself. Verified against
-    # Geofabrik .poly clip boundaries, before spending extraction time.
-    # (check_coverage is a package import with a BUILD dep now; the old bare
-    # `from pbf_coverage import check_coverage` never resolved under bazel, so
-    # this gate — the one that catches the 99.6%-catalog-loss case — was
-    # unreachable in exactly the environment the orchestrator runs in.)
+    # Verify the requested bbox against the Geofabrik clip boundaries before
+    # extraction; the extractor itself cannot detect a partial source set.
+    ok, msg, cov_details = check_coverage(
+        osm_specs, (west, south, east, north),
+        cache_dir=args.osm_cache_dir / "poly", pbf_paths=pbf_paths)
+    print(f"  coverage: {'OK' if ok else 'FAIL'} — {msg}")
+    for d in cov_details:
+        if "spec" in d:
+            print(f"    {d['spec'].rsplit('/', 1)[-1]}: "
+                  f"{100*d['covers_frac_of_request']:.1f}% of the request")
+    if not ok:
+        print(f"  ERROR: refusing to build a partial landmark catalog for {name}. "
+              f"Fix the registry's osm list.")
+        return False
     source_coverage = {
-        "schema": "farfield_catalog_source_coverage/v1",
-        "status": "skipped_by_operator",
-        "message": "collection ran with --skip_coverage_check",
-        "details": [],
-        "reference_specs": list(cfg.get("osm_reference") or []),
+        "schema": "farfield_catalog_source_coverage/v2",
+        "status": "passed",
+        "message": msg,
+        "details": cov_details,
     }
-    if not args.skip_coverage_check:
-        ok, msg, cov_details = check_coverage(
-            osm_specs, (west, south, east, north),
-            cache_dir=args.osm_cache_dir / "poly",
-            reference_specs=cfg.get("osm_reference"))
-        print(f"  coverage: {'OK' if ok else 'FAIL'} — {msg}")
-        for d in cov_details:
-            if "spec" in d:
-                print(f"    {d['spec'].rsplit('/', 1)[-1]}: "
-                      f"{100*d['covers_frac_of_request']:.1f}% of the request")
-        if not ok:
-            print(f"  ERROR: refusing to build a partial landmark catalog for {name}. "
-                  f"Fix the registry's osm list, or pass --skip_coverage_check to "
-                  f"accept it.")
-            return False
-        source_coverage = {
-            "schema": "farfield_catalog_source_coverage/v1",
-            "status": "passed",
-            "message": msg,
-            "details": cov_details,
-            "reference_specs": list(cfg.get("osm_reference") or []),
-        }
 
     sources = args.catalog_sources_base / name / args.catalog_version
-    if not args.dry_run:
-        sources.mkdir(parents=True, exist_ok=True)
+    sources.mkdir(parents=True, exist_ok=True)
 
     osm_feathers = []
     for pbf_path in pbf_paths:
-        # Full region name, not the first hyphen-separated token: "new-york" and
-        # "new-jersey" both start with "new", so splitting on "-" gave both source
-        # feathers the same filename and the second silently overwrote the first
-        # (the merge then saw New Jersey twice).
+        # Preserve the full region name so distinct hyphenated regions remain
+        # distinct source identities.
         region = re.sub(r"-\d{6}$", "", pbf_path.name.replace(".osm.pbf", ""))
         out = sources / (f"osm_{name}_{region}_v1" if len(pbf_paths) > 1
                          else f"osm_{name}_v1")
-        # --bbox order is WEST SOUTH EAST NORTH for both extractors (matching
-        # the canonical boston_harbor invocation).
+        # Both extractors require --bbox in WEST SOUTH EAST NORTH order.
         size_mb = pbf_path.stat().st_size / 1e6 if pbf_path.exists() else 0
         ok = run_bazel(
             f"{DATASET_TOOLS}:extract_landmarks_from_osm",
             ["--pbf_file", pbf_path,
              "--bbox", west, south, east, north,
-             "--node_margin_deg", args.node_margin_deg,
              "--output_path", out],
             f"[5 OSM] {name} ({pbf_path.name}, {size_mb:.0f} MB, cap "
             f"{args.extract_mem_cap_gb} GB)", args,
@@ -464,32 +459,49 @@ def stage_landmarks(name, cfg, args):
             source_coverage)
 
     enc_out = sources / f"enc_{name}_v1"
+    selection_output = sources / f"enc_{name}_selection.json"
     ok = run_bazel(
         f"{DATASET_TOOLS}:download_enc_cells",
         ["--catalog_state", cfg["enc_state"],
          "--bbox", west, south, east, north,
-         "--output_dir", args.enc_root],
+         "--band", 5,
+         "--output_dir", args.enc_root,
+         "--selection_output", selection_output],
         f"[5 ENC dl] {name} ({cfg['enc_state']})", args)
     if not ok:
         return False
-
-    # extract_landmarks_from_enc needs explicit cell names; discover what the
-    # download left in the ENC root for this bbox.
-    cells = _cells_for_bbox(args.enc_root, (west, south, east, north), args.dry_run)
+    if args.dry_run:
+        return True
+    try:
+        selection = download_enc_cells.validate_selection(
+            selection_output, args.enc_root)
+    except (OSError, ValueError) as error:
+        print(f"  ERROR: invalid ENC selection record: {error}")
+        return False
+    expected_selection = {
+        "catalog_state": cfg["enc_state"],
+        "bbox": [west, south, east, north],
+        "band": 5,
+        "explicit_cells": False,
+    }
+    disagreements = {
+        key: (selection.get(key), expected)
+        for key, expected in expected_selection.items()
+        if selection.get(key) != expected
+    }
+    if disagreements:
+        print(f"  ERROR: ENC selection disagrees with this invocation: "
+              f"{disagreements}")
+        return False
+    cells = selection["cells"]
     if not cells:
-        print(f"  WARNING: no ENC cells found covering {name}'s bbox; "
-              f"continuing with an OSM-only catalog")
-        if args.dry_run:
-            return True
-        return _finish_landmark_stage(
-            name, osm_out.with_suffix(".feather"), pbf_paths,
-            (west, south, east, north), osm_specs, cfg["enc_state"], False,
-            args, source_coverage)
+        print(f"  ERROR: ENC selection returned no band-5 cells for {name}")
+        return False
     print(f"  ENC cells: {' '.join(cells)}")
 
     ok = run_bazel(
         f"{DATASET_TOOLS}:extract_landmarks_from_enc",
-        ["--enc_root", args.enc_root, "--cells", *cells,
+        ["--enc_root", args.enc_root, "--selection", selection_output,
          "--bbox", west, south, east, north,
          "--dedupe_tolerance_m", args.dedupe_tolerance_m,
          "--output_path", enc_out],
@@ -510,27 +522,11 @@ def stage_landmarks(name, cfg, args):
         return True
     return _finish_landmark_stage(
         name, merged, pbf_paths, (west, south, east, north), osm_specs,
-        cfg["enc_state"], True, args, source_coverage, cells=cells)
-
-
-def _cells_for_bbox(enc_root: Path, bbox, dry_run: bool):
-    """ENC cell names under enc_root whose data covers the bbox.
-
-    download_enc_cells --catalog_state fetches by bbox but does not report which
-    cells it chose, so read them back off disk. Band 5 (harbour) cells are the
-    ones with the landmark detail we want.
-    """
-    if dry_run or not enc_root.exists():
-        return []
-    root = enc_root / "ENC_ROOT"
-    search = root if root.exists() else enc_root
-    return sorted(d.name for d in search.iterdir()
-                  if d.is_dir() and (d / f"{d.name}.000").exists()
-                  and d.name.startswith("US5"))
-
-
+        cfg["enc_state"], True, args, source_coverage, cells=cells,
+        enc_selection=selection_output)
 def _write_provenance(source_dir: Path, name: str, pbf_paths, bbox,
-                      enc_state, merged: bool, args, cells=None, osm_specs=None):
+                      enc_state, merged: bool, args, cells=None, osm_specs=None,
+                      enc_selection: Path | None = None):
     """Record how the loose raw-material catalog sources were produced."""
     provenance.write(
         source_dir,
@@ -547,8 +543,15 @@ def _write_provenance(source_dir: Path, name: str, pbf_paths, bbox,
             "enc_state": enc_state,
             "enc_cells": cells or [],
             "enc_available": bool(merged),
+            "enc_selection": (
+                {
+                    "path": str(enc_selection.resolve()),
+                    "sha256": artifact.sha256_file(enc_selection),
+                }
+                if enc_selection is not None else None
+            ),
             "dedupe_tolerance_m": args.dedupe_tolerance_m,
-            "node_margin_deg": args.node_margin_deg,
+            "osm_preextract_strategy": "smart",
         },
         notes=("OSM+ENC merged catalog" if merged else
                "OSM-only catalog: NOAA ENC covers US waters only, so fixed "
@@ -575,24 +578,73 @@ def stage_pinhole(name, cfg, args):
     # Pinhole faces are a versioned artifact (artifacts/pinhole_images/<name>/
     # <version>/ + manifest.json), not part of the frozen dataset contract.
     out_dir = args.pinhole_base / name / args.pinhole_version
-    ok = run_bazel(
-        f"{SCRIPTS}:panorama_to_pinhole",
-        [dataset_dir / "panorama", out_dir,
-         "--num_workers", args.convert_workers,
-         "--res_x", args.pinhole_res],
-        f"[6 PINHOLE] {name}", args)
-    if ok and not args.dry_run:
-        provenance.write(
-            out_dir,
-            generator=f"{SCRIPTS}:panorama_to_pinhole "
-                      "(collection stage 6)",
-            inputs={"panorama": (dataset_dir / "panorama").resolve()},
-            config={"faces": ["yaw_000", "yaw_090", "yaw_180", "yaw_270"],
-                    "res_x": args.pinhole_res},
-            extra={"kind": "pinhole_images", "dataset": name,
-                   "version": args.pinhole_version},
-        )
-    return ok
+    staging_dir = out_dir.with_name(out_dir.name + artifact.INCOMPLETE_SUFFIX)
+    if args.dry_run:
+        return run_bazel(
+            f"{SCRIPTS}:panorama_to_pinhole",
+            [dataset_dir / "panorama", staging_dir,
+             "--num_workers", args.convert_workers,
+             "--res_x", args.pinhole_res],
+            f"[6 PINHOLE] {name}", args)
+
+    try:
+        source_digests = paths_lib.dataset_source_digests(dataset_dir)
+        panorama_files = sorted((dataset_dir / "panorama").glob("*.jpg"))
+        if not panorama_files:
+            raise ValueError(
+                f"{dataset_dir / 'panorama'} contains no panorama JPEGs")
+        panorama_keys = [path.stem for path in panorama_files]
+        declared_outputs = paths_lib.pinhole_declared_outputs(panorama_keys)
+        config = paths_lib.pinhole_manifest_config(
+            source_digests, resolution=args.pinhole_res,
+            panorama_keys=panorama_keys)
+        with publication.published_artifact(
+                out_dir,
+                kind=paths_lib.PINHOLE_IMAGES,
+                dataset=name,
+                version=args.pinhole_version,
+                generator=f"{SCRIPTS}:panorama_to_pinhole "
+                          "(collection stage 6)",
+                git_commit=provenance.git_commit(),
+                config=config,
+                declared_outputs=declared_outputs) as builder:
+            if not run_bazel(
+                    f"{SCRIPTS}:panorama_to_pinhole",
+                    [dataset_dir / "panorama", builder.path,
+                     "--num_workers", args.convert_workers,
+                     "--res_x", args.pinhole_res],
+                    f"[6 PINHOLE] {name}", args):
+                raise RuntimeError("panorama-to-pinhole subprocess failed")
+            for relative in declared_outputs:
+                output = builder.path / relative
+                if output.is_symlink() or not output.is_file():
+                    raise ValueError(
+                        f"pinhole renderer omitted regular output {relative}")
+                try:
+                    with Image.open(output) as image:
+                        image.load()
+                        if image.format != "JPEG":
+                            raise ValueError(
+                                f"pinhole output is not JPEG: {relative}")
+                        if image.size != (args.pinhole_res,
+                                          args.pinhole_res):
+                            raise ValueError(
+                                f"pinhole output {relative} has size "
+                                f"{image.size}, expected "
+                                f"{(args.pinhole_res, args.pinhole_res)}")
+                except OSError as exc:
+                    raise ValueError(
+                        f"pinhole output is not decodable: {relative}") from exc
+            if paths_lib.dataset_source_digests(dataset_dir) != source_digests:
+                raise ValueError(
+                    "dataset source bytes changed during pinhole rendering")
+    except (artifact.ArtifactError, OSError, RuntimeError, ValueError,
+            paths_lib.MissingInput,
+            publication.PublicationValidationError) as exc:
+        print(f"  ERROR: failed to publish pinhole artifact {out_dir}: {exc}")
+        return False
+    print(f"  published pinhole artifact: {out_dir}")
+    return True
 
 
 def stage_trim(name, cfg, args):
@@ -664,8 +716,7 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--trajectories", required=True,
                    help="'all', 'pilot', 'pano', 'perspective', or "
-                        "comma-separated registry names (the old default was "
-                        "'pilot')")
+                        "comma-separated registry names")
     p.add_argument("--stages", default=",".join(map(str, DEFAULT_STAGES)),
                    help="Comma-separated stage numbers (default: all stages)")
 
@@ -700,65 +751,49 @@ def main(argv=None) -> int:
                         "<farfield_root>/artifacts/pinhole_images)")
     p.add_argument("--osm_cache_dir", type=Path, required=True,
                    help="Directory of downloaded Geofabrik .osm.pbf extracts; "
-                        ".poly boundaries cache under <osm_cache_dir>/poly "
-                        "(the old hardcoded location was ~/scratch/"
-                        "osm_downloads)")
+                        ".poly boundaries cache under <osm_cache_dir>/poly")
     p.add_argument("--enc_root", type=Path, required=True,
                    help="NOAA ENC cell root used by download_enc_cells / "
-                        "extract_landmarks_from_enc (the old hardcoded "
-                        "location was /data/overhead_matching/datasets/"
-                        "enc_cells)")
+                        "extract_landmarks_from_enc")
 
-    # Stage 1-3 parameters (assumption-carrying: required, old values quoted).
+    # Stage 1-3 result-shaping parameters are explicit and required.
     p.add_argument("--stitch_time", type=float, required=True,
-                   help="Max seam time gap in seconds (the old default was 300)")
+                   help="Maximum seam time gap in seconds")
     p.add_argument("--stitch_dist", type=float, required=True,
-                   help="Max seam spatial gap floor in meters (the old default "
-                        "was 100)")
+                   help="Maximum seam spatial-gap floor in metres")
     p.add_argument("--window_hours", type=float, required=True,
-                   help="Sibling-sequence capture-time window (the old default "
-                        "was 36)")
+                   help="Sibling-sequence capture-time window in hours")
     p.add_argument("--max_width", type=int, required=True,
                    help="Cap on stored image width, also the convert resize; "
-                        "0 disables (the old default was 4096)")
+                        "0 disables")
     p.add_argument("--min_spacing_m", type=float, required=True,
                    help="Drop frames closer than this along the track at "
                         "download time. These are mostly video extractions at "
                         "1-30 fps, so consecutive frames are metres apart and "
-                        "often share a GPS fix outright. On the Folkestone "
-                        "crossing 5 m takes 10711 frames to 399 with no loss "
-                        "of distinct positions (the old default was 5)")
+                        "often share a GPS fix outright")
     p.add_argument("--jpeg_quality", type=int, required=True,
-                   help="JPEG quality for stored frames (the old default was 95)")
+                   help="JPEG quality for stored frames")
     p.add_argument("--heading_source", choices=("auto", "computed", "compass"),
                    required=True,
-                   help="Heading source for the converter (the old default "
-                        "was 'auto')")
+                   help="Heading source for the converter")
     p.add_argument("--max_heading_error_deg", type=float, required=True,
-                   help="Converter heading-reliability gate (the old default "
-                        "was 10)")
+                   help="Converter heading-reliability gate in degrees")
     p.add_argument("--max_perspective_offset_std_deg", type=float, required=True,
-                   help="Converter hand-held-vs-fixed-mount report threshold "
-                        "(the old default was 45)")
+                   help="Converter hand-held-vs-fixed-mount report threshold")
     p.add_argument("--max_heading_source_disagreement_deg", type=float,
                    required=True,
-                   help="Converter SfM-vs-magnetometer warning threshold (the "
-                        "old default was 25)")
+                   help="Converter SfM-vs-magnetometer warning threshold")
 
     # Stage 5-8 parameters.
     p.add_argument("--pinhole_res", type=int, required=True,
-                   help="Pinhole face resolution (the old default was 2048, "
-                        "matching boston_harbor_leg1)")
+                   help="Pinhole face resolution")
     p.add_argument("--pinhole_version", required=True,
-                   help="Version directory name under the pinhole artifact "
-                        "lane (the old code hardcoded 'v1')")
+                   help="Version directory under the pinhole artifact lane")
     p.add_argument("--landmark_buffer_km", type=float, required=True,
                    help="Buffer around the trajectory for the landmark "
                         "catalog; per-trajectory registry overrides win. Large "
-                        "by design: far-field landmarks on water are visible "
-                        "well beyond the track — from a ferry deck the sea "
-                        "horizon is ~11 km but a 100 m cliff or harbour crane "
-                        "stays visible 30-40 km out (the old default was 25)")
+                        "by design because elevated far-field landmarks can be "
+                        "visible well beyond the track")
     p.add_argument("--catalog_version", required=True,
                    help="Full typed CATALOGS version published by stage 5")
     p.add_argument("--trimmed_catalog_version", required=True,
@@ -767,24 +802,13 @@ def main(argv=None) -> int:
                    help="Typed catalog_coverage version published by stage 8")
     p.add_argument("--dedupe_tolerance_m", type=float, required=True,
                    help="Merge identical-tag features whose geometries touch "
-                        "within this distance (the old default was 10, as "
-                        "used for boston_harbor)")
-    p.add_argument("--node_margin_deg", type=float, required=True,
-                   help="Bound the extractor's way-geometry node index to "
-                        "bbox + this margin. This is what makes a national "
-                        "extract cheap: whole France goes from 28 GB and "
-                        "climbing to 3.0 GB, at the cost of a couple of "
-                        "multipolygons whose rings cross the margin. Required "
-                        "and forwarded verbatim: -1 explicitly retains the "
-                        "full index; a nonnegative value selects bounded mode "
-                        "(the old default was 0.1, ~11 km)")
+                        "within this distance")
     p.add_argument("--trim_min_building_area_m2", type=float, required=True,
                    help="Stage-7 trim: drop untagged buildings smaller than "
-                        "this footprint (the old, Boston-tuned default was "
-                        "2000)")
+                        "this footprint")
     p.add_argument("--trim_min_building_levels", type=float, required=True,
                    help="Stage-7 trim: keep small buildings only at/above "
-                        "this many levels (the old, Boston-tuned default was 6)")
+                        "this many levels")
     p.add_argument("--trim_confidence_floor", type=float, default=0.5,
                    help="Stage-7 optional matched-result guard: ignore matches "
                         "below this confidence (default 0.5)")
@@ -796,23 +820,21 @@ def main(argv=None) -> int:
                    help="Schema-v2 landmark_positive_set.py output that "
                         "trim_catalog must retain (optional)")
     p.add_argument("--coverage_grid_cells", type=int, required=True,
-                   help="Stage-8 square density-grid resolution (old value 24)")
+                   help="Stage-8 square density-grid resolution")
     p.add_argument("--coverage_max_empty_run", type=int, required=True,
-                   help="Stage-8 failing interior empty-band run length "
-                        "(old value 6)")
+                   help="Stage-8 failing interior empty-band run length")
     p.add_argument("--coverage_empty_fraction_warning", type=float,
                    required=True,
                    help="Stage-8 warning threshold for the empty grid "
-                        "fraction (old value 0.9)")
+                        "fraction")
     p.add_argument("--coverage_far_range_km", type=float, required=True,
-                   help="Stage-8 distance defining the far-field tail "
-                        "(old value 5)")
+                   help="Stage-8 distance defining the far-field tail")
     p.add_argument("--coverage_min_far_fraction", type=float, required=True,
                    help="Stage-8 warning threshold for the fraction beyond "
-                        "the far-range distance (old value 0.02)")
+                        "the far-range distance")
     p.add_argument("--coverage_max_track_samples", type=int, required=True,
                    help="Stage-8 deterministic trajectory sample cap used by "
-                        "distance calculations (old value 400)")
+                        "distance calculations")
 
     # Mechanical knobs and guards.
     p.add_argument("--workers", type=int, default=8)
@@ -826,19 +848,9 @@ def main(argv=None) -> int:
                         "Recommended when running many trajectories: the "
                         "staged originals are ~15x larger than the stored "
                         "result")
-    p.add_argument("--force", action="store_true",
-                   help="Redo stage 1 even if a manifest already exists")
-    p.add_argument("--max_pbf_mb", type=int, default=MAX_PBF_MB,
-                   help=f"Refuse OSM extracts larger than this; the extractor "
-                        f"indexes the whole file in RAM (default: {MAX_PBF_MB})")
-    p.add_argument("--allow_large_pbf", action="store_true",
-                   help="Override the PBF size limit (verify memory headroom first)")
     p.add_argument("--extract_mem_cap_gb", type=int, default=EXTRACT_MEM_CAP_GB,
                    help=f"Hard cgroup memory ceiling for landmark extraction; 0 "
                         f"disables (default: {EXTRACT_MEM_CAP_GB})")
-    p.add_argument("--skip_coverage_check", action="store_true",
-                   help="Proceed even if the OSM extracts do not cover the bbox "
-                        "(builds a knowingly partial landmark catalog)")
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args(argv)
 
@@ -886,7 +898,13 @@ def main(argv=None) -> int:
         print(f"{name}  [{'360' if cfg['pano'] else 'perspective'}]  {cfg['note']}")
         print("=" * 74)
         for s in stages:
-            if not STAGES[s](name, cfg, args):
+            try:
+                completed = STAGES[s](name, cfg, args)
+            except Exception as exc:
+                print(f"  FAILED ({type(exc).__name__}: {exc}): "
+                      f"stage {s} for {name}")
+                completed = False
+            if not completed:
                 failures.append((name, s))
                 print(f"  stopping {name} at stage {s}")
                 break

@@ -4,12 +4,9 @@ One place that owns everything the measurement update needs to know about
 landmarks, so ids and coordinates cannot drift out of sync and the candidate
 prior w_j and kappa_eff have a single home (design doc §4/§5.3).
 
-`max_visible_range_m` is REQUIRED. It used to default (10 km here, while the
-replay fallback claimed 15 km), and that pair of silent numbers made every
-synthetic run non-replayable: the radius decides which positions the proposal
-thinks a landmark could have been seen from, so a guessed value changes the
-hypotheses, the injections, and the belief. Producers pass it explicitly and
-record it in the run manifest; replay reads the record.
+`max_visible_range_m` is required because it determines which positions the
+proposal considers visible and therefore shapes hypotheses, injections, and
+the belief. Producers record the resolved value; replay reads that record.
 """
 
 import numpy as np
@@ -36,6 +33,9 @@ class LandmarkCatalog:
             raise ValueError(
                 f"catalog arrays disagree with ids: {n} ids, "
                 f"{self.east_m.shape} east, {self.north_m.shape} north")
+        if (not np.all(np.isfinite(self.east_m))
+                or not np.all(np.isfinite(self.north_m))):
+            raise ValueError("catalog coordinates must be finite")
         self._index = {lid: i for i, lid in enumerate(self.landmark_ids)}
         if len(self._index) != n:
             raise ValueError("duplicate landmark_id in catalog")
@@ -56,19 +56,17 @@ class LandmarkCatalog:
 
         if max_visible_range_m is None:
             raise ValueError(
-                "max_visible_range_m is required — there is no default on "
-                "purpose: a guessed radius silently changes the proposal's "
-                "hypotheses. Pass the value the run records in its manifest.")
+                "max_visible_range_m is required because it shapes proposal "
+                "hypotheses; pass the value recorded in the run manifest")
         self.max_visible_range_m = np.broadcast_to(
             np.asarray(max_visible_range_m, dtype=np.float64), (n,)).copy()
-        if np.any(self.max_visible_range_m <= 0.0):
-            raise ValueError("max_visible_range_m must be positive")
+        if (not np.all(np.isfinite(self.max_visible_range_m))
+                or np.any(self.max_visible_range_m <= 0.0)):
+            raise ValueError("max_visible_range_m must be finite and positive")
 
         if log_prior is None:
-            # Uniform over the whole catalog. NOTE: until per-particle
-            # spatial gating lands (§5.3 `cand(x)`), this couples the
-            # posterior to catalog size — a bigger catalog dilutes every
-            # candidate against the fixed null.
+            # Uniform over the whole catalog; candidate mass therefore scales
+            # inversely with catalog size against the fixed null.
             self.log_prior = np.full(n, -np.log(n)) if n else np.zeros(0)
         else:
             self.log_prior = np.asarray(log_prior, dtype=np.float64)

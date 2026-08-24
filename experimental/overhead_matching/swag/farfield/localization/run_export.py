@@ -6,11 +6,12 @@ from that build config; there are no per-run scientific overrides.
 
 Reads the export's Tier-1 inputs, runs the filter, writes a run directory
 that the plots and viewer consume unchanged, and reports the two things a
-GPS-supervised export can honestly support: **bearing residuals** against the
-filter's own pose, and **association posteriors**. Final position error is
-printed but is not the figure of merit here — when odometry is GPS and the
-candidates were selected using GPS, dead reckoning alone nearly solves the
-leg, so a small position error demonstrates very little.
+GPS-supervised export can honestly support: **posterior-predictive bearing
+diagnostics** against the filter's own pose, and **association posteriors**.
+Those residuals are model checks, not correctness labels. Final position error
+is printed but is not the figure of merit here — when odometry is GPS and the
+candidates were selected using GPS, dead reckoning alone nearly solves the leg,
+so a small position error demonstrates very little.
 
 Only uniform-prior runs that actually consume bearings are evaluations.
 Truth initialization and odometry-only executions are diagnostic controls.
@@ -20,7 +21,6 @@ control writes empty measurement/table files, matching the run that happened.
 """
 
 import argparse
-import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,48 +30,42 @@ import numpy as np
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     build_config,
-    geometry as geo,
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.localization import (
     export_ingest,
-    filter as pf,
     metrics,
-    run_io,
+    run_identity,
+    runner,
     structs,
 )
 
 
-def bearing_residuals(data: export_ingest.ExportData, health: list):
-    """Angle between each measured bearing and the direction to its
-    best-associated landmark, under the filter's own pose estimate.
-
-    This is the metric that survives GPS supervision: it asks whether the
-    bearings, the mount offset, the catalog and the pose are mutually
-    consistent, which no amount of good odometry can fake.
-    """
-    residuals, records = [], []
-    for record in health:
-        for assoc in record.associations:
-            if assoc.mode_id is not None or not assoc.responsibilities:
-                continue  # whole-belief posterior only
-            landmark_id = max(assoc.responsibilities,
-                              key=assoc.responsibilities.get)
-            share = assoc.responsibilities[landmark_id]
-            index = data.catalog.index_of(landmark_id)
-            meas = next(m for m in data.measurements
-                        if m.tracklet_id == assoc.tracklet_id
-                        and m.anchor_keyframe_idx == record.keyframe_idx)
-            predicted = geo.compass_bearing_rad(
-                data.catalog.east_m[index] - record.mean_east_m,
-                data.catalog.north_m[index] - record.mean_north_m)
-            residual = abs(math.degrees(float(geo.wrap_rad(
-                predicted - math.radians(record.mean_heading_deg)
-                - math.radians(meas.bearing_forward_cw_deg)))))
-            residuals.append(residual)
-            records.append((record.keyframe_idx, assoc.tracklet_id,
-                            landmark_id, share, residual))
-    return np.array(residuals), records
+def _print_bearing_diagnostics(diagnostics) -> None:
+    print("\n--- posterior-predictive bearing model diagnostics ---")
+    print("(signed residuals; selected associations are not correctness labels)")
+    for mode_specific in (False, True):
+        scope = "mode-specific" if mode_specific else "whole-belief"
+        scoped = [
+            record for record in diagnostics
+            if (record.mode_id is not None) == mode_specific
+        ]
+        for null_dominated in (False, True):
+            label = "null-dominated" if null_dominated else "landmark-dominated"
+            values = np.array([
+                record.signed_residual_deg for record in scoped
+                if record.null_dominated == null_dominated
+                and record.signed_residual_deg is not None
+            ], dtype=np.float64)
+            count = sum(record.null_dominated == null_dominated
+                        for record in scoped)
+            if values.size:
+                print(f"{scope}, {label}: n={count}, signed median "
+                      f"{np.median(values):+.2f} deg, |residual| median "
+                      f"{np.median(np.abs(values)):.2f} deg, p90 "
+                      f"{np.percentile(np.abs(values), 90):.1f} deg")
+            else:
+                print(f"{scope}, {label}: n={count}, no named-landmark residual")
 
 
 def _flatten(value: dict, prefix: str = "") -> dict:
@@ -135,17 +129,20 @@ def _filter_config(localization: dict,
     init_kind = localization["init"]
     if init_kind == "uniform":
         init = export_ingest.region_box(data, localization["margin_m"])
-    else:
+    elif init_kind == "truth_position":
         if not data.truth:
             raise ValueError(
-                "truth initialization requires diagnostic GPS-course truth")
+                "truth_position init requires diagnostic position truth")
         sigma = localization["prior_sigma_m"]
         if sigma is None or sigma <= 0.0:
             raise ValueError(
-                "truth initialization requires a positive prior_sigma_m")
+                "truth_position init requires a positive prior_sigma_m")
         start = data.truth[0]
         init = structs.GaussianInit(
             start.east_m, start.north_m, sigma)
+    else:
+        raise ValueError(
+            "localization init must be 'uniform' or 'truth_position'")
     proposal = structs.ProposalConfig(**localization["proposal"])
     modes = structs.ModeConfig(**localization["modes"])
     return structs.FilterConfig(
@@ -172,6 +169,21 @@ def _filter_config(localization: dict,
         modes=modes)
 
 
+def _classification(localization: dict) -> tuple[str, list[str]]:
+    tags = set(localization.get("ablation_tags", []))
+    if not localization["bearings_enabled"]:
+        tags.add("no_bearings")
+    if localization["init"] == "truth_position":
+        tags.add("truth_position_initialization")
+    if not localization["proposal"]["enabled"]:
+        tags.add("proposal_disabled")
+    run_kind = ("evaluation"
+                if localization["init"] == "uniform"
+                and localization["bearings_enabled"] and not tags
+                else "diagnostic_control")
+    return run_kind, sorted(tags)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -186,9 +198,11 @@ def main():
         document, orchestration = _load_config(
             args.build_config, data, args.orchestration_config_digest)
         localization = document["config"]["localization"]
-        if args.run_dir.name != localization["run_name"]:
+        run_version = run_identity.from_build_document(document)
+        if args.run_dir.name != run_version:
             raise ValueError(
-                "--run_dir basename disagrees with localization.run_name")
+                "--run_dir basename disagrees with the immutable localization "
+                f"run identity {run_version!r}")
         filter_config = _filter_config(localization, data)
     except (artifact.ArtifactError, OSError, ValueError) as error:
         parser.error(str(error))
@@ -207,15 +221,18 @@ def main():
     bearings_consumed = localization["bearings_enabled"]
     measurements = data.measurements if bearings_consumed else []
     tables = data.tables if bearings_consumed else {}
-    history = pf.run_filter(filter_config, data.catalog, data.odometry,
-                            measurements, tables)
+    run_kind, ablation_tags = _classification(localization)
+    metric_config = (
+        metrics.position_mass_metric_config(
+            localization["position_mass_radii_m"])
+        if data.truth else None)
+    truth_source = data.artifact_ref.to_dict() if data.truth else None
 
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION,
         dataset=data.meta.dataset,
         scenario_name=data.meta.scenario_name,
-        run_kind=("evaluation" if localization["init"] == "uniform"
-                  and bearings_consumed else "diagnostic_control"),
+        run_kind=run_kind,
         initialization_kind=localization["init"],
         bearings_consumed=bearings_consumed,
         proposal_enabled=filter_config.proposal.enabled,
@@ -226,26 +243,31 @@ def main():
         n_keyframes=data.n_keyframes,
         filter_config=filter_config,
         landmarks=data.landmarks,
-        matcher_version=(f"{data.meta.matcher_version} (bearings withheld)"
-                         if not bearings_consumed
-                         else data.meta.matcher_version),
+        matcher_version=data.meta.matcher_version,
         max_visible_range_m=data.meta.max_visible_range_m,
         export_dir=str(args.input_dir),
         git_commit=provenance.git_commit(),
         argv=list(sys.argv),
         created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        particle_history_sha256=history.particle_history_sha256)
-    # The artifact records exactly what the filter consumed.  In particular,
-    # an odometry control contains no measurements or compatibility tables.
-    run_io.write_run(
-        args.run_dir, manifest, data.truth, data.odometry, measurements,
-        tables, history, dataset=data.meta.dataset,
-        version=localization["run_name"], upstreams=(data.artifact_ref,),
+        ablation_tags=ablation_tags,
+        truth_position_artifact=truth_source,
+        truth_position_schema=(
+            runner.TRUTH_POSITION_SCHEMA if data.truth else None),
+        position_mass_metric=metric_config)
+    # The artifact records exactly what the filter consumed. An odometry-only
+    # control therefore contains no measurements or compatibility tables.
+    result = runner.execute_localization(
+        args.run_dir, manifest, catalog=data.catalog, truth=data.truth,
+        odometry=data.odometry, measurements=measurements, tables=tables,
+        dataset=data.meta.dataset, version=run_version,
+        upstreams=(data.artifact_ref,),
         artifact_config={
             "orchestration": orchestration,
             "build_identity": document["build_identity"],
+            "object_tracks_version": document["config"]["artifacts"][
+                "object_tracks_version"],
             "localization": localization,
-            "run_kind": manifest.run_kind,
+            "run_identity": run_version,
             "localization_inputs_manifest_sha256": (
                 data.artifact_ref.manifest_digest),
             "build_config_sha256": artifact.sha256_file(args.build_config),
@@ -253,21 +275,8 @@ def main():
         generator="//experimental/overhead_matching/swag/farfield/"
                   "localization:run_export",
         arguments=tuple(sys.argv))
-
-    print("\n--- bearing residuals (filter pose vs. best-associated "
-          "landmark) ---")
-    residuals, records = bearing_residuals(data, history.health)
-    if residuals.size:
-        print(f"n={residuals.size}  median {np.median(residuals):.2f} deg  "
-              f"p90 {np.percentile(residuals, 90):.1f} deg  "
-              f"<5 deg {np.mean(residuals < 5) * 100:.0f}%  "
-              f"<15 deg {np.mean(residuals < 15) * 100:.0f}%  "
-              f">60 deg {np.mean(residuals > 60) * 100:.0f}%")
-        worst = sorted(records, key=lambda r: -r[4])[:5]
-        print("worst:", ", ".join(
-            f"kf{kf} {trk}->{lm} {res:.0f}deg(p={share:.2f})"
-            for kf, trk, lm, share, res in worst))
-
+    history = result.history
+    _print_bearing_diagnostics(result.bearing_diagnostics)
     print("\n--- association posteriors ---")
     nulls = [a.null_share for r in history.health for a in r.associations
              if a.mode_id is None]

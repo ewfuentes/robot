@@ -36,6 +36,20 @@ class ConstructionTest(unittest.TestCase):
             filter_catalog.LandmarkCatalog(
                 ["a", "b"], [0.0], [0.0, 1.0], max_visible_range_m=1000.0)
 
+    def test_coordinates_and_visible_range_must_be_finite(self):
+        for east, north in ((float("nan"), 0.0),
+                            (0.0, float("inf"))):
+            with self.subTest(east=east, north=north):
+                with self.assertRaisesRegex(ValueError, "coordinates"):
+                    filter_catalog.LandmarkCatalog(
+                        ["a"], [east], [north], max_visible_range_m=1000.0)
+        for visible_range in (float("nan"), float("inf"), 0.0, -1.0):
+            with self.subTest(visible_range=visible_range):
+                with self.assertRaisesRegex(ValueError, "finite and positive"):
+                    filter_catalog.LandmarkCatalog(
+                        ["a"], [0.0], [1.0],
+                        max_visible_range_m=visible_range)
+
     def test_position_sigma_is_one_uniform_finite_value(self):
         with self.assertRaisesRegex(ValueError, "uniform recorded value"):
             make_catalog(position_sigma_m=[10.0, 20.0, 10.0])

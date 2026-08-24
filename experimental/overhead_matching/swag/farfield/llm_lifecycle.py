@@ -661,7 +661,7 @@ def compile_canonical_results(request_set: RequestSet,
                               ) -> tuple[CanonicalResult, ...]:
     """Select exactly one valid success for each expected request, in order.
 
-    Failed or malformed historical attempts may be retried because the log is
+    Failed or malformed prior attempts may be retried because the log is
     append-only.  A unit is publishable only when it has exactly one successful
     response accepted by ``validator``.  Multiple valid successes are
     ambiguous and therefore rejected rather than selected by file order.

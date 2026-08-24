@@ -23,12 +23,8 @@ so the environment is at least identifiable.
 a run directory that cannot name its inputs is worse than no run directory,
 because every downstream consumer treats what is written here as true.
 
-This module was called `run_log.py` and sat one underscore away from the
-`runlog` forensics CLI; renamed so the I/O library and the CLI cannot be
-confused again.
-
-The JSONL helpers (`read_jsonl` / `write_jsonl`) are public: they were
-re-implemented five times across the old package.
+The JSONL helpers (`read_jsonl` / `write_jsonl`) are the shared run-record
+serialization boundary.
 """
 
 import dataclasses
@@ -205,6 +201,8 @@ def _manifest_contract(manifest: structs.RunManifest) -> dict[str, Any]:
             "initialization_kind", "bearings_consumed", "proposal_enabled",
             "localization_inputs_manifest_sha256", "n_keyframes",
             "filter_config", "matcher_version", "max_visible_range_m",
+            "ablation_tags", "truth_position_artifact",
+            "truth_position_schema", "position_mass_metric",
         )
     }
 
@@ -241,6 +239,60 @@ def validate_manifest(manifest: structs.RunManifest) -> None:
                         "or synthetic")
     if not manifest.initialization_kind:
         problems.append("initialization_kind is empty")
+    tags = manifest.ablation_tags
+    if (tags != sorted(set(tags))
+            or any(not isinstance(tag, str) or not tag for tag in tags)):
+        problems.append("ablation_tags must be sorted unique non-empty strings")
+    if not manifest.bearings_consumed and "no_bearings" not in tags:
+        problems.append(
+            "a bearings-withheld control must carry ablation tag no_bearings")
+    if manifest.bearings_consumed and "no_bearings" in tags:
+        problems.append("no_bearings tag disagrees with bearings_consumed")
+    if manifest.initialization_kind == "truth":
+        problems.append(
+            "initialization_kind 'truth' is ambiguous; use 'truth_position'")
+    if (manifest.initialization_kind == "truth_position"
+            and "truth_position_initialization" not in tags):
+        problems.append(
+            "truth_position initialization must carry its explicit ablation tag")
+    if ("truth_position_initialization" in tags
+            and manifest.initialization_kind != "truth_position"):
+        problems.append(
+            "truth_position_initialization tag disagrees with initialization")
+    if manifest.run_kind == "evaluation" and tags:
+        problems.append("evaluation runs cannot carry ablation_tags")
+    if manifest.run_kind == "evaluation" and (
+            manifest.initialization_kind != "uniform"
+            or not manifest.bearings_consumed):
+        problems.append(
+            "evaluation classification requires uniform init and bearings")
+    truth_schema = manifest.truth_position_schema
+    if truth_schema is not None and (
+            not isinstance(truth_schema, str) or not truth_schema):
+        problems.append("truth_position_schema must be null or non-empty")
+    truth_source = manifest.truth_position_artifact
+    if truth_source is not None and (
+            not isinstance(truth_source, dict)
+            or not truth_source
+            or any(not isinstance(key, str) or not key
+                   or not isinstance(value, str) or not value
+                   for key, value in truth_source.items())):
+        problems.append(
+            "truth_position_artifact must contain non-empty string fields")
+    metric_config = manifest.position_mass_metric
+    if metric_config is not None:
+        if not metric_config.metric_id or not metric_config.metric_version:
+            problems.append("position_mass_metric identity/version is empty")
+        radii = metric_config.radii_m
+        if (not radii or radii != sorted(set(radii))
+                or any(not math.isfinite(radius) or radius <= 0.0
+                       for radius in radii)):
+            problems.append(
+                "position_mass_metric radii must be finite, positive, sorted, "
+                "and unique")
+        if not truth_schema:
+            problems.append(
+                "position_mass_metric requires truth_position_schema")
     if (isinstance(manifest.n_keyframes, bool)
             or not isinstance(manifest.n_keyframes, int)
             or manifest.n_keyframes < 2):
@@ -294,6 +346,15 @@ def validate_manifest(manifest: structs.RunManifest) -> None:
            or not -180.0 <= landmark.lon_deg <= 180.0
            for landmark in manifest.landmarks):
         problems.append("landmark latitude/longitude is out of bounds")
+    for landmark in manifest.landmarks:
+        east = landmark.hull_east_m
+        north = landmark.hull_north_m
+        if len(east) != len(north):
+            problems.append(
+                f"landmark {landmark.landmark_id!r} hull arrays differ in length")
+        elif len(east) == 1:
+            problems.append(
+                f"landmark {landmark.landmark_id!r} hull has only one vertex")
     _finite_tree(manifest, "run_manifest", problems)
     if problems:
         raise ValueError("run manifest fails provenance validation:\n  - "
@@ -381,6 +442,31 @@ def _validate_payloads(manifest: structs.RunManifest, truth: list,
     health_indices = [record.keyframe_idx for record in health]
     if health_indices != expected_health:
         problems.append("health keyframes must be contiguous 0..N-1")
+    metric_config = manifest.position_mass_metric
+    if metric_config is None:
+        if any(record.position_probability_mass for record in health):
+            problems.append(
+                "health records contain position mass without metric config")
+    else:
+        expected_metric_keys = {
+            f"{metric_config.metric_id}@{metric_config.metric_version}:"
+            f"radius_m={float(radius):g}"
+            for radius in metric_config.radii_m
+        }
+        if not truth:
+            problems.append(
+                "position-mass metric config requires truth positions")
+        for record in health:
+            values = record.position_probability_mass
+            if set(values) != expected_metric_keys:
+                problems.append(
+                    f"health keyframe {record.keyframe_idx} does not contain "
+                    "every configured position-mass metric exactly once")
+            elif any(not math.isfinite(value) or not 0.0 <= value <= 1.0
+                     for value in values.values()):
+                problems.append(
+                    f"health keyframe {record.keyframe_idx} has invalid "
+                    "position probability mass")
     expected_odometry = list(range(1, manifest.n_keyframes))
     odometry_indices = [record.keyframe_idx for record in odometry]
     if odometry_indices != expected_odometry:
@@ -545,6 +631,12 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
         "run_kind": manifest.run_kind,
         "localization_inputs_manifest_sha256": (
             manifest.localization_inputs_manifest_sha256),
+        "ablation_tags": list(manifest.ablation_tags),
+        "truth_position_artifact": manifest.truth_position_artifact,
+        "truth_position_schema": manifest.truth_position_schema,
+        "position_mass_metric": (
+            None if manifest.position_mass_metric is None
+            else msgspec.to_builtins(manifest.position_mass_metric)),
     }
     for key, value in managed_config.items():
         if key in artifact_config and artifact_config[key] != value:
@@ -644,7 +736,13 @@ def read_run(run_dir: Path) -> RunData:
     for key, expected in (
             ("run_kind", manifest.run_kind),
             ("localization_inputs_manifest_sha256",
-             manifest.localization_inputs_manifest_sha256)):
+             manifest.localization_inputs_manifest_sha256),
+            ("ablation_tags", list(manifest.ablation_tags)),
+            ("truth_position_artifact", manifest.truth_position_artifact),
+            ("truth_position_schema", manifest.truth_position_schema),
+            ("position_mass_metric", (
+                None if manifest.position_mass_metric is None
+                else msgspec.to_builtins(manifest.position_mass_metric)))):
         if artifact_manifest.config.get(key) != expected:
             raise ValueError(
                 f"artifact config {key!r} disagrees with RunManifest")

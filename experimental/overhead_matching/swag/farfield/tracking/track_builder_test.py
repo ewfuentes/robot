@@ -219,6 +219,46 @@ class TrackBuilderTest(unittest.TestCase):
         self.assertIn("birth_", builder.tracks[0].close_reason)
         self.assertEqual(len(builder.rejected_births), 1)
 
+    def test_birth_record_serializes_mask_geometry(self):
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good])
+        obs = FakeObs("f0000__lm0__box0")
+        builder.seed_unassigned(
+            0, [obs], {obs.obs_id: centered_pano_box(1000, 1920, 40, 80)})
+        builder.step(0, crops_fn_factory(builder), [], {})
+        birth = builder.tracks[0].records[0]
+        self.assertEqual(birth["mask_area"], 40 * 80)
+        self.assertEqual(birth["mask_bbox_window"], [108, 88, 147, 167])
+        self.assertEqual(birth["supports"], [])
+
+    def test_empty_initial_frame_still_seeds_next_keyframe(self):
+        _, builder = self._mk([])
+        obs = FakeObs("f0001__lm0__box0")
+        box = centered_pano_box(1000, 1920, 40, 80)
+        builder.step(0, crops_fn_factory(builder), [obs], {obs.obs_id: box})
+        self.assertEqual(len(builder.tracks), 1)
+        self.assertEqual(builder.tracks[0].birth_keyframe, 1)
+
+    def test_all_unusable_tracks_still_seed_later_detection(self):
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good])
+        first = FakeObs("f0000__lm0__box0")
+        box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(0, [first], {first.obs_id: box})
+        builder.step(0, crops_fn_factory(builder), [], {})
+        track = builder.tracks[0]
+        track.prompt_box = None
+        track.prompt_mask = np.zeros_like(good)
+        track._mask_origin = track.last_origin
+
+        later = FakeObs("f0002__lm0__box0")
+        builder.step(1, crops_fn_factory(builder), [later],
+                     {later.obs_id: box})
+        self.assertEqual(track.close_reason, "mask_lost_in_window")
+        self.assertEqual(len(builder.tracks), 2)
+        self.assertEqual(builder.tracks[1].birth_obs_id, later.obs_id)
+        self.assertEqual(builder.tracks[1].birth_keyframe, 2)
+
     def test_clean_track_reanchors_and_survives(self):
         good = rect_mask(108, 88, 148, 168)  # ~centered on window center
         _, builder = self._mk([good, good, good])

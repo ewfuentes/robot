@@ -225,70 +225,11 @@ class AreaHandler : public osmium::handler::Handler {
     std::vector<std::pair<std::string, LandmarkFeature>> features_;
 };
 
-// Feeds the way-geometry index only with nodes near the requested bboxes.
-//
-// osmium's NodeLocationsForWays stores every node it is handed, which is why
-// peak memory tracks the size of the PBF rather than the size of the request. It
-// is not a requirement of the problem: a way here is selected iff one of its own
-// vertices falls in a bbox, and that question is answered just as well by an
-// index holding only the nodes near those bboxes.
-//
-// Wrapping rather than subclassing because the inner handler's way() mutates the
-// node refs it is given, and we want that behaviour untouched.
-template <typename TIndex>
-class BoundedNodeLocations : public osmium::handler::Handler {
-   public:
-    BoundedNodeLocations(TIndex& index, std::vector<BoundingBox> keep)
-        : inner_(index), keep_(std::move(keep)) {
-        // Nodes outside the margin are deliberately absent, so a way that
-        // references them must not be treated as a corrupt file. The existing
-        // way handler already skips refs whose location is invalid.
-        inner_.ignore_errors();
-    }
-
-    void node(const osmium::Node& node) {
-        const auto& loc = node.location();
-        if (!loc.valid()) {
-            return;
-        }
-        for (const auto& bbox : keep_) {
-            if (bbox.contains(loc.lon(), loc.lat())) {
-                inner_.node(node);
-                ++kept_;
-                return;
-            }
-        }
-        ++dropped_;
-    }
-
-    void way(osmium::Way& way) { inner_.way(way); }
-
-    std::size_t kept() const { return kept_; }
-    std::size_t dropped() const { return dropped_; }
-
-   private:
-    osmium::handler::NodeLocationsForWays<TIndex> inner_;
-    std::vector<BoundingBox> keep_;
-    std::size_t kept_ = 0;
-    std::size_t dropped_ = 0;
-};
-
-std::vector<BoundingBox> expand_bboxes(const std::unordered_map<std::string, BoundingBox>& bboxes,
-                                       double margin_deg) {
-    std::vector<BoundingBox> out;
-    out.reserve(bboxes.size());
-    for (const auto& [region_id, bbox] : bboxes) {
-        out.push_back(BoundingBox{bbox.left_deg - margin_deg, bbox.bottom_deg - margin_deg,
-                                  bbox.right_deg + margin_deg, bbox.top_deg + margin_deg});
-    }
-    return out;
-}
-
 }  // namespace
 
 std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     const std::string& pbf_path, const std::unordered_map<std::string, BoundingBox>& bboxes,
-    const std::map<std::string, bool>& tag_filters, double node_margin_deg) {
+    const std::map<std::string, bool>& tag_filters) {
     // Verify file exists
     if (!std::filesystem::exists(pbf_path)) {
         throw std::runtime_error("PBF file not found: " + pbf_path);
@@ -355,14 +296,8 @@ std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
         }
     };
 
-    if (node_margin_deg >= 0.0) {
-        BoundedNodeLocations<IndexType> location_handler(index,
-                                                         expand_bboxes(bboxes, node_margin_deg));
-        run_passes(location_handler);
-    } else {
-        LocationHandler location_handler(index);
-        run_passes(location_handler);
-    }
+    LocationHandler location_handler(index);
+    run_passes(location_handler);
 
     return all_features;
 }

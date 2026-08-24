@@ -37,18 +37,9 @@ from experimental.overhead_matching.swag.farfield.catalog import schema
 # ---------------------------------------------------------------------------
 # Far-field tag vocabulary
 # ---------------------------------------------------------------------------
-# Named for what it selects -- tags a distant observer could judge -- not for the
-# environment it was first written in. It is a superset vocabulary: the maritime
-# families below stay because a harbour table carries them, and they cost nothing
-# to keep where a table has none.
-# Deliberately NOT the street-level VIGOR keep-list: there the nearest landmark
-# is metres away and a shopfront's opening hours are legible; here most
-# landmarks are kilometres off. Two changes follow:
-#   - ADD the maritime vocabulary harbor tables actually carry, above all
-#     `seamark:*` and ENC's `object_class` -- the surveyed navigation aids are
-#     the single most matchable class we have.
-#   - DROP operational street furniture (addr:*, lanes, surface, opening hours,
-#     payment) that cannot be observed at range and only dilutes the bundle.
+# Keep identity and appearance tags that a distant observer can judge,
+# including maritime and ENC navigation-aid vocabulary. Operational
+# street-level metadata that is not visible at range is omitted.
 
 FAR_FIELD_KEEP_KEYS = frozenset({
     # what the thing IS
@@ -56,12 +47,8 @@ FAR_FIELD_KEEP_KEYS = frozenset({
     "leisure", "amenity", "tourism", "power", "bridge", "aeroway", "railway",
     "waterway", "water", "industrial", "military", "barrier", "highway",
     "object_class",           # ENC feature class
-    # `amenity=place_of_worship` alone is nearly free of information in an
-    # Anglophone harbour (~90% christian) and the opposite elsewhere: a torii,
-    # tiered tiled roofs, a minaret, and a steeple are about as
-    # far-field-legible as buildings get, and the split is real -- tokyo_bay
-    # carries shinto 3,464 vs buddhist 3,328. religion/denomination are the
-    # discriminating tags on those rows.
+    # `amenity=place_of_worship` alone does not distinguish visually different
+    # structures across regions; religion and denomination carry that identity.
     "religion", "denomination",
     # identity
     "name", "alt_name", "short_name", "official_name", "loc_name",
@@ -91,15 +78,9 @@ FAR_FIELD_DROP_PREFIXES = (
 # Exceptions to the `name:` drop, checked FIRST so the blanket prefix cannot
 # swallow them.
 #
-# "name:xx are language variants, not identity" is true exactly when the bare
-# `name` is already in the language the observer speaks. Elsewhere the bare
-# `name` is in the local script and these are the only strings that share an
-# alphabet with what a VLM reports: on pohang_canal_04, 6,360 of 7,207 named
-# rows are Hangul-only, and dropping these left just 387 of 12,766 rows with
-# any Latin identity. It is also asymmetric, because the *observer* emits
-# English. Kept deliberately narrow: `name:en` is the English exonym, `*-Latn`
-# the romanization; every other variant is a duplicate of the bare name or
-# unrelated noise (pohang's bbox carries 2,520 name:el).
+# The VLM emits English/Latin-script identity strings while a bare map `name`
+# may use a local script. Keep the English exonym and Latin transliterations;
+# other language variants duplicate the bare name or add unrelated scripts.
 FAR_FIELD_KEEP_NAME_VARIANTS = frozenset({"name:en"})
 FAR_FIELD_KEEP_NAME_SUFFIXES = ("-latn",)
 

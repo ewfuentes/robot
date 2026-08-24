@@ -1,33 +1,22 @@
 #!/usr/bin/env python3
 """Candidate regions to search for far-field trajectories.
 
-`farfield_trajectories.py` is a registry of trips already chosen. This is the
-layer above it: places worth *looking*, before any seed link exists.
-
-Every entry so far in the trajectory registry is water -- 22 ferries, harbours
-and one river. That was never the requirement, only one way to meet it. What a
-far-field site actually needs is three things at once:
+These are places worth searching before any seed link exists. A far-field site
+needs three properties at once:
 
   1. an empty foreground, so nothing occludes the 5-50 km band;
   2. landmarks tall enough to clear the horizon at that range and mapped in OSM;
   3. Mapillary coverage from a moving platform.
 
-Water buys (1) and nothing else, and it is actively poor at a fourth property
-that matters as much: **bearings spread around the circle**. A harbour crossing
-puts most of its landmarks in one wedge, which constrains position across the
-sightlines and barely at all along them. An intermontane basin gives 360 degrees
-of mapped peaks from roads with saturated dashcam coverage, which is why several
-of those lead this list.
+A fourth property is azimuthal spread: landmarks concentrated in one wedge
+constrain position across their sightlines more strongly than along them,
+whereas a surrounding basin can provide bearings around the full circle.
 
 `geometry` records which of the categories an entry is testing, so a search that
 comes back empty says something about the category rather than just the place.
 
-Bboxes are (west, south, east, north), matching Mapillary and the rest of this
-pipeline. Overpass wants the transpose; do not pre-swap here — the consumer
-converts. (The viewshed/landmark scoring tools that consumed these,
-`farfield_landmarks.py` / `farfield_viewshed.py`, are site-search tooling that
-was deliberately not ported; they live on the `refactor-farfield` checkpoint
-branch under `swag/scripts/`.)
+Bboxes are (west, south, east, north), matching Mapillary and the collection
+pipeline. Consumers that require another order perform the conversion.
 """
 
 REGIONS = {
@@ -118,10 +107,8 @@ REGIONS = {
                 "curvature alone, haze is the real limit",
     },
 
-    # --- Colorado high roads (ekf, 2026-08-16). High-elevation corridors with
-    # named 4,000 m peaks on both sides: the strongest case for far-field, since
-    # the observer is already 2-3 km up and the targets are named, isolated and
-    # well mapped. Expect these to score above every water entry.
+    # --- Colorado high roads: high-elevation corridors with named, isolated,
+    # well-mapped peaks on both sides.
     "us24_leadville_poncha": {
         "bbox": (-106.55, 38.45, -105.90, 39.35),
         "geometry": "intermontane_basin",

@@ -202,9 +202,8 @@ def load_context(dataset_base, landmark_base, video_path, checkpoint,
                  course_smooth_window_s, preview_size=None):
     """Load everything a range run needs. Returns a dict of shared state.
 
-    `ingest_params` is a dataset.IngestParams -- it carries no defaults
-    (REORG.md rule 2), so the caller supplies the recorded values.
-    GPS-course fit parameters are required for the same reason.  The model
+    `ingest_params` is a dataset.IngestParams supplied from the recorded
+    build configuration. GPS-course fit parameters are required too. The model
     may still be ``None`` when displacement is inadequate; callers must treat
     that as an explicit abstention, not a zero world heading.
     `video_path=None` means the dataset has no source video; the keyframe

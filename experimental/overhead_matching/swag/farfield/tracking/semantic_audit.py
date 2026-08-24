@@ -7,7 +7,7 @@ adjudicates ONLY semantics; all geometry (support classification, context
 screening) is decided by track_builder rules before the model ever sees the
 track.
 
-Design constraints (from the r002 hand review):
+Dossier contract:
 - The dossier contains NO dataset / run / location identifiers and no
   hand-written interpretation - every line must be derivable from the track
   artifact alone. Keyframes are presented as relative time indices t0..tN.
@@ -18,9 +18,9 @@ Design constraints (from the r002 hand review):
 - The model outputs categorical judgments and matching keys, never scalar
   reliability scores - those are computed downstream from geometry.
 
-The request JSONL format matches vertex_batch_manager (`run-online` /
-batch submission): {"key", "request": {contents, systemInstruction,
-generationConfig}} with inline_data image parts.
+The persisted request JSONL uses the shared Vertex batch adapter; online
+execution is derived from the same semantic request instead of rebuilding
+provider fields at the call site.
 
 Chip rendering lives in `viz_common.render_chip` (shared with the keyframe
 viewer so the two render byte-identical chips); it is re-exported here for
@@ -35,6 +35,9 @@ import numpy as np
 from pydantic import BaseModel
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
+from experimental.overhead_matching.swag.farfield.extraction import (
+    prompts as request_adapter,
+)
 from experimental.overhead_matching.swag.farfield.tracking import (
     track_builder as tb,
 )
@@ -53,40 +56,28 @@ CONFIDENCE_ORDER = ("high", "medium", "low")
 class AuditConfig:
     """Everything that shapes an audit request, recorded verbatim per run.
 
-    No defaults on purpose (REORG.md rule 2): every field encodes a modeling
-    assumption, so the values come from the stage's CLI (and, once REORG.md
-    PR 12 lands, the run's recorded config) and are written into the audit's
-    settings record. Readers reconstruct from that record -- never a fresh
-    instance.
+    Every field encodes a modeling assumption and is written into the audit's
+    settings record. Readers reconstruct the configuration from that record.
     """
 
-    # Supports required before a track is audited at all. Historical note on
-    # the previous default of 2 (= 3 detections counting the birth): the bar
-    # was 3 during the hand review, where the point was to study tracks with
-    # plenty of evidence; for production that threw away 22 auditable tracks
-    # for no reason. The audit works on three detections, it just has less to
-    # reconcile - and a thin track is where its judgement matters most,
-    # because vote-counting has almost nothing to work with.
+    # Post-birth geometric supports required before a track is audited. The
+    # founding detection is included separately in every eligible dossier.
     min_supports: int
     max_support_chips: int
     max_context_chips: int
     max_description_samples: int
     chip_height_px: int
     thinking_level: str
-    # The RECORDED TrackBuilderConfig of the tracks artifact the track came
-    # from (keyframe_viewer.recorded_config), never a freshly-constructed
-    # default -- that would silently re-classify an old run's supports under
-    # today's thresholds (and is impossible anyway: reference_pano_width has
-    # no default, by design).
+    # The exact TrackBuilderConfig recorded by the tracks artifact. Reusing it
+    # preserves the support classifications that shaped the source artifact.
     classifier: tb.TrackBuilderConfig
 
 
 # ---------------------------------------------------------------------------
 # response schema (pydantic -> Gemini responseSchema)
 # ---------------------------------------------------------------------------
-# No Optional fields: Gemini structured output handles required-everything
-# schemas most reliably (same convention as semantic_landmark_extractor).
-# "none"/""/[] are the explicit empty sentinels.
+# Required fields and explicit "none"/""/[] sentinels keep the structured
+# response shape unambiguous.
 
 class WeightedTag(BaseModel):
     tag: str          # "key=value", extraction vocabulary
@@ -106,11 +97,8 @@ class StrikeVote(BaseModel):
 class NameCandidate(BaseModel):
     name: str
     weight: float     # 0..1 belief this names the tracked object
-    # Only two values are reachable. The auditor is shown the detector's names
-    # and forbidden from inventing new ones, so every name it endorses was
-    # reported by some detection; all it can add is visual corroboration. A
-    # third value "read_from_images" existed and occurred zero times in 73
-    # candidates across 105 tracks, because it describes an impossible state.
+    # Every endorsed name originates in detector evidence; `both` additionally
+    # records visual corroboration from the supplied chips.
     basis: Literal["reported_by_detections", "both"]
 
 
@@ -241,9 +229,17 @@ def collect_evidence(track: dict, obs_by_id: dict, cfg: AuditConfig):
     supports, context = [], []
     for rec in track["records"]:
         for s in rec.get("supports", []):
-            obs = obs_by_id.get(s["obs_id"])
-            if obs is None:
-                continue
+            obs_id = s.get("obs_id") if isinstance(s, dict) else None
+            if not isinstance(obs_id, str) or not obs_id:
+                raise ValueError(
+                    f"track {track.get('track_id')}: malformed support at "
+                    f"keyframe {rec.get('keyframe')}: missing obs_id")
+            if obs_id not in obs_by_id:
+                raise ValueError(
+                    f"track {track.get('track_id')}: support at keyframe "
+                    f"{rec.get('keyframe')} references unknown observation "
+                    f"{obs_id!r}")
+            obs = obs_by_id[obs_id]
             entry = {"t": rec["keyframe"] - birth, "keyframe": rec["keyframe"],
                      "obs": obs, "support": s, "rec": rec}
             eff = effective_class(s, cfg)
@@ -253,6 +249,28 @@ def collect_evidence(track: dict, obs_by_id: dict, cfg: AuditConfig):
                 context.append(entry)
             # eff == "none": rejected outright, not evidence
     return supports, context
+
+
+def founding_evidence(track: dict, obs_by_id: dict) -> dict:
+    """Return the founding observation and its t0 mask record."""
+    obs_id = track.get("birth_obs_id")
+    if not isinstance(obs_id, str) or not obs_id:
+        raise ValueError(
+            f"track {track.get('track_id')}: missing birth_obs_id")
+    if obs_id not in obs_by_id:
+        raise ValueError(
+            f"track {track.get('track_id')}: birth references unknown "
+            f"observation {obs_id!r}")
+    birth = track["birth_keyframe"]
+    records = [
+        rec for rec in track.get("records", [])
+        if rec.get("keyframe") == birth and rec.get("action") == "birth"]
+    if len(records) != 1:
+        raise ValueError(
+            f"track {track.get('track_id')}: expected exactly one birth "
+            f"record at keyframe {birth}, found {len(records)}")
+    return {"t": 0, "keyframe": birth, "obs": obs_by_id[obs_id],
+            "support": None, "rec": records[0], "is_founding": True}
 
 
 def _obs_tags(obs):
@@ -323,7 +341,7 @@ def sample_descriptions(supports, max_samples: int) -> list:
     return sorted(picked, key=lambda e: e["t"])
 
 
-def select_chip_entries(supports, context, cfg: AuditConfig):
+def select_chip_entries(supports, context, cfg: AuditConfig, founder=None):
     """Deterministic chip pick: first + last support, then the highest-IoU
     support of each primary-tag run (longest runs first), then the most
     speck-like context boxes. Returns entries sorted by t, tagged with
@@ -357,12 +375,9 @@ def select_chip_entries(supports, context, cfg: AuditConfig):
     for e in picked.values():
         e["is_context"] = False
 
-    # Context chips are chosen one per DISTINCT primary tag before doubling
-    # up on any tag: the model is asked to judge each context group, and a
-    # group it never saw an image of gets judged from text alone (an f0180
-    # "egg-shaped digester tanks" box that is really a low seawall was
-    # promoted to its own landmark that way). Within a tag, prefer the
-    # largest mask fill - the most interpretable view of that group.
+    # Choose one context chip per distinct primary tag before repeating a tag,
+    # so every judged group has visual evidence. Within a tag, prefer the
+    # largest mask fill as the most interpretable view.
     ctx_by_tag = {}
     for e in context:
         tag = _obs_tags(e["obs"])[0]
@@ -378,6 +393,10 @@ def select_chip_entries(supports, context, cfg: AuditConfig):
     for e in ctx_order[:cfg.max_context_chips]:
         e = dict(e, is_context=True)
         picked.setdefault(("ctx", e["t"]), e)
+
+    if founder is not None:
+        founder = dict(founder, is_context=False, is_founding=True)
+        picked[("founder", founder["t"])] = founder
 
     return sorted(picked.values(), key=lambda e: e["t"])
 
@@ -401,20 +420,16 @@ def _close_reason_text(track: dict) -> str:
 def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
     """All dossier content, structured. Deterministic, artifact-only."""
     supports, context = collect_evidence(track, obs_by_id, cfg)
+    founder = founding_evidence(track, obs_by_id)
+    detections = [founder, *supports]
     birth = track["birth_keyframe"]
     lifetime = track["end_keyframe"] - birth + 1
 
-    # Names are counted with their detector confidence. Every identity *tag*
-    # reaches the auditor split high/medium/low via tag_vote_table, but `name`
-    # is in NON_IDENTITY_TAG_KEYS and so was excluded from it - the name, the
-    # single most consequential piece of evidence, used to arrive as a bare
-    # count. The extraction prompt explicitly delegates naming doubt to
-    # `confidence` ("express your certainty through the confidence field
-    # rather than by staying silent"), so dropping it discarded exactly the
-    # signal the extractor was told to send.
+    # Names sit outside the identity-tag table, so preserve their detector
+    # confidence explicitly alongside their vote counts.
     name_votes = {}
     name_confidence = {}
-    for e in supports:
+    for e in detections:
         _, extra = _obs_tags(e["obs"])
         name = extra.get("name", "")
         if name:
@@ -426,7 +441,7 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
 
     reanchors = sum(1 for r in track["records"]
                     if r["action"] == "reanchor_clean")
-    supported_ts = {e["t"] for e in supports}
+    supported_ts = {e["t"] for e in detections}
     gap_keyframes = sum(
         1 for r in track["records"]
         if r["keyframe"] - birth < lifetime
@@ -436,23 +451,26 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
         "track_id": track["track_id"],
         "birth_keyframe": birth,
         "lifetime": lifetime,
+        "founder": founder,
         "n_supports": len(supports),
+        "n_evidence_detections": len(detections),
         "n_gap_keyframes": gap_keyframes,
         "n_reanchors": reanchors,
         "drift_alarm": track["close_reason"] == "drift_alarm",
         "close_text": _close_reason_text(track),
-        "tag_table": tag_vote_table(supports),
+        "tag_table": tag_vote_table(detections),
         "name_votes": sorted(name_votes.items(), key=lambda kv: -kv[1]),
         "name_confidence": name_confidence,
         "primary_tag_rle": run_length_encode(
-            [_obs_tags(e["obs"])[0] for e in supports]),
+            [_obs_tags(e["obs"])[0] for e in detections]),
         "distance_rle": run_length_encode(
             [_obs_tags(e["obs"])[1].get("distance_estimate", "unreported")
-             for e in supports]),
+             for e in detections]),
         "description_samples": sample_descriptions(
-            supports, cfg.max_description_samples),
+            detections, cfg.max_description_samples),
         "context": context,
-        "chip_entries": select_chip_entries(supports, context, cfg),
+        "chip_entries": select_chip_entries(
+            supports, context, cfg, founder=founder),
         "supports": supports,
     }
 
@@ -462,9 +480,8 @@ def build_evidence(track: dict, dossier: dict, pano_w: int) -> dict:
     semantics should be trusted, and how much geometry it offers.
 
     Computed from the artifact only; the model never produces or influences
-    these numbers. Downstream (matching, SLAM) must be able to prefer a
-    68-support track over a 4-support one, so every count that distinguishes
-    them travels with the record.
+    these numbers. Counts remain explicit so consumers can compare support
+    density and geometric quality.
     """
     supports = dossier["supports"]
     ious = sorted(s["support"]["iou"] for s in supports)
@@ -673,7 +690,9 @@ def render_dossier_text(dossier: dict) -> str:
         f"lifetime: {dossier['lifetime']} keyframes "
         f"(t0..t{dossier['lifetime'] - 1}); {dossier['close_text']}")
     parts.append(
-        f"associated detections: {dossier['n_supports']}; keyframes in the "
+        f"evidence detections: {dossier['n_evidence_detections']} "
+        f"(1 founding detection at t0 + {dossier['n_supports']} post-birth "
+        f"geometric supports); keyframes in the "
         f"lifetime with no associated detection: {dossier['n_gap_keyframes']}")
     parts.append(
         f"geometry events: {dossier['n_reanchors']} re-anchors; drift alarm: "
@@ -739,6 +758,9 @@ def render_dossier_text(dossier: dict) -> str:
 
 def chip_caption(entry, index: int) -> str:
     primary, _ = _obs_tags(entry["obs"])
+    if entry.get("is_founding"):
+        return (f"[IMAGE {index}] t0 FOUNDING detection: {primary} "
+                f"({entry['obs'].confidence})")
     s = entry["support"]
     if entry.get("is_context"):
         return (f"[IMAGE {index}] t{entry['t']} CONTEXT detection: {primary} "
@@ -778,39 +800,13 @@ def build_request(track_key: str, dossier_text: str,
         parts.append({"text": caption})
         parts.append({"inline_data": {"mime_type": "image/jpeg",
                                       "data": b64}})
-    return {
-        "key": track_key,
-        "request": {
-            "contents": [{"parts": parts, "role": "user"}],
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseSchema": get_audit_schema(),
-                "thinkingConfig": {"thinkingLevel": cfg.thinking_level},
-            },
-        },
-    }
-
-
-def upgrade_legacy_audit(data: dict) -> dict:
-    """Migrate pre-name_candidates audit payloads in place-ish.
-
-    Results produced before names became a weighted candidate list carry a
-    single `name`. Those runs are still worth consuming (valid_segments and
-    strike/secondary evidence are unaffected), so the old single name is
-    lifted into a lone candidate rather than discarded. The weight is left
-    at 1.0 because the old schema recorded no alternative to weigh it
-    against - `name_contested` from build_evidence is the honest signal for
-    those records, not this weight.
-    """
-    primary = data.get("primary_object")
-    if not isinstance(primary, dict) or "name_candidates" in primary:
-        return data
-    name = primary.pop("name", "")
-    primary["name_candidates"] = (
-        [{"name": name, "weight": 1.0, "basis": "reported_by_detections"}]
-        if name else [])
-    return data
+    return request_adapter.batch_record(request_adapter.semantic_request(
+        track_key,
+        system_instruction=SYSTEM_PROMPT,
+        parts=parts,
+        response_schema=get_audit_schema(),
+        thinking_level=cfg.thinking_level,
+    ))
 
 
 def parse_result_line(record: dict) -> tuple[str, dict | None, str | None]:
@@ -821,8 +817,7 @@ def parse_result_line(record: dict) -> tuple[str, dict | None, str | None]:
         return key, None, record["error"]
     try:
         text = record["response"]["candidates"][0]["content"]["parts"][0]["text"]
-        audit = TrackAudit.model_validate(
-            upgrade_legacy_audit(json.loads(text)))
+        audit = TrackAudit.model_validate(json.loads(text))
         return key, audit.model_dump(), None
     except Exception as e:  # noqa: BLE001 - surfaced to caller per line
         return key, None, f"{type(e).__name__}: {e}"

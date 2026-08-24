@@ -7,7 +7,7 @@ is found; a path that is not a dataset directory is itself an error, never
 silently skipped.
 
     bazel run //experimental/overhead_matching/swag/farfield:audit_dataset -- \
-        /data/farfield_matching/datasets/folkestone_dover [more dirs...]
+        /path/to/dataset [more dirs...]
 """
 
 import argparse
@@ -153,8 +153,7 @@ def read_csv(path):
         return list(csv.DictReader(f))
 
 
-def audit(ds: Path) -> Audit:
-    a = Audit(ds.name)
+def _audit(ds: Path, a: Audit) -> None:
 
     # -- required files -------------------------------------------------------
     required = ["pipeline_metadata.json", "pano_id_mapping.csv",
@@ -165,12 +164,37 @@ def audit(ds: Path) -> Audit:
         return a
     a.ok("all required tables present")
 
-    meta = json.loads((ds / "pipeline_metadata.json").read_text())
+    metadata_path = ds / "pipeline_metadata.json"
+    try:
+        meta = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        a.fail(f"cannot read pipeline_metadata.json: {exc}")
+        return
+    if not isinstance(meta, dict):
+        a.fail("pipeline_metadata.json must contain a JSON object")
+        return
     is_equirect = meta.get("is_equirectangular")
+    if type(is_equirect) is not bool:
+        a.fail("pipeline_metadata.is_equirectangular must be an actual boolean")
+    elif not is_equirect:
+        a.fail("perspective imagery is unsupported; is_equirectangular must "
+               "be true")
+
+    north_aligned = meta.get("north_aligned")
+    if type(north_aligned) is not bool:
+        a.fail("pipeline_metadata.north_aligned must be an actual boolean")
+
+    conv = meta.get("azimuth_convention")
+    if not isinstance(conv, dict):
+        a.fail("pipeline_metadata.azimuth_convention must be an object")
+        conv = {}
+    images_rotated = conv.get("images_rotated")
+    if type(images_rotated) is not bool:
+        a.fail("pipeline_metadata.azimuth_convention.images_rotated must be "
+               "an actual boolean")
 
     # -- images must not have been rotated ------------------------------------
-    conv = meta.get("azimuth_convention") or {}
-    if conv.get("images_rotated") is False and meta.get("north_aligned") is False:
+    if images_rotated is False and north_aligned is False:
         a.ok("stored unrotated (images_rotated=false, north_aligned=false)")
     else:
         a.fail(f"expected unrotated storage, got images_rotated="
@@ -183,8 +207,8 @@ def audit(ds: Path) -> Audit:
 
     # -- panorama/ symlink -----------------------------------------------------
     pano = ds / "panorama"
-    if not pano.exists():
-        a.fail("no panorama/ (ingest requires it)")
+    if not pano.is_dir():
+        a.fail("no panorama/ directory (ingest requires it)")
         return a
     if pano.is_symlink():
         target = pano.readlink()
@@ -197,6 +221,8 @@ def audit(ds: Path) -> Audit:
         a.warn("panorama/ is a real directory, not a symlink")
 
     imgs = sorted(pano.glob("*.jpg"))
+    if not imgs:
+        a.fail("panorama/ contains no JPEG frames")
     hidden = [p.name for p in pano.iterdir() if p.name.startswith(".")]
     if hidden:
         a.fail(f"{len(hidden)} dot-file(s) in panorama/ (dataset loaders use "
@@ -214,6 +240,7 @@ def audit(ds: Path) -> Audit:
 
     ids = [p.stem.split(",")[0] for p in imgs]
     bad_ids = [i for i in ids if not (i[:1].isalpha() and i[1:].isdigit())]
+    numeric = []
     if bad_ids:
         a.fail(f"pano_ids not <letter><digits>, so int(pano_id[1:]) breaks: "
                f"{bad_ids[:3]}")
@@ -222,12 +249,12 @@ def audit(ds: Path) -> Audit:
         a.fail("pano_id string sort != numeric order (ingest sorts by string)")
     else:
         a.ok("pano_ids zero-padded; string sort == numeric order")
+        numeric = [int(i[1:]) for i in ids]
 
     dupe_ids = [i for i, c in Counter(ids).items() if c > 1]
     if dupe_ids:
         a.fail(f"duplicate pano_ids: {dupe_ids[:3]}")
 
-    numeric = [int(i[1:]) for i in ids]
     if numeric and numeric != list(range(numeric[0], numeric[0] + len(numeric))):
         a.warn(f"pano numbers are not contiguous ({len(numeric)} panos, "
                f"range {numeric[0]}-{numeric[-1]}): pano_id[1:] != frame_idx "
@@ -350,13 +377,29 @@ def audit(ds: Path) -> Audit:
     seqs = {r.get("sequence_id") for r in log if r.get("sequence_id")}
     if seqs:
         a.ok(f"stitched from {len(seqs)} source sequence(s)")
-        if not any(r.get("sequence_position") for r in log):
-            a.warn("no sequence_position recorded; ordering fell back to "
-                   "captured_at")
+        positions = [r.get("sequence_position", "").strip() for r in log]
+        if not all(positions):
+            a.fail("every authoritative extraction-log row must record "
+                   "sequence_position")
+        else:
+            try:
+                parsed_positions = [int(value) for value in positions]
+            except ValueError:
+                a.fail("sequence_position must be an integer on every row")
+            else:
+                if (any(value < 0 for value in parsed_positions)
+                        or len(set(parsed_positions)) != len(parsed_positions)):
+                    a.fail("sequence_position values must be nonnegative and "
+                           "unique")
 
     # -- intrinsics ------------------------------------------------------------------
-    required_intrinsics = {"heading_deg", "heading_reference",
-                           "heading_source"}
+    bearing_columns = (
+        "computed_compass_angle_true_deg",
+        "compass_angle_true_deg",
+        "heading_optical_axis_true_deg",
+        "heading_column0_true_deg",
+    )
+    required_intrinsics = set(bearing_columns) | {"selected_heading_source"}
     missing_intrinsics = [
         name for name in sorted(required_intrinsics)
         if any(name not in row for row in intr)
@@ -364,29 +407,68 @@ def audit(ds: Path) -> Audit:
     if missing_intrinsics:
         a.fail(f"intrinsics table lacks required shape columns "
                f"{missing_intrinsics}")
-    headings = [r.get("heading_deg", "").strip() for r in intr]
-    if any(headings) and not all(headings):
-        a.fail("intrinsics heading_deg must be populated for every row or "
-               "left unset for every row")
-    elif headings and all(headings):
+    headings = {
+        name: [r.get(name, "").strip() for r in intr]
+        for name in bearing_columns
+    }
+    populated = [bool(value) for values in headings.values()
+                 for value in values]
+    if any(populated) and not all(populated):
+        a.fail("intrinsics raw, optical-axis, and column-0 heading fields "
+               "must all be populated or all be unset")
+    elif populated and all(populated):
         try:
-            values = [float(value) for value in headings]
+            values = {name: [float(value) for value in column]
+                      for name, column in headings.items()}
         except ValueError:
-            a.fail("intrinsics heading_deg contains a non-numeric value")
+            a.fail("intrinsics heading fields contain a non-numeric value")
         else:
-            if not all(math.isfinite(value) for value in values):
-                a.fail("intrinsics heading_deg contains a non-finite value")
+            flattened = [value for column in values.values()
+                         for value in column]
+            if (not all(math.isfinite(value) for value in flattened)
+                    or not all(0.0 <= value < 360.0 for value in flattened)):
+                a.fail("intrinsics heading fields must be finite canonical "
+                       "angles in [0, 360)")
             else:
-                want_ref = "column_0" if is_equirect else "optical_axis"
-                refs = {r.get("heading_reference") for r in intr}
-                if refs != {want_ref}:
-                    a.fail(f"populated intrinsics heading_reference is "
-                           f"{refs}, expected {{{want_ref}}}")
-                else:
-                    a.warn("intrinsics heading_deg is populated for display/"
-                           "source diagnostics only; localization rotation "
-                           "requires a separate approved nominal-forward "
-                           "record")
+                sources = [r.get("selected_heading_source", "") for r in intr]
+                allowed_sources = {
+                    "computed_compass_angle", "compass_angle"}
+                if not all(source in allowed_sources for source in sources):
+                    a.fail("selected_heading_source must name one preserved "
+                           "raw Mapillary field")
+                for index, row in enumerate(intr):
+                    selected_key = sources[index]
+                    if selected_key not in allowed_sources:
+                        continue
+                    raw_key = ("computed_compass_angle_true_deg"
+                               if selected_key == "computed_compass_angle"
+                               else "compass_angle_true_deg")
+                    if abs(float(geo.circular_diff_deg(
+                            values["heading_optical_axis_true_deg"][index],
+                            values[raw_key][index]))) > 1e-6:
+                        a.fail(f"intrinsics row {index} selected optical-axis "
+                               "heading disagrees with its named raw field")
+                    try:
+                        hfov = float(row.get("hfov_deg", ""))
+                    except (TypeError, ValueError):
+                        a.fail(f"intrinsics row {index} hfov_deg is not "
+                               "numeric")
+                        continue
+                    if not math.isfinite(hfov) or not 0.0 < hfov <= 360.0:
+                        a.fail(f"intrinsics row {index} hfov_deg must be "
+                               "finite and in (0, 360]")
+                        continue
+                    expected_column0 = (
+                        values["heading_optical_axis_true_deg"][index]
+                        - (180.0 if is_equirect else hfov / 2.0)) % 360.0
+                    if abs(float(geo.circular_diff_deg(
+                            values["heading_column0_true_deg"][index],
+                            expected_column0))) > 1e-6:
+                        a.fail(f"intrinsics row {index} column-0 heading "
+                               "disagrees with optical-axis/FOV derivation")
+                a.warn("intrinsics headings preserve Mapillary orientation "
+                       "diagnostics only; localization rotation requires a "
+                       "separate approved nominal-forward record")
     else:
         a.ok("intrinsics heading columns preserve the table shape but are "
              "unset; no camera/world orientation is claimed")
@@ -398,7 +480,7 @@ def audit(ds: Path) -> Audit:
         if meta.get("heading_sources_disagree"):
             a.warn(f"the two heading sources disagree by {spread} deg "
                    f"(median) — for a perspective capture this is the only "
-                   f"heading check available, so treat heading_deg as "
+                   f"heading check available, so treat optical-axis heading as "
                    f"uncalibrated: a bearing built on it can be wrong by "
                    f"about that much")
         elif spread is not None:
@@ -440,9 +522,10 @@ def audit(ds: Path) -> Audit:
         sizes, broken = set(), []
         for p in sample:
             try:
-                im = Image.open(p)
-                im.verify()
-                sizes.add(Image.open(p).size)
+                with Image.open(p) as image:
+                    image.verify()
+                with Image.open(p) as image:
+                    sizes.add(image.size)
             except Exception as e:
                 broken.append((p.name, str(e)[:40]))
         if broken:
@@ -462,12 +545,25 @@ def audit(ds: Path) -> Audit:
 
     check_video_addressing(a, ds, meta, gps, imgs)
 
-    # -- legacy in-dataset catalogs ---------------------------------------------------
+    # Catalogs are derived artifacts, never part of the immutable dataset.
     if (ds / "landmarks").exists():
-        a.warn("legacy landmarks/ directory inside the dataset: catalogs are "
-               "derived products and live in artifacts/catalogs/<dataset>/ "
-               "(REORG.md data migration moves them)")
+        a.fail("landmarks/ must not live inside the dataset; publish catalogs "
+               "under artifacts/catalogs/<dataset>/<version>")
 
+    return None
+
+
+def audit(ds: Path) -> Audit:
+    """Audit *ds* without allowing corrupt input to escape as a traceback."""
+    a = Audit(ds.name)
+    try:
+        _audit(ds, a)
+    except Exception as exc:
+        # An audit command is a diagnostic boundary.  A malformed dataset is
+        # reported as a dataset failure, never as a failure of the audit run.
+        a.fail(
+            f"could not finish validating corrupt input: "
+            f"{type(exc).__name__}: {exc}")
     return a
 
 

@@ -20,6 +20,70 @@ const TRK = new Map(D.tracklets.map(x => [x.id, x]));
 const LM = new Map(D.landmarks.map(l => [l.id, l]));
 const wrap180 = a => ((a % 360) + 540) % 360 - 180;
 
+// ---------- optional localhost server ----------
+const LIVE = {
+  features: new Set(), requestedCheckpoints: new Set(),
+  loadedCheckpoints: new Set(), health: null
+};
+
+async function apiJson(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok)
+    throw new Error(body.error || ("HTTP " + response.status));
+  return body;
+}
+
+async function detectLiveServer() {
+  if (!/^https?:$/.test(window.location.protocol)) return;
+  try {
+    LIVE.health = await apiJson("/api/health");
+    LIVE.features = new Set(LIVE.health.features || []);
+    const status = $("liveStatus");
+    status.textContent = "live server";
+    status.className = "pill ok";
+    drawTiles();
+    drawMap();
+    if (tab === "whatif") drawWhatIf();
+  } catch (_) {
+    // A static page is a fully supported deployment; an absent server is not
+    // an error and deliberately leaves the static label in place.
+  }
+}
+
+async function loadFullCheckpoint(keyframe) {
+  if (!LIVE.features.has("checkpoint")
+      || LIVE.loadedCheckpoints.has(keyframe)
+      || LIVE.requestedCheckpoints.has(keyframe)) return;
+  LIVE.requestedCheckpoints.add(keyframe);
+  try {
+    const body = await apiJson("/api/checkpoint/" + keyframe);
+    D.checkpoints[String(keyframe)] = {
+      e: body.e, n: body.n_m, h: body.h, m: body.mode,
+      w: body.w, event: body.event
+    };
+    LIVE.loadedCheckpoints.add(keyframe);
+    const status = $("liveStatus");
+    status.textContent = "live · " + body.n.toLocaleString()
+      + " particles at kf " + keyframe;
+    drawMap();
+  } catch (error) {
+    LIVE.requestedCheckpoints.delete(keyframe);
+    const status = $("liveStatus");
+    status.textContent = "live checkpoint error";
+    status.className = "pill bad";
+    status.title = error.message;
+  }
+}
+
+async function runLiveReplay(edits) {
+  return apiJson("/api/replay", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({edits: edits})
+  });
+}
+
 // ---------- projection ----------
 let X0 = 1e9, X1 = -1e9, Y0 = 1e9, Y1 = -1e9;
 const grow = (e, n) => { if (!isFinite(e) || !isFinite(n)) return;
@@ -27,6 +91,7 @@ const grow = (e, n) => { if (!isFinite(e) || !isFinite(n)) return;
   Y0 = Math.min(Y0, n); Y1 = Math.max(Y1, n); };
 D.landmarks.forEach(l => grow(l.e, l.n));
 (D.backdrop || []).forEach(p => grow(p[0], p[1]));
+(D.landmarkGeometry || []).forEach(g => g.points.forEach(p => grow(p[0], p[1])));
 D.truth.forEach(p => grow(p[0], p[1]));
 H.forEach(h => grow(h.mapE, h.mapN));
 const pad = (X1 - X0 + Y1 - Y0) * 0.05 + 150;
@@ -98,16 +163,15 @@ function viewFit(x0, y0, x1, y1) {          // rect in BASE pixel space
 
 function viewFitAll() { viewFit(0, 0, MW, MH); }
 
-// The truth track plus wherever the filter currently thinks it is, so a
-// converged run fills the frame and a diverged one still shows both.
+// The truth track plus the complete estimate trajectory. With no truth, the
+// estimate alone still defines a useful fit instead of falling back to all.
 function viewFitTrack() {
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
   const g = (x, y) => { if (!isFinite(x) || !isFinite(y)) return;
     x0 = Math.min(x0, x); x1 = Math.max(x1, x);
     y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
   D.truth.forEach(p => g(px0(p[0]), py0(p[1])));
-  const h = H[t];
-  if (h && h.mapE !== undefined) g(px0(h.mapE), py0(h.mapN));
+  H.forEach(h => g(px0(h.mapE), py0(h.mapN)));
   if (x1 <= x0 || y1 <= y0) { viewFitAll(); return; }
   viewFit(x0, y0, x1, y1);
 }
@@ -215,6 +279,17 @@ const BACKDROP = (D.backdrop && D.backdrop.length)
       + py0(p[1]).toFixed(1) + "h.1").join("")}" stroke="var(--ink-faint)"
       stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".38"/>`
   : "";
+const LANDMARK_GEOMETRY = !(D.landmarkGeometry || []).length ? ""
+  : D.landmarkGeometry.map(g => {
+    let d = "";
+    g.points.forEach((p, i) => {
+      d += (i ? "L" : "M") + px0(p[0]).toFixed(2) + " "
+        + py0(p[1]).toFixed(2); });
+    if (g.kind === "polygon") d += "Z";
+    const stroke = g.referenced ? "var(--caution)" : "var(--ink-faint)";
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1"
+      stroke-linejoin="round" opacity="${g.referenced ? .75 : .38}"/>`;
+  }).join("");
 
 // Scale bar: a map with no basemap and no scale is unreadable at a glance.
 // Recomputed for the current viewport rather than built once, for two reasons:
@@ -400,6 +475,14 @@ function drawStrip() {
   let y = 4, out = "";
   const S = k => H.map(h => h[k]);
   out += sparkline(y, S("err"), "pos err (m)", "var(--port)", true); y += ROW;
+  const massMetric = RUN.positionMassMetric;
+  if (massMetric) for (const radius of massMetric.radiiM) {
+    const key = `${massMetric.id}@${massMetric.version}:radius_m=${Number(radius)}`;
+    const values = H.map(h => h.positionMass ? h.positionMass[key] : undefined);
+    out += sparkline(y, values, `mass ≤ ${Number(radius)} m`,
+      "var(--starboard)", false);
+    y += ROW;
+  }
   out += sparkline(y, S("sigma"), "reported σ (m)", "var(--starboard)", true); y += ROW;
   out += sparkline(y, S("ess"), "ESS", "var(--water)", true); y += ROW;
   out += sparkline(y, S("null"), "null share", "var(--caution)", false); y += ROW;
@@ -436,11 +519,13 @@ function drawStrip() {
 // ---------- view 2: map ----------
 function drawMap() {
   const h = H[t], ck = nearestCk(t), P = D.checkpoints[ck];
+  loadFullCheckpoint(ck);
   // Static layers stay in base coordinates and are moved by one transform:
   // re-emitting 138k basemap vertices on every wheel tick is not affordable.
   let out = `<g id="staticmap" transform="${staticTransform()}">`
     + (showSat ? SATELLITE : "")
-    + (showBase ? BASEMAP : "") + BACKDROP + `</g>`;
+    + (showBase ? BASEMAP : "") + LANDMARK_GEOMETRY + BACKDROP
+    + `</g>`;
 
   if (showParticles && P) {
     // One path per mode rather than one circle per particle: 900 DOM nodes per
@@ -723,7 +808,7 @@ function drawModes() {
 }
 
 // ---------- view 3: tracklet inspector ----------
-const VERDICT_PILL = {consistent: "ok", "tracker-fault": "bad",
+const VERDICT_PILL = {consistent: "ok", "geometry-unexplained": "bad",
                       "matcher-fault": "bad", "filter-fault": "warn",
                       "no-evidence": "info"};
 function drawTrackletList() {
@@ -829,10 +914,44 @@ function drawInspector() {
     return; }
   const tbl = trk.table;
 
+  // --- canonical tracker/audit source ---
+  const src = trk.source;
+  let source = `<h3>Tracker + semantic audit</h3>`;
+  if (src) {
+    if (src.chip) source += `<img class="crop" src="${src.chip}"
+      alt="audited evidence chip for ${esc(src.localId)}" loading="lazy">`;
+    source += `<dl class="kv" style="margin-top:8px">
+      <dt>source track</dt><dd>${esc(src.localId)} (track ${
+        src.sourceTrackId})</dd>
+      <dt>audit</dt><dd><span class="pill ${
+        src.verdict === "drop" ? "bad" : src.verdict === "keep_partial"
+          ? "warn" : "ok"}">${esc(src.verdict)}</span>
+        ${esc(src.confidence)} confidence</dd>
+      <dt>name</dt><dd>${esc(src.name || "—")}</dd>
+      <dt>supports</dt><dd>${src.nSupports}</dd>
+      <dt>span</dt><dd>kf ${src.span[0]}–${src.span[1]}</dd>
+      <dt>accepted</dt><dd>${src.validSegments.map(
+        segment => `kf ${segment[0]}–${segment[1]}`).join(", ")}</dd></dl>`;
+    if (src.tags.length)
+      source += `<div style="margin-top:6px">${src.tags.map(
+        tag => `<span class="chip">${esc(tag)}</span>`).join("")}</div>`;
+    if (src.description)
+      source += `<div class="legend">${esc(src.description)}</div>`;
+    if (src.features.length)
+      source += `<div class="legend">distinctive: ${
+        src.features.map(esc).join("; ")}</div>`;
+    if (src.unresolved)
+      source += `<div class="legend" style="color:var(--caution)">unresolved:
+        ${esc(src.unresolved)}</div>`;
+  } else {
+    source += `<div class="empty">No canonical source artifacts were supplied.
+      Pass the exact object_tracks and semantic_audits artifacts.</div>`;
+  }
+
   // --- bearing series ---
-  const bearings = `<h3>Bearing &amp; κ</h3>` + seriesChart(
+  const bearings = `<h3>Nominal-forward bearing &amp; κ</h3>` + seriesChart(
     trk.epochs, "kf", "bearing", {band: "sigma", col: "var(--accent)"})
-    + `<div class="legend">Body-frame bearing, shaded ±2σ from the
+    + `<div class="legend">Nominal-forward-frame clockwise bearing, shaded ±2σ from the
     fused κ. A step here that the vehicle did not make is a tracker
     problem, not a matcher one.</div>`;
 
@@ -982,7 +1101,8 @@ function drawInspector() {
   $("inspector").innerHTML = `<h2>Tracklet <code>${esc(trk.id)}</code>
     <span class="hint">&mdash; §7.4 view 3</span>
     <button id="closetrk">close</button></h2>
-    <div class="grid2"><div>${bearings}</div><div>${matcher}</div>
+    <div class="grid2"><div>${source}</div><div>${bearings}</div>
+    <div>${matcher}</div>
     <div>${filter}</div></div>${priv}`;
   $("closetrk").onclick = () => { selTrk = null; render(); };
 }
@@ -1026,6 +1146,40 @@ function drawWhatIf() {
     <pre class="mono" style="white-space:pre-wrap;font-size:11px;
       background:var(--sunk);padding:9px;border-radius:6px;overflow-x:auto">${
     esc(cmd)}</pre>`;
+  if (LIVE.features.has("replay")) {
+    const controls = document.createElement("div");
+    controls.innerHTML =
+      '<h3>Live replay</h3><div class="controls">'
+      + '<button id="liveReplay">drop selected tracklet and replay</button>'
+      + '<span id="liveReplayStatus" class="legend"></span></div>'
+      + '<div class="legend">Select a tracklet in the inspector, then run an '
+      + 'exact counterfactual through the localhost server.</div>';
+    $("whatif").appendChild(controls);
+    const button = $("liveReplay");
+    const status = $("liveReplayStatus");
+    button.disabled = !selTrk || !RUN.replayable;
+    if (!selTrk)
+      status.textContent = "Select a tracklet first.";
+    else if (!RUN.replayable)
+      status.textContent = "This baseline is not faithfully replayable.";
+    button.onclick = async () => {
+      const tracklet = selTrk;
+      button.disabled = true;
+      status.textContent = "replaying from keyframe 0…";
+      try {
+        const result = await runLiveReplay({drop_tracklets: [tracklet]});
+        if (result.ghost) {
+          D.ghosts.push(result.ghost);
+          showGhosts = true;
+        }
+        status.textContent = "complete in " + result.elapsed_s + " s";
+        render();
+      } catch (error) {
+        status.textContent = "replay failed: " + error.message;
+        button.disabled = false;
+      }
+    };
+  }
 }
 
 // ---------- event index ----------
@@ -1158,3 +1312,4 @@ $("play").onclick = () => {
 };
 drawEvents();
 render();
+detectLiveServer();

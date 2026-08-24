@@ -2,7 +2,7 @@
 
 Usage:
   bazel run //experimental/overhead_matching/swag/farfield/localization:run_localization -- \
-    --scenario harbor_loop --output_dir /tmp/bol_demo --init global \
+    --scenario harbor_loop --run_dir /tmp/bol_demo --init global \
     --box_halfwidth_m 2500 --max_visible_range_m 10000
 
 Synthetic scenarios exercise the filter under known truth; they are test and
@@ -16,12 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import msgspec
 
 from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.localization import (
-    filter as pf,
     metrics,
-    run_io,
+    runner,
     scenario,
     structs,
 )
@@ -65,7 +65,9 @@ def _catalog_landmarks(data) -> list:
     return [structs.LandmarkEntry(landmark_id=lm_id, lat_deg=float(la),
                                   lon_deg=float(lo),
                                   type_key=by_id[lm_id].type_key,
-                                  position_sigma_m=float(sigma))
+                                  position_sigma_m=float(sigma),
+                                  hull_east_m=list(by_id[lm_id].hull_east_m),
+                                  hull_north_m=list(by_id[lm_id].hull_north_m))
             for lm_id, la, lo, sigma in zip(
                 data.catalog.landmark_ids, lat, lon,
                 data.catalog.position_sigma_m)]
@@ -77,32 +79,33 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", required=True,
                         choices=sorted(scenario.SCENARIO_BUILDERS.keys()))
-    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--init", required=True, choices=["local", "global"])
-    # Result-shaping: required (previous values quoted in help).
+    # Result-shaping values are explicit inputs.
     parser.add_argument("--n_particles", type=int, required=True,
-                        help="(previously 5000 local / 150000 global)")
+                        help="number of particles")
     parser.add_argument("--max_visible_range_m", type=float, required=True,
-                        help="catalog visibility radius (previously an "
-                             "implicit 10000)")
+                        help="catalog visibility radius")
     parser.add_argument("--prior_sigma_m", type=float, default=None,
-                        help="--init local: prior sigma (previously 500)")
+                        help="--init local: prior sigma")
     parser.add_argument("--prior_offset_east_m", type=float, default=None,
-                        help="--init local: deliberate prior offset "
-                             "(previously +250)")
+                        help="--init local: deliberate prior east offset")
     parser.add_argument("--prior_offset_north_m", type=float, default=None,
-                        help="--init local: (previously -250)")
+                        help="--init local: deliberate prior north offset")
     parser.add_argument("--box_halfwidth_m", type=float, default=None,
-                        help="--init global: uniform box half-width "
-                             "(previously 2500)")
+                        help="--init global: uniform box half-width")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--keyframe_period_s", type=float, required=True,
-                        help="(previously 2.0)")
+                        help="seconds between keyframes")
     parser.add_argument("--epoch_length", type=int, required=True,
-                        help="(previously 5)")
+                        help="keyframes per compatibility epoch")
     parser.add_argument("--bearing_sigma_deg", type=float, required=True,
-                        help="(previously 1.0)")
+                        help="bearing observation sigma")
     parser.add_argument("--checkpoint_every", type=int, default=10)
+    parser.add_argument(
+        "--position_mass_radii_m", type=float, nargs="+",
+        default=list(metrics.DEFAULT_POSITION_MASS_RADII_M),
+        help="radii for every-keyframe posterior probability-mass metrics")
     parser.add_argument("--kidnap_at", type=int, default=None,
                         help="teleport the vehicle at this keyframe")
     parser.add_argument("--kidnap_east_m", type=float, default=None)
@@ -141,9 +144,7 @@ def main():
     print(f"Filter: {filter_config.n_particles} particles, "
           f"init={args.init}, seed={filter_config.seed}")
 
-    history = pf.run_filter(filter_config, data.catalog, data.odometry,
-                            data.measurements, data.tables)
-
+    ablation_tags = ["kidnap"] if args.kidnap_at is not None else []
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION,
         dataset="synthetic",
@@ -164,17 +165,22 @@ def main():
         git_commit=provenance.git_commit(),
         argv=list(sys.argv),
         created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        particle_history_sha256=history.particle_history_sha256)
-    run_io.write_run(args.output_dir, manifest, data.truth, data.odometry,
-                     data.measurements, data.tables, history,
-                     dataset="synthetic", version=args.output_dir.name,
-                     artifact_config={
-                         "run_kind": "synthetic",
-                         "scenario": scenario_config.name,
-                     },
-                     generator=("//experimental/overhead_matching/swag/"
-                                "farfield/localization:run_localization"),
-                     arguments=tuple(sys.argv))
+        ablation_tags=ablation_tags,
+        truth_position_schema=runner.TRUTH_POSITION_SCHEMA,
+        position_mass_metric=metrics.position_mass_metric_config(
+            args.position_mass_radii_m))
+    result = runner.execute_localization(
+        args.run_dir, manifest, catalog=data.catalog, truth=data.truth,
+        odometry=data.odometry, measurements=data.measurements,
+        tables=data.tables, dataset="synthetic", version=args.run_dir.name,
+        artifact_config={
+            "scenario": scenario_config.name,
+            "synthetic_config": msgspec.to_builtins(scenario_config),
+        },
+        generator=("//experimental/overhead_matching/swag/farfield/"
+                   "localization:run_localization"),
+        arguments=tuple(sys.argv))
+    history = result.history
 
     errors = metrics.position_errors_m(history.health, data.truth)
     heading_errors = metrics.heading_errors_deg(history.health, data.truth)
@@ -193,7 +199,7 @@ def main():
         print(f"  proposal #{event.event_id} kf={event.keyframe_idx} "
               f"trigger={event.trigger} hypotheses={event.n_hypotheses} "
               f"injected={event.n_injected}")
-    print(f"\nRun written to {args.output_dir}")
+    print(f"\nRun written to {args.run_dir}")
 
 
 if __name__ == "__main__":

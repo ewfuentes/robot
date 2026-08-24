@@ -1,5 +1,6 @@
 import math
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -31,6 +32,18 @@ class MapPoseTest(unittest.TestCase):
             metrics.mass_within_radius(belief, 0.0, 0.0, 100.0),
             2.0 / 3.0, places=6)
 
+    def test_position_mass_config_has_stable_identity_and_strict_radii(self):
+        config = metrics.position_mass_metric_config([50, 100.0])
+        self.assertEqual(config.metric_id,
+                         metrics.POSITION_MASS_METRIC_ID)
+        self.assertEqual(config.metric_version,
+                         metrics.POSITION_MASS_METRIC_VERSION)
+        self.assertEqual(
+            metrics.position_mass_metric_key(config, 50.0),
+            "posterior_position_probability_mass_within_radius@1:radius_m=50")
+        with self.assertRaisesRegex(ValueError, "sorted"):
+            metrics.position_mass_metric_config([100.0, 50.0])
+
 
 class ErrorSeriesTest(unittest.TestCase):
     """The canonical error helpers SKIP keyframes absent from truth.
@@ -58,11 +71,14 @@ class ErrorSeriesTest(unittest.TestCase):
 
         errors = metrics.position_errors_m(health, truth)
         np.testing.assert_allclose(errors, [0.0, 5.0])
-        np.testing.assert_allclose(
-            metrics.map_position_errors_m(health, truth), [0.0, 5.0])
+        np.testing.assert_array_equal(errors.keyframe_idx, [0, 2])
+        map_errors = metrics.map_position_errors_m(health, truth)
+        np.testing.assert_allclose(map_errors, [0.0, 5.0])
+        np.testing.assert_array_equal(map_errors.keyframe_idx, [0, 2])
         # Heading errors wrap: 10 vs 350 is 20 degrees, not 340.
         heading = metrics.heading_errors_deg(health, truth)
         np.testing.assert_allclose(heading, [0.0, 20.0])
+        np.testing.assert_array_equal(heading.keyframe_idx, [0, 2])
 
     def test_full_truth_coverage_matches_health_length(self):
         health = [self._health(k, float(k), 0.0) for k in range(4)]
@@ -88,6 +104,40 @@ class PositionNeesTest(unittest.TestCase):
         self.assertAlmostEqual(std, sigma, delta=0.3)
         cov = metrics.position_covariance(belief)
         self.assertAlmostEqual(math.sqrt(cov[0, 0]), sigma, delta=0.3)
+
+
+class BearingResidualDiagnosticTest(unittest.TestCase):
+    def test_signed_null_stratified_and_mode_pose_consistent(self):
+        catalog = SimpleNamespace(
+            east_m=np.array([100.0]), north_m=np.array([0.0]),
+            index_of=lambda landmark_id: {"lm": 0}[landmark_id])
+        measurement = structs.TrackletMeasurement("trk", 0, 100.0, 10.0)
+        mode = structs.ModeRecord(
+            mode_id=7, weight=1.0, n_particles=10,
+            mean_east_m=0.0, mean_north_m=100.0,
+            mean_heading_deg=0.0, position_std_m=1.0,
+            heading_std_deg=1.0, birth_keyframe_idx=0)
+        whole = structs.AssociationPosterior(
+            "trk", 0, 0.1, {"lm": 0.8})
+        mode_specific = structs.AssociationPosterior(
+            "trk", 0, 0.9, {"lm": 0.1}, mode_id=7)
+        health = structs.HealthRecord(
+            keyframe_idx=0, ess=10.0, resampled=False,
+            mean_east_m=0.0, mean_north_m=0.0, mean_heading_deg=0.0,
+            map_east_m=0.0, map_north_m=0.0, map_heading_deg=0.0,
+            position_std_m=1.0, heading_std_deg=1.0, n_measurements=1,
+            associations=[whole, mode_specific], modes=[mode])
+
+        diagnostics = metrics.bearing_residual_diagnostics(
+            catalog, [measurement], [health])
+
+        self.assertEqual(len(diagnostics), 2)
+        self.assertAlmostEqual(diagnostics[0].signed_residual_deg, 10.0)
+        self.assertFalse(diagnostics[0].null_dominated)
+        self.assertEqual(diagnostics[1].mode_id, 7)
+        self.assertEqual(diagnostics[1].pose_north_m, 100.0)
+        self.assertAlmostEqual(diagnostics[1].signed_residual_deg, -35.0)
+        self.assertTrue(diagnostics[1].null_dominated)
 
 
 if __name__ == "__main__":

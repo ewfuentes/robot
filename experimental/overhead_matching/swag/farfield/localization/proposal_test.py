@@ -30,6 +30,25 @@ from experimental.overhead_matching.swag.farfield.localization import (
 _PERIOD_S = 5.0
 
 
+def _propose(measurements, tables, catalog, config, event_id, keyframe_idx,
+             trigger, *, particle_budget=20000):
+    return proposal.propose(
+        measurements, tables, catalog, config, event_id, keyframe_idx,
+        trigger, particle_budget=particle_budget)
+
+
+def _proposal_result(hypotheses, particle_budget):
+    return proposal.ProposalResult(
+        event_id=0, keyframe_idx=0, trigger="test",
+        hypotheses=hypotheses, particle_budget=particle_budget,
+        n_tracklets_considered=1,
+        n_combinations_total=len(hypotheses),
+        n_combinations_enumerated=len(hypotheses),
+        n_combinations_sampled=0, n_combinations_geometry_pruned=0,
+        n_partially_represented_ties=0, n_solution_clusters_merged=0,
+        represented_compatibility_mass=1.0)
+
+
 def _kidnapped_scenario(jump_east_m=1500.0, jump_north_m=-1200.0,
                         jump_at=120, **overrides):
     """A run where the vehicle teleports mid-trajectory (scenario.apply_kidnap
@@ -71,7 +90,7 @@ class HypothesisGenerationTest(unittest.TestCase):
             if len(measurements) < 3:
                 continue
             tried += 1
-            result = proposal.propose(measurements, self.data.tables,
+            result = _propose(measurements, self.data.tables,
                                       self.data.catalog, self.config,
                                       event_id=0, keyframe_idx=keyframe_idx,
                                       trigger="test")
@@ -95,7 +114,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         would pass even if the ids were shuffled."""
         measurements = self._window()
         by_id = {m.tracklet_id: m for m in measurements}
-        result = proposal.propose(measurements, self.data.tables,
+        result = _propose(measurements, self.data.tables,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         self.assertGreater(len(result.hypotheses), 0)
@@ -125,7 +144,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         """One landmark pins heading, two give an arc, three give a fix —
         each is a usable proposal and dropping the weaker kinds throws away
         the cases where only one or two landmarks are visible."""
-        result = proposal.propose(self._window(), self.data.tables,
+        result = _propose(self._window(), self.data.tables,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         counts = result.counts_by_kind()
@@ -133,7 +152,7 @@ class HypothesisGenerationTest(unittest.TestCase):
             self.assertGreater(counts.get(kind, 0), 0, f"no {kind} generated")
 
     def test_hypotheses_are_ranked_by_residual_within_kind(self):
-        result = proposal.propose(self._window(), self.data.tables,
+        result = _propose(self._window(), self.data.tables,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         for kind in (proposal.TRIPLE, proposal.PAIR, proposal.SINGLE):
@@ -141,62 +160,95 @@ class HypothesisGenerationTest(unittest.TestCase):
                          if h.kind == kind]
             self.assertEqual(residuals, sorted(residuals))
 
-    def test_combination_cap_is_reported_not_silent(self):
-        """A capped search must be visible; silently truncating reads as
-        full coverage (§8.4)."""
-        config = structs.ProposalConfig(max_combinations_triple=2,
-                                        max_combinations_pair=2)
-        result = proposal.propose(self._window(),
-                                  self.data.tables, self.data.catalog,
-                                  config, 0, 90, "test")
-        self.assertGreater(result.n_combinations_skipped, 0)
-        # Singles keep their own budget, so the cheap always-available
-        # hypotheses survive a triple-combination explosion.
-        self.assertGreater(result.counts_by_kind().get(proposal.SINGLE, 0), 0)
+    @staticmethod
+    def _tied_fixture(n_landmarks):
+        class Catalog:
+            def __init__(self, count):
+                self.landmark_ids = [f"lm_{index:03d}" for index in range(count)]
+                angles = np.linspace(0.0, 2.0 * math.pi, count,
+                                     endpoint=False)
+                self.east_m = 3000.0 * np.sin(angles)
+                self.north_m = 3000.0 * np.cos(angles)
+                self.max_visible_range_m = np.full(count, 10000.0)
+                self._index = {value: index for index, value
+                               in enumerate(self.landmark_ids)}
 
-    def test_budgets_are_spent_cheapest_kind_first(self):
-        """A tracklet set whose triple combinations explode must still yield
-        singles and pairs — starving the cheap kinds to enumerate the
-        expensive one is the wrong trade when identities are disjunctive."""
-        config = structs.ProposalConfig(max_combinations_triple=0)
-        result = proposal.propose(self._window(), self.data.tables,
-                                  self.data.catalog, config, 0, 90, "test")
-        kinds = result.counts_by_kind()
-        self.assertEqual(kinds.get(proposal.TRIPLE, 0), 0)
-        self.assertGreater(kinds.get(proposal.PAIR, 0), 0)
-        self.assertGreater(kinds.get(proposal.SINGLE, 0), 0)
+            def __contains__(self, landmark_id):
+                return landmark_id in self._index
 
-    def test_a_tie_is_enumerated_whole_or_not_at_all(self):
-        """Real matchers emit disjunctions all tied at one log_lr. Taking an
-        arbitrary subset of a tie means resecting from a coin-flip identity,
-        so a combination that does not fit its budget is skipped entire."""
-        tracklet = self._window()[0].tracklet_id
-        tied = structs.CompatibilityTable(
-            tracklet_id=tracklet, matcher_version="tied",
-            entries=[structs.CompatibilityEntry(lm, 2.0)
-                     for lm in self.data.landmark_ids],
-            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
-        tables = dict(self.data.tables, **{tracklet: tied})
-        n_tied = len(self.data.landmark_ids)
+            def index_of(self, landmark_id):
+                return self._index[landmark_id]
 
-        full = proposal.propose(
-            self._window(), tables, self.data.catalog,
-            structs.ProposalConfig(max_combinations_single=n_tied * 8),
-            0, 90, "test")
-        singles = [h for h in full.hypotheses if h.kind == proposal.SINGLE
-                   and h.tracklet_ids == (tracklet,)]
-        self.assertEqual(len(singles), n_tied,
-                         "the tie was truncated rather than enumerated")
+        catalog = Catalog(n_landmarks)
+        measurement = structs.TrackletMeasurement("trk", 0, 12.0, 100.0)
+        table = structs.CompatibilityTable(
+            tracklet_id="trk", matcher_version="tied",
+            entries=[structs.CompatibilityEntry(landmark_id, 2.0)
+                     for landmark_id in catalog.landmark_ids],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0,
+            status="fast")
+        return catalog, measurement, table
 
-        starved = proposal.propose(
-            self._window(), tables, self.data.catalog,
-            structs.ProposalConfig(max_combinations_single=n_tied - 1),
-            0, 90, "test")
+    def test_small_candidate_space_is_enumerated_without_truncation(self):
+        catalog, measurement, table = self._tied_fixture(4)
+        config = structs.ProposalConfig(exhaustive_tuple_limit=8)
+        result = _propose(
+            [measurement], {"trk": table}, catalog, config, 0, 0, "test",
+            particle_budget=4 * config.min_particles_single)
+        self.assertEqual(result.n_combinations_total, 4)
+        self.assertEqual(result.n_combinations_enumerated, 4)
+        self.assertEqual(result.n_combinations_sampled, 0)
+        self.assertEqual(len(result.hypotheses), 4)
+        self.assertAlmostEqual(result.represented_compatibility_mass, 1.0)
+
+    def test_large_tie_is_systematically_sampled_and_reported(self):
+        catalog, measurement, table = self._tied_fixture(20)
+        config = structs.ProposalConfig(
+            exhaustive_tuple_limit=4,
+            tuple_samples_per_active_solution=4)
+        result = _propose(
+            [measurement], {"trk": table}, catalog, config, 0, 0, "test",
+            particle_budget=config.min_particles_single)
+        reversed_table = structs.CompatibilityTable(
+            tracklet_id=table.tracklet_id,
+            matcher_version=table.matcher_version,
+            entries=list(reversed(table.entries)),
+            default_log_lr=table.default_log_lr, clip_lo=table.clip_lo,
+            clip_hi=table.clip_hi, status=table.status)
+        reordered = _propose(
+            [measurement], {"trk": reversed_table}, catalog, config,
+            0, 0, "test", particle_budget=config.min_particles_single)
+
+        self.assertEqual(result.n_combinations_total, 20)
+        self.assertEqual(result.n_combinations_sampled, 4)
+        self.assertEqual(result.n_combinations_skipped, 16)
+        self.assertEqual(result.n_partially_represented_ties, 1)
         self.assertEqual(
-            [h for h in starved.hypotheses if h.kind == proposal.SINGLE
-             and h.tracklet_ids == (tracklet,)], [],
-            "a tie that does not fit must be skipped whole, not part-way")
-        self.assertGreaterEqual(starved.n_combinations_skipped, n_tied)
+            [item.landmark_ids for item in result.hypotheses],
+            [item.landmark_ids for item in reordered.hypotheses])
+
+    def test_near_duplicate_pose_solutions_share_one_budget(self):
+        config = structs.ProposalConfig()
+        hypotheses = [
+            proposal.PointHypothesis(
+                kind=proposal.TRIPLE, tracklet_ids=("a", "b", "c"),
+                landmark_ids=("x", "y", "z"), east_m=100.0,
+                north_m=200.0, heading_rad=0.2,
+                compatibility_mass=0.5),
+            proposal.PointHypothesis(
+                kind=proposal.TRIPLE, tracklet_ids=("d", "e", "f"),
+                landmark_ids=("u", "v", "w"), east_m=110.0,
+                north_m=205.0, heading_rad=0.21,
+                compatibility_mass=0.4),
+            proposal.PointHypothesis(
+                kind=proposal.TRIPLE, tracklet_ids=("g", "h", "i"),
+                landmark_ids=("r", "s", "t"), east_m=1500.0,
+                north_m=-800.0, heading_rad=-1.0,
+                compatibility_mass=0.1),
+        ]
+        clustered, merged = proposal._cluster_hypotheses(hypotheses, config)
+        self.assertEqual(len(clustered), 2)
+        self.assertEqual(merged, 1)
 
     def test_coarse_bearings_widen_the_fix_rather_than_being_rejected(self):
         """What a coarse bearing implies is an IMPRECISE fix, not an
@@ -213,7 +265,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         config = structs.ProposalConfig()
 
         def triples(window):
-            result = proposal.propose(window, self.data.tables,
+            result = _propose(window, self.data.tables,
                                       self.data.catalog, config, 0, 90,
                                       "test")
             return [h for h in result.hypotheses if h.kind == proposal.TRIPLE]
@@ -260,7 +312,7 @@ class HypothesisGenerationTest(unittest.TestCase):
             by_tracklet.setdefault(meas.tracklet_id, meas)
         ordered = list(by_tracklet.values())
 
-        kinds_for = lambda subset: set(proposal.propose(
+        kinds_for = lambda subset: set(_propose(
             subset, self.data.tables, self.data.catalog, self.config, 0, 90,
             "test").counts_by_kind())
         self.assertIn(proposal.TRIPLE, kinds_for(ordered[:3]))
@@ -273,7 +325,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         """The single-landmark case is worth having precisely because it
         removes the heading dimension exactly."""
         window = self._window()[:1]
-        result = proposal.propose(window, self.data.tables,
+        result = _propose(window, self.data.tables,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         strict = structs.ProposalConfig(injection_sigma_m=0.0,
@@ -300,7 +352,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         """Sampling uniformly in range instead of area piles particles up
         near the landmark and silently biases the proposal density."""
         window = self._window()[:1]
-        result = proposal.propose(window, self.data.tables,
+        result = _propose(window, self.data.tables,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         hypothesis = next(h for h in result.hypotheses
@@ -359,14 +411,14 @@ class HypothesisGenerationTest(unittest.TestCase):
             tracklet_id=tid, matcher_version="flat", entries=[],
             default_log_lr=0.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
             for tid in self.data.tables}
-        result = proposal.propose(self._window(), flat,
+        result = _propose(self._window(), flat,
                                   self.data.catalog, self.config, 0, 90,
                                   "test")
         self.assertEqual(result.hypotheses, [])
         self.assertEqual(result.n_tracklets_considered, 0)
 
     def test_sampling_is_deterministic(self):
-        result = proposal.propose(self._window(),
+        result = _propose(self._window(),
                                   self.data.tables, self.data.catalog,
                                   self.config, 0, 90, "test")
         draws = [proposal.sample_particles(result, 500, self.config,
@@ -374,6 +426,45 @@ class HypothesisGenerationTest(unittest.TestCase):
                  for _ in range(2)]
         np.testing.assert_array_equal(draws[0][0], draws[1][0])
         np.testing.assert_array_equal(draws[0][3], draws[1][3])
+
+    def test_sampling_returns_exact_count_and_honors_point_floors(self):
+        hypotheses = [proposal.PointHypothesis(
+            kind=proposal.TRIPLE, tracklet_ids=(f"t{index}",),
+            landmark_ids=(f"l{index}",), east_m=1000.0 * index,
+            compatibility_mass=1.0 / 3.0)
+            for index in range(3)]
+        config = structs.ProposalConfig(
+            injection_sigma_m=0.0, injection_heading_sigma_deg=0.0)
+        result = _proposal_result(hypotheses, 96)
+        sampled = proposal.sample_particles(
+            result, 96, config, np.random.default_rng(3))
+        self.assertEqual(sampled[0].size, 96)
+        np.testing.assert_array_equal(
+            np.bincount(sampled[3], minlength=3), [32, 32, 32])
+
+        one = proposal.sample_particles(
+            _proposal_result(hypotheses[:1], 1), 1, config,
+            np.random.default_rng(3))
+        self.assertEqual(one[0].size, 1)
+
+    def test_arc_length_guides_remaining_particle_allocation(self):
+        arc = resection.arcs_for_signed_angle(
+            -1000.0, 0.0, 1000.0, 0.0, math.radians(60.0))[0]
+        hypotheses = [proposal.ArcHypothesis(
+            kind=proposal.PAIR, tracklet_ids=(f"a{index}", f"b{index}"),
+            landmark_ids=(f"x{index}", f"y{index}"), arc=arc,
+            landmark_a=(-1000.0, 0.0), landmark_b=(1000.0, 0.0),
+            bearing_a_rad=0.0, arc_length_m=length,
+            compatibility_mass=0.5)
+            for index, length in enumerate((100.0, 10000.0))]
+        config = structs.ProposalConfig(
+            injection_sigma_m=0.0, injection_heading_sigma_deg=0.0)
+        sampled = proposal.sample_particles(
+            _proposal_result(hypotheses, 256), 256, config,
+            np.random.default_rng(5))
+        counts = np.bincount(sampled[3], minlength=2)
+        self.assertGreaterEqual(int(counts.min()), config.min_particles_arc)
+        self.assertGreater(counts[1], counts[0])
 
 
 class InitTriggerTest(unittest.TestCase):

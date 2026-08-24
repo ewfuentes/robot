@@ -161,7 +161,12 @@ py_library(
     name = "audit_dataset_lib",
     srcs = ["audit_dataset.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":geometry"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+        requirement("pillow"),
+        ":geometry",
+    ],
 )
 
 py_binary(
@@ -197,6 +202,9 @@ py_library(
         ":build_config",
         ":nominal_forward",
         ":paths",
+        ":provenance",
+        "//experimental/overhead_matching/swag/farfield/localization:run_identity",
+        "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
     ],
 )
 
@@ -217,5 +225,20 @@ py_test(
         ":build_config",
         ":paths",
         ":pipeline_lib",
+        "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
+    ],
+)
+
+py_test(
+    name = "pipeline_cli_test",
+    srcs = ["pipeline_cli_test.py"],
+    data = [
+        "configs/harbor_example.yaml",
+        ":pipeline",
+    ],
+    deps = [
+        requirement("pyyaml"),
+        ":artifact",
+        "@rules_python//python/runfiles",
     ],
 )

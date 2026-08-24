@@ -1,12 +1,14 @@
 """Shared helpers for compact landmark feathers.
 
 All Feather reading and construction goes through `farfield.catalog.schema`,
-the only reader in the farfield tree. Catalogs have exactly four persisted
-columns; source-specific metadata such as ENC's ``object_class`` lives in the
-canonical JSON ``tags`` object. Geometry constants come from
-`farfield.geometry` (one owner per convention).
+the only reader in the farfield tree. Catalogs have four required compact
+columns and may retain explicitly allowed structural source metadata. ENC's
+``object_class`` is also mirrored in canonical JSON ``tags`` for tag-only
+consumers. Geometry constants come from `farfield.geometry` (one owner per
+convention).
 """
 
+import json
 import math
 
 import geopandas as gpd
@@ -19,15 +21,17 @@ from experimental.overhead_matching.swag.farfield.catalog import schema
 # Tags that carry source provenance rather than observable identity. They are
 # persisted in the compact tag object, but deliberately excluded when deciding
 # whether two source features describe the same physical landmark.
-DEDUPE_METADATA_TAGS = frozenset({"object_class"})
+SOURCE_RECORDS_TAG = "source_records"
+DEDUPE_METADATA_TAGS = frozenset({"object_class", SOURCE_RECORDS_TAG})
 
 
 def tag_signatures(gdf: gpd.GeoDataFrame) -> list[tuple]:
     """Hashable tag set per row: populated string tags only, sorted.
 
     ``object_class`` is decoded from the compact tags object and excluded as
-    source provenance. Thus an ENC layer split does not prevent otherwise
-    identical, touching features from deduplicating.
+    source provenance, regardless of its mirrored structural column. Thus an
+    ENC layer split does not prevent otherwise identical, touching features
+    from deduplicating.
     """
     return [
         tuple(sorted((k, v) for k, v in props.items()
@@ -72,7 +76,9 @@ def dedupe_exact_duplicates(
     touches (within `tolerance_m` of) another such feature — e.g. one bridge
     stored as four abutting segments, or an island clipped at an ENC cell
     boundary into two polygons. Each such cluster becomes a single feature
-    with the unioned geometry, keeping the first member's `id`.
+    with a unioned geometry. Cross-source clusters prefer ENC explicitly and
+    retain every merged record's id/source in the non-evidence
+    ``source_records`` metadata tag; input ordering never chooses the winner.
 
     Proximity is required, not just matching tags: 1638 distinct Boston piers
     all carry `man_made=pier`, and two unrelated islands 13 km apart are both
@@ -88,6 +94,7 @@ def dedupe_exact_duplicates(
 
     keep_positions: list[int] = []
     merged_geometry: dict[int, object] = {}
+    merged_provenance: dict[int, str] = {}
     n_dropped = 0
     n_repaired = 0
     n_union_failed = 0
@@ -101,10 +108,21 @@ def dedupe_exact_duplicates(
                 _cluster_by_proximity(geometries, tolerance_deg)):
             clusters.setdefault(label, []).append(local)
         for members in clusters.values():
-            first = positions[members[0]]
+            absolute = [positions[member] for member in members]
+            sources = {str(gdf["landmark_type"].iloc[p]) for p in absolute}
+            preferred_source = "enc" if "enc" in sources else min(sources)
+            preferred = [p for p in absolute
+                         if gdf["landmark_type"].iloc[p] == preferred_source]
+            first = min(preferred,
+                        key=lambda p: (str(gdf["id"].iloc[p]), p))
             keep_positions.append(first)
             if len(members) > 1:
-                parts = [geometries[m] for m in members]
+                # A cross-source duplicate keeps the preferred source's
+                # geometry as well as its identity. Unioning a less accurate
+                # OSM point/shape into an ENC feature would undo the choice.
+                geometry_positions = (preferred if len(sources) > 1
+                                      else absolute)
+                parts = [gdf.geometry.iloc[p] for p in geometry_positions]
                 # OSM polygons are not always valid (self-touching rings are
                 # common), and GEOS raises a TopologyException rather than
                 # degrading. Repair on demand instead of paying make_valid on
@@ -124,6 +142,16 @@ def dedupe_exact_duplicates(
                         union = parts[0]
                         n_union_failed += 1
                 merged_geometry[first] = union
+                if len(sources) > 1:
+                    records = sorted(
+                        ({"id": str(gdf["id"].iloc[p]),
+                          "landmark_type": str(
+                              gdf["landmark_type"].iloc[p])}
+                         for p in absolute),
+                        key=lambda record: (record["landmark_type"],
+                                            record["id"]))
+                    merged_provenance[first] = json.dumps(
+                        records, sort_keys=True, separators=(",", ":"))
                 n_dropped += len(members) - 1
 
     keep_positions.sort()
@@ -135,6 +163,18 @@ def dedupe_exact_duplicates(
                 geometry[offset] = merged_geometry[position]
         out = out.set_geometry(
             gpd.GeoSeries(geometry, index=out.index, crs=gdf.crs))
+    if merged_provenance:
+        decoded = schema.tag_dicts(out)
+        for offset, position in enumerate(keep_positions):
+            if position not in merged_provenance:
+                continue
+            tags = dict(decoded[offset])
+            tags[SOURCE_RECORDS_TAG] = merged_provenance[position]
+            out.iloc[offset, out.columns.get_loc(schema.TAGS_COLUMN)] = (
+                json.dumps(tags, sort_keys=True, separators=(",", ":")))
+        # Keep the source-build helper behind the same strict persisted schema
+        # boundary as every catalog reader.
+        schema.tag_dicts(out)
     if verbose:
         print(f"Dedupe (identical tags, geometries within {tolerance_m:g} m):"
               f" {len(gdf)} -> {len(out)} landmarks ({n_dropped} merged away)")
@@ -254,34 +294,33 @@ def report_cross_source_collisions(
 def bbox_from_dataset(dataset_base) -> tuple[float, float, float, float]:
     """(west, south, east, north) of a dataset's trajectory bbox.
 
-    THE one definition (the checkpoint branch carried a copy per extractor,
-    each reading a different file). The farfield collection package
-    (REORG.md PR 13) does not exist yet; when it lands, this helper should
-    move there (or be imported from there) so collection and catalog tools
-    share it.
-
-    Reads the farfield dataset contract first (`pipeline_metadata.json`'s
-    `bbox`, written by ingest and the collection pipeline), falling back to
-    the VIGOR-style `satellite_bbox.json` for legacy directories.
+    Reads the canonical `pipeline_metadata.json` bbox written by ingest and the
+    collection pipeline. Callers may provide an explicit bbox when that record
+    is unavailable.
     """
     import json
     from pathlib import Path
 
     dataset_base = Path(dataset_base)
     meta_path = dataset_base / "pipeline_metadata.json"
-    if meta_path.exists():
-        bbox = json.loads(meta_path.read_text()).get("bbox")
-        if bbox:
-            return (float(bbox["west"]), float(bbox["south"]),
-                    float(bbox["east"]), float(bbox["north"]))
-    legacy = dataset_base / "satellite_bbox.json"
-    if legacy.exists():
-        bbox = json.loads(legacy.read_text())
-        return (float(bbox["west"]), float(bbox["south"]),
-                float(bbox["east"]), float(bbox["north"]))
-    raise FileNotFoundError(
-        f"{dataset_base} has neither a pipeline_metadata.json bbox nor a "
-        f"satellite_bbox.json; pass an explicit --bbox instead")
+    if not meta_path.is_file() or meta_path.is_symlink():
+        raise FileNotFoundError(
+            f"{dataset_base} has no regular pipeline_metadata.json; pass an "
+            "explicit --bbox instead")
+    document = json.loads(meta_path.read_text())
+    if not isinstance(document, dict) or not isinstance(document.get("bbox"), dict):
+        raise ValueError(f"{meta_path} must contain an object-valued bbox")
+    bbox = document["bbox"]
+    try:
+        values = tuple(float(bbox[key]) for key in ("west", "south", "east", "north"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{meta_path} has an invalid bbox: {exc}") from exc
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{meta_path} bbox values must be finite")
+    west, south, east, north = values
+    if not (-180.0 <= west < east <= 180.0 and -90.0 <= south < north <= 90.0):
+        raise ValueError(f"{meta_path} bbox is outside WGS84 bounds or unordered")
+    return values
 
 
 def buffered_bbox(bbox: tuple[float, float, float, float],

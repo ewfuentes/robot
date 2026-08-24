@@ -106,22 +106,5 @@ class TestCorrespondenceClassifier(unittest.TestCase):
         self.assertEqual(out.shape, (B, 1))
 
 
-class TestVocabSizeMismatchFailsLoudly(unittest.TestCase):
-    def test_checkpoint_with_smaller_vocab_raises(self):
-        """A checkpoint trained before keys were appended to _TAGS_TO_KEEP must
-        fail to load (shape mismatch), not silently run with stale key rows."""
-        cfg = CorrespondenceClassifierConfig(
-            encoder=TagBundleEncoderConfig(
-                text_input_dim=16, text_proj_dim=8, per_tag_dim=4),
-            mlp_hidden_dim=8, dropout=0.0,
-        )
-        model = CorrespondenceClassifier(cfg)
-        state_dict = {k: v.clone() for k, v in model.state_dict().items()}
-        key = "encoder.key_embedding.weight"
-        state_dict[key] = state_dict[key][: NUM_TAG_KEYS - 3]
-        with self.assertRaises(RuntimeError):
-            CorrespondenceClassifier(cfg).load_state_dict(state_dict)
-
-
 if __name__ == "__main__":
     unittest.main()

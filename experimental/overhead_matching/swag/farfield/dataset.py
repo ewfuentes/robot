@@ -207,13 +207,22 @@ def require_camera_frame_panoramas(metadata: dict, dataset_base: Path) -> None:
     assumed: on a north-aligned dataset every bearing silently becomes
     absolute and downstream adds heading to it again.
     """
-    north_aligned = metadata.get("north_aligned")
-    if north_aligned is None:
+    is_equirectangular = metadata.get("is_equirectangular")
+    if type(is_equirectangular) is not bool:
         raise ContractViolation(
-            f"{dataset_base}: pipeline_metadata.json does not record "
-            f"'north_aligned'. The pipeline requires camera-frame panoramas "
-            f"and refuses to guess; record the orientation the images are "
-            f"actually stored in.")
+            f"{dataset_base}: pipeline_metadata.json 'is_equirectangular' "
+            "must be an actual boolean")
+    if not is_equirectangular:
+        raise ContractViolation(
+            f"{dataset_base}: perspective imagery is not supported; "
+            "is_equirectangular must be true")
+
+    north_aligned = metadata.get("north_aligned")
+    if type(north_aligned) is not bool:
+        raise ContractViolation(
+            f"{dataset_base}: pipeline_metadata.json 'north_aligned' must be "
+            "an actual boolean. The pipeline requires camera-frame panoramas "
+            "and refuses to guess their orientation.")
     if north_aligned:
         raise ContractViolation(
             f"{dataset_base}: panoramas are north-aligned (north_aligned: "
@@ -221,6 +230,25 @@ def require_camera_frame_panoramas(metadata: dict, dataset_base: Path) -> None:
             f"columns; feeding it north-aligned frames double-counts heading "
             f"with every number still well-formed. Ingest the raw "
             f"camera-frame frames instead.")
+
+    convention = metadata.get("azimuth_convention")
+    if not isinstance(convention, dict):
+        raise ContractViolation(
+            f"{dataset_base}: pipeline_metadata.json 'azimuth_convention' "
+            "must be an object")
+    images_rotated = convention.get("images_rotated")
+    if type(images_rotated) is not bool:
+        raise ContractViolation(
+            f"{dataset_base}: azimuth_convention.images_rotated must be an "
+            "actual boolean")
+    if images_rotated:
+        raise ContractViolation(
+            f"{dataset_base}: azimuth_convention.images_rotated must be false; "
+            "prediction requires unrotated camera-frame panoramas")
+    if convention.get("camera_frame") != geo.CAMERA_FRAME:
+        raise ContractViolation(
+            f"{dataset_base}: azimuth_convention.camera_frame must be the "
+            f"canonical camera frame {geo.CAMERA_FRAME!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +308,7 @@ class Observation:
 
 @dataclass
 class IngestParams:
-    """Detection-ingest parameters. No defaults on purpose (REORG.md rule 2):
-    values come from the run's recorded config."""
+    """Detection-ingest parameters supplied by the recorded build config."""
     fov_deg: float
     seam_gap_norm: float    # bbox units (0-1000): margin for a seam candidate
     seam_min_y_iou: float   # vertical IoU to accept a seam continuation
@@ -292,6 +319,8 @@ class IngestStats:
     n_frames: int = 0
     n_raw_landmark_entries: int = 0
     n_observations: int = 0
+    n_boxes_invalid_geometry: int = 0
+    n_landmarks_without_valid_boxes: int = 0
 
 
 class IngestResult:
@@ -474,7 +503,8 @@ def _finite_number(value, where: str) -> float:
     return result
 
 
-def _validated_landmark(landmark, where: str) -> tuple[dict, list[BBox]]:
+def _validated_landmark(landmark, where: str) \
+        -> tuple[dict, list[BBox], int]:
     if not isinstance(landmark, dict):
         raise ContractViolation(f"{where} must be an object")
     _require_exact_keys(
@@ -505,38 +535,42 @@ def _validated_landmark(landmark, where: str) -> tuple[dict, list[BBox]]:
             raise ContractViolation(f"{tag_where} values must be strings")
 
     raw_boxes = landmark["bounding_boxes"]
-    if not isinstance(raw_boxes, list) or not raw_boxes:
-        raise ContractViolation(
-            f"{where}.bounding_boxes must be a non-empty list")
+    if not isinstance(raw_boxes, list):
+        raise ContractViolation(f"{where}.bounding_boxes must be a list")
     boxes = []
+    n_invalid = 0
     for index, raw_box in enumerate(raw_boxes):
         box_where = f"{where}.bounding_boxes[{index}]"
-        if not isinstance(raw_box, dict):
-            raise ContractViolation(f"{box_where} must be an object")
-        _require_exact_keys(
-            raw_box, {"yaw_angle", "xmin", "ymin", "xmax", "ymax"},
-            box_where)
-        yaw = raw_box["yaw_angle"]
-        if (isinstance(yaw, bool) or not isinstance(yaw, int)
-                or str(yaw) not in VALID_FACE_YAWS):
-            raise ContractViolation(
-                f"{box_where}.yaw_angle must be one of "
-                f"{[int(value) for value in VALID_FACE_YAWS]}")
-        coordinates = {
-            name: _finite_number(raw_box[name], f"{box_where}.{name}")
-            for name in ("xmin", "ymin", "xmax", "ymax")
-        }
-        if not all(0.0 <= value <= geo.BBOX_NORM_MAX
-                   for value in coordinates.values()):
-            raise ContractViolation(
-                f"{box_where}: coordinates must be in "
-                f"[0, {geo.BBOX_NORM_MAX}]")
-        if (coordinates["xmin"] >= coordinates["xmax"]
-                or coordinates["ymin"] >= coordinates["ymax"]):
-            raise ContractViolation(
-                f"{box_where}: bbox must have positive width and height")
+        try:
+            if not isinstance(raw_box, dict):
+                raise ContractViolation(f"{box_where} must be an object")
+            _require_exact_keys(
+                raw_box, {"yaw_angle", "xmin", "ymin", "xmax", "ymax"},
+                box_where)
+            yaw = raw_box["yaw_angle"]
+            if (isinstance(yaw, bool) or not isinstance(yaw, int)
+                    or str(yaw) not in VALID_FACE_YAWS):
+                raise ContractViolation(
+                    f"{box_where}.yaw_angle must be one of "
+                    f"{[int(value) for value in VALID_FACE_YAWS]}")
+            coordinates = {
+                name: _finite_number(raw_box[name], f"{box_where}.{name}")
+                for name in ("xmin", "ymin", "xmax", "ymax")
+            }
+            if not all(0.0 <= value <= geo.BBOX_NORM_MAX
+                       for value in coordinates.values()):
+                raise ContractViolation(
+                    f"{box_where}: coordinates must be in "
+                    f"[0, {geo.BBOX_NORM_MAX}]")
+            if (coordinates["xmin"] >= coordinates["xmax"]
+                    or coordinates["ymin"] >= coordinates["ymax"]):
+                raise ContractViolation(
+                    f"{box_where}: bbox must have positive width and height")
+        except ContractViolation:
+            n_invalid += 1
+            continue
         boxes.append(BBox(face_yaw_deg=yaw, **coordinates))
-    return landmark, boxes
+    return landmark, boxes, n_invalid
 
 
 def _observation_from_group(pano_id: str, frame_idx: int, landmark_idx: int,
@@ -633,9 +667,13 @@ def run_ingest(dataset_base: Path, frame_landmarks_dir: Path,
         n_frame_obs = 0
         for landmark_idx, landmark in enumerate(prediction["landmarks"]):
             stats.n_raw_landmark_entries += 1
-            landmark, boxes = _validated_landmark(
+            landmark, boxes, n_invalid = _validated_landmark(
                 landmark,
                 f"prediction[{frame.pano_stem!r}].landmarks[{landmark_idx}]")
+            stats.n_boxes_invalid_geometry += n_invalid
+            if not boxes:
+                stats.n_landmarks_without_valid_boxes += 1
+                continue
             groups = group_seam_boxes(boxes, params)
             for box_group_idx, group in enumerate(groups):
                 observations.append(_observation_from_group(

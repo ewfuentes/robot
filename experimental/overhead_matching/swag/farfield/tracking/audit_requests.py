@@ -438,7 +438,7 @@ def _validate_weight(value, label):
 
 
 def _require_exact_response_shape(raw, canonical, path="audit"):
-    """Reject fields Pydantic would otherwise ignore as forward/legacy data."""
+    """Reject fields Pydantic would otherwise ignore as unknown data."""
     if isinstance(canonical, dict):
         if not isinstance(raw, dict) or set(raw) != set(canonical):
             raw_keys = sorted(raw) if isinstance(raw, dict) else type(raw).__name__
@@ -847,7 +847,7 @@ def main():
         print(f"published immutable audit requests: {request_dir}")
         return
     attempts_dir = work_dir / ATTEMPTS_DIR_NAME
-    for transport in sorted(work_dir.glob("transport_submit_*.jsonl")):
+    for transport in vbm.completed_submission_results(work_dir):
         imported = llm.import_transport_results(
             transport, attempts_dir, request_set)
         if imported:
@@ -858,22 +858,20 @@ def main():
         pending = llm.pending_request_keys(
             request_set, attempts, _validate_audit_response)
         if pending:
-            round_index = 1 + len(tuple(
-                work_dir.glob("transport_submit_*.jsonl")))
-            pending_path = work_dir / f"requests_submit_{round_index:04d}.jsonl"
-            transport_path = (
-                work_dir / f"transport_submit_{round_index:04d}.jsonl")
-            artifact.atomic_write_file(
+            round_index, pending_path, transport_path = (
+                vbm.next_submission_paths(work_dir))
+            artifact.atomic_create_file(
                 pending_path,
                 llm.transport_requests_bytes(request_set, pending))
             vbm.run_requests(
                 args, pending_path, transport_path,
                 tag=(f"{args.dataset}_semantic_audit_{output_version}_"
                      f"r{round_index:04d}"))
-            if transport_path.exists():
+            for completed in vbm.completed_submission_results(work_dir):
                 imported = llm.import_transport_results(
-                    transport_path, attempts_dir, request_set)
-                print(f"preserved {imported} new provider attempt(s)")
+                    completed, attempts_dir, request_set)
+                if imported:
+                    print(f"preserved {imported} new provider attempt(s)")
         else:
             print("all audit requests already have a validated success")
     if not attempts_dir.exists():

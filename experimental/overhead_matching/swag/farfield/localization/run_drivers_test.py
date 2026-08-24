@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     run_export,
     run_io,
     run_localization,
+    run_identity,
     structs,
 )
 
@@ -107,6 +109,8 @@ def localization_config(*, init="uniform", prior_sigma_m=None,
         "prior_sigma_m": prior_sigma_m,
         "margin_m": 500.0,
         "bearings_enabled": bearings_enabled,
+        "ablation_tags": [],
+        "position_mass_radii_m": [50.0, 100.0],
     })
     return config
 
@@ -117,7 +121,8 @@ def write_build_config(root: Path, localization: dict) \
         root / "build",
         dataset=DATASET,
         config={
-            "artifacts": {"localization_inputs_version": "v1"},
+            "artifacts": {"localization_inputs_version": "v1",
+                          "object_tracks_version": "tracks-v1"},
             "localization": localization,
         },
         generator="test",
@@ -139,7 +144,30 @@ def export_argv(input_dir: Path, out_dir: Path, config_path: Path,
     ]
 
 
+def expected_run_dir(root: Path, build_identity: str) -> Path:
+    return root / run_identity.localization_run_version(
+        "run", "tracks-v1", build_identity)
+
+
 class RunExportTest(unittest.TestCase):
+    def test_rejects_run_dir_that_conflicts_with_stable_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "localization_inputs"
+            config_path, digest, build_identity = write_build_config(
+                root, localization_config())
+            data = tiny_export(input_dir, build_identity)
+            argv = export_argv(
+                input_dir, root / "conflicting-run-name", config_path, digest)
+            with mock.patch.object(run_export.export_ingest, "load",
+                                   return_value=data), \
+                    mock.patch("sys.argv", argv), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO) \
+                    as stderr, self.assertRaises(SystemExit):
+                run_export.main()
+            self.assertIn("immutable localization run identity",
+                          stderr.getvalue())
+
     def test_rejects_cross_build_inputs_and_symlinked_build_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -162,9 +190,9 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            out = root / "run"
             config_path, digest, build_identity = write_build_config(
                 root, localization_config())
+            out = expected_run_dir(root, build_identity)
             data = tiny_export(input_dir, build_identity)
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), mock.patch(
@@ -172,6 +200,8 @@ class RunExportTest(unittest.TestCase):
                         input_dir, out, config_path, digest)):
                 run_export.main()
             data = run_io.read_run(out)
+            self.assertTrue(
+                (out / "posterior_predictive_bearings.json").is_file())
         manifest = data.manifest
         self.assertEqual(manifest.export_dir, str(input_dir))
         self.assertEqual(manifest.max_visible_range_m, 10000.0)
@@ -180,8 +210,20 @@ class RunExportTest(unittest.TestCase):
         self.assertEqual(manifest.run_kind, "evaluation")
         self.assertEqual(manifest.localization_inputs_manifest_sha256,
                          INPUT_DIGEST)
+        self.assertEqual(manifest.ablation_tags, [])
+        self.assertEqual(manifest.truth_position_schema,
+                         "farfield_truth_position/v1")
+        self.assertEqual(manifest.position_mass_metric.radii_m,
+                         [50.0, 100.0])
         self.assertEqual(len(data.measurements), 1)
         self.assertEqual(len(data.health), 6)
+        expected_metrics = {
+            "posterior_position_probability_mass_within_radius@1:radius_m=50",
+            "posterior_position_probability_mass_within_radius@1:radius_m=100",
+        }
+        self.assertTrue(all(
+            set(record.position_probability_mass) == expected_metrics
+            for record in data.health))
 
     def test_no_bearings_writes_the_run_that_happened(self):
         # The old driver wrote the FULL unconsumed measurements under
@@ -190,9 +232,9 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            out = root / "run"
             config_path, digest, build_identity = write_build_config(
                 root, localization_config(bearings_enabled=False))
+            out = expected_run_dir(root, build_identity)
             data = tiny_export(input_dir, build_identity)
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), mock.patch(
@@ -202,18 +244,20 @@ class RunExportTest(unittest.TestCase):
             data = run_io.read_run(out)
         self.assertEqual(data.measurements, [])
         self.assertEqual(data.tables, {})
-        self.assertIn("bearings withheld", data.manifest.matcher_version)
+        self.assertEqual(data.manifest.matcher_version, "m")
         self.assertEqual(data.manifest.run_kind, "diagnostic_control")
+        self.assertEqual(data.manifest.ablation_tags, ["no_bearings"])
 
     def test_truth_init_requires_prior_sigma(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
             config_path, digest, build_identity = write_build_config(
-                root, localization_config(init="truth"))
+                root, localization_config(init="truth_position"))
             data = tiny_export(input_dir, build_identity)
             argv = export_argv(
-                input_dir, root / "run", config_path, digest)
+                input_dir, expected_run_dir(root, build_identity), config_path,
+                digest)
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), \
                     mock.patch("sys.argv", argv), \
@@ -227,7 +271,7 @@ class RunLocalizationTest(unittest.TestCase):
             out = Path(tmp) / "run"
             argv = ["run_localization",
                     "--scenario", "harbor_loop",
-                    "--output_dir", str(out),
+                    "--run_dir", str(out),
                     "--init", "local",
                     "--n_particles", "400",
                     "--max_visible_range_m", "10000",
@@ -243,11 +287,14 @@ class RunLocalizationTest(unittest.TestCase):
         self.assertEqual(data.manifest.export_dir, "synthetic:harbor_loop")
         self.assertEqual(data.manifest.max_visible_range_m, 10000.0)
         self.assertTrue(data.manifest.git_commit)
+        self.assertEqual(data.manifest.run_kind, "synthetic")
+        self.assertTrue(all(record.position_probability_mass
+                            for record in data.health))
         self.assertGreater(len(data.health), 10)
 
     def test_kidnap_requires_explicit_teleport(self):
         argv = ["run_localization", "--scenario", "harbor_loop",
-                "--output_dir", "/tmp/x", "--init", "global",
+                "--run_dir", "/tmp/x", "--init", "global",
                 "--n_particles", "400", "--max_visible_range_m", "10000",
                 "--box_halfwidth_m", "2500",
                 "--keyframe_period_s", "2.0", "--epoch_length", "5",

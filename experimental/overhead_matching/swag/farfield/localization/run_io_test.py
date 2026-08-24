@@ -75,7 +75,9 @@ def make_manifest(**overrides):
 
 
 def sample_payload(*, bearings=True):
-    manifest = make_manifest(bearings_consumed=bearings)
+    manifest = make_manifest(
+        bearings_consumed=bearings,
+        ablation_tags=[] if bearings else ["no_bearings"])
     history = FakeHistory(n_measurements_at_1=int(bearings))
     truth = [structs.TruthPose(k, 0.0, 0.0, 0.0) for k in range(3)]
     odometry = [structs.OdometryDelta(k, 40.0, 0.0, 0.0, 1.0, 0.02)

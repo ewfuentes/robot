@@ -21,14 +21,12 @@ written so the consumer can decide, rather than a boolean that has already
 decided. `implied_speed_mps` is the tell -- a value far above what the vessel
 can do means the two frames are not a motion step at all.
 
-The record goes to `<dataset>/_manifests/recording_seams.json` -- the derived
-triage lane beside the frozen definition (REORG.md rule 7: nothing but the
-explicit publisher mutates `pipeline_metadata.json`). `dataset_status_table`
-reads it from there, and `trim_dataset` rebases its indices whenever it
-renumbers frames.
+The record goes to `<dataset>/_manifests/recording_seams.json` in the derived
+triage lane. `dataset_status_table` reads it from there, and `trim_dataset`
+rebases its indices whenever it renumbers frames.
 
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:annotate_recording_seams -- \\
-        --dataset_path /data/farfield_matching/datasets/nyc_east_river \\
+        --dataset_path /path/to/dataset \\
         --gap_multiple 10 --min_gap_s 20
 """
 
@@ -137,13 +135,11 @@ def main(argv=None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset_path", nargs="+", required=True, type=Path)
     # What counts as a seam shapes every consumer's odometry model, so the
-    # thresholds are required (REORG.md rule 2), previous values quoted.
+    # thresholds are required.
     p.add_argument("--gap_multiple", type=float, required=True,
-                   help="a step this many times the median dt counts as a "
-                        "gap (previously 10.0 on the harbor collections)")
+                   help="a step this many times the median dt counts as a gap")
     p.add_argument("--min_gap_s", type=float, required=True,
-                   help="absolute floor for a gap, seconds (previously 20.0 "
-                        "on the harbor collections)")
+                   help="absolute floor for a gap, seconds")
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args(argv)
 

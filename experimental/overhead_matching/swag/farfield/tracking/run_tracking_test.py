@@ -29,6 +29,7 @@ PANO_W = 64
 PANO_H = 32
 K_START = 0
 K_END = 1
+PINHOLE_RES = 24
 
 
 def write_artifact(path: Path, kind: str, version: str, *, upstreams=(),
@@ -106,17 +107,12 @@ class ProducerFixture:
         document = build_config.load(self.build_dir)
         self.build_identity = document["build_identity"]
         self.digest = rt.orchestration_contract(document)["config_digest"]
-        extraction_config = {
-            "build_identity": self.build_identity,
-            "input_digests": {
-                "pipeline_metadata": self.dataset_digests[
-                    paths_lib.DATASET_PIPELINE_METADATA_SHA256],
-                "frames_gps": self.dataset_digests[
-                    paths_lib.DATASET_FRAMES_GPS_SHA256],
-                "panorama_directory": self.dataset_digests[
-                    paths_lib.DATASET_PANORAMA_SHA256],
-            },
-        }
+        extraction_config = paths_lib.pinhole_manifest_config(
+            self.dataset_digests,
+            resolution=PINHOLE_RES,
+            panorama_keys=sorted(
+                path.stem for path in
+                (self.dataset_base / "panorama").glob("*.jpg")))
         self.pinholes = write_artifact(
             root / "artifacts" / paths_lib.PINHOLE_IMAGES
             / DATASET / "pinholes-v1",
@@ -193,6 +189,9 @@ class TrackingConfigTest(unittest.TestCase):
         self.assertEqual(
             [ref.kind for ref in resolved["upstreams"]],
             [paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS])
+        self.assertNotIn(
+            "build_identity",
+            artifact.load_manifest(self.fixture.pinholes).config)
         self.assertRegex(resolved["dataset_source_sha256"], r"^[0-9a-f]{64}$")
 
     def test_cli_range_must_equal_immutable_recipe(self):
@@ -228,8 +227,8 @@ class TrackingConfigTest(unittest.TestCase):
                 rt.TrackingContractError, "exact pinhole artifact"):
             rt.load_tracking_config(self.fixture.args())
 
-    def test_upstreams_must_belong_to_the_immutable_build(self):
-        manifest_path = self.fixture.pinholes / artifact.MANIFEST_NAME
+    def test_frame_landmarks_must_belong_to_the_immutable_build(self):
+        manifest_path = self.fixture.frame_landmarks / artifact.MANIFEST_NAME
         document = json.loads(manifest_path.read_text())
         document["config"]["build_identity"] = "0" * 64
         artifact.atomic_write_json(manifest_path, document)

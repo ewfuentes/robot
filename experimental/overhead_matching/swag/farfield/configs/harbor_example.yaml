@@ -107,6 +107,7 @@ alignment_diagnostics:
 localization_inputs:
   motion_source: frames_gps.csv
   nominal_forward_calibration: nominal_forward.json
+  identity_review_dir: null
   use_uninformative_tables: false
   default_log_compatibility: 0.0
   compatibility_clip: 4.0
@@ -123,6 +124,8 @@ localization_inputs:
 localization:
   run_name: boston_harbor_leg2_v1
   init: uniform
+  ablation_tags: []
+  position_mass_radii_m: [50.0, 100.0, 250.0, 500.0, 1000.0]
   prior_sigma_m: null
   n_particles: 50000
   seed: 0
@@ -151,12 +154,17 @@ localization:
     ess_floor_frac: 0.02
     ess_floor_keyframes: 3
     refractory_keyframes: 10
-    top_k_landmarks: 64
     max_tracklets: 5
-    max_combinations_single: 512
-    max_combinations_pair: 4000
-    max_combinations_triple: 8000
-    max_hypotheses_per_kind: 256
+    exhaustive_tuple_limit: 256
+    tuple_samples_per_active_solution: 8
+    min_particles_point_fix: 32
+    min_particles_arc: 64
+    min_particles_single: 128
+    solution_cluster_position_m: 75.0
+    solution_cluster_heading_deg: 8.0
+    pose_diversity_weight: 0.25
+    arc_length_reference_m: 1000.0
+    arc_length_weight_cap: 10.0
     residual_tolerance_sigma: 3.0
     max_residual_tolerance_deg: 90.0
     window_keyframes: 4

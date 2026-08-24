@@ -4,7 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from experimental.overhead_matching.swag.farfield.localization import plots
+from experimental.overhead_matching.swag.farfield.localization import (
+    matplotlib_plots as plots,
+)
 
 
 class _Figure:
@@ -23,6 +25,31 @@ class PlotsOutputTest(unittest.TestCase):
 
         axis.plot.assert_not_called()
         axis.scatter.assert_not_called()
+
+    def test_primary_mass_and_uncertainty_render_without_truth(self):
+        metric = plots.metrics.position_mass_metric_config([50.0, 100.0])
+        keys = [plots.metrics.position_mass_metric_key(metric, radius)
+                for radius in metric.radii_m]
+        health = [SimpleNamespace(
+            keyframe_idx=kf, resampled=False,
+            position_probability_mass={keys[0]: 0.25 + 0.1 * kf,
+                                       keys[1]: 0.75 + 0.1 * kf},
+            position_std_m=20.0, heading_std_deg=3.0, ess=100.0,
+            associations=[], proposal_weight_share=0.0)
+                  for kf in range(2)]
+        data = SimpleNamespace(
+            manifest=SimpleNamespace(
+                position_mass_metric=metric,
+                filter_config=SimpleNamespace(
+                    n_particles=200, ess_resample_frac=0.5)),
+            health=health, truth=[], proposal_events=[])
+        axes = [mock.Mock() for _ in range(5)]
+
+        plots._draw_strip(data, axes)
+
+        self.assertEqual(axes[0].plot.call_count, 2)
+        axes[1].plot.assert_called_once()
+        axes[2].plot.assert_called_once()
 
     def test_main_publishes_sibling_without_mutating_run(self):
         with tempfile.TemporaryDirectory() as temporary:

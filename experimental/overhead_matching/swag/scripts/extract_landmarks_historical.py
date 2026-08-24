@@ -10,13 +10,11 @@ import argparse
 import json
 from pathlib import Path
 import geopandas as gpd
-import numpy as np
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 
 from common.openstreetmap import extract_landmarks_python as elm
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from common.gps import web_mercator
-from experimental.overhead_matching.swag.data import landmark_schema as ls
 
 
 def create_shapely_geometry(geom):
@@ -97,7 +95,6 @@ def main(
     bbox: tuple[float, float, float, float] | None,
     zoom_level: int,
     output_path: Path,
-    node_margin_deg: float = -1.0,
 ):
     # Determine bounding box
     if bbox is not None:
@@ -133,19 +130,10 @@ def main(
         "public_transport": True,
         "railway": True,
         "waterway": True,
-        # Far-field / maritime (2026-08): islands (place=island is a top
-        # panorama-extracted category) and raw-OSM navigational aids.
-        "place": True,
-        "seamark:type": True,
     }
 
     print(f"Extracting landmarks from {pbf_path}...")
-    if node_margin_deg >= 0:
-        print(f"  Bounding the way-geometry index to bbox + {node_margin_deg} deg "
-              f"(~{node_margin_deg * 111:.0f} km): peak memory scales with the "
-              f"request area rather than the whole file")
-    results = elm.extract_landmarks(str(pbf_path), {"region": bbox_obj}, tag_filters,
-                                    node_margin_deg)
+    results = elm.extract_landmarks(str(pbf_path), {"region": bbox_obj}, tag_filters)
     features = [feature for region_id, feature in results]
     print(f"Extracted {len(features)} features")
 
@@ -163,16 +151,22 @@ def main(
         elm.OsmType.RELATION: "relation"
     }
 
-    # Tags go into a single dict column. See data/landmark_schema.py: the old
-    # one-column-per-tag-key layout cost columns x rows for a table that is
-    # ~99.8% empty, and every reader immediately converted it back to per-row
-    # dicts anyway.
-    gdf = ls.build_frame(
-        ids=[f"('{osm_type_map[f.osm_type]}', {f.osm_id})" for f in features],
-        geometries=[create_shapely_geometry(f.geometry) for f in features],
-        landmark_types=["historical" for _ in features],
-        tags=[dict(f.tags) for f in features],
-    )
+    # Create 'id' column with tuple strings (matching osmnx format from v3 feather)
+    data = {
+        "id": [f"('{osm_type_map[f.osm_type]}', {f.osm_id})" for f in features],
+        "geometry": [create_shapely_geometry(f.geometry) for f in features],
+        "landmark_type": ["historical" for _ in features],
+    }
+
+    # Flatten important tags as columns
+    all_tag_keys = set()
+    for f in features:
+        all_tag_keys.update(f.tags.keys())
+
+    for key in sorted(all_tag_keys):
+        data[key] = [f.tags.get(key, None) for f in features]
+
+    gdf = gpd.GeoDataFrame(data, crs="EPSG:4326")
 
     # Save outputs
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,18 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--zoom_level", type=int, default=20,
                         help="Zoom level for satellite metadata (used when falling back from satellite_bbox.json, default: 20)")
     parser.add_argument("--output_path", required=True, type=Path, help="Output path for landmarks (will create .feather)")
-    parser.add_argument("--node_margin_deg", type=float, default=-1.0,
-                        help="If >= 0, hold node locations only within bbox + this "
-                             "margin while building way geometry. Peak memory then "
-                             "scales with the requested area instead of the whole "
-                             "file, which is what lets a country-sized PBF run "
-                             "(whole-France otherwise reached 28 GB and climbing). "
-                             "Selected ways are unchanged, but their geometry is "
-                             "clipped to the retained vertices, so use a margin "
-                             "larger than the longest segment you care about. "
-                             "Default -1 keeps every node (original behaviour).")
 
     args = parser.parse_args()
 
-    main(args.pbf_file, args.dataset_path, args.bbox, args.zoom_level, args.output_path,
-         args.node_margin_deg)
+    main(args.pbf_file, args.dataset_path, args.bbox, args.zoom_level, args.output_path)

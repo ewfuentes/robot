@@ -53,7 +53,8 @@ def write_dataset(root: Path, dataset_name: str = DATASET) -> Path:
 def write_poly(root: Path) -> Path:
     cache = root / "raw_material" / "osm" / "poly"
     cache.mkdir(parents=True)
-    (cache / "massachusetts.poly").write_text(
+    subject.pbf_coverage.poly_cache_path(
+        "north-america/us/massachusetts-latest.osm.pbf", cache).write_text(
         "massachusetts\n"
         "1\n"
         "  -71.3 41.8\n"
@@ -89,8 +90,9 @@ def catalog_frame(*, outside: bool = False):
 
 
 def publish_full_catalog(root: Path, *, dataset_name: str = DATASET,
-                         outside: bool = False) -> tuple[Path,
-                                                        artifact.ArtifactRef]:
+                         outside: bool = False,
+                         coverage_status: str = "passed") -> tuple[
+                             Path, artifact.ArtifactRef]:
     frame = catalog_frame(outside=outside)
     loose = root / "raw_material" / f"{dataset_name}.feather"
     loose.parent.mkdir(parents=True, exist_ok=True)
@@ -103,17 +105,17 @@ def publish_full_catalog(root: Path, *, dataset_name: str = DATASET,
         "enc_state": None,
         "enc_cells": [],
         "enc_available": False,
+        "enc_selection": None,
         "dedupe_tolerance_m": 10.0,
-        "node_margin_deg": 0.1,
+        "osm_preextract_strategy": "smart",
         "selected_source_feather": str(loose.resolve()),
         "selected_source_sha256": artifact.sha256_file(loose),
         "rows": len(frame),
         "source_coverage": {
-            "schema": "farfield_catalog_source_coverage/v1",
-            "status": "passed",
+            "schema": "farfield_catalog_source_coverage/v2",
+            "status": coverage_status,
             "message": "fixture source coverage passed",
             "details": [],
-            "reference_specs": [],
         },
     }
     with artifact.ArtifactDirectoryBuilder(
@@ -221,6 +223,18 @@ class PublicationTest(unittest.TestCase):
 
 
 class InputContractTest(unittest.TestCase):
+
+    def test_skipped_source_coverage_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset_dir = write_dataset(root)
+            poly_cache = write_poly(root)
+            catalog_dir, _ = publish_full_catalog(
+                root, coverage_status="skipped_by_operator")
+            with self.assertRaisesRegex(
+                    subject.CoverageError, "must attest status='passed'"):
+                subject.load_inputs(
+                    DATASET, dataset_dir, catalog_dir, poly_cache)
 
     def test_catalog_dataset_must_match_explicit_dataset(self):
         with tempfile.TemporaryDirectory() as directory:

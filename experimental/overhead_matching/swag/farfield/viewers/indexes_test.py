@@ -79,6 +79,17 @@ class RefreshTest(unittest.TestCase):
                 / "index.html").read_text()
         self.assertIn("farfield.tracking.run_tracking", kind)
 
+    def test_loose_legacy_artifact_files_are_not_indexed(self):
+        dataset_dir = (
+            self.root / "artifacts" / "object_tracks"
+            / "boston_harbor_leg1")
+        (dataset_dir / "legacy.json").write_text("{}")
+        (dataset_dir / "legacy.feather").write_bytes(b"legacy")
+        indexes.refresh(self.root)
+        page = (dataset_dir.parent / "index.html").read_text()
+        self.assertNotIn("legacy.json", page)
+        self.assertNotIn("legacy.feather", page)
+
     def test_never_clobbers_a_page_it_did_not_generate(self):
         stage_page = self.root / "runs" / "260820_extent_sigma" / "index.html"
         stage_page.write_text("<html>stage-owned</html>")

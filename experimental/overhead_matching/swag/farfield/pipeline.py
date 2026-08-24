@@ -37,12 +37,17 @@ from experimental.overhead_matching.swag.farfield import (
     build_config,
     nominal_forward,
     paths as paths_lib,
+    provenance,
 )
+from experimental.overhead_matching.swag.farfield.localization import run_identity
+from experimental.overhead_matching.swag.farfield.matching import identity_review
 
 
 FF = "//experimental/overhead_matching/swag/farfield"
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 LOCALIZATION_RUN_KIND = "localization_run"
+VIEWER_TARGET = f"{FF}/localization:viewer"
+VIEWER_GENERATOR = VIEWER_TARGET
 
 
 def _text(*, choices: tuple[str, ...] | None = None
@@ -59,6 +64,18 @@ def _number(*, minimum: float = 0.0,
             maximum: float | None = None) -> build_config.ValueSpec:
     return build_config.ValueSpec(
         (int, float), minimum=minimum, maximum=maximum)
+
+
+def _positive_number(*, maximum: float | None = None
+                     ) -> build_config.ValueSpec:
+    return build_config.ValueSpec(
+        (int, float), exclusive_minimum=0.0, maximum=maximum)
+
+
+def _open_probability() -> build_config.ValueSpec:
+    return build_config.ValueSpec(
+        (int, float), exclusive_minimum=0.0, exclusive_maximum=1.0)
+
 
 
 def _boolean() -> build_config.ValueSpec:
@@ -129,57 +146,62 @@ CONFIG_SCHEMA = {
     "matching.thinking_level": _text(),
     "matching.confidence_floor": _number(maximum=1.0),
     "matching.instance_max_rows": _integer(minimum=1),
-    "bearing_observations.bearing_sigma_deg": _number(),
-    "gps_course.min_displacement_m": _number(),
+    "bearing_observations.bearing_sigma_deg": _positive_number(),
+    "gps_course.min_displacement_m": _positive_number(),
     "gps_course.smooth_window_s": _number(),
     "alignment_diagnostics.sun.n_frames": _integer(minimum=1),
     "alignment_diagnostics.sun.min_speed_mps": _number(),
-    "alignment_diagnostics.sun.elevation_tolerance_deg": _number(),
-    "alignment_diagnostics.sun.work_width": _integer(minimum=1),
-    "alignment_diagnostics.sweep.coarse_step_deg": _number(),
-    "alignment_diagnostics.sweep.fine_step_deg": _number(),
-    "alignment_diagnostics.sweep.fine_halfwidth_deg": _number(),
+    "alignment_diagnostics.sun.elevation_tolerance_deg": _positive_number(
+        maximum=90.0),
+    "alignment_diagnostics.sun.work_width": _integer(minimum=2),
+    "alignment_diagnostics.sweep.coarse_step_deg": _positive_number(),
+    "alignment_diagnostics.sweep.fine_step_deg": _positive_number(),
+    "alignment_diagnostics.sweep.fine_halfwidth_deg": _positive_number(),
     "alignment_diagnostics.sweep.min_observations": _integer(minimum=1),
-    "alignment_diagnostics.sweep.min_arc_deg": _number(),
-    "alignment_diagnostics.sweep.max_condition": _number(),
+    "alignment_diagnostics.sweep.min_arc_deg": _number(maximum=360.0),
+    "alignment_diagnostics.sweep.max_condition": _positive_number(),
     "alignment_diagnostics.sweep.min_tracklets": _integer(minimum=1),
     "alignment_diagnostics.sweep.min_support_frac": _number(maximum=1.0),
     "localization_inputs.motion_source": _text(),
     "localization_inputs.nominal_forward_calibration": _text(),
+    "localization_inputs.identity_review_dir": build_config.ValueSpec(
+        (str,), allow_none=True, nonempty=True),
     "localization_inputs.use_uninformative_tables": _boolean(),
     "localization_inputs.default_log_compatibility": build_config.ValueSpec(
         (int, float)),
-    "localization_inputs.compatibility_clip": _number(),
+    "localization_inputs.compatibility_clip": _positive_number(),
     "localization_inputs.reducer_epoch_keyframes": _integer(minimum=1),
-    "localization_inputs.odometry_sigma_pair_m": _number(),
-    "localization_inputs.displacement_gate_m": _number(),
-    "localization_inputs.stationary_sigma_m": _number(),
-    "localization_inputs.slow_yaw_sigma_deg": _number(),
+    "localization_inputs.odometry_sigma_pair_m": _positive_number(),
+    "localization_inputs.displacement_gate_m": _positive_number(),
+    "localization_inputs.stationary_sigma_m": _positive_number(),
+    "localization_inputs.slow_yaw_sigma_deg": _positive_number(),
     "localization_inputs.reverse_keyframe_ranges": build_config.ValueSpec(
         (list,)),
     "localization_inputs.reverse_annotation_source": _text(),
-    "localization_inputs.max_visible_range_m": _number(),
-    "localization_inputs.landmark_position_sigma_m": _number(),
+    "localization_inputs.max_visible_range_m": _positive_number(),
+    "localization_inputs.landmark_position_sigma_m": _positive_number(),
     "localization.run_name": _text(),
-    "localization.init": _text(choices=("uniform", "truth")),
+    "localization.init": _text(choices=("uniform", "truth_position")),
+    "localization.ablation_tags": build_config.ValueSpec((list,)),
+    "localization.position_mass_radii_m": build_config.ValueSpec((list,)),
     "localization.prior_sigma_m": build_config.ValueSpec(
         (int, float), allow_none=True, minimum=0.0),
     "localization.n_particles": _integer(minimum=1),
     "localization.seed": _integer(),
     "localization.margin_m": _number(),
-    "localization.pi0": _number(maximum=1.0),
+    "localization.pi0": _open_probability(),
     "localization.ess_resample_frac": _number(maximum=1.0),
     "localization.heading_random_walk_deg": _number(),
     "localization.resample_regularization": _number(),
     "localization.position_roughening_m": _number(),
     "localization.heading_roughening_deg": _number(),
-    "localization.map_cell_size_m": _number(),
+    "localization.map_cell_size_m": _positive_number(),
     "localization.checkpoint_every": _integer(minimum=1),
     "localization.measurement_backend": _text(choices=("numpy", "torch")),
     "localization.association_persistence": _boolean(),
-    "localization.association_renewal_rate": _number(maximum=1.0),
+    "localization.association_renewal_rate": _positive_number(maximum=1.0),
     "localization.association_outlier_rate": _number(maximum=1.0),
-    "localization.matcher_recall": _number(maximum=1.0),
+    "localization.matcher_recall": _open_probability(),
     "localization.min_reported_responsibility": _number(maximum=1.0),
     "localization.bearings_enabled": _boolean(),
     "localization.proposal.enabled": _boolean(),
@@ -190,12 +212,18 @@ CONFIG_SCHEMA = {
     "localization.proposal.ess_floor_frac": _number(maximum=1.0),
     "localization.proposal.ess_floor_keyframes": _integer(minimum=1),
     "localization.proposal.refractory_keyframes": _integer(),
-    "localization.proposal.top_k_landmarks": _integer(minimum=1),
     "localization.proposal.max_tracklets": _integer(minimum=1),
-    "localization.proposal.max_combinations_single": _integer(minimum=1),
-    "localization.proposal.max_combinations_pair": _integer(minimum=1),
-    "localization.proposal.max_combinations_triple": _integer(minimum=1),
-    "localization.proposal.max_hypotheses_per_kind": _integer(minimum=1),
+    "localization.proposal.exhaustive_tuple_limit": _integer(minimum=1),
+    "localization.proposal.tuple_samples_per_active_solution": _integer(
+        minimum=1),
+    "localization.proposal.min_particles_point_fix": _integer(minimum=1),
+    "localization.proposal.min_particles_arc": _integer(minimum=1),
+    "localization.proposal.min_particles_single": _integer(minimum=1),
+    "localization.proposal.solution_cluster_position_m": _number(),
+    "localization.proposal.solution_cluster_heading_deg": _number(),
+    "localization.proposal.pose_diversity_weight": _number(),
+    "localization.proposal.arc_length_reference_m": _number(minimum=1e-9),
+    "localization.proposal.arc_length_weight_cap": _number(minimum=1.0),
     "localization.proposal.residual_tolerance_sigma": _number(),
     "localization.proposal.max_residual_tolerance_deg": _number(),
     "localization.proposal.window_keyframes": _integer(minimum=1),
@@ -214,8 +242,8 @@ CONFIG_SCHEMA = {
     "localization.proposal.injection_heading_sigma_deg": _number(),
     "localization.proposal.max_injection_sigma_m": _number(),
     "localization.modes.enabled": _boolean(),
-    "localization.modes.cell_size_m": _number(),
-    "localization.modes.heading_cell_deg": _number(),
+    "localization.modes.cell_size_m": _positive_number(),
+    "localization.modes.heading_cell_deg": _positive_number(),
     "localization.modes.min_cell_weight": _number(maximum=1.0),
     "localization.modes.min_mode_weight": _number(maximum=1.0),
 }
@@ -244,6 +272,12 @@ def validate_pipeline_config(config: dict) -> None:
         raise build_config.InvalidConfigValue(
             "localization_inputs.stationary_sigma_m must be >= "
             "localization_inputs.odometry_sigma_pair_m")
+    if (_value(config, "localization_inputs.identity_review_dir") is not None
+            and _value(
+                config, "localization_inputs.use_uninformative_tables")):
+        raise build_config.InvalidConfigValue(
+            "localization_inputs.identity_review_dir cannot be combined with "
+            "localization_inputs.use_uninformative_tables")
     reverse_ranges = _value(
         config, "localization_inputs.reverse_keyframe_ranges")
     previous_end = 0
@@ -274,12 +308,36 @@ def validate_pipeline_config(config: dict) -> None:
             "execution.batch_gcs_prefix must be null for on_demand mode")
     init = _value(config, "localization.init")
     prior_sigma = _value(config, "localization.prior_sigma_m")
-    if init == "truth" and (prior_sigma is None or prior_sigma <= 0):
+    if (init == "truth_position"
+            and (prior_sigma is None or prior_sigma <= 0)):
         raise build_config.InvalidConfigValue(
-            "localization.prior_sigma_m must be positive for truth init")
+            "localization.prior_sigma_m must be positive for truth_position init")
     if init == "uniform" and prior_sigma is not None:
         raise build_config.InvalidConfigValue(
             "localization.prior_sigma_m must be null for uniform init")
+    radii = _value(config, "localization.position_mass_radii_m")
+    if (not radii
+            or any(type(radius) not in (int, float)
+                   for radius in radii)):
+        raise build_config.InvalidConfigValue(
+            "localization.position_mass_radii_m must contain numbers")
+    numeric_radii = [float(radius) for radius in radii]
+    if (any(not math.isfinite(radius) or radius <= 0.0
+            for radius in numeric_radii)
+            or numeric_radii != sorted(set(numeric_radii))):
+        raise build_config.InvalidConfigValue(
+            "localization.position_mass_radii_m must be finite, positive, "
+            "sorted, and unique")
+    tags = _value(config, "localization.ablation_tags")
+    if (any(not isinstance(tag, str) or not tag for tag in tags)
+            or tags != sorted(set(tags))):
+        raise build_config.InvalidConfigValue(
+            "localization.ablation_tags must be sorted unique identifiers")
+    for tag in tags:
+        try:
+            paths_lib.require_identifier(tag, "localization.ablation_tags")
+        except paths_lib.PathContractError as exc:
+            raise build_config.InvalidConfigValue(str(exc)) from exc
     shares = sum(_value(config, f"localization.proposal.{name}")
                  for name in ("share_single", "share_pair", "share_triple"))
     if not math.isclose(shares, 1.0, rel_tol=0.0, abs_tol=1e-9):
@@ -383,7 +441,8 @@ STAGE_SPECS = {
     "diagnostics": StageSpec(
         outputs=(paths_lib.ALIGNMENT_DIAGNOSTICS,),
         upstreams=(paths_lib.BEARING_OBSERVATIONS,),
-        config_prefixes=("alignment_diagnostics",),
+        config_prefixes=("alignment_diagnostics",
+                         "localization_inputs.nominal_forward_calibration"),
         target=f"{FF}/calibration:build_alignment_diagnostics"),
     "localization_inputs": StageSpec(
         outputs=(paths_lib.LOCALIZATION_INPUTS,),
@@ -402,7 +461,7 @@ PIPELINE_ARTIFACT_OWNER = {
     kind: stage
     for stage, spec in STAGE_SPECS.items()
     for kind in spec.outputs
-    if kind in VERSION_KEYS
+    if kind in VERSION_KEYS and kind != paths_lib.PINHOLE_IMAGES
 }
 
 
@@ -412,6 +471,14 @@ class StageContractError(ValueError):
 
 class StageDependencyError(ValueError):
     """A stage cannot start because a configured upstream is incomplete."""
+
+
+def _binds_exact_pinhole_once(
+        manifest, expected: artifact.ArtifactRef) -> bool:
+    """Whether a build-scoped artifact binds only the configured pinhole ref."""
+    return tuple(
+        ref for ref in manifest.upstreams
+        if ref.kind == paths_lib.PINHOLE_IMAGES) == (expected,)
 
 
 def _prefixed_keys(prefixes: tuple[str, ...]) -> list[str]:
@@ -439,20 +506,23 @@ def versions_from_config(config: dict) -> dict[str, str]:
     return {kind: _value(config, key) for kind, key in VERSION_KEYS.items()}
 
 
-def localization_run_dir(paths: paths_lib.FarfieldPaths, config: dict) -> Path:
-    return (paths.experiment_dir(_value(config, "experiment.name")) /
-            paths_lib.require_identifier(
-                _value(config, "localization.run_name"),
-                "localization.run_name"))
+def localization_run_dir(paths: paths_lib.FarfieldPaths, config: dict, *,
+                         build_identity: str) -> Path:
+    version = run_identity.localization_run_version(
+        _value(config, "localization.run_name"),
+        _value(config, "artifacts.object_tracks_version"), build_identity)
+    return paths.experiment_dir(_value(config, "experiment.name")) / version
 
 
 def _output_descriptors(paths: paths_lib.FarfieldPaths, config: dict,
-                        stage: str) -> list[tuple[str, str, Path]]:
+                        stage: str, *,
+                        build_identity: str) -> list[tuple[str, str, Path]]:
     output = []
     for kind in STAGE_SPECS[stage].outputs:
         if kind == LOCALIZATION_RUN_KIND:
-            output.append((kind, _value(config, "localization.run_name"),
-                           localization_run_dir(paths, config)))
+            path = localization_run_dir(
+                paths, config, build_identity=build_identity)
+            output.append((kind, path.name, path))
         else:
             version = _value(config, VERSION_KEYS[kind])
             output.append((kind, version, paths.artifact(kind, version)))
@@ -475,6 +545,7 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
         raise StageDependencyError(
             f"required {kind} artifact is invalid: {exc}") from exc
     owner = PIPELINE_ARTIFACT_OWNER.get(kind)
+    manifest = None
     if build_identity is not None and owner is not None:
         manifest = artifact.load_manifest(path)
         if manifest.config.get("orchestration") != stage_contract(owner, config):
@@ -485,6 +556,16 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
             raise StageDependencyError(
                 f"required {kind} artifact belongs to a different immutable "
                 "build identity; publish a new upstream version")
+    if kind == paths_lib.FRAME_LANDMARKS:
+        if manifest is None:
+            manifest = artifact.load_manifest(path)
+        pinhole_ref = _configured_ref(
+            paths, config, paths_lib.PINHOLE_IMAGES,
+            build_identity=build_identity)
+        if not _binds_exact_pinhole_once(manifest, pinhole_ref):
+            raise StageDependencyError(
+                "required frame_landmarks artifact does not bind the exact "
+                "configured pinhole_images artifact once")
     return ref
 
 
@@ -492,16 +573,35 @@ def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
                            stage: str, *,
                            build_identity: str
                            ) -> tuple[artifact.ArtifactRef, ...]:
-    return tuple(_configured_ref(
+    refs = tuple(_configured_ref(
         paths, config, kind, build_identity=build_identity)
                  for kind in STAGE_SPECS[stage].upstreams)
+    if stage != "localization_inputs":
+        return refs
+    review_dir = _value(config, "localization_inputs.identity_review_dir")
+    if review_dir is None:
+        return refs
+    matching_ref = next(
+        ref for ref in refs if ref.kind == paths_lib.LANDMARK_MATCHES)
+    try:
+        review_ref, _ = identity_review.load(
+            Path(review_dir), expected_matching_ref=matching_ref,
+            matching_dir=matching_ref.path)
+    except (artifact.ArtifactError, identity_review.IdentityReviewError,
+            OSError) as error:
+        raise StageDependencyError(
+            "identity-review gate is not satisfied: first complete the match "
+            "stage, review its identity_review_draft.json, and publish the "
+            f"typed review to {review_dir}: {error}") from error
+    return (*refs, review_ref)
 
 
 def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                          stage: str, *,
                          build_identity: str) -> tuple[artifact.ArtifactRef, ...]:
     """Return validated outputs, ``()`` when absent, or reject stale output."""
-    descriptors = _output_descriptors(paths, config, stage)
+    descriptors = _output_descriptors(
+        paths, config, stage, build_identity=build_identity)
     present = [path.exists() or path.is_symlink()
                for _, _, path in descriptors]
     if not any(present):
@@ -528,14 +628,28 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
             raise StageContractError(
                 f"stage {stage!r} output {path} was built from different "
                 "upstream artifact identities; choose a new output version")
-        if manifest.config.get("orchestration") != contract:
-            raise StageContractError(
-                f"stage {stage!r} output {path} has a different resolved "
-                "configuration; choose a new output version")
-        if manifest.config.get("build_identity") != build_identity:
-            raise StageContractError(
-                f"stage {stage!r} output {path} belongs to a different "
-                "immutable build identity; choose a new output version")
+        if kind in PIPELINE_ARTIFACT_OWNER:
+            if manifest.config.get("orchestration") != contract:
+                raise StageContractError(
+                    f"stage {stage!r} output {path} has a different resolved "
+                    "configuration; choose a new output version")
+            if manifest.config.get("build_identity") != build_identity:
+                raise StageContractError(
+                    f"stage {stage!r} output {path} belongs to a different "
+                    "immutable build identity; choose a new output version")
+        if kind == paths_lib.FRAME_LANDMARKS:
+            try:
+                pinhole_ref = _configured_ref(
+                    paths, config, paths_lib.PINHOLE_IMAGES,
+                    build_identity=build_identity)
+            except StageDependencyError as exc:
+                raise StageContractError(
+                    f"stage {stage!r} frame_landmarks dependency is invalid: "
+                    f"{exc}") from exc
+            if not _binds_exact_pinhole_once(manifest, pinhole_ref):
+                raise StageContractError(
+                    f"stage {stage!r} frame_landmarks output does not bind "
+                    "the exact configured pinhole_images artifact once")
         refs.append(ref)
     # Extraction publishes pinhole images first and frame landmarks second.
     # A crash between the two leaves one valid immutable artifact that must be
@@ -573,8 +687,10 @@ def resolve_config_paths(config: dict, paths: paths_lib.FarfieldPaths) -> dict:
         for key in ("motion_source", "nominal_forward_calibration"):
             if isinstance(inputs.get(key), str):
                 inputs[key] = _resolved_path(inputs[key], paths.dataset_base)
+        if isinstance(inputs.get("identity_review_dir"), str):
+            inputs["identity_review_dir"] = _resolved_path(
+                inputs["identity_review_dir"], paths.root)
     return result
-
 
 def _source_video_inputs(paths: paths_lib.FarfieldPaths) -> dict[str, str]:
     try:
@@ -626,6 +742,18 @@ def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
         **dataset_digests,
         **_source_video_inputs(paths),
     }
+    review_dir = _value(config, "localization_inputs.identity_review_dir")
+    if review_dir is not None:
+        review_path = Path(review_dir)
+        if review_path.exists() or review_path.is_symlink():
+            raise FileExistsError(
+                "localization_inputs.identity_review_dir is a post-match "
+                "output gate and must be unoccupied when the build is created: "
+                f"{review_path}")
+        result.update({
+            "identity_review_output_dir": str(review_path.resolve()),
+            "identity_review_phase": "post_match_gate",
+        })
     return result
 
 
@@ -699,7 +827,8 @@ def _stage_base(build_dir: Path, config: dict, stage: str) -> list[Any]:
 
 
 def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
-                   config: dict) -> dict[str, list[Any]]:
+                   config: dict, *,
+                   build_identity: str) -> dict[str, list[Any]]:
     """Construct explicit artifact-to-artifact stage commands.
 
     Result-shaping values live in ``build_config.json``.  Child tools receive
@@ -759,6 +888,8 @@ def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
         "diagnostics": [
             "bazel", "run", STAGE_SPECS["diagnostics"].target, "--",
             "--observations_dir", outputs[paths_lib.BEARING_OBSERVATIONS],
+            "--nominal_forward_calibration",
+            _value(config, "localization_inputs.nominal_forward_calibration"),
             "--output_dir", outputs[paths_lib.ALIGNMENT_DIAGNOSTICS],
         ] + common + _stage_base(build_dir, config, "diagnostics"),
         "localization_inputs": [
@@ -777,10 +908,108 @@ def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
         "localize": [
             "bazel", "run", STAGE_SPECS["localize"].target, "--",
             "--input_dir", outputs[paths_lib.LOCALIZATION_INPUTS],
-            "--run_dir", localization_run_dir(paths, config),
+            "--run_dir", localization_run_dir(
+                paths, config, build_identity=build_identity),
         ] + _stage_base(build_dir, config, "localize"),
     }
+    review_dir = _value(config, "localization_inputs.identity_review_dir")
+    if review_dir is not None:
+        commands["localization_inputs"].extend(
+            ["--identity_review_dir", review_dir])
     return commands
+
+
+def localization_viewer_dir(paths: paths_lib.FarfieldPaths, config: dict, *,
+                            build_identity: str) -> Path:
+    run_dir = localization_run_dir(
+        paths, config, build_identity=build_identity)
+    return run_dir.with_name(run_dir.name + ".viewer")
+
+
+def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
+                         build_identity: str) -> list[Any]:
+    """Construct the canonical viewer from exact scientific artifact inputs."""
+    run_dir = localization_run_dir(
+        paths, config, build_identity=build_identity)
+    tracks_dir = paths.artifact(
+        paths_lib.OBJECT_TRACKS,
+        _value(config, VERSION_KEYS[paths_lib.OBJECT_TRACKS]))
+    audit_dir = paths.artifact(
+        paths_lib.SEMANTIC_AUDITS,
+        _value(config, VERSION_KEYS[paths_lib.SEMANTIC_AUDITS]))
+    catalog_dir = paths.artifact(
+        paths_lib.CATALOGS, _value(config, VERSION_KEYS[paths_lib.CATALOGS]))
+    return [
+        "bazel", "run", VIEWER_TARGET, "--",
+        "--run_dir", run_dir,
+        "--output_dir", localization_viewer_dir(
+            paths, config, build_identity=build_identity),
+        "--tracks_dir", tracks_dir,
+        "--audit_dir", audit_dir,
+        "--feather", catalog_dir / "catalog.feather",
+    ]
+
+
+def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
+                     build_identity: str) -> bool:
+    """Validate the deterministic viewer and every recorded input identity."""
+    output_dir = localization_viewer_dir(
+        paths, config, build_identity=build_identity)
+    if not (output_dir.exists() or output_dir.is_symlink()):
+        return False
+    if output_dir.is_symlink() or not output_dir.is_dir():
+        raise StageContractError(
+            f"viewer output is not a regular directory: {output_dir}")
+    viewer_file = output_dir / "viewer.html"
+    if (viewer_file.is_symlink() or not viewer_file.is_file()
+            or viewer_file.stat().st_size == 0):
+        raise StageContractError(
+            f"viewer output is incomplete: {viewer_file}")
+
+    run_dir = localization_run_dir(
+        paths, config, build_identity=build_identity)
+    try:
+        run_ref = artifact.open_artifact(
+            run_dir, expected_kind=LOCALIZATION_RUN_KIND,
+            expected_dataset=paths.dataset, expected_version=run_dir.name)
+        tracks_ref = _configured_ref(
+            paths, config, paths_lib.OBJECT_TRACKS,
+            build_identity=build_identity)
+        audits_ref = _configured_ref(
+            paths, config, paths_lib.SEMANTIC_AUDITS,
+            build_identity=build_identity)
+        catalog_ref = _configured_ref(paths, config, paths_lib.CATALOGS)
+        feather = Path(catalog_ref.path) / "catalog.feather"
+        manifest = provenance.read(output_dir)
+        expected_inputs = {
+            "run_dir": str(run_dir.resolve()),
+            "run_manifest_digest": run_ref.manifest_digest,
+            "tracks_dir": str(Path(tracks_ref.path).resolve()),
+            "tracks_manifest_digest": tracks_ref.manifest_digest,
+            "audit_dir": str(Path(audits_ref.path).resolve()),
+            "audit_manifest_digest": audits_ref.manifest_digest,
+            "feather": str(feather.resolve()),
+            "feather_sha256": artifact.sha256_file(feather),
+            "ghosts": "[]",
+            "satellite": "",
+        }
+    except (artifact.ArtifactError, OSError, ValueError) as error:
+        raise StageContractError(
+            f"cannot validate viewer output {output_dir}: {error}") from error
+    expected_config = {
+        "max_particles": 900,
+        "basemap_detail": 1.0,
+        "body_only": False,
+        "embed_source_chips": True,
+    }
+    if (manifest.get("schema") != provenance.SCHEMA
+            or manifest.get("generator") != VIEWER_GENERATOR
+            or manifest.get("inputs") != expected_inputs
+            or manifest.get("config") != expected_config):
+        raise StageContractError(
+            "viewer output was built from different inputs or settings; "
+            f"move the stale side output before rebuilding: {output_dir}")
+    return True
 
 
 def run(command: list[Any], description: str, *, dry_run: bool = False) -> None:
@@ -817,11 +1046,14 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    commands = build_commands(paths, Path(args.build_dir), config)
+    commands = build_commands(
+        paths, Path(args.build_dir), config,
+        build_identity=document["build_identity"])
     selected = _selected_stages(args, parser)
     print(f"dataset:          {paths.dataset}")
     print(f"build_dir:        {args.build_dir}")
-    print(f"localization run: {localization_run_dir(paths, config)}")
+    print("localization run: " + str(localization_run_dir(
+        paths, config, build_identity=document["build_identity"])))
     print(f"stages:           {' -> '.join(selected)}")
     for stage in selected:
         try:
@@ -847,6 +1079,26 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
             except (StageContractError, StageDependencyError) as exc:
                 raise SystemExit(str(exc)) from exc
 
+    if "localize" in selected:
+        try:
+            complete = viewer_completed(
+                paths, config, build_identity=document["build_identity"])
+        except (StageContractError, StageDependencyError) as exc:
+            raise SystemExit(str(exc)) from exc
+        if complete:
+            print("\n-- viewer: validated complete")
+        else:
+            run(build_viewer_command(
+                paths, config, build_identity=document["build_identity"]),
+                "viewer", dry_run=args.dry_run)
+            if not args.dry_run:
+                if not viewer_completed(
+                        paths, config,
+                        build_identity=document["build_identity"]):
+                    raise SystemExit(
+                        "viewer exited successfully without publishing its "
+                        "complete side output")
+
 
 def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     try:
@@ -855,7 +1107,8 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
         parser.error(str(exc))
     config = document["config"]
     print(f"build {args.build_dir}")
-    print(f"localization run: {localization_run_dir(paths, config)}")
+    print("localization run: " + str(localization_run_dir(
+        paths, config, build_identity=document["build_identity"])))
     for stage in STAGES:
         try:
             state = ("done" if stage_done(
@@ -865,6 +1118,15 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
         except (StageContractError, StageDependencyError) as exc:
             state, detail = "INVALID", f" ({exc})"
         print(f"  {stage:<20} {state}{detail}")
+
+    try:
+        state = ("done" if viewer_completed(
+            paths, config, build_identity=document["build_identity"])
+                 else "pending")
+        detail = ""
+    except (StageContractError, StageDependencyError) as exc:
+        state, detail = "INVALID", f" ({exc})"
+    print(f"  {'viewer':<20} {state}{detail}")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -1,18 +1,13 @@
 """Narrow SAM video-tracking backend.
 
-The track builder only needs: frames in, per-frame masks out, prompted by a
-box or a mask at frame 0. Keeping this interface small is what lets us swap
-SAM2 for SAM3 (gated checkpoint pending) without touching tracking logic.
+The track builder only needs frames in and per-frame masks out, prompted by a
+box or mask at frame 0. This narrow interface keeps tracker orchestration
+independent of model loading.
 
-`propagate_batch` advances several tracks through their own clips in lockstep,
-which exists for one reason: SAM2's video predictor holds one clip per
-inference state, so tracking N tracks one after another runs the Hiera image
-encoder N times per frame as N separate batch-of-1 calls. Since every track
-crops its own heading-compensated window, the clips genuinely differ and cannot
-be merged -- but the encoder does not care whose window a frame belongs to, so
-the N crops for one timestep go through as a single batch. Measured before this
-existed: SM utilization averaged 17% with a median of 3%, the shape of a GPU
-waiting on Python between small kernels.
+`propagate_batch` advances several tracks through their own clips in lockstep.
+Each track has a distinct heading-compensated crop, while the Hiera image
+encoder can process the crops for one timestep as a batch. This preserves one
+predictor state per clip while amortizing encoder dispatch.
 """
 
 from pathlib import Path
@@ -41,11 +36,9 @@ class _LazyClip:
     interval at 1024x1024 float32 is 4.3 GB, and lockstep keeps several clips
     open at once -- so frames are converted on demand and nothing is retained.
 
-    Mirrors `sam2.utils.misc._load_img_as_tensor`: same PIL resize, the same
-    float64 divide before the cast to float32, same CHW layout, same mean/std.
-    Only the JPEG encode/decode round trip through a temp directory is gone,
-    which makes the input strictly more faithful (no quantization) and means
-    masks can differ slightly from a pre-2026-08-18 run.
+    Mirrors `sam2.utils.misc._load_img_as_tensor`: same PIL resize, float64
+    divide before the cast to float32, CHW layout, and normalization. In-memory
+    arrays avoid an unnecessary JPEG encode/decode round trip.
     """
 
     def __init__(self, frames: list[np.ndarray], size: int, torch, device,
@@ -132,9 +125,6 @@ class Sam2Backend:
                 last_err = e
         else:
             raise RuntimeError(f"could not build SAM2 predictor: {last_err}")
-        # channels_last for the image encoder measured 18.2 vs 18.7 ms/frame
-        # (2026-08-18) -- inside noise for a Hiera backbone, so not adopted.
-
     def _init_state(self, clip: _LazyClip):
         """`init_state` over an in-memory clip.
 

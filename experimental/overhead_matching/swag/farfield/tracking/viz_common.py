@@ -53,9 +53,9 @@ def render_chip(pano, det_box, mask_box, out_path, chip_height: int):
     """Crop around the union of detection box and mask bbox (wrap-safe);
     detection box green, mask bbox red.
 
-    Boxes are pano-pixel (possibly unwrapped) coordinates. Shared by the
-    keyframe viewer and (when it lands, REORG.md PR 07) the semantic-audit
-    request builder, so the two render byte-identical chips.
+    Boxes are pano-pixel (possibly unwrapped) coordinates. The keyframe viewer
+    and semantic-audit request builder share this helper so they render
+    byte-identical chips.
     """
     pano_w = pano.shape[1]
     x0, y0, x1, y1 = det_box

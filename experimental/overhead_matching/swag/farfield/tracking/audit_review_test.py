@@ -70,6 +70,9 @@ def track(track_id, birth_keyframe, support_keyframes, observations):
         "n_supported_keyframes": len(support_keyframes),
         "records": [{
             "keyframe": birth_keyframe,
+            "mask_area": 100,
+            "mask_bbox_window": [40, 30, 80, 60],
+            "supports": [],
             "action": "birth",
             "window_origin": [0.0, 0],
             "window_px": PANO_W,
@@ -115,6 +118,11 @@ def make_inputs(root: Path):
         "rejected_births": [],
         "track_overlaps": [],
     }
+    frame_ref = artifact.open_artifact(frame_landmarks)
+    source_digest = artifact.sha256_json(
+        paths_lib.dataset_source_digests(base))
+    ingest = {"fov_deg": 90.0, "seam_gap_norm": 25.0,
+              "seam_min_y_iou": 0.3}
     tracks_dir = (
         root / "artifacts" / paths_lib.OBJECT_TRACKS / DATASET / "v1")
     with artifact.ArtifactDirectoryBuilder(
@@ -128,7 +136,14 @@ def make_inputs(root: Path):
                 "schema": "farfield_object_tracks/v1",
                 "coverage": "complete",
                 "range": document["range"],
+                "source_digests": {
+                    "dataset_tracking_inputs": source_digest,
+                },
+                "resolved": {
+                    "ingest": ingest,
+                },
             },
+            upstreams=(frame_ref,),
             declared_outputs=("tracks_full.json",)) as builder:
         artifact.atomic_write_json(
             builder.output_path("tracks_full.json"), document)
@@ -253,15 +268,11 @@ class AuditReviewTest(unittest.TestCase):
         cls.audit_ref_before_review = artifact.open_artifact(cls.audit_dir)
         cls.review_dir = cls.root / "reviews" / "audit-v1"
         cls.review_flags = [
-            "--dataset", DATASET,
-            "--farfield_root", str(cls.root),
-            "--landmark_base", str(cls.frame_landmarks),
             "--tracks_dir", str(cls.tracks_dir),
             "--semantic_audits_dir", str(cls.audit_dir),
+            "--dataset_base", str(cls.dataset_base),
+            "--frame_landmarks_dir", str(cls.frame_landmarks),
             "--output_dir", str(cls.review_dir),
-            "--fov_deg", "90.0",
-            "--seam_gap_norm", "25",
-            "--seam_min_y_iou", "0.3",
         ]
         run_main(av, cls.review_flags)
         cls.page = (cls.review_dir / "index.html").read_text()
@@ -304,13 +315,10 @@ class AuditReviewTest(unittest.TestCase):
 
     def test_no_extra_chips_still_renders(self):
         output = self.root / "reviews" / "without-extra"
-        run_main(av, self.review_flags[:-8] + [
-            "--output_dir", str(output),
-            "--fov_deg", "90.0",
-            "--seam_gap_norm", "25",
-            "--seam_min_y_iou", "0.3",
-            "--no_extra_chips",
-        ])
+        flags = list(self.review_flags)
+        flags[flags.index("--output_dir") + 1] = str(output)
+        flags.append("--no_extra_chips")
+        run_main(av, flags)
         page = (output / "index.html").read_text()
         self.assertIn("id='T1'", page)
         self.assertFalse((output / "chips" / "T1_t0002_extra.jpg").exists())
@@ -335,6 +343,30 @@ class AuditReviewTest(unittest.TestCase):
             artifact.open_artifact(self.audit_dir),
             self.audit_ref_before_review)
 
+    def test_cli_has_no_fresh_ingest_or_legacy_path_flags(self):
+        args = av.build_parser().parse_args([
+            "--tracks_dir", "/artifacts/tracks",
+            "--semantic_audits_dir", "/artifacts/audits",
+            "--dataset_base", "/datasets/ds",
+            "--frame_landmarks_dir", "/artifacts/frames",
+            "--output_dir", "/reviews/audit",
+        ])
+        self.assertFalse(hasattr(args, "fov_deg"))
+        self.assertFalse(hasattr(args, "seam_gap_norm"))
+        self.assertFalse(hasattr(args, "landmark_base"))
+
+    def test_recorded_ingest_requires_the_exact_shape(self):
+        settings = {
+            "ingest": {"fov_deg": 91.0, "seam_gap_norm": 24.0,
+                       "seam_min_y_iou": 0.31}}
+        self.assertEqual(
+            av.recorded_ingest(settings),
+            dataset.IngestParams(
+                fov_deg=91.0, seam_gap_norm=24.0,
+                seam_min_y_iou=0.31))
+        settings["ingest"]["unknown"] = 1
+        with self.assertRaisesRegex(SystemExit, "exact recorded ingest"):
+            av.recorded_ingest(settings)
 
 if __name__ == "__main__":
     unittest.main()

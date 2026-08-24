@@ -1,8 +1,6 @@
 """Publish coverage diagnostics for one full typed landmark catalog.
 
-This is collection stage 8. It replaces the checkpoint-era plotter that
-searched dataset-local landmark sources and wrote a PNG into the frozen
-dataset. The port has explicit inputs and one immutable output:
+This is collection stage 8. It has explicit inputs and one immutable output:
 
 * the frozen dataset supplies the validated trajectory;
 * a complete full CATALOGS artifact supplies landmarks and extraction
@@ -62,8 +60,9 @@ _FULL_CONFIG_KEYS = frozenset({
     "enc_state",
     "enc_cells",
     "enc_available",
+    "enc_selection",
     "dedupe_tolerance_m",
-    "node_margin_deg",
+    "osm_preextract_strategy",
     "selected_source_feather",
     "selected_source_sha256",
     "rows",
@@ -74,7 +73,6 @@ _SOURCE_COVERAGE_KEYS = frozenset({
     "status",
     "message",
     "details",
-    "reference_specs",
 })
 _ANALYSIS_KEYS = frozenset({
     "grid_cells",
@@ -183,13 +181,26 @@ def validate_full_catalog_config(
         raise CoverageError("full catalog enc_state must be null or non-empty")
     if type(config["enc_available"]) is not bool:
         raise CoverageError("full catalog enc_available must be boolean")
+    selection = config["enc_selection"]
+    if config["enc_available"]:
+        if (not isinstance(selection, dict)
+                or set(selection) != {"path", "sha256"}
+                or not isinstance(selection["path"], str)
+                or not selection["path"]
+                or not isinstance(selection["sha256"], str)
+                or len(selection["sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in selection["sha256"])):
+            raise CoverageError(
+                "full catalog enc_selection must contain path and SHA-256")
+    elif selection is not None:
+        raise CoverageError(
+            "OSM-only full catalog cannot carry an ENC selection")
     _finite(config["dedupe_tolerance_m"],
             "full catalog dedupe_tolerance_m", minimum=0.0)
-    node_margin = _finite(
-        config["node_margin_deg"], "full catalog node_margin_deg")
-    if node_margin < 0.0 and node_margin != -1.0:
+    if config["osm_preextract_strategy"] != "smart":
         raise CoverageError(
-            "full catalog node_margin_deg must be -1 or nonnegative")
+            "full catalog osm_preextract_strategy must be 'smart'")
     if (not isinstance(config["selected_source_feather"], str)
             or not config["selected_source_feather"]):
         raise CoverageError(
@@ -207,22 +218,17 @@ def validate_full_catalog_config(
     coverage = _exact_keys(
         config["source_coverage"], _SOURCE_COVERAGE_KEYS,
         "full catalog source_coverage")
-    if coverage["schema"] != "farfield_catalog_source_coverage/v1":
+    if coverage["schema"] != "farfield_catalog_source_coverage/v2":
         raise CoverageError("unsupported full catalog source_coverage schema")
-    if coverage["status"] not in ("passed", "skipped_by_operator"):
-        raise CoverageError("invalid full catalog source_coverage status")
+    if coverage["status"] != "passed":
+        raise CoverageError(
+            "full catalog source_coverage must attest status='passed'")
     if not isinstance(coverage["message"], str) or not coverage["message"]:
         raise CoverageError(
             "full catalog source_coverage message must be non-empty")
     if not isinstance(coverage["details"], list):
         raise CoverageError(
             "full catalog source_coverage details must be a list")
-    if (not isinstance(coverage["reference_specs"], list)
-            or not all(isinstance(spec, str) and spec
-                       for spec in coverage["reference_specs"])):
-        raise CoverageError(
-            "full catalog source_coverage reference_specs must be a string "
-            "list")
     return config, bbox
 
 
@@ -269,8 +275,7 @@ def _clip_boundaries(specs: list[str], poly_cache_dir: Path) -> tuple[list, dict
     boundaries = []
     digests = {}
     for spec in specs:
-        name = pbf_coverage.poly_url_for(spec).rsplit("/", 1)[-1]
-        path = poly_cache_dir / name
+        path = pbf_coverage.poly_cache_path(spec, poly_cache_dir)
         try:
             digest = artifact.sha256_file(path)
             boundary = pbf_coverage.parse_poly(path)
@@ -451,7 +456,7 @@ def analyze(resolved: dict, analysis_config: dict) -> dict:
 
     source_coverage = resolved["full_config"]["source_coverage"]
     finding(
-        ("ok" if source_coverage["status"] == "passed" else "warning"),
+        "ok",
         "source_extract_coverage",
         source_coverage["message"],
         status=source_coverage["status"],

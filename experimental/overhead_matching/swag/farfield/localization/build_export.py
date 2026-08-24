@@ -48,6 +48,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     run_io,
     structs,
 )
+from experimental.overhead_matching.swag.farfield.matching import identity_review
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
 
@@ -364,6 +365,10 @@ def load_matching(matching_dir: Path, *, dataset_name: str,
     except (OSError, msgspec.DecodeError, msgspec.ValidationError) as exc:
         raise LocalizationInputError(
             f"cannot decode matching compatibility tables: {exc}") from exc
+    if not tables:
+        raise LocalizationInputError(
+            "matching compatibility table list is empty; a complete matching "
+            "artifact must publish one table per accepted tracklet")
     table_ids = [table.tracklet_id for table in tables]
     if len(table_ids) != len(set(table_ids)):
         raise LocalizationInputError("matching repeats a compatibility table")
@@ -382,6 +387,62 @@ def load_matching(matching_dir: Path, *, dataset_name: str,
         raise LocalizationInputError(
             f"matching tables mix matcher versions {sorted(versions)}")
     return matching_ref, tables, matcher_version
+
+
+def apply_identity_review(
+        tables: list[structs.CompatibilityTable],
+        review: identity_review.IdentityReview,
+        review_version: str) -> tuple[list[structs.CompatibilityTable], str]:
+    """Apply explicit human precedence without mutating machine artifacts.
+
+    Confirmed decisions replace the machine shortlist with exactly the
+    reviewed ids at the table's upper clip. Rejected decisions remove exactly
+    the reviewed ids. Ambiguous decisions preserve machine scores. Every table
+    receives one composite matcher version so downstream cannot mix reviewed
+    and unreviewed score identities silently.
+    """
+    by_tracklet = {table.tracklet_id: table for table in tables}
+    decisions = {item.tracklet_id: item for item in review.decisions}
+    unknown = set(decisions) - set(by_tracklet)
+    if unknown:
+        raise LocalizationInputError(
+            "identity review names a tracklet absent from compatibility "
+            f"tables: {sorted(unknown)[0]!r}")
+    machine_versions = {table.matcher_version for table in tables}
+    if len(machine_versions) != 1:
+        raise LocalizationInputError(
+            "cannot apply human review to mixed machine matcher versions")
+    machine_version = next(iter(machine_versions))
+    combined_version = (
+        f"{machine_version}+human_identity_review_v1:{review_version}")
+    result = []
+    for table in tables:
+        decision = decisions.get(table.tracklet_id)
+        entries = list(table.entries)
+        status = table.status
+        if decision is not None:
+            if decision.decision == "confirmed":
+                entries = [structs.CompatibilityEntry(
+                    landmark_id=landmark_id, log_lr=float(table.clip_hi))
+                           for landmark_id in sorted(decision.landmark_ids)]
+            elif decision.decision == "rejected":
+                rejected = set(decision.landmark_ids)
+                entries = [entry for entry in entries
+                           if entry.landmark_id not in rejected]
+            elif decision.decision != "ambiguous":
+                raise LocalizationInputError(
+                    f"unsupported identity decision {decision.decision!r}")
+            status = "refined"
+        result.append(structs.CompatibilityTable(
+            tracklet_id=table.tracklet_id,
+            matcher_version=combined_version,
+            entries=entries,
+            default_log_lr=table.default_log_lr,
+            clip_lo=table.clip_lo,
+            clip_hi=table.clip_hi,
+            status=status,
+        ))
+    return result, combined_version
 
 
 def uninformative_tables(tracklet_ids: set[str], default_log_lr: float,
@@ -403,7 +464,7 @@ def landmark_entries(catalog_path: Path, anchor_lat: float, anchor_lon: float,
     """Load the whole catalog with one uniform explicit map uncertainty."""
     entries = catalog_lib.load_catalog(
         catalog_path, anchor_lat, anchor_lon,
-        position_sigma_m=position_sigma_m, keep_hulls=False)
+        position_sigma_m=position_sigma_m, keep_hulls=True)
     frame = geo.RegionFrame(anchor_lat, anchor_lon)
     result = []
     for entry in entries:
@@ -413,7 +474,9 @@ def landmark_entries(catalog_path: Path, anchor_lat: float, anchor_lon: float,
             lat_deg=float(lat),
             lon_deg=float(lon),
             type_key=type_key(entry.tags),
-            position_sigma_m=entry.position_sigma_m))
+            position_sigma_m=entry.position_sigma_m,
+            hull_east_m=[float(value) for value in entry.hull_east_m],
+            hull_north_m=[float(value) for value in entry.hull_north_m]))
     return result
 
 
@@ -662,6 +725,23 @@ def build(args) -> artifact.ArtifactRef:
     measurements = forward_frame_measurements(
         camera_measurements, calibration)
 
+    review_dir = getattr(args, "identity_review_dir", None)
+    review_ref = None
+    review = None
+    if review_dir is not None:
+        if _config(document, "localization_inputs.use_uninformative_tables"):
+            raise LocalizationInputError(
+                "--identity_review_dir cannot be combined with the "
+                "uninformative-table control")
+        try:
+            review_ref, review = identity_review.load(
+                review_dir, expected_matching_ref=matching_ref,
+                matching_dir=args.matching_dir)
+        except (identity_review.IdentityReviewError,
+                artifact.ArtifactError) as error:
+            raise LocalizationInputError(
+                f"invalid human identity review: {error}") from error
+
     if _config(document, "localization_inputs.use_uninformative_tables"):
         tables = uninformative_tables(
             accepted_ids,
@@ -672,6 +752,9 @@ def build(args) -> artifact.ArtifactRef:
     else:
         tables = matched_tables
         matcher_version = matched_version
+        if review is not None:
+            tables, matcher_version = apply_identity_review(
+                tables, review, review_ref.version)
 
     sigma_pair_m = _finite(
         _config(document, "localization_inputs.odometry_sigma_pair_m"),
@@ -780,7 +863,7 @@ def build(args) -> artifact.ArtifactRef:
             "output_frame": "nominal_forward_cw_deg",
         },
     }
-    outputs = (
+    outputs = [
         "export_meta.json",
         "landmarks.json",
         "motion_source.csv",
@@ -789,7 +872,9 @@ def build(args) -> artifact.ArtifactRef:
         "tier1_odometry.jsonl",
         "tier1_tables.json",
         "truth.jsonl",
-    )
+    ]
+    if review_ref is not None:
+        outputs.append(identity_review.REVIEW_NAME)
     with publication.published_artifact(
             args.output_dir,
             kind=paths_lib.LOCALIZATION_INPUTS,
@@ -798,7 +883,8 @@ def build(args) -> artifact.ArtifactRef:
             generator=GENERATOR,
             git_commit=provenance.git_commit(),
             arguments=sys.argv,
-            upstreams=(observations_ref, matching_ref, catalog_ref),
+            upstreams=(observations_ref, matching_ref, catalog_ref)
+            + (() if review_ref is None else (review_ref,)),
             config={
                 "orchestration": orchestration,
                 "build_identity": document["build_identity"],
@@ -806,6 +892,12 @@ def build(args) -> artifact.ArtifactRef:
                 "gps_course": dict(document["config"]["gps_course"]),
                 "nominal_forward_sha256": nominal_meta["content_sha256"],
                 "motion_source_sha256": motion_sha,
+                "identity_review": (None if review_ref is None else {
+                    "artifact": review_ref.to_dict(),
+                    "content_digest": review_ref.content_digest,
+                    "precedence_policy": "human_identity_over_machine_v1",
+                    "n_decisions": len(review.decisions),
+                }),
                 "source_digests": {
                     "build_config": artifact.sha256_file(config_path),
                     **dataset_digests,
@@ -816,6 +908,9 @@ def build(args) -> artifact.ArtifactRef:
                     paths_lib.LANDMARK_MATCHES:
                         matching_ref.content_digest,
                     paths_lib.CATALOGS: catalog_ref.content_digest,
+                    identity_review.IDENTITY_REVIEW_KIND: (
+                        None if review_ref is None
+                        else review_ref.content_digest),
                 },
                 "matching_coverage": "complete",
                 "matching_n_expected": artifact.load_manifest(
@@ -824,7 +919,7 @@ def build(args) -> artifact.ArtifactRef:
                     args.matching_dir).config["n_successful"],
                 "reducer": meta["reducer"],
             },
-            declared_outputs=outputs) as builder:
+            declared_outputs=tuple(outputs)) as builder:
         artifact.atomic_write_json(builder.output_path("export_meta.json"), meta)
         artifact.atomic_write_file(
             builder.output_path("landmarks.json"),
@@ -842,6 +937,10 @@ def build(args) -> artifact.ArtifactRef:
         shutil.copyfile(
             calibration_source,
             builder.output_path("nominal_forward.json"))
+        if review_ref is not None:
+            shutil.copyfile(
+                Path(review_dir) / identity_review.REVIEW_NAME,
+                builder.output_path(identity_review.REVIEW_NAME))
     assert builder.artifact_ref is not None
     # Exercise the consumer boundary before reporting success.
     export_ingest.load(args.output_dir, expected_dataset=args.dataset)
@@ -856,6 +955,10 @@ def main():
     parser.add_argument("--dataset_base", type=Path, required=True)
     parser.add_argument("--observations_dir", type=Path, required=True)
     parser.add_argument("--matching_dir", type=Path, required=True)
+    parser.add_argument(
+        "--identity_review_dir", type=Path,
+        help="Optional immutable human identity review bound to the exact "
+             "matching artifact; decisive reviews override machine tables")
     parser.add_argument("--catalog_dir", type=Path, required=True)
     parser.add_argument("--motion_source", type=Path, required=True)
     parser.add_argument("--nominal_forward_calibration", type=Path,

@@ -27,8 +27,18 @@ def default_metadata() -> dict:
         "azimuth_convention": {
             "images_rotated": False,
             "camera_frame": geo.CAMERA_FRAME,
-            "heading_deg_is_bearing_of": "column_0",
-            "formula": "azimuth = (heading_deg + 360*x/W) % 360",
+            "raw_mapillary_fields_reference":
+                "optical_axis_true_north_cw",
+            "selected_heading_per_frame":
+                "intrinsics.csv:heading_optical_axis_true_deg",
+            "column0_per_frame":
+                "intrinsics.csv:heading_column0_true_deg",
+            "column0_from_optical_axis_formula":
+                "heading_column0_true_deg = "
+                "(heading_optical_axis_true_deg - 180) mod 360",
+            "world_bearing_formula":
+                "bearing_world_true_cw_deg = "
+                "(heading_column0_true_deg + 360 * col / width) mod 360",
         },
     }
 
@@ -76,11 +86,16 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
                  "sequence_id": "seq0", "sequence_position": r["idx"]}
                 for r in kept])
     _write_csv(base / "intrinsics.csv",
-               ["idx", "heading_deg", "heading_reference", "heading_source",
+               ["idx", "computed_compass_angle_true_deg",
+                "compass_angle_true_deg", "heading_optical_axis_true_deg",
+                "heading_column0_true_deg", "selected_heading_source",
                 "hfov_deg"],
-               [{"idx": r["idx"], "heading_deg": "45.0",
-                 "heading_reference": "column_0",
-                 "heading_source": "synthetic_diagnostic",
+               [{"idx": r["idx"],
+                 "computed_compass_angle_true_deg": "225.0",
+                 "compass_angle_true_deg": "225.0",
+                 "heading_optical_axis_true_deg": "225.0",
+                 "heading_column0_true_deg": "45.0",
+                 "selected_heading_source": "computed_compass_angle",
                  "hfov_deg": "360.0"}
                 for r in kept])
     resolved_metadata = dict(

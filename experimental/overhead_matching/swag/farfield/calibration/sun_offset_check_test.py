@@ -60,9 +60,11 @@ class BlobSearchTest(unittest.TestCase):
         pano = pano_with_blob(720, 360, az_deg=296.0, el_deg=28.0)
         found = soc.brightest_blob_in_band(pano, 28.0)
         self.assertIsNotNone(found)
-        az, el, _ = found
+        az, el, _, centre_x, centre_y = found
         self.assertAlmostEqual(az, 296.0, delta=2.0)
         self.assertAlmostEqual(el, 28.0, delta=2.0)
+        self.assertTrue(0.0 <= centre_x < pano.shape[1])
+        self.assertTrue(0.0 <= centre_y < pano.shape[0])
 
     def test_ignores_a_brighter_blob_outside_the_band(self):
         # This is the sun-glitter case: the water below the horizon is at
@@ -71,12 +73,12 @@ class BlobSearchTest(unittest.TestCase):
         glitter = pano_with_blob(720, 360, az_deg=100.0, el_deg=-20.0,
                                  value=255, radius=20)
         pano = np.maximum(pano, glitter)
-        az, _, _ = soc.brightest_blob_in_band(pano, 28.0)
+        az, _, _, _, _ = soc.brightest_blob_in_band(pano, 28.0)
         self.assertAlmostEqual(az, 296.0, delta=2.0)
 
     def test_blob_straddling_the_seam_does_not_average_to_the_far_side(self):
         pano = pano_with_blob(720, 360, az_deg=180.5, el_deg=30.0)
-        az, _, _ = soc.brightest_blob_in_band(pano, 30.0)
+        az, _, _, _, _ = soc.brightest_blob_in_band(pano, 30.0)
         # Azimuth 180 is the seam (column 0 / column W). Anything near 0 deg
         # would mean the circular mean collapsed to the panorama's centre.
         self.assertLess(min(abs(az - 180.5), 360.0 - abs(az - 180.5)), 3.0)
@@ -94,7 +96,7 @@ class BlobSearchTest(unittest.TestCase):
         for radius in (3, 6, 12):
             pano = pano_with_blob(720, 360, az_deg=296.0, el_deg=28.0,
                                   value=255, radius=radius)
-            az, _, _ = soc.brightest_blob_in_band(pano, 28.0)
+            az, _, _, _, _ = soc.brightest_blob_in_band(pano, 28.0)
             self.assertAlmostEqual(
                 az, 296.0, delta=1.0,
                 msg=f"radius {radius}px blob read at {az:.2f} deg")

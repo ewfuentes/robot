@@ -125,5 +125,23 @@ class TrajectoryExtentTest(unittest.TestCase):
             su.trajectory_enu(SimpleNamespace(truth=[], health=[]))
 
 
+class CatalogExtentTest(unittest.TestCase):
+    def test_exact_hull_vertices_expand_the_wide_extent(self):
+        frame = geo.RegionFrame(42.35, -71.05)
+        manifest = SimpleNamespace(landmarks=[SimpleNamespace(
+            lat_deg=42.35, lon_deg=-71.05,
+            hull_east_m=[-1000.0, 1500.0],
+            hull_north_m=[-500.0, 750.0])])
+
+        lat, lon = su.catalog_latlon(manifest, frame)
+
+        self.assertEqual(lat.size, 3)
+        self.assertEqual(lon.size, 3)
+        self.assertLess(lat.min(), 42.35)
+        self.assertGreater(lat.max(), 42.35)
+        self.assertLess(lon.min(), -71.05)
+        self.assertGreater(lon.max(), -71.05)
+
+
 if __name__ == "__main__":
     unittest.main()

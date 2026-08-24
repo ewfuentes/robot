@@ -1,54 +1,31 @@
 #!/usr/bin/env python3
-"""Vertex AI Batch Manager - Manage batch jobs using Vertex AI API.
+"""Vertex execution transport used by immutable farfield LLM stages.
 
-This script manages batch inference jobs using Vertex AI instead of the
-Gemini Developer API. It works with files stored in Google Cloud Storage.
-
-There is no default model anywhere in this file: which model to run is a
-modeling choice recorded in the run config, so every entry point requires
-`--model` explicitly (the checkpoint branch carried three conflicting
-defaults, which is how a stage ends up on a model nobody chose).
-
-Prerequisites:
-    1. Set environment variables:
-       export GOOGLE_CLOUD_PROJECT=your-project-id
-       export GOOGLE_CLOUD_LOCATION=us-central1  # or your preferred location
-       export GOOGLE_GENAI_USE_VERTEXAI=True
-
-    2. Authenticate with gcloud:
-       gcloud auth application-default login
-
-Example usage:
-    # Submit all JSONL files from a GCS prefix
-    # This will find all *.jsonl files under the given prefix in the bucket.
-    bazel run //experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager -- \\
-        submit-all \\
-        --input_prefix gs://bucket/requests/ \\
-        --output_prefix gs://your-bucket/output-results/ \\
-        --model <model-id>
-
-    # List all active batch jobs
-    bazel run //experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager -- \\
-        list --active
-
-    # Get status of a specific job
-    bazel run //experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager -- \\
-        status --job_name projects/.../batchPredictionJobs/123
+New provider work enters through run_requests, where the stage-owned model,
+cost approval, immutable request snapshot, and append-only attempts are
+already established. The command-line interface is deliberately limited to
+observing or cancelling existing jobs; raw submit/run commands would bypass
+those contracts.
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import List
 
 from google import genai
 from google.genai.types import CreateBatchJobConfig, JobState, HttpOptions
 
-from experimental.overhead_matching.swag.farfield.extraction import llm_cost
+from experimental.overhead_matching.swag.farfield.extraction import (
+    llm_cost,
+    prompts,
+)
 
 try:
     from google.cloud import storage
@@ -71,6 +48,8 @@ COMPLETED_STATES = {
     JobState.JOB_STATE_CANCELLED,
     JobState.JOB_STATE_PAUSED,
 }
+
+_SUBMISSION_REQUEST_RE = re.compile(r"requests_submit_(\d+)\.jsonl\Z")
 
 
 def check_environment():
@@ -117,154 +96,6 @@ def parse_gcs_uri(uri: str) -> tuple[str, str]:
         prefix = ''
 
     return bucket, prefix
-
-
-def list_gcs_jsonl_files(bucket_name: str, prefix: str) -> List[str]:
-    """List all JSONL files in a GCS bucket/prefix.
-
-    Args:
-        bucket_name: GCS bucket name
-        prefix: Prefix/directory path
-
-    Returns:
-        List of GCS URIs (gs://bucket/path/file.jsonl)
-    """
-    if not HAS_GCS:
-        print("Error: google-cloud-storage is not installed")
-        print("Install with: pip install google-cloud-storage")
-        sys.exit(1)
-
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-
-    # Ensure prefix ends with / if it's not empty
-    if prefix and not prefix.endswith('/'):
-        prefix += '/'
-
-    # List all blobs with the prefix
-    blobs = bucket.list_blobs(prefix=prefix)
-
-    jsonl_files = []
-    for blob in blobs:
-        if blob.name.endswith('.jsonl'):
-            jsonl_files.append(f"gs://{bucket_name}/{blob.name}")
-
-    return sorted(jsonl_files)
-
-
-def get_output_uri(input_uri: str, output_prefix: str) -> str:
-    """Generate output URI for a given input file.
-
-    Args:
-        input_uri: Input file GCS URI (gs://bucket/input/file.jsonl)
-        output_prefix: Output prefix (gs://bucket/output/)
-
-    Returns:
-        Output directory URI for this file
-    """
-    # Extract filename from input
-    filename = input_uri.split('/')[-1]
-    basename = filename.replace('.jsonl', '')
-
-    # Ensure output_prefix ends with /
-    if not output_prefix.endswith('/'):
-        output_prefix += '/'
-
-    return f"{output_prefix}{basename}/"
-
-
-def cmd_submit_all(args):
-    """Submit batch jobs for all JSONL files in a GCS directory."""
-    check_environment()
-
-    # Parse input prefix
-    print(f"Scanning for JSONL files in: {args.input_prefix}")
-    try:
-        bucket_name, prefix = parse_gcs_uri(args.input_prefix)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-
-    # List all JSONL files
-    print(f"Listing files in gs://{bucket_name}/{prefix}")
-    jsonl_files = list_gcs_jsonl_files(bucket_name, prefix)
-
-    if not jsonl_files:
-        print(f"No JSONL files found in {args.input_prefix}")
-        return
-
-    print(f"\nFound {len(jsonl_files)} JSONL file(s):")
-    for f in jsonl_files:
-        print(f"  - {f}")
-
-    if args.dry_run:
-        print("\nDRY RUN - No jobs were submitted.")
-        return
-
-    # Confirm submission unless --force
-    if not args.force:
-        response = input(f"\nSubmit {len(jsonl_files)} batch job(s)? [y/N]: ")
-        if response.lower() != 'y':
-            print("Cancelled.")
-            return
-
-    # Initialize Vertex AI client
-    client = genai.Client(http_options=HttpOptions(api_version="v1"))
-
-    # Submit jobs
-    print(f"\nSubmitting batch jobs using model: {args.model}")
-    print("=" * 80)
-
-    submitted_jobs = []
-    errors = []
-
-    for input_uri in jsonl_files:
-        try:
-            # Generate output URI
-            output_uri = get_output_uri(input_uri, args.output_prefix)
-
-            print(f"\nSubmitting: {input_uri.split('/')[-1]}")
-            print(f"  Input:  {input_uri}")
-            print(f"  Output: {output_uri}")
-
-            # Create batch job
-            job = client.batches.create(
-                model=args.model,
-                src=input_uri,
-                config=CreateBatchJobConfig(dest=output_uri),
-            )
-
-            print(f"  ✓ Job created: {job.name}")
-            print(f"    State: {job.state}")
-            submitted_jobs.append((input_uri, job.name))
-
-            # Brief pause to avoid rate limiting
-            if args.delay > 0:
-                time.sleep(args.delay)
-
-        except Exception as e:
-            print(f"  ✗ Error: {e}")
-            errors.append((input_uri, str(e)))
-
-    # Print summary
-    print("\n" + "=" * 80)
-    print("SUMMARY")
-    print("=" * 80)
-    print(f"Submitted: {len(submitted_jobs)}/{len(jsonl_files)} job(s)")
-    print(f"Errors: {len(errors)}")
-
-    if submitted_jobs:
-        print("\nSubmitted jobs:")
-        for input_uri, job_name in submitted_jobs:
-            print(f"  {input_uri.split('/')[-1]} -> {job_name}")
-
-    if errors:
-        print("\nErrors:")
-        for input_uri, error in errors:
-            print(f"  {input_uri.split('/')[-1]}: {error}")
-
-    print("\nCheck job status with:")
-    print(f"  bazel run //experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager -- list")
 
 
 def cmd_list(args):
@@ -404,33 +235,15 @@ def cmd_run_online(args):
                 records.append(json.loads(line))
     print(f"Loaded {len(records)} requests from {args.input}")
 
-    # Resume: skip already-processed keys (exclude error records so they get retried)
-    done_keys = set()
-    error_keys = set()
-    skipped = 0
     output_path = Path(args.output)
-    if output_path.exists():
-        with open(output_path) as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        rec = json.loads(line)
-                        if rec.get("error") is not None:
-                            error_keys.add(rec["key"])
-                        else:
-                            done_keys.add(rec["key"])
-                    except (json.JSONDecodeError, KeyError):
-                        skipped += 1
-                        pass
-        if skipped:
-            print(f"WARNING: Skipped {skipped} corrupted lines in {output_path}")
-        if done_keys or error_keys:
-            print(f"Resuming: {len(done_keys)} succeeded, {len(error_keys)} errors (will retry errors)")
-            records = [r for r in records if r["key"] not in done_keys]
-
+    errors_path = output_path.with_suffix('.errors.jsonl')
+    for path in (output_path, errors_path):
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(
+                f"transport output already exists; request lifecycle must "
+                f"allocate a new attempt path: {path}")
     if not records:
-        print("All requests already processed.")
-        return
+        raise ValueError("request transport input is empty")
 
     client = genai.Client(http_options=HttpOptions(api_version="v1"))
 
@@ -449,26 +262,20 @@ def cmd_run_online(args):
     stop_early = False
     print_lock = Lock()
     start_time = time.time()
-    out_file = open(args.output, 'a')
-    errors_path = Path(args.output).with_suffix('.errors.jsonl')
-    errors_file = open(errors_path, 'a')
+    out_file = open(output_path, 'x')
+    errors_file = open(errors_path, 'x')
 
     def process_one(record):
         req = record["request"]
         try:
+            adapted = prompts.online_request_from_batch(record["key"], req)
             response = client.models.generate_content(
                 model=args.model,
-                contents=req["contents"],
-                config={
-                    "system_instruction": req["systemInstruction"]["parts"][0]["text"],
-                    "response_mime_type": req["generationConfig"]["responseMimeType"],
-                    "response_schema": req["generationConfig"]["responseSchema"],
-                    "thinking_config": req["generationConfig"].get("thinkingConfig"),
-                },
+                contents=adapted["contents"],
+                config=adapted["config"],
             )
             return {
                 "key": record["key"],
-                "request": req,
                 "response": {
                     "candidates": [{"content": {"parts": [{"text": response.text}], "role": "model"}}],
                     "usageMetadata": {
@@ -478,16 +285,18 @@ def cmd_run_online(args):
                         "totalTokenCount": response.usage_metadata.total_token_count,
                     },
                 },
-                "error": None,
             }
         except Exception as e:
-            return {"key": record["key"], "request": req, "response": None, "error": f"{type(e).__name__}: {e}"}
+            return {
+                "key": record["key"],
+                "error": f"{type(e).__name__}: {e}",
+            }
 
     def handle_result(result):
         nonlocal total_prompt, total_output, total_thinking, completed, errors
         nonlocal consecutive_errors, stop_early
         with print_lock:
-            if result["error"]:
+            if "error" in result:
                 errors += 1
                 consecutive_errors += 1
                 print(f"  ERROR {result['key']}: {result['error']}")
@@ -538,10 +347,56 @@ def cmd_run_online(args):
     print(f"Output: {args.output}")
 
 
-def _batch_stage_uri(gcs_prefix: str, tag: str) -> tuple[str, str]:
-    """(requests_uri, results_prefix) for one batch run under a staging prefix."""
+def _batch_stage_uri(gcs_prefix: str, tag: str,
+                     submission_id: str | None = None) -> tuple[str, str]:
+    """Unique request/result locations for one batch submission."""
     prefix = gcs_prefix.rstrip('/')
-    return f"{prefix}/{tag}/requests.jsonl", f"{prefix}/{tag}/results/"
+    submission_id = submission_id or uuid.uuid4().hex
+    base = f"{prefix}/{tag}/submissions/{submission_id}"
+    return f"{base}/requests.jsonl", f"{base}/results/"
+
+
+def next_submission_paths(work_dir: Path | str) -> tuple[int, Path, Path]:
+    """Paths for a fresh stage submission round.
+
+    The immutable request shard is the durable reservation. Counting it,
+    rather than completed provider output, ensures a retry gets a new local raw
+    path even when a batch is interrupted before it can download any results.
+    """
+    work_dir = Path(work_dir)
+    indices = set()
+    if work_dir.exists():
+        for entry in work_dir.iterdir():
+            match = _SUBMISSION_REQUEST_RE.fullmatch(entry.name)
+            if match:
+                indices.add(int(match.group(1)))
+    round_index = max(indices, default=0) + 1
+    return (
+        round_index,
+        work_dir / f"requests_submit_{round_index:04d}.jsonl",
+        work_dir / f"transport_submit_{round_index:04d}.jsonl",
+    )
+
+
+def completed_submission_results(work_dir: Path | str) -> tuple[Path, ...]:
+    """Existing main/error transport shards for allocated submission rounds."""
+    work_dir = Path(work_dir)
+    rounds = set()
+    if work_dir.exists():
+        for entry in work_dir.iterdir():
+            match = _SUBMISSION_REQUEST_RE.fullmatch(entry.name)
+            if match:
+                rounds.add(int(match.group(1)))
+    results = []
+    for round_index in sorted(rounds):
+        raw_path = work_dir / f"transport_submit_{round_index:04d}.jsonl"
+        for path in (raw_path, raw_path.with_suffix(".errors.jsonl")):
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError(
+                        f"transport result is not a regular file: {path}")
+                results.append(path)
+    return tuple(results)
 
 
 def _upload_to_gcs(local_path: str, uri: str):
@@ -573,10 +428,8 @@ def _normalize_batch_record(record: dict) -> dict:
 
     Batch emits {key, status, response, processed_time} where a non-empty
     `status` means the request failed and `response` is the string "{}". The
-    online path emits {key, request, response} and both aggregators
-    (`semantic_audit.parse_result_line`, `m9.aggregate`) branch on an `error`
-    key, so the two paths are made to produce the same records rather than
-    teaching every consumer about two formats.
+    online path already emits exact ``{key,response|error}`` lifecycle records,
+    so batch normalization produces the same boundary shape.
     """
     status = record.get('status')
     response = record.get('response')
@@ -589,43 +442,19 @@ def _normalize_batch_record(record: dict) -> dict:
     return out
 
 
-def _usable_keys(path: Path) -> set:
-    """Keys in an existing results file that already have a usable response."""
-    if not path.exists():
-        return set()
-    keys = set()
-    with open(path) as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get('error') or 'response' not in record:
-                continue
-            keys.add(record.get('key'))
-    return keys
-
-
 def cmd_run_batch(args):
     """Run requests through the Vertex Batch API end to end.
 
-    Same contract as `run-online` -- local requests JSONL in, local results
-    JSONL out, resumable -- but at the batch price, which is half of on-demand.
-    That discount is the reason this exists: matching a single leg is ~3.6M
-    tokens, and the audit another ~1.2M, so the two online stages were most of
-    the per-leg bill.
-
-    Upload -> submit -> poll -> download -> normalize, so callers do not have to
-    care that GCS is involved. Requests whose key already has a usable response
-    in `--output` are skipped, which makes a rerun retry only the failures.
+    Upload, submit, poll, download, and normalize one stage-owned request
+    shard. Retry selection belongs to the immutable request/attempt lifecycle;
+    this transport always writes a fresh raw output.
     """
     check_environment()
     if not HAS_GCS:
-        sys.exit("google-cloud-storage is required for run-batch")
+        sys.exit("google-cloud-storage is required for batch execution")
     if not args.gcs_prefix:
-        sys.exit("--gcs_prefix is required for run-batch (a gs:// staging path)")
+        sys.exit("--gcs_prefix is required for batch execution (a gs:// "
+                 "staging path)")
 
     records = []
     with open(args.input) as handle:
@@ -635,21 +464,19 @@ def cmd_run_batch(args):
     print(f"Loaded {len(records)} requests from {args.input}")
 
     output_path = Path(args.output)
-    done = _usable_keys(output_path)
-    pending = [r for r in records if r.get('key') not in done]
-    if done:
-        print(f"  {len(done)} already have a usable response; "
-              f"{len(pending)} to run")
-    if not pending:
-        print("Nothing to do.")
-        return
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError(
+            "transport output already exists; request lifecycle must allocate "
+            f"a new attempt path: {output_path}")
+    if not records:
+        raise ValueError("request transport input is empty")
 
-    tag = args.tag or f"{output_path.parent.name}_{int(time.time())}"
+    tag = args.tag
     requests_uri, results_prefix = _batch_stage_uri(args.gcs_prefix, tag)
 
     with tempfile.NamedTemporaryFile('w', suffix='.jsonl',
                                      delete=False) as staged:
-        for record in pending:
+        for record in records:
             staged.write(json.dumps(record) + "\n")
         staged_path = staged.name
     try:
@@ -688,7 +515,7 @@ def cmd_run_batch(args):
     n_ok = 0
     n_err = 0
     prompt = output = thinking = 0
-    with open(output_path, 'a') as handle:
+    with open(output_path, 'x') as handle:
         for record in downloaded:
             normalized = _normalize_batch_record(record)
             if 'error' in normalized:
@@ -705,8 +532,8 @@ def cmd_run_batch(args):
     print(f"Token usage:\n  Prompt:   {prompt:,}\n  Output:   {output:,}\n"
           f"  Thinking: {thinking:,}\n  Total:    {prompt + output + thinking:,}")
     if n_err:
-        print(f"\n{n_err} request(s) failed. Rerun the same command to retry "
-              f"only those.")
+        print(f"\n{n_err} request(s) failed; the request lifecycle will select "
+              "them for a new attempt.")
 
 
 def add_execution_arguments(parser):
@@ -718,9 +545,8 @@ def add_execution_arguments(parser):
     when a fast turnaround matters more than the discount.
 
     `--model` has no default: which model to run is a modeling choice recorded
-    in the run config, not something a flag block should decide (the checkpoint
-    branch grew three conflicting defaults, which is exactly how a stage ends
-    up on a model nobody chose). Likewise there is no default staging bucket:
+    in the run config, not something a flag block should decide. Likewise there
+    is no default staging bucket:
     `--gcs_prefix` names where batch traffic stages, and batch execution
     refuses to run without it.
     """
@@ -750,11 +576,18 @@ def add_execution_arguments(parser):
 def run_requests(args, input_path, output_path, *, tag):
     """Execute a requests JSONL through whichever path `args` selects.
 
-    One entry point so a caller does not branch on transport: both paths write
-    the same records to `output_path` and both are resumable, so the caller's
-    aggregation step is identical either way.
+    One entry point so a caller does not branch on transport. Both paths write
+    the same raw records to a fresh `output_path`; stage-owned lifecycle code
+    imports them into immutable attempt shards.
     """
-    input_path, output_path = str(input_path), str(output_path)
+    input_path = str(input_path)
+    output_path = Path(output_path)
+    errors_path = output_path.with_suffix('.errors.jsonl')
+    for path in (output_path, errors_path):
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(
+                f"transport output already exists; allocate a new attempt "
+                f"path: {path}")
 
     # Before either transport spends anything: estimate, and stop if the step is
     # over the ceiling. Placed here rather than in each caller so no stage can
@@ -769,7 +602,7 @@ def run_requests(args, input_path, output_path, *, tag):
     if args.online:
         print(f"executing {tag} on-demand (--online)")
         return cmd_run_online(argparse.Namespace(
-            input=input_path, output=output_path,
+            input=input_path, output=str(output_path),
             model=args.model, parallel=args.parallel))
     if not args.gcs_prefix:
         sys.exit(f"{tag}: --gcs_prefix is required for batch execution (a "
@@ -779,7 +612,7 @@ def run_requests(args, input_path, output_path, *, tag):
     print(f"executing {tag} through the Batch API (half price; use --online "
           f"for a faster, dearer run)")
     return cmd_run_batch(argparse.Namespace(
-        input=input_path, output=output_path, model=args.model,
+        input=input_path, output=str(output_path), model=args.model,
         gcs_prefix=args.gcs_prefix, tag=tag, poll_interval=args.poll_interval))
 
 
@@ -822,46 +655,6 @@ def main():
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # SUBMIT-ALL command
-    submit_parser = subparsers.add_parser(
-        'submit-all',
-        help='Submit batch jobs for all JSONL files in a GCS directory'
-    )
-    submit_parser.add_argument(
-        '--input_prefix',
-        type=str,
-        required=True,
-        help='GCS directory containing JSONL files (e.g., gs://bucket/requests/)'
-    )
-    submit_parser.add_argument(
-        '--output_prefix',
-        type=str,
-        required=True,
-        help='GCS output prefix for results (e.g., gs://bucket/output/)'
-    )
-    submit_parser.add_argument(
-        '--model',
-        type=str,
-        required=True,
-        help='Model id to execute with (required; no default)'
-    )
-    submit_parser.add_argument(
-        '--delay',
-        type=float,
-        default=1.0,
-        help='Delay in seconds between submissions (default: 1.0)'
-    )
-    submit_parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Show what would be submitted without submitting'
-    )
-    submit_parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Skip confirmation prompt'
-    )
-
     # LIST command
     list_parser = subparsers.add_parser(
         'list',
@@ -885,42 +678,6 @@ def main():
         required=True,
         help='Job name (e.g., projects/.../batchPredictionJobs/123)'
     )
-
-    # RUN-ONLINE command
-    online_parser = subparsers.add_parser(
-        'run-online',
-        help='Run batch requests via live API (non-batched, resumable)'
-    )
-    online_parser.add_argument('--input', type=str, required=True,
-                               help='Input JSONL file (same format as batch requests)')
-    online_parser.add_argument('--output', type=str, required=True,
-                               help='Output JSONL file (same format as batch responses)')
-    online_parser.add_argument('--model', type=str, required=True,
-                               help='Model id to execute with (required; no default)')
-    online_parser.add_argument('--parallel', type=int, default=5,
-                               help='Number of concurrent requests (default: 5)')
-
-    # RUN-BATCH command
-    batch_parser = subparsers.add_parser(
-        'run-batch',
-        help='Run a local requests JSONL through the Batch API (half price) '
-             'and write the same results JSONL run-online would'
-    )
-    batch_parser.add_argument('--input', type=str, required=True,
-                              help='Local requests JSONL')
-    batch_parser.add_argument('--output', type=str, required=True,
-                              help='Local results JSONL (appended; keys that '
-                                   'already have a usable response are skipped)')
-    batch_parser.add_argument('--model', type=str, required=True,
-                              help='Model id to execute with (required; no '
-                                   'default)')
-    batch_parser.add_argument('--gcs_prefix', type=str, required=True,
-                              help='gs:// staging path for requests + results')
-    batch_parser.add_argument('--tag', type=str, default=None,
-                              help='Subdirectory under --gcs_prefix for this '
-                                   'run (default: output dir name + timestamp)')
-    batch_parser.add_argument('--poll_interval', type=int, default=120,
-                              help='Seconds between job state checks')
 
     # CANCEL command
     cancel_parser = subparsers.add_parser(
@@ -946,16 +703,10 @@ def main():
         sys.exit(1)
 
     # Dispatch to command handler
-    if args.command == 'submit-all':
-        cmd_submit_all(args)
-    elif args.command == 'list':
+    if args.command == 'list':
         cmd_list(args)
     elif args.command == 'status':
         cmd_status(args)
-    elif args.command == 'run-online':
-        cmd_run_online(args)
-    elif args.command == 'run-batch':
-        cmd_run_batch(args)
     elif args.command == 'cancel':
         cmd_cancel(args)
     else:

@@ -249,18 +249,6 @@ _TAGS_TO_KEEP = [
     "waste",
     "water",
     "waterway",
-    # Far-field / maritime keys (2026-08). _TAGS_TO_KEEP order defines
-    # TAG_KEY_TO_IDX, which trained TagBundleEncoder checkpoints depend on:
-    # only ever APPEND to this list. Checkpoints trained with a different
-    # list fail to load (key_embedding shape mismatch) — retrain, on purpose.
-    "building:colour",
-    "building:material",
-    "color",
-    "colour",
-    "distance_estimate",
-    "height",
-    "place",
-    "seamark:type",
 ]
 
 # Entries ending with ':' are treated as prefix matches (e.g. "building:" would match

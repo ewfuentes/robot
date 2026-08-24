@@ -47,7 +47,8 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 
 
-def create_app(run_dir: Path, feather: Path | None = None,
+def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
+               audit_dir: Path | None = None, feather: Path | None = None,
                ghost_dirs=()) -> Flask:
     app = Flask(__name__)
     state = {
@@ -63,7 +64,8 @@ def create_app(run_dir: Path, feather: Path | None = None,
     def payload(rebuild: bool = False) -> dict:
         if state["payload"] is None or rebuild:
             state["payload"] = viewer_payload.build(
-                run_dir, feather=feather,
+                run_dir, tracks_dir=tracks_dir, audit_dir=audit_dir,
+                feather=feather,
                 ghost_dirs=state["ghosts"])
             state["payload"]["server"] = True
         return state["payload"]
@@ -174,6 +176,8 @@ def create_app(run_dir: Path, feather: Path | None = None,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--tracks_dir", type=Path, default=None)
+    parser.add_argument("--audit_dir", type=Path, default=None)
     parser.add_argument("--feather", type=Path, default=None)
     parser.add_argument("--ghost", type=Path, action="append", default=[])
     parser.add_argument("--port", type=int, default=8765)
@@ -182,7 +186,9 @@ def main():
                              "filter on request")
     args = parser.parse_args()
 
-    app = create_app(args.run_dir, args.feather, args.ghost)
+    app = create_app(
+        args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
+        feather=args.feather, ghost_dirs=args.ghost)
     print(f"serving {args.run_dir} at http://{args.host}:{args.port}/")
     print("  /api/checkpoint/<kf>  every particle at that keyframe")
     print("  /api/replay           live counterfactual (POST {\"edits\": ...})")

@@ -17,12 +17,9 @@ MIN_CONTRAST = 1.5
 
 # A camera-to-effective-course candidate cannot be supported by one tracklet:
 # a single tracklet's residual is a smooth function of the candidate by
-# construction, so the curve looks textbook-unimodal while saying nothing.
-# Observed for real: a 1-tracklet sweep returned "SMOOTH UNIMODAL, 0.95 deg"
-# while the same leg with less bearing fusion (7 tracklets) disagreed by
-# nearly 180 deg. The other gates are all relative, so none of them can catch
-# this. This is `assess`'s default floor; the typed diagnostic config supplies
-# the value used for a particular build.
+# construction, so curve shape alone cannot establish independent support.
+# This is `assess`'s default floor; the typed diagnostic config supplies the
+# value used for a particular build.
 MIN_TRACKLETS = 5
 
 
@@ -51,22 +48,15 @@ def triangulate(rays):
     (east_m, north_m, median_abs_residual_deg, condition_number), or None if
     under-determined.
 
-    This is the honest consistency check for a tracklet, and it replaces
-    "circular std of the world bearing", which was wrong: a static object at
-    1 km sweeps tens of degrees of true bearing as the vessel passes it, so
-    spread measures parallax at least as much as error. What we actually want
-    to know is whether the bearings are consistent with *some* single static
-    point -- which is exactly what the residual about the triangulated
-    intersection reports.
+    A static object's true bearing changes with parallax, so circular bearing
+    spread is not a consistency metric. Residual about the triangulated
+    intersection instead tests whether the bearings agree on one static point.
 
     The condition number matters as much as the residual: bearings taken over
     a short arc intersect at a glancing angle, so a tiny residual can hide a
     position uncertain by kilometres along the line of sight. Callers must
     gate on both.
 
-    Ported from bearing_matcher.triangulate on the checkpoint branch; when
-    the matching package lands (REORG.md PR 09) its copy and this one should
-    merge into a single owner.
     """
     if len(rays) < 2:
         return None
@@ -88,9 +78,8 @@ def triangulate(rays):
     point = np.linalg.solve(a_mat, b_vec)
 
     # The least-squares solve intersects LINES, not rays, so it can place the
-    # object behind the observer -- which then reports a ~180 deg residual and
-    # is meaningless. Seen for real: one tracklet came back at 179.7 deg.
-    # Require the solution to lie ahead of most observations.
+    # object behind the observer, where its near-180-degree residual is not a
+    # valid ray intersection. Require it to lie ahead of most observations.
     ahead = sum(1 for unit, origin in zip(units, points)
                 if float(np.dot(point - origin, unit)) > 0.0)
     if ahead * 2 < len(rays):

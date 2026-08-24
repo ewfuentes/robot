@@ -14,34 +14,33 @@ Discovery is creator-scoped and local to the chain's two endpoints, widening
 outward as the chain grows. It deliberately does not sweep the trajectory's
 whole area: the /images endpoint rejects a large bbox on area (over 0.010 square
 degrees) and separately rejects dense regions on result volume, both as HTTP
-500, and subdividing a city-sized box far enough to satisfy the volume limit
-fans out exponentially (measured to depth 10 in SF, Seattle and London).
+500. Subdividing a large dense region far enough to satisfy the volume limit
+fans out exponentially.
 
-`build_chain` is THE stitch logic: nothing else in the tree decides whether two
-Mapillary sequences are one trip. (The old `sequences.py` carried a second,
-greedy first-match implementation and a `--download` path whose sidecars had no
-`sequence_position`, silently corrupting ordering; both were deleted rather
-than ported.)
+`build_chain` is the canonical policy for deciding whether two Mapillary
+sequences belong to one trip.
 
 Usage:
     # measure only, no manifest written (cheap; no images downloaded)
     bazel run //experimental/overhead_matching/swag/farfield/collection:seed_to_trajectory -- \\
-        --seed_pkey 298475668560052 --name folkestone_dover \\
+        --seed_pkey <image-id> --name <trajectory-name> \\
         --stitch_time 300 --stitch_dist 100 --window_hours 36 --report_only
 
     # write a manifest ready for extract_stitch.py
     bazel run //experimental/overhead_matching/swag/farfield/collection:seed_to_trajectory -- \\
-        --seed_pkey 298475668560052 --name folkestone_dover \\
+        --seed_pkey <image-id> --name <trajectory-name> \\
         --stitch_time 300 --stitch_dist 100 --window_hours 36 \\
-        --output <root>/raw_material/mapillary_manifests/folkestone_dover.json
+        --output <root>/raw_material/mapillary_manifests/<trajectory-name>.json
 """
 
 import argparse
 import json
 import math
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from experimental.overhead_matching.swag.farfield.collection.api import MapillaryClient
 from experimental.overhead_matching.swag.farfield.collection.models import (
@@ -67,6 +66,74 @@ COARSE_GPS_DISTINCT_FRAC = 0.25
 # A "trajectory" shorter than this is a stationary burst, not a trip.
 MIN_USEFUL_TRACK_KM = 0.5
 
+MANIFEST_INCOMPLETE_SUFFIX = ".incomplete"
+_MANIFEST_KEYS = frozenset({"metadata", "sequences", "trajectory", "provenance"})
+_METADATA_KEYS = frozenset({
+    "area_name",
+    "total_sequences",
+    "total_images",
+    "total_length_km",
+    "created_at",
+})
+_SEQUENCE_KEYS = frozenset({
+    "id",
+    "length_km",
+    "image_count",
+    "start_time",
+    "end_time",
+    "camera_types",
+    "min_width",
+    "min_height",
+    "images",
+})
+_IMAGE_REQUIRED_KEYS = frozenset({
+    "id",
+    "lat",
+    "lng",
+    "compass_angle",
+    "computed_compass_angle",
+    "captured_at",
+    "camera_type",
+    "height",
+    "width",
+    "sequence_id",
+    "downloaded",
+})
+_IMAGE_OPTIONAL_KEYS = frozenset({
+    "camera_parameters",
+    "is_pano",
+    "creator_username",
+    "geometry_source",
+})
+_TRAJECTORY_IDENTITY_KEYS = frozenset({
+    "name",
+    "seed_pkey",
+    "seed_sequence_id",
+    "creator_username",
+    "camera_type",
+    "is_equirectangular",
+    "camera_parameters",
+    "seed_image_count",
+    "seed_length_km",
+    "component_sequence_ids",
+    "chain_image_count",
+    "chain_length_km",
+})
+_PROVENANCE_KEYS = frozenset({
+    "schema",
+    "generator",
+    "git_commit",
+    "argv",
+    "created",
+    "inputs",
+    "config",
+    "notes",
+})
+_GENERATOR = (
+    "//experimental/overhead_matching/swag/farfield/"
+    "collection:seed_to_trajectory"
+)
+
 
 def _percentile(sorted_vals: list, q: float) -> float:
     if not sorted_vals:
@@ -77,9 +144,8 @@ def _percentile(sorted_vals: list, q: float) -> float:
 def track_quality(images: list[PanoImage]) -> dict:
     """Per-frame GPS geometry of a capture, used to screen and to size seams.
 
-    Mapillary sequences vary wildly in usable geometry: a 500-image sequence may
-    be a 10 km ferry run with a fix per frame, or 17 seconds of video shot from a
-    moored boat. Both look identical in an image count, so measure it.
+    The same image count can describe either a moving capture with a GPS fix per
+    frame or a stationary video burst. Per-frame geometry distinguishes them.
     """
     steps = [haversine_m(images[i].lat, images[i].lng,
                          images[i + 1].lat, images[i + 1].lng)
@@ -126,11 +192,10 @@ def seam_allowance_m(quality: dict, time_gap_s: float, floor_m: float) -> float:
     independent causes and only one of them scales with time:
 
       * GPS quantization — the device emits a fix every N frames, so endpoints
-        land up to one whole step apart even with no elapsed time. On the
-        Folkestone ferry that step is ~220 m, so a fixed 100 m threshold rejects
-        every seam of an obviously continuous 9 km run.
+        land up to one whole GPS step apart even with no elapsed time. Coarse
+        devices can make that step hundreds of metres.
       * real travel during a recording gap — at the track's own mean speed, a
-        37 s gap legitimately covers a few hundred metres.
+        recording gap can legitimately cover additional distance.
 
     So the allowance is (expected travel + one GPS step), with 1.5x headroom on
     each, floored at the caller's value. Judging seams by instantaneous implied
@@ -218,9 +283,7 @@ class EndpointScanner:
 
     Scanning the whole buffered trajectory area does not work: the /images
     endpoint refuses dense regions on data volume (not just bbox area), and
-    subdividing a city-sized box to satisfy it fans out exponentially —
-    measured to depth 10 in San Francisco, Seattle and London, which never
-    finishes.
+    subdividing a large dense box to satisfy it fans out exponentially.
 
     Stitching does not need an area scan anyway. A sequence that continues the
     trip must begin or end near where this chain currently begins or ends, so
@@ -281,8 +344,8 @@ class EndpointScanner:
         must widen on a round that fails to *attach* anything, not merely one
         that finds nothing new: a round can surface an unrelated nearby sequence,
         fail to attach it, and still have a real continuation sitting just past
-        the close-in radius. Stopping there silently truncated the Folkestone
-        crossing by 2.7 km.
+        the close-in radius. Stopping after that round can silently truncate the
+        trajectory.
         """
         radius = ENDPOINT_SEARCH_RADII_DEG[radius_index]
         points = [(chain[0].images[0].lat, chain[0].images[0].lng),
@@ -327,13 +390,410 @@ def seam_report(chain: list[PanoSequence], seams: dict, quality: dict) -> list[d
     return out
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _require_exact_keys(value: dict, expected: frozenset[str], where: str) -> None:
+    actual = frozenset(value)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if missing or unknown:
+        raise ValueError(f"{where}: missing={missing}, unknown={unknown}")
+
+
+def _require_object(value: Any, where: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{where} must be an object")
+    return value
+
+
+def _require_string(value: Any, where: str, *, nonempty: bool = True) -> str:
+    if not isinstance(value, str) or (nonempty and not value):
+        qualifier = "non-empty " if nonempty else ""
+        raise ValueError(f"{where} must be a {qualifier}string")
+    return value
+
+
+def _require_integer(value: Any, where: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{where} must be an integer >= {minimum}")
+    return value
+
+
+def _require_finite(value: Any, where: str, *, minimum: float | None = None,
+                    maximum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{where} must be a finite number")
+    if minimum is not None and result < minimum:
+        raise ValueError(f"{where} must be >= {minimum}")
+    if maximum is not None and result > maximum:
+        raise ValueError(f"{where} must be <= {maximum}")
+    return result
+
+
+def _validate_json_value(value: Any, where: str) -> None:
+    """Reject values that JSON accepts permissively but cannot identify."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{where} contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(item, f"{where}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{where} contains a non-string key")
+            _validate_json_value(item, f"{where}.{key}")
+        return
+    raise ValueError(
+        f"{where} contains non-JSON value {type(value).__name__}")
+
+
+def _load_manifest_json(path: Path) -> dict:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"manifest is not a regular file: {path}")
+    try:
+        document = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {token!r}")),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"invalid trajectory manifest {path}: {error}") from error
+    return _require_object(document, f"trajectory manifest {path}")
+
+
+def _image_length_km(images: list[dict]) -> float:
+    return sum(
+        haversine_m(
+            images[index]["lat"], images[index]["lng"],
+            images[index + 1]["lat"], images[index + 1]["lng"],
+        )
+        for index in range(len(images) - 1)
+    ) / 1000.0
+
+
+def _validate_image(image: Any, sequence_id: str, index: int,
+                    seen_image_ids: set[str]) -> dict:
+    where = f"sequence {sequence_id!r} image {index}"
+    image = _require_object(image, where)
+    actual = frozenset(image)
+    missing = sorted(_IMAGE_REQUIRED_KEYS - actual)
+    unknown = sorted(actual - _IMAGE_REQUIRED_KEYS - _IMAGE_OPTIONAL_KEYS)
+    if missing or unknown:
+        raise ValueError(f"{where}: missing={missing}, unknown={unknown}")
+    image_id = _require_string(image["id"], f"{where} id")
+    if image_id in seen_image_ids:
+        raise ValueError(f"duplicate image id {image_id!r}")
+    seen_image_ids.add(image_id)
+    _require_finite(image["lat"], f"image {image_id} lat",
+                    minimum=-90.0, maximum=90.0)
+    _require_finite(image["lng"], f"image {image_id} lng",
+                    minimum=-180.0, maximum=180.0)
+    _require_finite(image["compass_angle"], f"image {image_id} compass_angle")
+    _require_finite(
+        image["computed_compass_angle"],
+        f"image {image_id} computed_compass_angle")
+    _require_integer(image["captured_at"], f"image {image_id} captured_at")
+    _require_string(image["camera_type"], f"image {image_id} camera_type",
+                    nonempty=False)
+    _require_integer(image["height"], f"image {image_id} height", minimum=1)
+    _require_integer(image["width"], f"image {image_id} width", minimum=1)
+    _require_string(image["sequence_id"], f"image {image_id} sequence_id")
+    if type(image["downloaded"]) is not bool:
+        raise ValueError(f"image {image_id} downloaded must be a boolean")
+    if "camera_parameters" in image:
+        parameters = image["camera_parameters"]
+        if not isinstance(parameters, list):
+            raise ValueError(f"image {image_id} camera_parameters must be a list")
+        for parameter_index, parameter in enumerate(parameters):
+            _require_finite(
+                parameter,
+                f"image {image_id} camera_parameters[{parameter_index}]")
+    if "is_pano" in image and type(image["is_pano"]) is not bool:
+        raise ValueError(f"image {image_id} is_pano must be a boolean")
+    for field in ("creator_username", "geometry_source"):
+        if field in image:
+            _require_string(image[field], f"image {image_id} {field}",
+                            nonempty=False)
+    return image
+
+
+def _validate_sequence(sequence: Any, seen_sequence_ids: set[str],
+                       seen_image_ids: set[str]) -> tuple[dict, float]:
+    sequence = _require_object(sequence, "sequence")
+    _require_exact_keys(sequence, _SEQUENCE_KEYS, "sequence")
+    sequence_id = _require_string(sequence["id"], "sequence id")
+    if sequence_id in seen_sequence_ids:
+        raise ValueError(f"duplicate sequence id {sequence_id!r}")
+    seen_sequence_ids.add(sequence_id)
+    images_value = sequence["images"]
+    if not isinstance(images_value, list) or not images_value:
+        raise ValueError(f"sequence {sequence_id!r} images must be a non-empty list")
+    images = [
+        _validate_image(image, sequence_id, index, seen_image_ids)
+        for index, image in enumerate(images_value)
+    ]
+    image_count = len(images)
+    if _require_integer(sequence["image_count"],
+                        f"sequence {sequence_id} image_count") != image_count:
+        raise ValueError(f"sequence {sequence_id!r} image_count is not exact")
+    start_time = min(image["captured_at"] for image in images)
+    end_time = max(image["captured_at"] for image in images)
+    recorded_start = _require_integer(
+        sequence["start_time"], f"sequence {sequence_id} start_time")
+    recorded_end = _require_integer(
+        sequence["end_time"], f"sequence {sequence_id} end_time")
+    if recorded_start != start_time or recorded_end != end_time:
+        raise ValueError(f"sequence {sequence_id!r} timestamp bounds are not exact")
+    camera_types = sorted({image["camera_type"] for image in images
+                           if image["camera_type"]})
+    if (not isinstance(sequence["camera_types"], list)
+            or not all(isinstance(item, str)
+                       for item in sequence["camera_types"])
+            or sequence["camera_types"] != camera_types):
+        raise ValueError(f"sequence {sequence_id!r} camera_types are not exact")
+    recorded_min_width = _require_integer(
+        sequence["min_width"], f"sequence {sequence_id} min_width", minimum=1)
+    if recorded_min_width != min(image["width"] for image in images):
+        raise ValueError(f"sequence {sequence_id!r} min_width is not exact")
+    recorded_min_height = _require_integer(
+        sequence["min_height"], f"sequence {sequence_id} min_height", minimum=1)
+    if recorded_min_height != min(image["height"] for image in images):
+        raise ValueError(f"sequence {sequence_id!r} min_height is not exact")
+    length_km = _image_length_km(images)
+    recorded_length = _require_finite(
+        sequence["length_km"], f"sequence {sequence_id} length_km", minimum=0.0)
+    if recorded_length != round(length_km, 3):
+        raise ValueError(f"sequence {sequence_id!r} length_km is not exact")
+    return sequence, length_km
+
+
+def _validate_provenance(provenance: Any, sequence_id: str,
+                         seed_pkey: str, trajectory: dict) -> None:
+    provenance = _require_object(provenance, "provenance")
+    _require_exact_keys(provenance, _PROVENANCE_KEYS, "provenance")
+    if provenance["schema"] != "farfield_provenance/v1":
+        raise ValueError("provenance has an unsupported schema")
+    if provenance["generator"] != _GENERATOR:
+        raise ValueError("provenance generator does not identify seed_to_trajectory")
+    for field in ("git_commit", "created"):
+        _require_string(provenance[field], f"provenance {field}")
+    if not isinstance(provenance["argv"], list) or not all(
+            isinstance(item, str) for item in provenance["argv"]):
+        raise ValueError("provenance argv must be a list of strings")
+    if provenance["inputs"] != {"seed_pkey": seed_pkey}:
+        raise ValueError("provenance seed_pkey does not match trajectory identity")
+    config = _require_object(provenance["config"], "provenance config")
+    _require_exact_keys(
+        config,
+        frozenset({"name", "window_hours", "stitch_time_s", "stitch_dist_m"}),
+        "provenance config")
+    if config["name"] != sequence_id:
+        raise ValueError("provenance name does not match sequence identity")
+    for field, trajectory_field in (
+            ("window_hours", "window_hours"),
+            ("stitch_time_s", "stitch_time_s"),
+            ("stitch_dist_m", "stitch_dist_m")):
+        _require_finite(config[field], f"provenance config {field}", minimum=0.0)
+        if config[field] != trajectory.get(trajectory_field):
+            raise ValueError(
+                f"provenance {field} does not match trajectory diagnostics")
+    _require_string(provenance["notes"], "provenance notes", nonempty=False)
+
+
+def _validate_manifest_document(
+        document: Any, *, expected_sequence_id: str | None = None,
+        expected_seed_pkey: str | None = None) -> dict:
+    document = _require_object(document, "trajectory manifest")
+    _validate_json_value(document, "trajectory manifest")
+    _require_exact_keys(document, _MANIFEST_KEYS, "trajectory manifest")
+
+    sequences_value = document["sequences"]
+    if not isinstance(sequences_value, list) or len(sequences_value) != 1:
+        raise ValueError("trajectory manifest must contain exactly one sequence")
+    seen_sequence_ids: set[str] = set()
+    seen_image_ids: set[str] = set()
+    sequence, length_km = _validate_sequence(
+        sequences_value[0], seen_sequence_ids, seen_image_ids)
+    sequence_id = sequence["id"]
+    if expected_sequence_id is not None and sequence_id != expected_sequence_id:
+        raise ValueError(
+            f"sequence identity mismatch: expected {expected_sequence_id!r}, "
+            f"found {sequence_id!r}")
+
+    metadata = _require_object(document["metadata"], "metadata")
+    _require_exact_keys(metadata, _METADATA_KEYS, "metadata")
+    if _require_string(metadata["area_name"], "metadata area_name") != sequence_id:
+        raise ValueError("metadata area_name does not match sequence identity")
+    if _require_integer(metadata["total_sequences"],
+                        "metadata total_sequences", minimum=1) != 1:
+        raise ValueError("metadata total_sequences is not exact")
+    if _require_integer(metadata["total_images"],
+                        "metadata total_images", minimum=1) != len(
+                            sequence["images"]):
+        raise ValueError("metadata total_images is not exact")
+    if _require_finite(metadata["total_length_km"],
+                       "metadata total_length_km", minimum=0.0) != round(length_km, 2):
+        raise ValueError("metadata total_length_km is not exact")
+    _require_integer(metadata["created_at"], "metadata created_at")
+
+    trajectory = _require_object(document["trajectory"], "trajectory")
+    missing_trajectory = sorted(_TRAJECTORY_IDENTITY_KEYS - frozenset(trajectory))
+    if missing_trajectory:
+        raise ValueError(f"trajectory missing identity fields {missing_trajectory}")
+    if trajectory["name"] != sequence_id:
+        raise ValueError("trajectory name does not match sequence identity")
+    seed_pkey = _require_string(trajectory["seed_pkey"], "trajectory seed_pkey")
+    if expected_seed_pkey is not None and seed_pkey != expected_seed_pkey:
+        raise ValueError(
+            f"seed image identity mismatch: expected {expected_seed_pkey!r}, "
+            f"found {seed_pkey!r}")
+    seed_sequence_id = _require_string(
+        trajectory["seed_sequence_id"], "trajectory seed_sequence_id")
+    components = trajectory["component_sequence_ids"]
+    if not isinstance(components, list) or not components or not all(
+            isinstance(item, str) and item for item in components):
+        raise ValueError("trajectory component_sequence_ids must be non-empty strings")
+    if len(set(components)) != len(components):
+        raise ValueError("trajectory component_sequence_ids must be unique")
+    images = sequence["images"]
+    observed_components = []
+    for image in images:
+        source_sequence_id = image["sequence_id"]
+        if not observed_components or observed_components[-1] != source_sequence_id:
+            observed_components.append(source_sequence_id)
+    if observed_components != components:
+        raise ValueError(
+            "trajectory component_sequence_ids do not exactly match image order")
+    if seed_sequence_id not in components:
+        raise ValueError("trajectory seed_sequence_id is not a component")
+    seed_images = [image for image in images
+                   if image["sequence_id"] == seed_sequence_id]
+    seed_matches = [image for image in images if image["id"] == seed_pkey]
+    if len(seed_matches) != 1:
+        raise ValueError("trajectory seed_pkey does not identify exactly one image")
+    seed_image = seed_matches[0]
+    if seed_image["sequence_id"] != seed_sequence_id:
+        raise ValueError("trajectory seed image belongs to the wrong sequence")
+    if _require_integer(trajectory["chain_image_count"],
+                        "trajectory chain_image_count", minimum=1) != len(images):
+        raise ValueError("trajectory chain_image_count is not exact")
+    if _require_finite(trajectory["chain_length_km"],
+                       "trajectory chain_length_km", minimum=0.0) != round(length_km, 3):
+        raise ValueError("trajectory chain_length_km is not exact")
+    if _require_integer(trajectory["seed_image_count"],
+                        "trajectory seed_image_count", minimum=1) != len(seed_images):
+        raise ValueError("trajectory seed_image_count is not exact")
+    seed_length_km = _image_length_km(seed_images)
+    if _require_finite(trajectory["seed_length_km"],
+                       "trajectory seed_length_km", minimum=0.0) != round(
+                           seed_length_km, 3):
+        raise ValueError("trajectory seed_length_km is not exact")
+    if trajectory["camera_type"] != seed_image["camera_type"]:
+        raise ValueError("trajectory camera_type does not match the seed image")
+    if trajectory["camera_parameters"] != seed_image.get("camera_parameters"):
+        raise ValueError("trajectory camera_parameters do not match the seed image")
+    expected_equirectangular = PanoImage.from_dict(seed_image).is_equirectangular
+    if trajectory["is_equirectangular"] is not expected_equirectangular:
+        raise ValueError("trajectory panorama type does not match the seed image")
+    if "creator_username" in seed_image and (
+            trajectory["creator_username"] != seed_image["creator_username"]):
+        raise ValueError("trajectory creator does not match the seed image")
+
+    _validate_provenance(
+        document["provenance"], sequence_id, seed_pkey, trajectory)
+    return document
+
+
+def validate_sequence_manifest(
+        path: Path | str, *, expected_sequence_id: str | None = None,
+        expected_seed_pkey: str | None = None) -> dict:
+    """Strictly validate one completed seed-to-trajectory manifest.
+
+    The collection orchestrator calls this before treating an existing stage-1
+    output as complete.  Incomplete siblings are deliberately not consumable.
+    """
+    path = Path(path)
+    if any(part.endswith(MANIFEST_INCOMPLETE_SUFFIX) for part in path.parts):
+        raise ValueError(f"incomplete trajectory manifest cannot be consumed: {path}")
+    return _validate_manifest_document(
+        _load_manifest_json(path),
+        expected_sequence_id=expected_sequence_id,
+        expected_seed_pkey=expected_seed_pkey,
+    )
+
+
+def _directory_fd(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return os.open(path, flags)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = _directory_fd(path)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_incomplete(path: Path, payload: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _publish_file_no_clobber(staging: Path, destination: Path) -> None:
+    """Publish one sibling file atomically without a replacement window."""
+    if staging.parent.resolve() != destination.parent.resolve():
+        raise ValueError("manifest staging and destination must be siblings")
+    if staging.is_symlink() or not staging.is_file():
+        raise ValueError(f"manifest staging file is not regular: {staging}")
+    parent_fd = _directory_fd(destination.parent)
+    try:
+        # Linking is the portable atomic no-clobber publication primitive for
+        # two names on the same filesystem.  A concurrent winner makes this
+        # fail instead of replacing its manifest.
+        os.link(staging, destination, follow_symlinks=False)
+        os.fsync(parent_fd)
+        staging.unlink()
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def write_sequence_manifest(path, sequences: list[PanoSequence],
                             area_name: str = "", extra: dict = None) -> None:
-    """Write the manifest extract_stitch.py consumes.
+    """Validate, stage, and immutably publish an extract_stitch manifest.
 
-    Moved here from the deleted `sequences.py`; this is the only writer. The
-    contract extract_stitch relies on: `sequences` is a list of dicts each with
-    `id`, `length_km` and ordered `images` (see PanoSequence.to_dict).
+    The exact sibling ``<manifest>.incomplete`` is retained on a write,
+    validation, or publication failure.  Neither that diagnostic residue nor
+    an existing completed manifest is ever overwritten.
     """
     total_images = sum(s.image_count for s in sequences)
     total_length = sum(s.length_km for s in sequences)
@@ -347,11 +807,31 @@ def write_sequence_manifest(path, sequences: list[PanoSequence],
         },
         "sequences": [s.to_dict() for s in sequences],
     }
-    if extra:
+    if extra is not None:
+        if not isinstance(extra, dict):
+            raise ValueError("manifest extra fields must be an object")
+        collisions = sorted(set(manifest) & set(extra))
+        if collisions:
+            raise ValueError(f"manifest extra fields shadow {collisions}")
         manifest.update(extra)
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(manifest, indent=2))
+
+    # Validate the in-memory contract before creating any filesystem residue;
+    # the disk copy is validated again before it becomes consumable.
+    _validate_manifest_document(manifest)
+    payload = (json.dumps(
+        manifest, indent=2, sort_keys=True, ensure_ascii=False,
+        allow_nan=False) + "\n").encode("utf-8")
+    destination = Path(path)
+    staging = destination.with_name(
+        destination.name + MANIFEST_INCOMPLETE_SUFFIX)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(f"completed manifest already exists: {destination}")
+    if staging.exists() or staging.is_symlink():
+        raise FileExistsError(f"incomplete manifest already exists: {staging}")
+    _write_incomplete(staging, payload)
+    _validate_manifest_document(_load_manifest_json(staging))
+    _publish_file_no_clobber(staging, destination)
 
 
 def resolve_trajectory(client: MapillaryClient, seed_pkey: str, name: str,
@@ -535,19 +1015,18 @@ def main(argv=None) -> int:
                    help="Print the stitch report without writing a manifest")
     p.add_argument("--window_hours", type=float, required=True,
                    help="Capture-time window around the seed sequence within "
-                        "which siblings are considered (the old default was 36)")
+                        "which siblings are considered")
     p.add_argument("--stitch_time", type=float, required=True,
-                   help="Max seam time gap in seconds (the old default was 300)")
+                   help="Max seam time gap in seconds")
     p.add_argument("--stitch_dist", type=float, required=True,
                    help="Max seam spatial gap floor in meters; the allowance "
                         "grows with GPS quantization and speed, see "
-                        "seam_allowance_m (the old default was 100)")
+                        "seam_allowance_m")
     p.add_argument("--workers", type=int, default=8)
     args = p.parse_args(argv)
 
     if not args.report_only and not args.output:
-        p.error("--output is required unless --report_only (the old implicit "
-                "default wrote to a relative manifests/farfield/<name>.json)")
+        p.error("--output is required unless --report_only")
 
     client = MapillaryClient()
     res = resolve_trajectory(
@@ -564,8 +1043,7 @@ def main(argv=None) -> int:
     extra = {
         "trajectory": {k: v for k, v in res.items() if k != "sequence"},
         "provenance": provenance_record(
-            generator="//experimental/overhead_matching/swag/farfield/"
-                      "collection:seed_to_trajectory",
+            generator=_GENERATOR,
             inputs={"seed_pkey": args.seed_pkey},
             config={"name": args.name, "window_hours": args.window_hours,
                     "stitch_time_s": args.stitch_time,

@@ -76,6 +76,38 @@ class MetadataTest(unittest.TestCase):
             ds_lib.require_camera_frame_panoramas(
                 ds_lib.load_metadata(self.base), self.base)
 
+    def test_orientation_qualifiers_require_actual_booleans(self):
+        for field_path, value in (
+                (("is_equirectangular",), 1),
+                (("north_aligned",), 0),
+                (("azimuth_convention", "images_rotated"), "false")):
+            with self.subTest(field_path=field_path):
+                metadata = testing.default_metadata()
+                target = metadata
+                for key in field_path[:-1]:
+                    target = target[key]
+                target[field_path[-1]] = value
+                with self.assertRaisesRegex(ds_lib.ContractViolation,
+                                            "actual boolean"):
+                    ds_lib.require_camera_frame_panoramas(metadata, self.base)
+
+    def test_non_camera_frame_inputs_are_refused(self):
+        cases = (
+            ("is_equirectangular", False, "perspective imagery"),
+            ("images_rotated", True, "images_rotated must be false"),
+            ("camera_frame", "unknown", "canonical camera frame"),
+        )
+        for field, value, message in cases:
+            with self.subTest(field=field):
+                metadata = testing.default_metadata()
+                if field == "is_equirectangular":
+                    metadata[field] = value
+                else:
+                    metadata["azimuth_convention"][field] = value
+                with self.assertRaisesRegex(ds_lib.ContractViolation, message):
+                    ds_lib.require_camera_frame_panoramas(metadata, self.base)
+
+
 class IngestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -147,21 +179,74 @@ class IngestTest(unittest.TestCase):
         result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
         self.assertEqual(len(result.observations), 2)
 
-    def test_invalid_yaw_is_a_contract_failure(self):
+    def test_invalid_yaw_is_dropped_and_counted(self):
         self.make_predictions({
             self.stems[0]: [testing.landmark(
                 "Bad Yaw", [(45, 100, 100, 200, 200)])],
         })
-        with self.assertRaisesRegex(ds_lib.ContractViolation, "yaw_angle"):
-            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        self.assertEqual(result.observations, [])
+        self.assertEqual(result.stats.n_boxes_invalid_geometry, 1)
+        self.assertEqual(result.stats.n_landmarks_without_valid_boxes, 1)
 
-    def test_invalid_bbox_geometry_is_a_contract_failure(self):
+    def test_invalid_bbox_is_dropped_without_losing_valid_sibling(self):
         self.make_predictions({
             self.stems[0]: [testing.landmark(
-                "Inside Out", [(0, 600, 100, 400, 500)])],
+                "Mixed", [
+                    (0, 600, 100, 400, 500),
+                    (0, 400.25, 100.5, 600.75, 500.25),
+                ])],
         })
-        with self.assertRaisesRegex(ds_lib.ContractViolation, "positive width"):
-            ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.observations[0].boxes[0].xmin, 400.25)
+        self.assertEqual(result.stats.n_boxes_invalid_geometry, 1)
+        self.assertEqual(result.stats.n_landmarks_without_valid_boxes, 0)
+
+    def test_all_invalid_box_shapes_are_dropped_and_counted(self):
+        landmark = testing.landmark("Bad boxes", [])
+        landmark["bounding_boxes"] = [
+            None,
+            {"yaw_angle": 0, "xmin": 0, "ymin": 0, "xmax": 1},
+            {"yaw_angle": True, "xmin": 0, "ymin": 0,
+             "xmax": 1, "ymax": 1},
+            {"yaw_angle": 0, "xmin": True, "ymin": 0,
+             "xmax": 1, "ymax": 1},
+            {"yaw_angle": 0, "xmin": -1, "ymin": 0,
+             "xmax": 1, "ymax": 1},
+            {"yaw_angle": 0, "xmin": 0, "ymin": 0,
+             "xmax": 1, "ymax": 1001},
+            {"yaw_angle": 0, "xmin": 0, "ymin": 1,
+             "xmax": 1, "ymax": 1},
+        ]
+        self.make_predictions({self.stems[0]: [landmark]})
+        result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        self.assertEqual(result.observations, [])
+        self.assertEqual(result.stats.n_boxes_invalid_geometry, 7)
+        self.assertEqual(result.stats.n_landmarks_without_valid_boxes, 1)
+
+    def test_empty_box_list_is_a_counted_empty_landmark(self):
+        self.make_predictions({
+            self.stems[0]: [testing.landmark("No boxes", [])],
+        })
+        result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        self.assertEqual(result.observations, [])
+        self.assertEqual(result.stats.n_boxes_invalid_geometry, 0)
+        self.assertEqual(result.stats.n_landmarks_without_valid_boxes, 1)
+
+    def test_nonfinite_box_is_dropped_by_geometry_validator(self):
+        landmark = testing.landmark("Nonfinite", [])
+        landmark["bounding_boxes"] = [{
+            "yaw_angle": 0,
+            "xmin": 0,
+            "ymin": 0,
+            "xmax": float("inf"),
+            "ymax": 1,
+        }]
+        _, boxes, n_invalid = ds_lib._validated_landmark(
+            landmark, "test landmark")
+        self.assertEqual(boxes, [])
+        self.assertEqual(n_invalid, 1)
 
     def test_float_bbox_coordinates_are_not_truncated(self):
         self.make_predictions({
@@ -191,6 +276,23 @@ class IngestTest(unittest.TestCase):
             Path(self.tmp.name) / "fl2", {}, dataset_name="ds2")
         with self.assertRaises(ds_lib.ContractViolation):
             ds_lib.run_ingest(base2, Path(self.tmp.name) / "fl2", PARAMS)
+
+    def test_bad_orientation_is_refused_before_predictions_are_opened(self):
+        for field, value in (("is_equirectangular", False),
+                             ("images_rotated", True)):
+            with self.subTest(field=field):
+                metadata = testing.default_metadata()
+                if field == "is_equirectangular":
+                    metadata[field] = value
+                else:
+                    metadata["azimuth_convention"][field] = value
+                base = testing.make_dataset(
+                    Path(self.tmp.name) / f"ds_{field}", metadata=metadata)
+                missing = Path(self.tmp.name) / f"missing_{field}"
+                with self.assertRaises(ds_lib.ContractViolation) as ctx:
+                    ds_lib.run_ingest(base, missing, PARAMS)
+                self.assertNotIn(
+                    "frame_landmarks artifact", str(ctx.exception))
 
     def test_missing_predictions_artifact_is_a_pointed_error(self):
         with self.assertRaises(ds_lib.ContractViolation) as ctx:

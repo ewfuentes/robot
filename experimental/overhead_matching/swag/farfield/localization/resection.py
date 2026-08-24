@@ -1,7 +1,9 @@
 """Bearing-only resection: invert bearings into candidate poses (§5.5).
 
-Two identified landmarks constrain position to a pair of circular arcs; three
-give a discrete fix. This is what lets the mixture proposal sample from the
+Two identified landmark-bearing correspondences constrain position to one
+signed circular arc; three give a discrete fix. Two mirror arcs exist only
+when the subtended angle is unsigned or the bearing assignment is unknown.
+This is what lets the mixture proposal sample from the
 likelihood rather than the motion model, so particle count scales with the
 number of plausible hypotheses instead of with search area.
 
@@ -60,9 +62,9 @@ class ArcHypothesis:
     """Locus of poses seeing `subtended_rad` between two landmarks.
 
     A circle of radius `radius_m` about `center_east_m/north_m`; the valid
-    locus is the arc on one side of the landmark baseline (the other side is
-    a separate hypothesis with its own ArcHypothesis, because the observer
-    could be on either side).
+    locus is the arc on one side of the landmark baseline. ``side`` is the
+    sign of the identified A-to-B subtended angle; the opposite side belongs
+    to the opposite signed observation.
     """
     center_east_m: float
     center_north_m: float
@@ -119,37 +121,59 @@ def inscribed_angle_arcs(east_a: float, north_a: float, east_b: float,
 
 
 def arcs_for_signed_angle(east_a: float, north_a: float, east_b: float,
-                          north_b: float, signed_subtended_rad: float,
-                          rng=None):
-    """The arc(s) consistent with a SIGNED subtended angle from A to B.
+                          north_b: float, signed_subtended_rad: float):
+    """The one arc consistent with a signed subtended angle from A to B.
 
     With both bearings identified the sign is observable, so only one of the
     two inscribed-angle arcs is a real hypothesis — keeping both would put
     half the proposal's particles somewhere the measurement flatly
-    contradicts. The consistent side is found by testing a representative
-    point rather than by deriving a sign convention, because that derivation
-    is exactly the kind of thing that silently inverts.
+    contradicts. ``inscribed_angle_arcs`` constructs its ``side=+1`` arc for
+    a positive A-to-B compass angle and ``side=-1`` for a negative one, so no
+    sampling or random state is needed to select it.
     """
     arcs = inscribed_angle_arcs(east_a, north_a, east_b, north_b,
                                signed_subtended_rad)
     if not arcs:
         return []
-    if rng is None:
-        rng = np.random.default_rng(0)
     target = float(geo.wrap_rad(signed_subtended_rad))
-    consistent = []
-    for arc in arcs:
-        east, north = sample_arc(arc, east_a, north_a, east_b, north_b, 1,
-                                 rng)
-        if east.size == 0:
-            continue
-        signed = float(geo.wrap_rad(
-            geo.compass_bearing_rad(east_b - east[0], north_b - north[0])
-            - geo.compass_bearing_rad(east_a - east[0],
-                                          north_a - north[0])))
-        if abs(float(geo.wrap_rad(signed - target))) < 1e-6:
-            consistent.append(arc)
-    return consistent
+    wanted_side = 1 if target > 0.0 else -1
+    return [arc for arc in arcs if arc.side == wanted_side]
+
+
+def valid_arc_interval_rad(arc: ArcHypothesis, east_a: float, north_a: float,
+                           east_b: float, north_b: float) -> tuple[float, float]:
+    """Return ``(start, positive_sweep)`` for the valid observer arc.
+
+    The chord endpoints split the circle into exactly two angular intervals.
+    Their interiors lie on opposite sides of directed baseline A->B. Under
+    the compass-angle convention a positive signed A-to-B angle places the
+    observer on the right side of that baseline, hence ``-arc.side`` in the
+    ordinary Cartesian cross-product test below.
+    """
+    center_east = arc.center_east_m
+    center_north = arc.center_north_m
+    theta_a = math.atan2(north_a - center_north, east_a - center_east)
+    theta_b = math.atan2(north_b - center_north, east_b - center_east)
+    sweep_a_to_b = (theta_b - theta_a) % (2.0 * math.pi)
+
+    midpoint = theta_a + 0.5 * sweep_a_to_b
+    mid_east = center_east + arc.radius_m * math.cos(midpoint)
+    mid_north = center_north + arc.radius_m * math.sin(midpoint)
+    d_east = east_b - east_a
+    d_north = north_b - north_a
+    cross = d_east * (mid_north - north_a) - d_north * (mid_east - east_a)
+    desired_cross_sign = -arc.side
+    if cross * desired_cross_sign > 0.0:
+        return theta_a, sweep_a_to_b
+    return theta_b, 2.0 * math.pi - sweep_a_to_b
+
+
+def valid_arc_length_m(arc: ArcHypothesis, east_a: float, north_a: float,
+                       east_b: float, north_b: float) -> float:
+    """Length of the valid signed observer arc in metres."""
+    _, sweep = valid_arc_interval_rad(
+        arc, east_a, north_a, east_b, north_b)
+    return arc.radius_m * sweep
 
 
 def sample_arc(arc: ArcHypothesis, east_a: float, north_a: float,
@@ -157,29 +181,22 @@ def sample_arc(arc: ArcHypothesis, east_a: float, north_a: float,
                rng: np.random.Generator):
     """Sample poses uniformly along the *valid* arc.
 
-    A circle carries the inscribed angle gamma on one of its two arcs and
-    pi - gamma on the other, so sampling the whole circle would place half
-    the particles at the wrong subtended angle. Sample the circle, then keep
-    only the points that actually reproduce gamma.
+    A circle carries the requested angle on only one interval between the
+    chord endpoints. Resolve that interval analytically and sample it
+    directly; no rejection or padding is needed, even for a very narrow arc.
     """
     if n_samples <= 0:
         return np.zeros(0), np.zeros(0)
-    # Oversample, then filter: the valid arc is at least half the circle for
-    # gamma <= pi/2 and shrinks as gamma grows, so 4x is ample.
-    angles = rng.uniform(-math.pi, math.pi, size=4 * n_samples)
+    start, sweep = valid_arc_interval_rad(
+        arc, east_a, north_a, east_b, north_b)
+    # Avoid the chord endpoints themselves: there the observer coincides with
+    # a landmark and its bearing is undefined.
+    epsilon = np.finfo(np.float64).eps
+    unit = epsilon + rng.random(n_samples) * (1.0 - 2.0 * epsilon)
+    angles = start + sweep * unit
     east = arc.center_east_m + arc.radius_m * np.cos(angles)
     north = arc.center_north_m + arc.radius_m * np.sin(angles)
-    gamma = np.abs(geo.wrap_rad(
-        geo.compass_bearing_rad(east_b - east, north_b - north)
-        - geo.compass_bearing_rad(east_a - east, north_a - north)))
-    keep = np.abs(gamma - arc.subtended_rad) < 1e-6
-    east, north = east[keep], north[keep]
-    if east.size == 0:
-        return np.zeros(0), np.zeros(0)
-    if east.size < n_samples:  # pad by resampling what we found
-        idx = rng.integers(0, east.size, size=n_samples)
-        return east[idx], north[idx]
-    return east[:n_samples], north[:n_samples]
+    return east, north
 
 
 def _circle_intersections(arc_p: ArcHypothesis, arc_q: ArcHypothesis):
@@ -251,7 +268,7 @@ def resect_three(landmark_positions, bearings_rad,
     arcs_by_pair = {}
     for i, j in ((0, 1), (1, 2), (0, 2)):
         (ei, ni), (ej, nj) = landmark_positions[i], landmark_positions[j]
-        arcs = inscribed_angle_arcs(
+        arcs = arcs_for_signed_angle(
             ei, ni, ej, nj,
             subtended_angle_rad(bearings_rad[i], bearings_rad[j]))
         if arcs:
@@ -278,9 +295,9 @@ def resect_three(landmark_positions, bearings_rad,
                         heading = heading_from_bearing(
                             east, north, landmark_positions[0][0],
                             landmark_positions[0][1], bearings_rad[0])
-                        # Verify against ALL bearings: an intersection can
-                        # satisfy the unsigned subtended angles while the
-                        # actual directions contradict it.
+                        # Verify against all bearings because noisy pairwise
+                        # signed arcs need not agree exactly at their circle
+                        # intersections.
                         residual = max(
                             abs(float(geo.wrap_rad(
                                 geo.compass_bearing_rad(le - east,

@@ -28,6 +28,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     run_io,
     structs,
 )
+from experimental.overhead_matching.swag.farfield.matching import identity_review
 
 
 EXPORT_SCHEMA = "farfield_localization_inputs/v1"
@@ -222,20 +223,40 @@ def load(export_dir: Path, *, expected_dataset: str | None = None) \
         expected_kind=paths_lib.LOCALIZATION_INPUTS,
         expected_dataset=expected_dataset)
     manifest = artifact.load_manifest(export_dir)
-    expected_kinds = {
+    required_kinds = {
         paths_lib.BEARING_OBSERVATIONS,
         paths_lib.LANDMARK_MATCHES,
         paths_lib.CATALOGS,
     }
     actual_kinds = [item.kind for item in manifest.upstreams]
-    if len(actual_kinds) != len(expected_kinds) \
-            or set(actual_kinds) != expected_kinds:
+    allowed_kinds = required_kinds | {identity_review.IDENTITY_REVIEW_KIND}
+    if (any(actual_kinds.count(kind) != 1 for kind in required_kinds)
+            or actual_kinds.count(identity_review.IDENTITY_REVIEW_KIND) > 1
+            or not set(actual_kinds) <= allowed_kinds):
         raise ValueError(
             "localization_inputs upstreams must be exactly "
-            "bearing_observations, landmark_matches, and catalogs")
+            "bearing_observations, landmark_matches, and catalogs, plus at "
+            "most one typed identity_reviews artifact")
     _exact_upstream(manifest, paths_lib.BEARING_OBSERVATIONS)
     _exact_upstream(manifest, paths_lib.LANDMARK_MATCHES)
     _exact_upstream(manifest, paths_lib.CATALOGS)
+    review_refs = [
+        item for item in manifest.upstreams
+        if item.kind == identity_review.IDENTITY_REVIEW_KIND]
+    review_config = manifest.config.get("identity_review")
+    if review_refs:
+        review_ref = review_refs[0]
+        if (not isinstance(review_config, dict)
+                or review_config.get("artifact") != review_ref.to_dict()
+                or review_config.get("content_digest")
+                != review_ref.content_digest):
+            raise ValueError(
+                "localization manifest does not bind its identity review "
+                "upstream exactly")
+    elif review_config is not None:
+        raise ValueError(
+            "localization manifest records an identity review without its "
+            "typed upstream")
 
     try:
         meta = msgspec.json.decode(

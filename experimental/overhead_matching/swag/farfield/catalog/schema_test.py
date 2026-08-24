@@ -36,11 +36,6 @@ class CompactSchemaTest(unittest.TestCase):
         self.assertEqual(
             list(frame.columns), ["id", "geometry", "landmark_type", "tags"])
 
-    def test_row_dicts_flatten_metadata_and_tags(self):
-        row = schema.row_dicts(valid_frame())[0]
-        self.assertEqual(row["landmark_type"], "osm")
-        self.assertEqual(row["name"], "Boston Light")
-
     def test_build_and_read_feather_round_trip(self):
         frame = valid_frame()
         with tempfile.TemporaryDirectory() as tmp:
@@ -70,14 +65,29 @@ class InvalidFrameTest(unittest.TestCase):
             wide.to_feather(path)
             with self.assertRaisesRegex(
                     schema.CatalogSchemaError,
-                    "legacy wide.*JSON 'tags'.*migrate"):
+                    "wide landmark schema.*JSON 'tags'.*convert"):
                 schema.read_frame(path)
+
+    def test_permits_optional_object_class_with_exact_tag_mirror(self):
+        frame = valid_frame()
+        frame["object_class"] = [None, "LNDMRK"]
+        frame.at[1, "tags"] = '{"object_class":"LNDMRK"}'
+        self.assertEqual(schema.tag_dicts(frame)[1]["object_class"], "LNDMRK")
 
     def test_rejects_unexpected_columns(self):
         frame = valid_frame()
-        frame["object_class"] = ["LNDMRK", "LNDMRK"]
+        frame["review_note"] = ["one", "two"]
         with self.assertRaisesRegex(
-                schema.CatalogSchemaError, "unexpected columns.*object_class"):
+                schema.CatalogSchemaError, "unexpected columns.*review_note"):
+            schema.tag_dicts(frame)
+
+    def test_rejects_conflicting_optional_structural_tag(self):
+        frame = valid_frame()
+        frame["object_class"] = [None, "LNDMRK"]
+        frame.at[1, "tags"] = '{"object_class":"BOYLAT"}'
+        with self.assertRaisesRegex(
+                schema.CatalogSchemaError,
+                "tag 'object_class' does not match.*LNDMRK"):
             schema.tag_dicts(frame)
 
     def test_rejects_missing_structural_column(self):
@@ -150,6 +160,17 @@ class StrictTagsTest(unittest.TestCase):
 
     def test_rejects_malformed_json(self):
         self.assert_bad_tags('{"name":', "invalid JSON")
+
+    def test_read_frame_tag_error_identifies_file_and_row(self):
+        frame = valid_frame()
+        frame.at[1, "tags"] = '{"name":'
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "malformed.feather"
+            frame.to_feather(path)
+            with self.assertRaises(schema.CatalogSchemaError) as caught:
+                schema.read_frame(path)
+        self.assertIn("row 1", str(caught.exception))
+        self.assertIn(str(path), str(caught.exception))
 
     def test_rejects_json_non_object(self):
         self.assert_bad_tags('["name"]', "must decode to a JSON object")

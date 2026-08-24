@@ -1,10 +1,11 @@
 """Authoritative persisted schema for far-field landmark catalogs.
 
-Far-field catalogs use exactly four columns: id, geometry, landmark_type, and
-tags. Tags is canonical JSON text containing one object whose keys and values
-are strings. Keeping this contract here prevents a reader from accidentally
-interpreting a structural column as a tag or quietly accepting the old
-one-column-per-tag representation.
+Far-field catalogs require four compact columns: id, geometry, landmark_type,
+and tags. Tags is canonical JSON text containing one object whose keys and
+values are strings. A small, explicit set of source-provenance columns may be
+stored alongside those required columns; all other landmark attributes belong
+inside tags. Keeping that distinction here prevents a reader from accepting a
+non-compact one-column-per-tag representation.
 """
 
 import json
@@ -19,6 +20,8 @@ FULL_ARTIFACT_SCHEMA = "farfield_full_catalog/v1"
 TAGS_COLUMN = "tags"
 META_COLUMNS = ("id", "geometry", "landmark_type", TAGS_COLUMN)
 REQUIRED_COLUMNS = frozenset(META_COLUMNS)
+OPTIONAL_STRUCTURAL_COLUMNS = frozenset({"object_class"})
+ALLOWED_COLUMNS = REQUIRED_COLUMNS | OPTIONAL_STRUCTURAL_COLUMNS
 ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc"})
 
 
@@ -26,27 +29,26 @@ class CatalogSchemaError(ValueError):
     """A landmark frame does not satisfy the far-field catalog contract."""
 
 
-def is_dict_schema(frame: pd.DataFrame) -> bool:
-    """Whether a frame declares the compact JSON-tags column."""
-    return TAGS_COLUMN in frame.columns
-
-
 def _where(context: str | Path | None) -> str:
     return f" in {context}" if context is not None else ""
 
 
-def _decode_tags(value, row_index) -> dict[str, str]:
+def _decode_tags(value, row_index,
+                 context: str | Path | None = None) -> dict[str, str]:
     """Decode and validate one persisted JSON tags cell."""
+    where = _where(context)
     if not isinstance(value, str):
         raise CatalogSchemaError(
             f"row {row_index!r} tags must be JSON object text, got "
-            f"{type(value).__name__}")
+            f"{type(value).__name__}{where}")
+
     def reject_duplicate_keys(pairs):
         decoded = {}
         for key, tag_value in pairs:
             if key in decoded:
                 raise CatalogSchemaError(
-                    f"row {row_index!r} tags contains duplicate key {key!r}")
+                    f"row {row_index!r} tags contains duplicate key {key!r}"
+                    f"{where}")
             decoded[key] = tag_value
         return decoded
 
@@ -54,25 +56,34 @@ def _decode_tags(value, row_index) -> dict[str, str]:
         decoded = json.loads(value, object_pairs_hook=reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise CatalogSchemaError(
-            f"row {row_index!r} tags is invalid JSON: {exc.msg}") from exc
+            f"row {row_index!r} tags is invalid JSON: {exc.msg}"
+            f"{where}") from exc
     if not isinstance(decoded, dict):
         raise CatalogSchemaError(
             f"row {row_index!r} tags must decode to a JSON object, got "
-            f"{type(decoded).__name__}")
+            f"{type(decoded).__name__}{where}")
 
     for key, tag_value in decoded.items():
         if not isinstance(key, str) or not key:
             raise CatalogSchemaError(
-                f"row {row_index!r} tag keys must be non-empty strings")
+                f"row {row_index!r} tag keys must be non-empty strings"
+                f"{where}")
         if key in REQUIRED_COLUMNS:
             raise CatalogSchemaError(
                 f"row {row_index!r} tag {key!r} collides with a structural "
-                "catalog field")
+                f"catalog field{where}")
         if not isinstance(tag_value, str):
             raise CatalogSchemaError(
                 f"row {row_index!r} tag {key!r} must have a string value, "
-                f"got {type(tag_value).__name__}")
+                f"got {type(tag_value).__name__}{where}")
     return decoded
+
+
+def _is_null_scalar(value) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_frame(frame: pd.DataFrame,
@@ -82,14 +93,14 @@ def _validate_frame(frame: pd.DataFrame,
     missing = REQUIRED_COLUMNS - columns
     if TAGS_COLUMN in missing:
         raise CatalogSchemaError(
-            f"legacy wide landmark schema is not supported{_where(context)}: "
+            f"wide landmark schema is not supported{_where(context)}: "
             "the required JSON 'tags' column is missing. Regenerate or "
-            "explicitly migrate this Feather with catalog.schema.build_frame")
+            "explicitly convert this Feather with catalog.schema.build_frame")
     if missing:
         raise CatalogSchemaError(
             f"catalog is missing required columns {sorted(missing)}"
             f"{_where(context)}")
-    unexpected = columns - REQUIRED_COLUMNS
+    unexpected = columns - ALLOWED_COLUMNS
     if unexpected:
         raise CatalogSchemaError(
             f"catalog has unexpected columns {sorted(unexpected)}"
@@ -148,37 +159,33 @@ def _validate_frame(frame: pd.DataFrame,
             "landmark_type must be exactly 'osm' or 'enc'; found "
             f"{invalid_sources}{_where(context)}")
 
-    return [_decode_tags(value, row_index)
-            for row_index, value in frame[TAGS_COLUMN].items()]
+    decoded_tags = [
+        _decode_tags(value, row_index, context=context)
+        for row_index, value in frame[TAGS_COLUMN].items()
+    ]
+
+    if "object_class" in columns:
+        for position, (row_index, value) in enumerate(
+                frame["object_class"].items()):
+            if not _is_null_scalar(value):
+                if not isinstance(value, str) or not value.strip():
+                    raise CatalogSchemaError(
+                        "object_class values must be non-empty strings or "
+                        f"null; row {row_index!r} has {value!r}"
+                        f"{_where(context)}")
+            mirrored = decoded_tags[position].get("object_class")
+            if mirrored is not None and mirrored != value:
+                raise CatalogSchemaError(
+                    f"row {row_index!r} tag 'object_class' does not match "
+                    f"the structural object_class value {value!r}"
+                    f"{_where(context)}")
+
+    return decoded_tags
 
 
 def tag_dicts(frame: pd.DataFrame) -> list[dict[str, str]]:
     """Return validated tag objects from a compact far-field frame."""
     return _validate_frame(frame)
-
-
-def row_dicts(frame: pd.DataFrame) -> list[dict]:
-    """Return each row with its validated tags flattened into the metadata."""
-    tags = _validate_frame(frame)
-    metadata = frame[["id", "geometry", "landmark_type"]].to_dict(
-        orient="records")
-    return [{**metadata[i], **tags[i]} for i in range(len(frame))]
-
-
-def row_dicts_with_index(frame: pd.DataFrame,
-                         index_key: str = "index") -> list[dict]:
-    """row_dicts plus the frame index under index_key."""
-    if index_key in REQUIRED_COLUMNS:
-        raise CatalogSchemaError(
-            f"index key {index_key!r} collides with a structural field")
-    out = row_dicts(frame)
-    for position, index_value in enumerate(frame.index):
-        if index_key in out[position]:
-            raise CatalogSchemaError(
-                f"index key {index_key!r} collides with a tag at row "
-                f"{index_value!r}")
-        out[position][index_key] = index_value
-    return out
 
 
 def _as_list(name: str, values: Iterable) -> list:

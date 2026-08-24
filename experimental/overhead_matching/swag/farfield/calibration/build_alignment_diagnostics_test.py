@@ -11,6 +11,7 @@ from experimental.overhead_matching.swag.farfield import (
     build_config,
     dataset,
     geometry,
+    nominal_forward,
     paths,
 )
 from experimental.overhead_matching.swag.farfield.calibration import (
@@ -27,7 +28,12 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         (self.dataset_base / "panorama").mkdir()
         (self.dataset_base / "pipeline_metadata.json").write_text(json.dumps({
             "dataset_name": "ds",
+            "is_equirectangular": True,
             "north_aligned": False,
+            "azimuth_convention": {
+                "images_rotated": False,
+                "camera_frame": geometry.CAMERA_FRAME,
+            },
         }))
         rows = ["idx,latitude,longitude,dist_m,video_t_s"]
         for index in range(8):
@@ -40,6 +46,24 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
                 self.dataset_base / "panorama" /
                 f"f{index:04d},{latitude:.7f},{longitude:.7f},.jpg")
         (self.dataset_base / "frames_gps.csv").write_text("\n".join(rows) + "\n")
+
+        self.nominal_forward_path = self.dataset_base / "nominal_forward.json"
+        self.nominal_forward_path.write_text(json.dumps({
+            "schema": nominal_forward.SCHEMA,
+            "frame": nominal_forward.FRAME,
+            "dataset": "ds",
+            "version": "nominal-v1",
+            "mounting_id": "rig-1",
+            "panorama_column": 200.0,
+            "panorama_width": 360,
+            "bearing_camera_cw_deg": 20.0,
+            "uncertainty_deg": 1.0,
+            "evidence_frame_ids": ["f0000"],
+            "operator": "reviewer",
+            "approved_at": "2026-08-24T12:00:00Z",
+            "approved": True,
+            "notes": "test fixture",
+        }, sort_keys=True) + "\n")
 
         self.build_dir = self.root / "build"
         self.config = {
@@ -54,6 +78,10 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
             "gps_course": {
                 "min_displacement_m": 9.0,
                 "smooth_window_s": 4.0,
+            },
+            "localization_inputs": {
+                "nominal_forward_calibration":
+                    str(self.nominal_forward_path.resolve()),
             },
             "alignment_diagnostics": {
                 "sun": {
@@ -186,6 +214,7 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
             "dataset": "ds",
             "dataset_base": self.dataset_base,
             "observations_dir": self.observations_dir,
+            "nominal_forward_calibration": self.nominal_forward_path,
             "output_dir": self.root / "diag-v1",
             "build_config": self.build_dir / build_config.BUILD_CONFIG_NAME,
             "orchestration_config_digest":
@@ -213,7 +242,7 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         manifest = artifact.load_manifest(self.root / "diag-v1")
         self.assertEqual(manifest.upstreams, (self.observations_ref,))
         self.assertEqual(manifest.declared_outputs,
-                         (subject.OUTPUT_NAME,))
+                         (subject.OUTPUT_NAME, subject.SUN_REVIEW_NAME))
         self.assertEqual(manifest.config["authority"], subject.AUTHORITY)
         self.assertEqual(
             manifest.config["resolved"]["gps_course_from_object_tracks"],
@@ -228,8 +257,20 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         sweep = report["methods"][0]
         self.assertEqual(sweep["status"], "candidate_reported")
         self.assertAlmostEqual(
-            sweep["effective_camera_to_gps_course_cw_deg"], 30.0,
+            sweep[subject.RESULT_FIELD], 30.0,
             delta=2.0)
+        self.assertAlmostEqual(
+            sweep["comparison_to_approved_nominal_forward"]
+                 ["candidate_minus_nominal_forward_cw_deg"],
+            10.0, delta=2.0)
+        self.assertEqual(sweep["result_kind"], subject.RESULT_KIND)
+        self.assertEqual(sweep["frame"], subject.RESULT_FRAME)
+        self.assertEqual(report["quantity"]["name"], subject.RESULT_FIELD)
+        review_path = self.root / "diag-v1" / subject.SUN_REVIEW_NAME
+        with Image.open(review_path) as review:
+            self.assertEqual(review.format, "JPEG")
+            self.assertGreater(review.width, 0)
+            self.assertGreater(review.height, 0)
         self.assertEqual(report["methods"][1]["status"], "no_candidate")
         self.assertIn("log_start_utc", report["methods"][1]["reason"])
 
@@ -253,6 +294,15 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
                 "orchestration_config_digest"):
             subject._load_inputs(self._args(
                 orchestration_config_digest="0" * 64))
+
+    def test_nominal_forward_path_is_bound_to_build_config(self):
+        other = self.root / "other-nominal-forward.json"
+        other.write_bytes(self.nominal_forward_path.read_bytes())
+        with self.assertRaisesRegex(
+                subject.AlignmentDiagnosticError,
+                "--nominal_forward_calibration"):
+            subject._load_inputs(self._args(
+                nominal_forward_calibration=other))
 
 
 if __name__ == "__main__":
