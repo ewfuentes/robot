@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,45 @@ class CoveragePolicyTest(unittest.TestCase):
             "europe/georgia-latest.osm.pbf", self.cache)
         self.assertNotEqual(first, second)
         self.assertTrue(first.name.endswith("-georgia.poly"))
+
+    def _write_index(self, invalid_coordinates):
+        features = []
+        for region_id, coordinates in (
+                ("relevant", [[[-1.0, -1.0], [2.0, -1.0],
+                                [2.0, 2.0], [-1.0, 2.0], [-1.0, -1.0]]]),
+                ("invalid", invalid_coordinates)):
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "id": region_id,
+                    "parent": None,
+                    "urls": {
+                        "pbf": ("https://download.geofabrik.de/"
+                                f"test/{region_id}-latest.osm.pbf"),
+                    },
+                },
+                "geometry": {"type": "Polygon", "coordinates": coordinates},
+            })
+        (self.cache / "index-v1.json").write_text(json.dumps({
+            "type": "FeatureCollection",
+            "features": features,
+        }))
+
+    def test_unrelated_invalid_global_leaf_is_pruned_by_raw_bounds(self):
+        self._write_index([[[100.0, 100.0], [102.0, 102.0],
+                            [100.0, 102.0], [102.0, 100.0],
+                            [100.0, 100.0]]])
+
+        mapped = subject.mapped_area(self.want.bounds, self.cache)
+
+        self.assertTrue(mapped.equals(self.want))
+
+    def test_invalid_leaf_intersecting_request_still_fails_closed(self):
+        self._write_index([[[0.1, 0.1], [0.9, 0.9], [0.1, 0.9],
+                            [0.9, 0.1], [0.1, 0.1]]])
+
+        with self.assertRaisesRegex(ValueError, "invalid geometry"):
+            subject.mapped_area(self.want.bounds, self.cache)
 
 
 if __name__ == "__main__":

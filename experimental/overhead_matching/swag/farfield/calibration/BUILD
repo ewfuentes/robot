@@ -135,3 +135,41 @@ py_test(
         "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
+
+py_library(
+    name = "nominal_forward_review_lib",
+    srcs = ["nominal_forward_review.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pillow"),
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:checksums",
+    ],
+)
+
+py_binary(
+    name = "nominal_forward_review",
+    srcs = ["nominal_forward_review.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pillow"),
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:checksums",
+    ],
+)
+
+py_test(
+    name = "nominal_forward_review_test",
+    srcs = ["nominal_forward_review_test.py"],
+    deps = [
+        requirement("pillow"),
+        ":nominal_forward_review_lib",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:checksums",
+    ],
+)

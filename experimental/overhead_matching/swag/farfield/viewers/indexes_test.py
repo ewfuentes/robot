@@ -205,16 +205,64 @@ class RefreshTest(unittest.TestCase):
                                     "refusing symlink directory"):
             indexes.refresh(self.root)
 
-    def test_refuses_a_symlinked_panorama_directory(self):
+    def test_accepts_relative_in_dataset_panorama_symlink(self):
+        dataset = self.root / "datasets" / "symlinked-panorama"
+        frames = dataset / "frames"
+        frames.mkdir(parents=True)
+        (frames / "f0000,42.0,-71.0,.jpg").write_bytes(b"jpeg")
+        (dataset / "panorama").symlink_to(
+            "frames", target_is_directory=True)
+        indexes.refresh(self.root)
+        page = (self.root / "datasets" / "index.html").read_text()
+        self.assertIn("symlinked-panorama", page)
+
+    def test_refuses_unsafe_panorama_symlinks(self):
         dataset = self.root / "datasets" / "symlinked-panorama"
         dataset.mkdir()
-        linked_target = Path(self.tmp.name) / "panorama-target"
-        linked_target.mkdir()
-        (dataset / "panorama").symlink_to(
-            linked_target, target_is_directory=True)
-        with self.assertRaisesRegex(indexes.IndexRefreshError,
-                                    "refusing symlink directory"):
+        outside = Path(self.tmp.name) / "panorama-target"
+        outside.mkdir()
+        (dataset / "alternate").mkdir()
+        panorama = dataset / "panorama"
+        for target, message in (
+                (outside, "absolute panorama symlink"),
+                (Path("frames"), "dangling panorama symlink"),
+                (Path("alternate"), "target must be exactly 'frames'"),
+                (Path("../../panorama-target"),
+                 "target must be exactly 'frames'")):
+            with self.subTest(target=target):
+                panorama.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(indexes.IndexRefreshError,
+                                            message):
+                    indexes.refresh(self.root)
+                panorama.unlink()
+
+    def test_refuses_frames_that_is_itself_a_symlink(self):
+        dataset = self.root / "datasets" / "symlinked-frames"
+        actual = dataset / "actual-frames"
+        actual.mkdir(parents=True)
+        (dataset / "frames").symlink_to("actual-frames", target_is_directory=True)
+        (dataset / "panorama").symlink_to("frames", target_is_directory=True)
+
+        with self.assertRaisesRegex(
+                indexes.IndexRefreshError,
+                "real in-dataset frames directory"):
             indexes.refresh(self.root)
+
+    def test_dataset_collections_are_browsable_but_not_dataset_rows(self):
+        collection = self.root / "datasets" / "unvetted"
+        frames = collection / "london_thames" / "frames"
+        frames.mkdir(parents=True)
+        (frames / "f0000,51.0,-0.1,.jpg").write_bytes(b"jpeg")
+        (frames.parent / "panorama").symlink_to(
+            "frames", target_is_directory=True)
+        result = indexes.refresh(self.root)
+        collection_page = collection / "index.html"
+        self.assertIn(str(collection_page), result["written"])
+        datasets_page = (self.root / "datasets" / "index.html").read_text()
+        self.assertIn("collections", datasets_page)
+        self.assertIn('href="unvetted/index.html"', datasets_page)
+        self.assertNotIn("london_thames", datasets_page)
+        self.assertIn("london_thames", collection_page.read_text())
 
     def test_refuses_a_non_directory_root(self):
         not_a_root = Path(self.tmp.name) / "not-a-root"

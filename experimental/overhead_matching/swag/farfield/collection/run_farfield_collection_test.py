@@ -168,6 +168,33 @@ class TrimStageBoundaryTest(unittest.TestCase):
 
 class FullCatalogPublicationTest(unittest.TestCase):
 
+    def test_finish_records_direct_full_pbf_geometry_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = SimpleNamespace(
+                catalog_sources_base=root / "sources",
+                catalog_version="full_v1",
+                dedupe_tolerance_m=10.0,
+            )
+            with mock.patch.object(runner, "_write_provenance"), \
+                 mock.patch.object(
+                     runner, "_publish_full_catalog",
+                     return_value=True) as publish:
+                self.assertTrue(runner._finish_landmark_stage(
+                    "example", root / "selected.feather", [root / "x.pbf"],
+                    (-71.2, 41.8, -70.8, 42.2),
+                    ["north-america/us/massachusetts-latest.osm.pbf"],
+                    None, False, args,
+                    {"schema": "farfield_catalog_source_coverage/v2",
+                     "status": "passed", "message": "complete",
+                     "details": []}))
+
+        config = publish.call_args.kwargs["config"]
+        self.assertEqual(
+            config["osm_geometry_index_mode"],
+            "full_pbf_complete_geometry_index")
+        self.assertNotIn("osm_preextract_strategy", config)
+
     def test_stage5_helper_publishes_one_typed_regular_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
