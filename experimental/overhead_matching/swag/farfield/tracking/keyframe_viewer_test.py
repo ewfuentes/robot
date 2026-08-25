@@ -1,7 +1,9 @@
 import dataclasses
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from experimental.overhead_matching.swag.farfield import (
     artifact as artifact_lib,
@@ -184,6 +186,17 @@ class CliContractTest(unittest.TestCase):
         self.assertFalse(hasattr(args, "fov_deg"))
         self.assertEqual(args.tracks_dir, Path("/artifacts/tracks"))
 
+    def test_output_defaults_to_a_commit_versioned_frame_sidecar(self):
+        inputs = SimpleNamespace(
+            frame_ref=SimpleNamespace(version="frames-v1"),
+            tracks_ref=SimpleNamespace(version="tracks-v2"),
+            frame_landmarks_dir=Path("/artifacts/frame_landmarks/ds/frames-v1"),
+        )
+        self.assertEqual(
+            kv.default_output_dir(inputs, "0123456789abcdef"),
+            Path("/artifacts/frame_landmarks/ds/"
+                 "frames-v1--tracks-tracks-v2--viewer-0123456789ab"))
+
     def test_output_inside_completed_tracks_artifact_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             tracks_dir = Path(temp) / "tracks"
@@ -205,6 +218,97 @@ class RecordedConfigTest(unittest.TestCase):
         del artifact["config"]
         with self.assertRaises(SystemExit):
             kv.recorded_config(artifact)
+
+
+class SidecarPublicationTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.dataset_base = testing.make_dataset(
+            self.root / "datasets" / "viewer_test", n_frames=1,
+            pano_size=(64, 32))
+        stem = next((self.dataset_base / "panorama").glob("*.jpg")).stem
+        self.frames_dir = testing.make_predictions(
+            self.root / "artifacts" / "frame_landmarks" / "viewer_test"
+            / "frames-v1",
+            {stem: []}, dataset_name="viewer_test", version="frames-v1")
+        frame_ref = artifact_lib.open_artifact(self.frames_dir)
+        self.tracks_dir = (
+            self.root / "artifacts" / "object_tracks" / "viewer_test"
+            / "tracks-v1")
+        source_digest = artifact_lib.sha256_json(
+            paths_lib.dataset_source_digests(self.dataset_base))
+        payload = make_artifact("full", [make_track(0, "seed", [record(0)])])
+        outputs = (
+            "index.html", "track_full_T0.html", "tracks_full.json",
+            "thumbs/full_T0.jpg", "videos/full_T0.mp4")
+        with artifact_lib.ArtifactDirectoryBuilder(
+                self.tracks_dir,
+                kind=paths_lib.OBJECT_TRACKS,
+                dataset="viewer_test",
+                version="tracks-v1",
+                generator="keyframe_viewer_test",
+                git_commit="test",
+                upstreams=(frame_ref,),
+                config={
+                    "schema": "farfield_object_tracks/v1",
+                    "coverage": "complete",
+                    "range": payload["range"],
+                    "source_digests": {
+                        "dataset_tracking_inputs": source_digest,
+                    },
+                    "resolved": {"ingest": {
+                        "fov_deg": 91.0,
+                        "seam_gap_norm": 24.0,
+                        "seam_min_y_iou": 0.31,
+                    }},
+                },
+                declared_outputs=outputs) as builder:
+            builder.output_path("index.html").write_text(
+                "<html><body><img src='thumbs/full_T0.jpg'></body></html>")
+            builder.output_path("track_full_T0.html").write_text(
+                "<html><body><table><tr><td class='kf'>f0000</td></tr>"
+                "</table><video src='videos/full_T0.mp4'></video></body></html>")
+            artifact_lib.atomic_write_json(
+                builder.output_path("tracks_full.json"), payload)
+            builder.output_path("thumbs/full_T0.jpg").parent.mkdir()
+            builder.output_path("thumbs/full_T0.jpg").write_bytes(b"thumb")
+            builder.output_path("videos/full_T0.mp4").parent.mkdir()
+            builder.output_path("videos/full_T0.mp4").write_bytes(b"video")
+
+    def test_sidecar_is_typed_bidirectional_and_leaves_inputs_unchanged(self):
+        frame_before = artifact_lib.open_artifact(self.frames_dir)
+        track_before = artifact_lib.open_artifact(self.tracks_dir)
+        output = (self.frames_dir.parent
+                  / "frames-v1--tracks-tracks-v1--viewer-test")
+        args = SimpleNamespace(
+            tracks_dir=self.tracks_dir,
+            dataset_base=self.dataset_base,
+            frame_landmarks_dir=self.frames_dir,
+            output_dir=output,
+            pano_width=64,
+            kf_start=None,
+            kf_end=None,
+            image_workers=1,
+        )
+        reference = kv.publish_viewer(args, arguments=("test",))
+        self.assertEqual(reference.kind, kv.VIEWER_KIND)
+        manifest = artifact_lib.load_manifest(output)
+        self.assertEqual(manifest.upstreams, (frame_before, track_before))
+        self.assertEqual(manifest.config["schema"], kv.VIEWER_SCHEMA)
+        self.assertIn("f0000.html", manifest.declared_outputs)
+        self.assertIn("tracks/track_full_T0.html",
+                      manifest.declared_outputs)
+        frame_page = (output / "f0000.html").read_text()
+        self.assertIn("tracks/index.html", frame_page)
+        track_page = (output / "tracks" / "track_full_T0.html").read_text()
+        self.assertIn("href='../f0000.html'", track_page)
+        self.assertIn("immutable track artifact", track_page)
+        self.assertEqual(artifact_lib.open_artifact(self.frames_dir),
+                         frame_before)
+        self.assertEqual(artifact_lib.open_artifact(self.tracks_dir),
+                         track_before)
 
 
 class TrackAssociationsTest(unittest.TestCase):

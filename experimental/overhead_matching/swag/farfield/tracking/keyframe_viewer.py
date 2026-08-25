@@ -27,6 +27,8 @@ import concurrent.futures as cf
 import html
 import json
 import os
+import re
+import sys
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -40,6 +42,7 @@ from experimental.overhead_matching.swag.farfield import (
     dataset,
     geometry as geo,
     paths as paths_lib,
+    provenance,
 )
 from experimental.overhead_matching.swag.farfield.tracking import (
     track_builder as tb,
@@ -49,15 +52,21 @@ from experimental.overhead_matching.swag.farfield.tracking.perf_profile import (
     PROFILE,
 )
 from experimental.overhead_matching.swag.farfield.viewers import (
+    indexes,
     page as page_lib,
 )
 
 GENERATOR = ("//experimental/overhead_matching/swag/farfield/tracking"
              ":keyframe_viewer")
+VIEWER_KIND = "frame_landmark_viewer"
+VIEWER_SCHEMA = "farfield_frame_landmark_viewer/v1"
 
 MASK_COLOR = (255, 60, 60)
 IMAGE_WORKERS = 12
 CHIP_H = 200
+
+_KEYFRAME_CELL_RE = re.compile(
+    r"<td class='kf'>(f[0-9]{4})</td>")
 
 # Pages go through the one shared farfield.viewers.page helper (one CSS, a
 # provenance footer on every page); only the classes specific to this viewer
@@ -77,8 +86,10 @@ td img{height:200px;border-radius:3px;display:block}
 @dataclass(frozen=True)
 class ViewerInputs:
     tracks_ref: artifact_lib.ArtifactRef
+    frame_ref: artifact_lib.ArtifactRef
     artifacts: dict
     ingest_params: dataset.IngestParams
+    dataset_source_digest: str
     dataset_base: Path
     frame_landmarks_dir: Path
 
@@ -177,8 +188,10 @@ def load_viewer_inputs(tracks_dir: Path, dataset_base: Path,
             from exc
     return ViewerInputs(
         tracks_ref=tracks_ref,
+        frame_ref=supplied_frame_ref,
         artifacts=artifacts,
         ingest_params=ingest_params,
+        dataset_source_digest=source_digest,
         dataset_base=dataset_base,
         frame_landmarks_dir=Path(frame_landmarks_dir).resolve(),
     )
@@ -350,7 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracks_dir", type=Path, required=True)
     parser.add_argument("--dataset_base", type=Path, required=True)
     parser.add_argument("--frame_landmarks_dir", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, required=True)
+    parser.add_argument(
+        "--output_dir", type=Path, default=None,
+        help="default: a commit-versioned viewer sidecar beside the exact "
+             "frame_landmarks artifact")
     parser.add_argument("--pano_width", type=int, default=3072)
     parser.add_argument("--kf_start", type=int, default=None)
     parser.add_argument("--kf_end", type=int, default=None)
@@ -360,10 +376,86 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
-    args = build_parser().parse_args()
+def default_output_dir(inputs: ViewerInputs, git_commit: str) -> Path:
+    """Return the immutable viewer-sidecar lane for these exact inputs."""
+    commit = git_commit[:12]
+    artifact_lib.require_identifier(commit, "viewer git commit prefix")
+    version = (f"{inputs.frame_ref.version}--tracks-"
+               f"{inputs.tracks_ref.version}--viewer-{commit}")
+    artifact_lib.require_identifier(version, "frame landmark viewer version")
+    return inputs.frame_landmarks_dir.parent / version
+
+
+def _linked_track_pages(out: Path, final_out: Path, tracks_dir: Path) -> int:
+    """Copy only track HTML into the sidecar and add frame links.
+
+    Videos and thumbnails remain owned by the immutable object_tracks artifact;
+    the derived pages reference them relatively.  This keeps the sidecar small
+    while making frame <-> track navigation bidirectional.
+    """
+    tracks_dir = Path(tracks_dir).resolve()
+    linked = out / "tracks"
+    linked.mkdir()
+    source_href = html.escape(os.path.relpath(
+        tracks_dir, (final_out / "tracks").resolve(strict=False)), quote=True)
+    source_link = (
+        f"<p><a href='../index.html'>&larr; keyframes</a> | "
+        f"<a href='{source_href}/index.html'>immutable track artifact</a></p>")
+
+    original_index = tracks_dir / "index.html"
+    if not original_index.is_file() or original_index.is_symlink():
+        raise SystemExit(
+            f"object_tracks artifact has no safe index.html: {tracks_dir}")
+    index_html = original_index.read_text()
+    index_html = index_html.replace(
+        "<body>", f"<body>{source_link}", 1)
+    index_html = index_html.replace(
+        "src='thumbs/", f"src='{source_href}/thumbs/")
+    (linked / "index.html").write_text(index_html)
+
+    count = 0
+    for source in sorted(tracks_dir.glob("track_*.html")):
+        if source.is_symlink() or not source.is_file():
+            raise SystemExit(f"unsafe object track page: {source}")
+        page_html = source.read_text()
+        page_html = _KEYFRAME_CELL_RE.sub(
+            r"<td class='kf'><a href='../\1.html'>\1</a></td>",
+            page_html)
+        page_html = page_html.replace(
+            "<body>", f"<body>{source_link}", 1)
+        page_html = page_html.replace(
+            "src='videos/", f"src='{source_href}/videos/")
+        (linked / source.name).write_text(page_html)
+        count += 1
+    return count
+
+
+def _declared_files(root: Path) -> tuple[str, ...]:
+    return tuple(sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*") if path.is_file()))
+
+
+def _refresh_navigation(inputs: ViewerInputs) -> None:
+    frame_path = Path(inputs.frame_ref.path)
+    if (len(frame_path.parents) < 4
+            or frame_path.parents[1].name != paths_lib.FRAME_LANDMARKS
+            or frame_path.parents[2].name != "artifacts"):
+        return
+    try:
+        indexes.refresh(frame_path.parents[3])
+    except Exception as exc:  # Viewer is valid even if navigation is stale.
+        print(f"WARNING: viewer published but index refresh failed: {exc}",
+              file=sys.stderr)
+
+
+def publish_viewer(args, *, arguments: tuple[str, ...] = ()):
     inputs = load_viewer_inputs(
         args.tracks_dir, args.dataset_base, args.frame_landmarks_dir)
+    git_commit = provenance.git_commit()
+    final_out = (Path(args.output_dir) if args.output_dir is not None
+                 else default_output_dir(inputs, git_commit))
+    version = final_out.name
     artifacts = inputs.artifacts
     result = dataset.run_ingest(
         inputs.dataset_base, inputs.frame_landmarks_dir, inputs.ingest_params)
@@ -379,126 +471,184 @@ def main():
     assoc_by_obs, masks_by_kf, seeded_by_obs, rejected_births = \
         track_associations(artifacts)
 
-    final_out, out = prepare_output_directory(
-        args.tracks_dir, args.output_dir)
-    tracks_href = html.escape(os.path.relpath(
-        Path(args.tracks_dir).resolve(), final_out.resolve(strict=False)),
-        quote=True)
-    (out / "img").mkdir(parents=True, exist_ok=True)
+    config = {
+        "schema": VIEWER_SCHEMA,
+        "n_keyframes": len(frames),
+        "keyframe_range": {
+            "start": frames[0].frame_idx if frames else None,
+            "end": frames[-1].frame_idx if frames else None,
+        },
+        "pano_width": args.pano_width,
+        "dataset_tracking_inputs": inputs.dataset_source_digest,
+    }
+    if final_out.exists() or final_out.is_symlink():
+        try:
+            existing = artifact_lib.open_artifact(
+                final_out, expected_kind=VIEWER_KIND,
+                expected_dataset=inputs.tracks_ref.dataset,
+                expected_version=version)
+            manifest = artifact_lib.load_manifest(final_out)
+        except artifact_lib.ArtifactError as exc:
+            raise SystemExit(
+                f"invalid existing frame landmark viewer {final_out}: {exc}") \
+                from exc
+        if (manifest.upstreams != (inputs.frame_ref, inputs.tracks_ref)
+                or manifest.config != config):
+            raise SystemExit(
+                f"existing frame landmark viewer has different inputs: "
+                f"{final_out}")
+        print(f"validated existing frame landmark viewer {final_out}")
+        return existing
 
-    index_rows = []
-    per_kf = [(frame,
-               sorted(obs_by_frame.get(frame.frame_idx, []),
-                      key=lambda o: o.obs_id),
-               sorted(masks_by_kf.get(frame.frame_idx, [])))
-              for frame in frames]
-    workers = max(1, min(args.image_workers, os.cpu_count() or 4))
-    tasks = [(frame, obs_list, masks, inputs.dataset_base, out, args.pano_width)
-             for frame, obs_list, masks in per_kf]
-    print(f"rendering {len(tasks)} keyframe image sets over {workers} "
-          f"process(es)")
-    if workers == 1:
-        for task in tasks:
-            _render_task(task)
-    else:
-        # Each task performs an independent panorama decode and derived-image
-        # write. Processes let those CPU-heavy tasks run in separate interpreters.
-        with cf.ProcessPoolExecutor(max_workers=workers) as pool:
-            for _ in pool.map(_render_task, tasks, chunksize=4):
-                pass
+    builder = artifact_lib.ArtifactDirectoryBuilder(
+        final_out,
+        kind=VIEWER_KIND,
+        dataset=inputs.tracks_ref.dataset,
+        version=version,
+        generator=GENERATOR,
+        git_commit=git_commit,
+        arguments=arguments,
+        upstreams=(inputs.frame_ref, inputs.tracks_ref),
+        config=config,
+        declared_outputs=(),
+    )
+    with builder:
+        out = builder.staging_dir
+        tracks_href = "tracks"
+        (out / "img").mkdir(parents=True, exist_ok=True)
+        linked_tracks = _linked_track_pages(
+            out, final_out, Path(args.tracks_dir))
 
-    for n, (frame, obs_list, masks) in enumerate(per_kf):
-        kf = frame.frame_idx
-        prev_kf = kf_name(frames[n - 1].frame_idx) if n else None
-        next_kf = kf_name(frames[n + 1].frame_idx) if n + 1 < len(frames) \
-            else None
-        parts = [
-            "<p><a href='index.html'>&larr; all keyframes</a>"
-            + (f" | <a href='{prev_kf}.html'>&larr; {prev_kf}</a>"
-               if prev_kf else "")
-            + (f" | <a href='{next_kf}.html'>{next_kf} &rarr;</a>"
-               if next_kf else "")
-            + f" | <a href='{tracks_href}/index.html'>track boards</a></p>",
-            f"<p>{len(obs_list)} detections | {len(masks)} track masks "
-            "(red). Scroll the panorama horizontally; box colors are stable "
-            "per (tag, name) identity.</p>",
-            f"<div class='panowrap'><img src='img/{kf_name(kf)}_pano.jpg'>"
-            "</div>",
-            "<h2>Detections</h2>",
-            "<table><tr><th>chip</th><th>detection</th><th>description</th>"
-            "<th>track</th></tr>"]
-        for o in obs_list:
-            tags = dict(tuple(t) for t in o.additional_tags)
-            label = html.escape(vc.obs_semantic_label(o))
-            dist = tags.get("distance_estimate", "?")
-            lines = []
-            for seeded_key in seeded_by_obs.get(o.obs_id, []):
-                lines.append(
-                    f"<a href='{tracks_href}/track_{seeded_key}.html' "
-                    f"class='seeds'>&#9733; seeds "
-                    f"T{seeded_key.split('_T')[-1]}</a>")
-            if o.obs_id in rejected_births:
-                reason = rejected_births[o.obs_id].get("reason", "?")
-                lines.append("<span class='cls_none'>birth rejected "
-                             f"({html.escape(reason)})</span>")
-            # Supports first, then classes that were considered and refused.
-            assoc = assoc_by_obs.get((kf, o.obs_id), [])
-            real = [(k, c) for k, c in assoc if c in tb.SUPPORT_CLASSES]
-            other = [(k, c) for k, c in assoc
-                     if c not in tb.SUPPORT_CLASSES]
-            for track_key, cls in real + other:
-                note = "" if cls in tb.SUPPORT_CLASSES else " (not support)"
-                tid = track_key.split("_T")[-1]
-                lines.append(
-                    f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a> "
-                    f"<span class='cls_{cls}'>{cls}{note}</span>")
-            if not lines:
-                lines.append("<span class='cls_none'>unclaimed</span>")
-            assoc_txt = "<br>".join(lines)
-            parts.append(
-                f"<tr id='{o.obs_id}'>"
-                f"<td><img src='img/{kf_name(kf)}_{o.obs_id}.jpg' "
-                "loading='lazy'></td>"
-                f"<td><code>{o.obs_id}</code><br>{label}<br>"
-                f"dist: {html.escape(dist)}</td>"
-                f"<td style='max-width:420px'>{html.escape(o.description)}"
-                "</td>"
-                f"<td>{assoc_txt}</td></tr>")
-        parts.append("</table>")
-        if masks:
-            parts.append("<h2>Tracks alive at this keyframe</h2>"
-                         "<table><tr><th>track</th><th>action</th>"
-                         "<th>mask bbox (pano px)</th></tr>")
-            for track_key, action, box in masks:
-                bb = ", ".join(f"{v:.0f}" for v in box)
-                tid = track_key.split("_T")[-1]
+        index_rows = []
+        per_kf = [(frame,
+                   sorted(obs_by_frame.get(frame.frame_idx, []),
+                          key=lambda o: o.obs_id),
+                   sorted(masks_by_kf.get(frame.frame_idx, [])))
+                  for frame in frames]
+        workers = max(1, min(args.image_workers, os.cpu_count() or 4))
+        tasks = [(frame, obs_list, masks, inputs.dataset_base, out,
+                  args.pano_width)
+                 for frame, obs_list, masks in per_kf]
+        print(f"rendering {len(tasks)} keyframe image sets over {workers} "
+              f"process(es)")
+        if workers == 1:
+            for task in tasks:
+                _render_task(task)
+        else:
+            # Each task performs an independent panorama decode and derived-image
+            # write. Processes let those CPU-heavy tasks run in separate interpreters.
+            with cf.ProcessPoolExecutor(max_workers=workers) as pool:
+                for _ in pool.map(_render_task, tasks, chunksize=4):
+                    pass
+
+        for n, (frame, obs_list, masks) in enumerate(per_kf):
+            kf = frame.frame_idx
+            prev_kf = kf_name(frames[n - 1].frame_idx) if n else None
+            next_kf = kf_name(frames[n + 1].frame_idx) \
+                if n + 1 < len(frames) else None
+            parts = [
+                "<p><a href='index.html'>&larr; all keyframes</a>"
+                + (f" | <a href='{prev_kf}.html'>&larr; {prev_kf}</a>"
+                   if prev_kf else "")
+                + (f" | <a href='{next_kf}.html'>{next_kf} &rarr;</a>"
+                   if next_kf else "")
+                + f" | <a href='{tracks_href}/index.html'>track boards</a></p>",
+                f"<p>{len(obs_list)} detections | {len(masks)} track masks "
+                "(red). Scroll the panorama horizontally; box colors are stable "
+                "per (tag, name) identity.</p>",
+                f"<div class='panowrap'><img src='img/{kf_name(kf)}_pano.jpg'>"
+                "</div>",
+                "<h2>Detections</h2>",
+                "<table><tr><th>chip</th><th>detection</th><th>description</th>"
+                "<th>track</th></tr>"]
+            for o in obs_list:
+                tags = dict(tuple(t) for t in o.additional_tags)
+                label = html.escape(vc.obs_semantic_label(o))
+                dist = tags.get("distance_estimate", "?")
+                lines = []
+                for seeded_key in seeded_by_obs.get(o.obs_id, []):
+                    lines.append(
+                        f"<a href='{tracks_href}/track_{seeded_key}.html' "
+                        f"class='seeds'>&#9733; seeds "
+                        f"T{seeded_key.split('_T')[-1]}</a>")
+                if o.obs_id in rejected_births:
+                    reason = rejected_births[o.obs_id].get("reason", "?")
+                    lines.append("<span class='cls_none'>birth rejected "
+                                 f"({html.escape(reason)})</span>")
+                # Supports first, then classes that were considered and refused.
+                assoc = assoc_by_obs.get((kf, o.obs_id), [])
+                real = [(k, c) for k, c in assoc if c in tb.SUPPORT_CLASSES]
+                other = [(k, c) for k, c in assoc
+                         if c not in tb.SUPPORT_CLASSES]
+                for track_key, cls in real + other:
+                    note = "" if cls in tb.SUPPORT_CLASSES else " (not support)"
+                    tid = track_key.split("_T")[-1]
+                    lines.append(
+                        f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a> "
+                        f"<span class='cls_{cls}'>{cls}{note}</span>")
+                if not lines:
+                    lines.append("<span class='cls_none'>unclaimed</span>")
+                assoc_txt = "<br>".join(lines)
                 parts.append(
-                    f"<tr id='{track_key}'><td class='masklab'>"
-                    f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a>"
+                    f"<tr id='{o.obs_id}'>"
+                    f"<td><img src='img/{kf_name(kf)}_{o.obs_id}.jpg' "
+                    "loading='lazy'></td>"
+                    f"<td><code>{o.obs_id}</code><br>{label}<br>"
+                    f"dist: {html.escape(dist)}</td>"
+                    f"<td style='max-width:420px'>{html.escape(o.description)}"
                     "</td>"
-                    f"<td>{action}</td><td>{bb}</td></tr>")
+                    f"<td>{assoc_txt}</td></tr>")
             parts.append("</table>")
-        (out / f"{kf_name(kf)}.html").write_text(page_lib.page(
-            kf_name(kf), "\n".join(parts), generator=GENERATOR,
-            extra_style=EXTRA_STYLE))
-        index_rows.append((kf, len(obs_list), len(masks)))
-        if n % 50 == 0:
-            print(f"[{n + 1}/{len(frames)}] {kf_name(kf)}")
+            if masks:
+                parts.append("<h2>Tracks alive at this keyframe</h2>"
+                             "<table><tr><th>track</th><th>action</th>"
+                             "<th>mask bbox (pano px)</th></tr>")
+                for track_key, action, box in masks:
+                    bb = ", ".join(f"{v:.0f}" for v in box)
+                    tid = track_key.split("_T")[-1]
+                    parts.append(
+                        f"<tr id='{track_key}'><td class='masklab'>"
+                        f"<a href='{tracks_href}/track_{track_key}.html'>T{tid}</a>"
+                        "</td>"
+                        f"<td>{action}</td><td>{bb}</td></tr>")
+                parts.append("</table>")
+            (out / f"{kf_name(kf)}.html").write_text(page_lib.page(
+                kf_name(kf), "\n".join(parts), generator=GENERATOR,
+                extra_style=EXTRA_STYLE))
+            index_rows.append((kf, len(obs_list), len(masks)))
+            if n % 50 == 0:
+                print(f"[{n + 1}/{len(frames)}] {kf_name(kf)}")
 
-    parts = [
-        f"<p><a href='{tracks_href}/index.html'>track boards</a></p>",
-        "<table><tr><th>keyframe</th><th>detections</th>"
-        "<th>track masks</th></tr>"]
-    for kf, n_obs, n_masks in index_rows:
-        parts.append(f"<tr><td class='kf'><a href='{kf_name(kf)}.html'>"
-                     f"{kf_name(kf)}</a></td><td>{n_obs}</td>"
-                     f"<td>{n_masks}</td></tr>")
-    parts.append("</table>")
-    (out / "index.html").write_text(page_lib.page(
-        "keyframes", "\n".join(parts), generator=GENERATOR,
-        extra_style=EXTRA_STYLE))
-    artifact_lib.publish_directory_no_clobber(out, final_out)
-    print(f"wrote {len(index_rows)} keyframe pages to {final_out}")
+        parts = [
+            f"<p><a href='{tracks_href}/index.html'>linked track boards</a></p>",
+            "<table><tr><th>keyframe</th><th>detections</th>"
+            "<th>track masks</th></tr>"]
+        for kf, n_obs, n_masks in index_rows:
+            parts.append(f"<tr><td class='kf'><a href='{kf_name(kf)}.html'>"
+                         f"{kf_name(kf)}</a></td><td>{n_obs}</td>"
+                         f"<td>{n_masks}</td></tr>")
+        parts.append("</table>")
+        (out / "index.html").write_text(page_lib.page(
+            "keyframes", "\n".join(parts), generator=GENERATOR,
+            extra_style=EXTRA_STYLE))
+        builder.declared_outputs = _declared_files(out)
+    assert builder.artifact_ref is not None
+    print(f"published {len(index_rows)} keyframe pages and "
+          f"{linked_tracks} linked track pages to {final_out}")
+    _refresh_navigation(inputs)
+    return builder.artifact_ref
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    arguments = tuple(sys.argv if argv is None
+                      else [GENERATOR, *(str(value) for value in argv)])
+    try:
+        return publish_viewer(args, arguments=arguments)
+    except (artifact_lib.ArtifactError, dataset.ContractViolation,
+            FileExistsError, OSError, ValueError) as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":

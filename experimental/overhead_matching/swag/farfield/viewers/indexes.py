@@ -72,6 +72,9 @@ RUN_SIDE_DIRECTORY_SUFFIXES = (
     artifact_lib.INCOMPLETE_SUFFIX,
 )
 
+FRAME_VIEWER_KIND = "frame_landmark_viewer"
+FRAME_VIEWER_SCHEMA = "farfield_frame_landmark_viewer/v1"
+
 
 def _require_directory(path: Path, *, allow_missing: bool = False) -> bool:
     """Validate one directory without following a final symlink."""
@@ -147,6 +150,58 @@ def _manifest_summary(version_dir: Path) -> tuple:
         return ("<span class='bad'>unreadable manifest</span>", "")
     return (pg.esc(doc.get("generator", "?")),
             pg.esc(doc.get("created", "")))
+
+
+def _frame_viewer_links(data_root: Path) -> dict[str, dict[tuple[str, str], Path]]:
+    """Map exact frame/track dataset+versions to their newest sidecar.
+
+    Navigation is a best-effort scan, not artifact validation.  The linked
+    sidecar itself remains strictly manifested and validates its exact
+    FRAME_LANDMARKS + OBJECT_TRACKS upstream identities when opened.
+    """
+    links = {"frame_landmarks": {}, "object_tracks": {}}
+    created_by_key = {"frame_landmarks": {}, "object_tracks": {}}
+    lane = data_root / "artifacts" / "frame_landmarks"
+    for dataset_dir in _dirs(lane):
+        for viewer_dir in _dirs(dataset_dir):
+            manifest_path = viewer_dir / artifact_lib.MANIFEST_NAME
+            try:
+                document = json.loads(manifest_path.read_text())
+            except (FileNotFoundError, OSError, UnicodeError,
+                    json.JSONDecodeError):
+                continue
+            if (document.get("kind") != FRAME_VIEWER_KIND
+                    or (document.get("config") or {}).get("schema")
+                    != FRAME_VIEWER_SCHEMA
+                    or not _regular_page(viewer_dir / "index.html")
+                    or not _regular_page(viewer_dir / "tracks" / "index.html")):
+                continue
+            track_refs = [
+                ref for ref in document.get("upstreams", [])
+                if isinstance(ref, dict)
+                and ref.get("kind") == "object_tracks"
+            ]
+            frame_refs = [
+                ref for ref in document.get("upstreams", [])
+                if isinstance(ref, dict)
+                and ref.get("kind") == "frame_landmarks"
+            ]
+            if len(track_refs) != 1 or len(frame_refs) != 1:
+                continue
+            created = document.get("created", "")
+            if not isinstance(created, str):
+                created = ""
+            for kind, reference in (
+                    ("frame_landmarks", frame_refs[0]),
+                    ("object_tracks", track_refs[0])):
+                key = (reference.get("dataset"), reference.get("version"))
+                if not all(isinstance(value, str) and value for value in key):
+                    continue
+                if (key not in links[kind]
+                        or created > created_by_key[kind][key]):
+                    links[kind][key] = viewer_dir
+                    created_by_key[kind][key] = created
+    return links
 
 
 def _dirs(path: Path) -> list[Path]:
@@ -311,6 +366,7 @@ def _refresh_locked(data_root: Path) -> dict:
 
     # --- artifacts lane ----------------------------------------------------
     kinds = _dirs(data_root / "artifacts")
+    frame_viewers = _frame_viewer_links(data_root)
     for kind in kinds:
         krows = []
         for ds in _dirs(kind):
@@ -324,6 +380,19 @@ def _refresh_locked(data_root: Path) -> dict:
                 if (version / "index.html").exists():
                     inner = (f'<a href="{ds.name}/{version.name}/'
                              f'index.html">{pg.esc(version.name)}</a>')
+                viewer = frame_viewers["object_tracks"].get(
+                    (ds.name, version.name))
+                if kind.name == "object_tracks" and viewer is not None:
+                    viewer_href = (
+                        f"../frame_landmarks/{ds.name}/{viewer.name}/"
+                        "tracks/index.html")
+                    inner += (f' · <a href="{viewer_href}">'
+                              "frames ↔ tracks</a>")
+                viewer = frame_viewers["frame_landmarks"].get(
+                    (ds.name, version.name))
+                if kind.name == "frame_landmarks" and viewer is not None:
+                    viewer_href = f"{ds.name}/{viewer.name}/index.html"
+                    inner += (f' · <a href="{viewer_href}">keyframes</a>')
                 cells.append(f"{inner} <span class='muted'>{generator} "
                              f"{created}</span>")
             krows.append([f"{pg.esc(ds.name)}", "<br>".join(cells)])

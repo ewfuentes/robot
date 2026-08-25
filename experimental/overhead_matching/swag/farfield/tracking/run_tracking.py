@@ -36,6 +36,7 @@ from experimental.overhead_matching.swag.farfield import (
     publication as publication_lib,
 )
 from experimental.overhead_matching.swag.farfield.tracking import (
+    keyframe_viewer,
     range_runner as rr,
     track_builder as tb,
     viz_common as vc,
@@ -950,13 +951,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def publish_viewer_sidecar(args, tracks_ref):
+    """Best-effort derived viewer publication after scientific tracking.
+
+    The viewer is deliberately a separate artifact.  A rendering failure
+    therefore never rolls back or contaminates the already-complete tracking
+    artifact, and viewer-only code changes never invalidate scientific work.
+    """
+    viewer_args = argparse.Namespace(
+        tracks_dir=Path(tracks_ref.path),
+        dataset_base=args.dataset_base,
+        frame_landmarks_dir=args.frame_landmarks_dir,
+        output_dir=None,
+        pano_width=3072,
+        kf_start=None,
+        kf_end=None,
+        image_workers=keyframe_viewer.IMAGE_WORKERS,
+    )
+    try:
+        return keyframe_viewer.publish_viewer(
+            viewer_args,
+            arguments=(keyframe_viewer.GENERATOR,
+                       "--automatic_from_tracking", str(tracks_ref.path)))
+    except (Exception, SystemExit) as error:  # Derived pages are non-scientific.
+        print("WARNING: tracking is complete, but automatic keyframe viewer "
+              f"publication failed: {error}", file=sys.stderr)
+        return None
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     arguments = tuple(sys.argv if argv is None
                       else [GENERATOR, *(str(value) for value in argv)])
     try:
-        return publish_tracking(args, arguments=arguments)
+        reference = publish_tracking(args, arguments=arguments)
+        publish_viewer_sidecar(args, reference)
+        return reference
     except (artifact_lib.ArtifactError, dataset.ContractViolation,
             TrackingContractError, FileExistsError, OSError, ValueError) as error:
         parser.error(str(error))

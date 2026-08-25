@@ -79,6 +79,44 @@ class RefreshTest(unittest.TestCase):
                 / "index.html").read_text()
         self.assertIn("farfield.tracking.run_tracking", kind)
 
+    def test_track_index_links_the_exact_frame_viewer_sidecar(self):
+        frame_source = (self.root / "artifacts" / "frame_landmarks"
+                        / "boston_harbor_leg1" / "frames-v1")
+        frame_source.mkdir(parents=True)
+        (frame_source / "manifest.json").write_text(json.dumps({
+            "generator": "frame producer",
+            "created": "2026-08-20T12:00:00Z",
+        }))
+        viewer = (self.root / "artifacts" / "frame_landmarks"
+                  / "boston_harbor_leg1" / "viewer-v1")
+        (viewer / "tracks").mkdir(parents=True)
+        (viewer / "index.html").write_text("frame index")
+        (viewer / "tracks" / "index.html").write_text("track index")
+        (viewer / "manifest.json").write_text(json.dumps({
+            "kind": indexes.FRAME_VIEWER_KIND,
+            "created": "2026-08-25T12:00:00Z",
+            "config": {"schema": indexes.FRAME_VIEWER_SCHEMA},
+            "upstreams": [{
+                "kind": "object_tracks",
+                "dataset": "boston_harbor_leg1",
+                "version": "v1",
+            }, {
+                "kind": "frame_landmarks",
+                "dataset": "boston_harbor_leg1",
+                "version": "frames-v1",
+            }],
+        }))
+        indexes.refresh(self.root)
+        page = (self.root / "artifacts" / "object_tracks"
+                / "index.html").read_text()
+        self.assertIn("frames ↔ tracks", page)
+        self.assertIn(
+            '../frame_landmarks/boston_harbor_leg1/viewer-v1/'
+            'tracks/index.html', page)
+        frames_page = (self.root / "artifacts" / "frame_landmarks"
+                       / "index.html").read_text()
+        self.assertIn("keyframes", frames_page)
+
     def test_loose_legacy_artifact_files_are_not_indexed(self):
         dataset_dir = (
             self.root / "artifacts" / "object_tracks"

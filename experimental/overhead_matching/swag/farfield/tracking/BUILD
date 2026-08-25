@@ -146,6 +146,7 @@ py_library(
         requirement("numpy"),
         requirement("opencv-python"),
         requirement("pillow"),
+        ":keyframe_viewer_lib",
         ":perf_profile",
         ":range_runner",
         ":track_builder",
@@ -197,6 +198,8 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/viewers:indexes",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )

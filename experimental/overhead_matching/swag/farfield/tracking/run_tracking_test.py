@@ -258,6 +258,26 @@ class TrackingConfigTest(unittest.TestCase):
                         "--skip_existing_ranges", "--force", "--fov_deg"):
             self.assertNotIn(retired, options)
 
+    def test_automatic_viewer_is_derived_and_best_effort(self):
+        tracks_ref = SimpleNamespace(path=str(self.fixture.output))
+        args = self.fixture.args()
+        expected = SimpleNamespace(path="viewer")
+        with mock.patch.object(
+                rt.keyframe_viewer, "publish_viewer",
+                return_value=expected) as publish:
+            self.assertIs(rt.publish_viewer_sidecar(args, tracks_ref), expected)
+        viewer_args = publish.call_args.args[0]
+        self.assertEqual(viewer_args.tracks_dir, self.fixture.output)
+        self.assertEqual(viewer_args.dataset_base, self.fixture.dataset_base)
+        self.assertEqual(
+            viewer_args.frame_landmarks_dir, self.fixture.frame_landmarks)
+        self.assertIsNone(viewer_args.output_dir)
+
+        with mock.patch.object(
+                rt.keyframe_viewer, "publish_viewer",
+                side_effect=RuntimeError("render failed")):
+            self.assertIsNone(rt.publish_viewer_sidecar(args, tracks_ref))
+
 
 class TrackingPublicationTest(unittest.TestCase):
     def setUp(self):
