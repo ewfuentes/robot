@@ -31,9 +31,9 @@ relying on prose.
 
 ### Rules that follow
 
-1. **Import, never restate.** `geometry.CAMERA_FRAME`,
-   `geometry.MOUNT_OFFSET_CONVENTION` and `geometry.MOUNT_OFFSET_FRAME` are
-   constants so they can be embedded in artifacts without being retyped.
+1. **Import, never restate.** `geometry.CAMERA_FRAME` and
+   `nominal_forward.FRAME` are constants so artifacts can embed the contracts
+   without retyping them.
 2. **Say where zero is.** "The azimuth in the camera frame" is ambiguous, and
    ambiguity is what caused all three incidents. Write "zero at the centre
    column" or "zero at column 0" every time.
@@ -67,43 +67,41 @@ not a camera-frame azimuth: the azimuth of a face centre is `−face_yaw mod
 at the bbox centre.
 
 `geometry.azimuth_of_pano_column` is the named helper for "the azimuth of a
-column"; `apply_mount_offset` and `body_to_world_bearing_deg` are the named
-frame steps. Nothing else converts.
+column"; `nominal_forward.camera_to_forward_cw_deg` and
+`geometry.forward_to_world_bearing_cw_deg` are the named frame steps. Nothing
+else converts.
 
-## 2. `mount_offset_deg`
+## 2. Nominal forward
 
-**Owner: `geometry.MOUNT_OFFSET_CONVENTION` / `geometry.MOUNT_OFFSET_FRAME`.**
+**Owner: `farfield/nominal_forward.py`.**
 
-> the azimuth, IN THE CAMERA FRAME, of the vehicle's **DIRECTION OF TRAVEL** —
-> not the bow. Applied as `bearing_body_deg = (bearing_camera_deg −
-> mount_offset_deg) mod 360`. Camera-frame azimuth 0 is the **CENTRE** column,
-> not column 0; a prior reasoned in the column-0 convention is exactly 180° out.
+Nominal forward is the platform's fixed longitudinal forward axis. The
+approved record identifies its azimuth in the camera frame, whose zero is the
+panorama centre column. A camera-frame bearing becomes a forward-frame bearing
+through `nominal_forward.camera_to_forward_cw_deg`.
 
-Two traps in one quantity: direction of travel is not the bow (they differ by
-crab/leeway), and zero is at the centre (§1).
+Nominal forward is deliberately **not** GPS course over ground and is never
+promoted automatically from a sun check, sweep, or localization residual.
+Those are diagnostics. Only a human-approved, dataset-bound
+`farfield_nominal_forward/v1` record may rotate localization evidence. The
+record binds its panorama column/width derivation, mounting identity,
+uncertainty, evidence frames, operator, and approval time; the loader rejects
+unknown fields or an unapproved/wrong-dataset record.
 
-| tool | kind | can it catch a 180° slip? |
-|---|---|---|
-| `calibration:sun_offset_check` | **absolute** — sun vs ephemeris | **yes.** The only one that can. Its `usable` flag is verdict-gated: a FIXED-OBJECT abstention can never publish. |
-| `calibration:mount_offset_sweep` | relative — triangulation self-consistency | no. Fits a slip perfectly. |
-| operator prior | one look at one frame | no |
-
-Both estimators write **run-dir sidecars only**, stamped with the convention
-string and `frame` constant. The one writer of dataset metadata is
-`dataset_tools:publish_mount_offset`, which enforces the accuracy-validated
-guard and regenerates checksums. `localization:build_export` resolves
-best-evidence-first (explicit flag → validated dataset record → sun sidecar →
-sweep sidecar → unvalidated record, loudly) and records the source.
+`calibration:nominal_forward_review` builds a content-bound evidence bundle and
+non-authoritative template. Its separate finalize operation is the explicit
+approval boundary. Alignment diagnostics can reveal a likely half-turn or
+other systematic error, but cannot rewrite the calibration.
 
 ## 3. Absolute azimuth from a column (dataset metadata)
 
 **Owner: each dataset's `pipeline_metadata.json:azimuth_convention`**, written
 by `dataset_tools:ingest_selfcollect` and `collection:mapillary_to_vigor`.
-The equirect formula's zero is **column 0** — a different zero from §1, and
-the frame Pohang's bad offset was reasoned in. Both writers stamp a
-`mount_offset_frame` note saying exactly that, and `dataset.py` refuses to
-consume a `mount_offset` block that does not carry `frame ==
-geometry.MOUNT_OFFSET_FRAME` and an explicit `applied_to_heading_deg`.
+Source metadata may define an equirectangular absolute azimuth from **column
+0** — a different zero from §1, and the frame in which the historical Pohang
+error was reasoned. Both writers stamp the source convention and the canonical
+camera-frame contract. `dataset.py` refuses rotated/north-aligned pixels or a
+missing/mismatched camera-frame declaration.
 
 Images are stored **unrotated** and never north-aligned: rotating bakes a
 heading estimate into pixels where an error cannot be recalibrated.
@@ -116,7 +114,7 @@ heading estimate into pixels where an error cannot be recalibrated.
 |---|---|---|
 | heading / course | degrees **clockwise from north**, `atan2(east, north)` | `geometry.compass_bearing_deg` / `compass_bearing_rad` |
 | pipeline heading | derived from **GPS course over ground**, never from `intrinsics.csv:heading_deg` | `calibration/heading.py` |
-| serialized bearings (`bearing_body_deg` etc.) | stored in **[0, 360)**; compare with the wrap helpers, never by subtraction | `localization/structs.py`, validated at `export_ingest` |
+| serialized bearings (`bearing_forward_cw_deg` etc.) | stored in **[0, 360)**; compare with the wrap helpers, never by subtraction | `localization/structs.py`, validated by localization-input ingest |
 | Mapillary `computed_compass_angle` | bearing of the **LEFT EDGE**, not the centre (incident 1) | recorded per dataset |
 
 ## 5. Bounding boxes
@@ -129,17 +127,19 @@ unwrapped: `x_max > W` means the box crosses the seam.
 
 | thing | format | where |
 |---|---|---|
-| landmark id in matching/export artifacts | `osm:node:257370656` (element kind kept — node 123 ≠ way 123) | `catalog.catalog._id_text` |
+| landmark id in matching/export artifacts | namespaced element identity such as `osm:node:...` (element kind kept) | `catalog.catalog._id_text` |
 | landmark id in the feather | a **tuple repr string** `"('node', 257370656)"` | feather `id` column |
 | panorama frame filename | `f####,<lat>,<lon>,.jpg` — comma separated, trailing comma | dataset `panorama/` |
-| tracklet id | `T<track_id>` — one per audited track (no merged ids) | `tracking/tracklets.py` |
-| observation id | `f{pano}__lm{index}__box{n}` — positional, encodes no content | `dataset.py` |
+| tracklet id | artifact-scoped identity derived from the source track | `tracking/tracklets.py` |
+| observation id | `obs-<digest>` derived from dataset/frame/local observation identity | `dataset.py` |
+| local observation id | `f{pano}__lm{index}__box{n}` — useful for display, not global identity | `dataset.py` |
 
-Positional ids **resolve on any dataset**, so hardcoded fixtures from one leg
-never fail loudly on another; gate fixtures on the dataset name, never on
-whether ids resolve. And never parse digits out of a pano id to get a frame
-index — `dataset.frame_index_by_pano_id` is the one sanctioned join (they
-diverge the moment a panorama is missing).
+Local positional ids are presentation/debug aids. Scientific joins use the
+artifact-scoped tracklet identity and content-derived global observation id;
+consumers must still validate the owning dataset/artifact rather than trusting
+the shape of an id. Never parse digits out of a pano id to get a frame index —
+`dataset.frame_index_by_pano_id` is the sanctioned join (they diverge the
+moment a panorama is missing).
 
 ## 7. Time and space
 
@@ -154,13 +154,17 @@ diverge the moment a panorama is missing).
 The places where a frame error stops being a well-formed number and becomes an
 error, in pipeline order:
 
-1. `dataset.require_camera_frame_panoramas` — north-aligned/unrecorded refused.
-2. `dataset.mount_offset_record` — unqualified offset blocks refused.
-3. `audit_dataset` — the contract audit, including the video-addressing NCC.
-4. Calibration sidecars — stamped with convention + frame by construction.
-5. `localization/export_ingest.load` — an export without offset provenance, or
-   in the wrong frame, or with out-of-range bearings, is refused.
-6. `run_io.write_run` — a run that cannot name its inputs is refused.
+1. `dataset.require_camera_frame_panoramas` — north-aligned, rotated, or
+   unrecorded camera-frame imagery is refused.
+2. `audit_dataset` — the frozen dataset contract, including video addressing.
+3. `nominal_forward.load` — unapproved, wrong-frame, wrong-dataset, or
+   internally inconsistent calibration records are refused.
+4. `tracking:build_bearing_observations` — only supported observations inside
+   canonical audit segments become bearings.
+5. `localization:build_export` — exact bearing/match/catalog lineage and the
+   approved nominal-forward bytes are required.
+6. Typed artifact and run writers — outputs that cannot name and validate
+   their exact inputs are refused.
 
 ## Adding a convention
 

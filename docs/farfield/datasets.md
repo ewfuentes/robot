@@ -1,76 +1,90 @@
-# Datasets
+# Datasets and catalogs
 
-## The contract
+## The dataset contract
 
 A dataset directory is a **frozen problem definition**:
 
 ```
 datasets/<name>/
-  panorama/f####,<lat>,<lon>,.jpg    equirect frames, GPS in the filename
-  frames_gps.csv                     idx, latitude, longitude, dist_m, video_t_s
-  intrinsics.csv                     heading_deg + heading_reference + hfov
-  extraction_log.csv                 source provenance (Mapillary ids, sequences)
-  pano_id_mapping.csv
-  pipeline_metadata.json             conventions, video pointer, mount offset
+  panorama/f####,<lat>,<lon>,.jpg    equirectangular frames
+  frames_gps.csv                     ordered GPS/time records
+  intrinsics.csv                     source camera metadata
+  extraction_log.csv                 collection provenance
+  pano_id_mapping.csv                source-to-canonical frame identity
+  pipeline_metadata.json             source video and convention metadata
+  nominal_forward.json               approved calibration, when applicable
 ```
 
-`farfield/dataset.py` is the only reader of this contract, and
-`farfield:audit_dataset` is its enforcement tool — run it on every new or
-modified dataset. It checks the things that fail silently: filename parsing,
-frame ordering, table agreement, convention metadata (`north_aligned`, the
-azimuth formula, mount-offset qualifiers), GPS plausibility, image integrity,
-and whether `video_t_s` actually addresses the frames it claims (the NCC
-check that would have caught the charles_river trim incident).
+`farfield/dataset.py` is the canonical reader and `farfield:audit_dataset` is
+the enforcement tool. The audit catches failures that otherwise look
+plausible: filename/table disagreement, frame-order drift, malformed
+convention metadata, GPS discontinuity, bad images, and source-video timing
+errors. Pipeline stages do not write into this directory.
 
-No stage ever writes into a dataset. The one exception is
-`dataset_tools:publish_mount_offset`, the explicit, guarded publisher of a
-calibrated mount offset (accuracy-validated guard + checksum regeneration).
+Self-collected data enters through `dataset_tools:ingest_selfcollect`.
+Mapillary data enters through the independently resumable stages under
+`collection/`, with `collection:run_farfield_collection` as the orchestrator.
+Both paths publish the same camera-frame dataset contract before scientific
+processing begins.
 
-## Getting datasets
+## Full catalogs
 
-**Self-collected (video + GPS rig):** `dataset_tools:ingest_selfcollect`
-turns a frame dump + GPS log into the contract, writing the convention
-metadata (including the mount-offset frame qualifiers) as it goes.
+Map-side OSM/ENC data is derived evidence, not dataset metadata. The active
+catalog planner under `collection/active_catalogs.py` is report-first:
 
-**Mapillary:** the `collection/` package: discover candidate tracks in a
-region, QC the seeds, resolve a seed into a whole trip, download/stitch, and
-convert to the contract (`collection:run_farfield_collection` orchestrates;
-each stage is also a standalone tool). The converter records
-`azimuth_convention` with the left-edge caveat and the mount-offset frame
-note — see `conventions.md` §3.
+1. bind the exact frozen trajectory tables and their hashes;
+2. bind caller-selected complete source files and ENC selection records;
+3. compute and review the source-coverage plan;
+4. publish only when the caller supplies the expected plan digest.
 
-**Triage tools** (`dataset_tools/`): trajectory timelapse, vehicle-anchor
-detection, recording-seam annotation, frame trimming (which rebases seams
-and invalidates stale calibrations), and the status table generator.
+OSM extraction reads the complete caller-pinned PBF and builds the geometry
+index required for ways and relations. It does not depend on an external
+smart-pre-extraction step. Invalid source geometry is repaired fail-closed;
+every repair is deterministic and recorded in an exact diagnostic ledger.
+ENC extraction and OSM/ENC merging are similarly provenance-bound.
 
-## Catalogs
+The result is a typed full-catalog artifact plus a separate typed
+`catalog_coverage` review artifact. Coverage is diagnostic evidence and is not
+a hidden input to matching.
 
-Map-side landmark tables (OSM + ENC) are **derived products** and live in
-`artifacts/catalogs/<dataset>/<stem>.feather` — never inside `datasets/`.
-They are built by `dataset_tools` (Overpass/PBF extraction, ENC extraction,
-merge) and trimmed by `dataset_tools:trim_catalog`, whose recall guard is
-mandatory: a trim that drops a landmark the pairing labels say we observed
-is refused. Every trim carries a provenance sidecar with the exact arguments
-and a reproduce command; a trim byte-identical to an existing sibling is
-refused (a new version must contain new content).
+## Pruned catalogs
 
-All feather reading goes through `catalog/schema.py` — both the current
-dict-tags layout and the legacy wide layout. The far-field tag vocabulary
-(`catalog.catalog.keeps_tag_key`) is the single source the trim and the
-loader share.
+`dataset_tools:trim_catalog` applies the shared far-field semantic vocabulary
+and any reviewed spatial policy to a typed full catalog. A governed
+trajectory-union clip carries a strict, digest-bound plan containing the
+canonical trajectory sources, recomputed union, area/buffer policy, resolved
+bounds, coordinate system, and intended output dataset. The producer
+revalidates the live sources before and during transactional publication.
 
-## The data root
+This is deliberately post-deduplication representative-point clipping: it
+reduces matching workload without pretending to be a new source extraction.
+The exact policy and values belong in the reviewed plan, not in this document.
+All feather access goes through `catalog/schema.py`; semantic pruning uses the
+one vocabulary in `catalog/catalog.py`.
+
+## Data-root layout
 
 ```
-<root>/                        (default /data/farfield_matching; $FARFIELD_ROOT overrides)
-  datasets/<name>/             frozen problem definitions
-  artifacts/<kind>/<dataset>/<version>/   derived products + manifest.json
-  artifacts/catalogs/<dataset>/<stem>.feather
-  runs/<experiment>/<run>/     localization experiments (+ experiment.md)
-  models/<family>/<file>      weights (+ SOURCE.md)
-  raw_material/                source material
+<root>/
+  datasets/<dataset>/                         frozen problem definitions
+  artifacts/<kind>/<dataset>/<version>/      immutable typed artifacts
+  builds/<dataset>/<build>/                  mutable orchestration records
+  runs/<experiment>/<run>/                   completed localization runs
+  models/<family>/<checkpoint>               weights and source records
+  raw_material/                               retained source material
+  archive/                                    explicitly retired evidence
 ```
 
-Artifact versions are explicit everywhere — there is no default version or
-default catalog anywhere in the tree, because a version default is how a
-stage silently reads one version's data against another's.
+`builds/` contains only orchestration state such as `build_config.json` and,
+when used, `stage_reuse.json`. It is not a scientific artifact lane. Current
+scientific artifact kinds are:
+
+- `pinhole_images`, `frame_landmarks`, and `object_tracks`;
+- `semantic_audits`, `bearing_observations`, and `landmark_matches`;
+- `alignment_diagnostics` and `localization_inputs`;
+- `catalogs`.
+
+Artifact versions are explicit. There is no default catalog, detection set,
+or track set: silently resolving “latest” would make a plausible but false
+lineage. Old evidence kept for backtesting belongs under an explicit archive
+subdirectory rather than beside current versions.

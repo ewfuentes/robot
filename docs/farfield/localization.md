@@ -1,56 +1,93 @@
-# Localization: exports, filter runs, forensics
+# Localization: bearings, matching, filter runs, and forensics
 
-## The seam
+## The scientific seam
 
-`localization/structs.py` is the data contract between the pipeline and the
-filter: `TrackletMeasurement` (one fused body-frame bearing per tracklet per
-information epoch, serialized in [0, 360)), `OdometryDelta` (body-frame SE(2)
-increments), `CompatibilityTable` (the matcher seam — landmarks absent from a
-table score its default, and the filter clips every log-LR).
+Localization does not read tracker pages or raw provider responses. It reads
+typed products with explicit lineage:
 
-`localization:build_export` produces an export from a tracking run:
-tracklets come straight from tracks + audit (audit membership is the gate;
-there is no merge stage), the mount offset is baked in here with its source
-recorded, odometry derives from GPS course, and `--tables` selects the
-matcher's compatibility tables or the uninformative floor. The export is
-read back through its own loader before it is declared done;
-`export_ingest.load` refuses an export whose mount-offset provenance is
-missing or in the wrong frame.
+1. the semantic audit defines the valid evidence segments for each accepted
+   track;
+2. `tracking/tracklets.py` applies the support gate and exposes only those
+   accepted segments;
+3. `tracking:build_bearing_observations` fuses supported observations into
+   body/camera-frame bearing measurements;
+4. matching supplies a weighted compatibility table, including a null
+   alternative;
+5. `localization:build_export` publishes `localization_inputs` from bearings,
+   matches, the typed catalog, motion, and approved nominal-forward data.
+
+There is no geometric merge stage. Multiple tracks of one physical object may
+remain separate; uncertainty belongs in association rather than an irreversible
+pre-filter weld.
+
+Tracking distinguishes the last supported keyframe from the last propagated
+keyframe. Audit segments are bounded by supported evidence, so an unsupported
+or mask-dead tail can be reviewed without leaking into bearings. A `keep`
+decision may trim an unreliable same-object tail; a partial-identity decision
+is reserved for a real object switch. Dropped or malformed evidence remains
+counted in the audit ledger.
+
+## Frames and nominal forward
+
+`nominal_forward.py` owns the approved camera-to-platform-forward rotation.
+Nominal forward is a fixed platform axis: it is not GPS course and is never
+inferred automatically from a sun check or landmark sweep. Diagnostics may
+produce reviewable evidence, but only an approved, dataset-bound calibration
+record can rotate localization bearings.
+
+The export records the calibration bytes, frame identifier, source path, and
+all upstream artifact references. A missing, wrong-dataset, unapproved, or
+frame-inconsistent calibration fails before publication.
+
+## Matching semantics
+
+Machine-only matching is a valid primary autonomous experiment. Low-confidence
+or ambiguous candidates are not silently converted into a single identity;
+they remain weighted hypotheses alongside a null score. Configuring a human
+identity-review directory creates a distinct human-assisted lineage and must
+be labeled as such.
+
+Exact pair counts can grow with catalog signature expansion and should not be
+read as independent identity claims. Regression checks emphasize request and
+tracklet coverage, retained instance identity, null mass, and calibrated
+uncertainty—not raw category-expanded row count alone.
 
 ## Running the filter
 
-`localization:run_export` runs the filter on an export and writes a
-self-describing run directory (manifest with the full config echo, git
-commit, argv, the export path, and the catalog visibility radius — the
-recorded value is the replay contract). `localization:run_localization` does
-the same for synthetic scenarios.
+`localization:run_export` consumes an immutable `localization_inputs` artifact
+and the recorded localization section of `build_config.json`. Scientific
+settings cannot be overridden at the run command. The run records the build,
+input artifact, backend, replay inputs, and complete resolved configuration.
 
-**Evaluation rule: only uniform-prior whole-map runs are evaluations.**
-`--init truth` is a diagnostic instrument (basin-of-attraction control) and
-is labelled as such in its output; never report it as a result. An
-odometry-only control (`--no_bearings`) writes a run directory containing
-exactly what the filter consumed — empty measurement files — so the record
-always describes the run that happened.
+**Only a uniform-prior, bearing-enabled run is a primary evaluation.** A
+truth-centered initialization, odometry-only run, oracle association, or
+other privileged input is a labeled diagnostic. These controls are valuable
+for attribution but do not answer whether a uniformly initialized agent can
+localize cross-view.
 
-What a GPS-supervised export can honestly support is printed at the end of
-every run: **bearing residuals** against the filter's own pose and the
-**association posteriors**. Final position error is a sanity check, not the
-figure of merit — GPS odometry nearly solves a leg by itself.
+The measurement backend may be NumPy or Torch. The Torch backend is packaged
+with the localization launcher, uses CUDA when available, and chunks the
+candidate dimension to bound device memory. It is required to be numerically
+equivalent within tested tolerances, not bit-for-bit identical; the selected
+backend is part of the run record.
+
+Primary regression summaries should show probability mass near truth across
+time and over the final window, with MAP error as a secondary diagnostic.
+Also inspect null share, effective sample size/resampling, proposal
+accept/reject events, residual distributions, mode weights, and entropy.
+Rejected proposal events remain linked in health/forensics output instead of
+disappearing from the record.
 
 ## Reading a run
 
-- `localization:viewer` — the self-contained single-file run viewer
-  (offline basemap, checkpoints, associations, proposal events).
-  `localization:viewer_server` adds live replay/crop endpoints on top of the
-  same payload.
-- `localization:plot_run` — map/strip/animation images into the run dir.
-- `localization:satellite_underlay` — optional imagery underlay (licensed
-  tiles; not redistributed).
-- `localization:forensics` — the CLI that answers "why did this leg fail":
-  `check` (invariants), `attribute` (per-measurement error attribution),
-  `replay` (bit-exact re-run + counterfactual edits, into the run's own
-  `counterfactuals/`), `tracklet` (one tracklet's whole story), `events`,
-  `triage` (the ranked what-went-wrong table).
+- `localization:viewer` builds the self-contained run viewer; the optional
+  server adds live replay/crop endpoints over the same recorded payload.
+- `localization:plot_run` writes maps, strips, and animation products.
+- `localization:satellite_underlay` adds an optional licensed imagery layer;
+  source tiles are not redistributed.
+- `localization:forensics` checks invariants, attributes measurements,
+  replays exact inputs, explores explicitly labeled counterfactuals, and
+  traces one tracklet or event.
 
-All of it reads only the run directory. Every page and plot lands inside the
-run (never `/tmp`), so serving the data root reaches everything.
+Presentation outputs are derived from the completed run. They do not become
+scientific inputs and do not invalidate the run when viewer code evolves.
