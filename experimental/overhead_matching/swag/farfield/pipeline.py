@@ -569,7 +569,13 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
             raise StageDependencyError(
                 f"required {kind} artifact has a different resolved "
                 "configuration; publish the configured upstream stage first")
+        # After tracking, the configured artifact version, stage-scoped
+        # recipe digest, and exact upstream refs are the cache identity.  A
+        # later run-only code/config change must not invalidate those bytes.
+        # Extract/track retain the stronger reviewed-prefix proof because they
+        # bind the large raw/model inputs that begin the chain.
         if (manifest.config.get("build_identity") != build_identity
+                and owner in {"extract", "track"}
                 and not _reuse_accepts(
                     reuse_authorization, ref, owner_stage=owner,
                     build_identity=build_identity)):
@@ -661,6 +667,7 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                     f"stage {stage!r} output {path} has a different resolved "
                     "configuration; choose a new output version")
             if (manifest.config.get("build_identity") != build_identity
+                    and stage in {"extract", "track"}
                     and not _reuse_accepts(
                         reuse_authorization, ref, owner_stage=stage,
                         build_identity=build_identity)):

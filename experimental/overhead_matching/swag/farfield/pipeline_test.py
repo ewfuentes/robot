@@ -776,6 +776,25 @@ class ManifestCompletionTest(unittest.TestCase):
                 "extract", self.paths, self.config,
                 build_identity="b" * 64)
 
+    def test_post_track_outputs_use_stage_scoped_identity(self):
+        self.publish_catalog()
+        self.publish_stage("extract")
+        self.publish_stage("track")
+        self.publish_stage("audit")
+        self.publish_stage("bearings")
+        self.publish_stage("match")
+        inputs_ref, = self.publish_stage("localization_inputs")
+
+        successor_identity = "b" * 64
+        self.assertTrue(pipeline.stage_done(
+            "localization_inputs", self.paths, self.config,
+            build_identity=successor_identity))
+        self.assertEqual(
+            pipeline.expected_upstream_refs(
+                self.paths, self.config, "localize",
+                build_identity=successor_identity),
+            (inputs_ref,))
+
     def test_localization_run_is_itself_manifest_validated(self):
         self.publish_catalog()
         self.publish_stage("extract")
@@ -1650,7 +1669,7 @@ class StageReuseProofTest(unittest.TestCase):
                 pipeline.StageContractError, "invalid tracks"):
             self._proof_document()
 
-    def test_proof_does_not_accept_an_unlisted_old_audit(self):
+    def test_post_track_audit_uses_its_stage_scoped_identity(self):
         frame_ref = artifact.open_artifact(self.source_paths.frame_landmarks)
         old_audit = self._publish(
             paths_lib.SEMANTIC_AUDITS,
@@ -1667,14 +1686,14 @@ class StageReuseProofTest(unittest.TestCase):
             pipeline.load_stage_reuse_proof(self.target_build),
             refs=pipeline.load_stage_reuse_proof(self.target_build).refs
                  + (old_audit,))
-        # Even a contaminated ref list remains bounded by the proven prefix.
+        # The proof remains bounded to the extraction/tracking prefix.  The
+        # later audit is independently reusable because its configured lane,
+        # stage recipe, and direct upstream refs are exact.
         self.assertIn(old_audit, authorization.refs)
-        with self.assertRaisesRegex(
-                pipeline.StageContractError, "no exact stage-reuse proof"):
-            pipeline.stage_done(
-                "audit", self.target_paths, self.target_config,
-                build_identity=self.target_document["build_identity"],
-                reuse_authorization=authorization)
+        self.assertTrue(pipeline.stage_done(
+            "audit", self.target_paths, self.target_config,
+            build_identity=self.target_document["build_identity"],
+            reuse_authorization=authorization))
 
     def test_tracking_change_is_not_downstream_and_is_rejected(self):
         changed_config = copy.deepcopy(self.target_config)

@@ -28,7 +28,7 @@ DATASET = "tiny_harbor"
 INPUT_DIGEST = "a" * 64
 
 
-def tiny_export(input_dir: Path, build_identity: str) \
+def tiny_export(input_dir: Path, build_identity: str, input_contract: dict) \
         -> export_ingest.ExportData:
     frame = geo.RegionFrame(42.35, -71.05)
     landmarks = [
@@ -74,7 +74,8 @@ def tiny_export(input_dir: Path, build_identity: str) \
     return export_ingest.ExportData(
         artifact_ref=reference,
         manifest=SimpleNamespace(
-            config={"build_identity": build_identity}),
+            config={"build_identity": build_identity,
+                    "orchestration": input_contract}),
         meta=meta,
         frame=frame,
         catalog=filter_catalog.LandmarkCatalog(
@@ -116,13 +117,15 @@ def localization_config(*, init="uniform", prior_sigma_m=None,
 
 
 def write_build_config(root: Path, localization: dict) \
-        -> tuple[Path, str, str]:
+        -> tuple[Path, str, str, dict]:
     path = build_config.create(
         root / "build",
         dataset=DATASET,
         config={
             "artifacts": {"localization_inputs_version": "v1",
                           "object_tracks_version": "tracks-v1"},
+            "localization_inputs": {},
+            "gps_course": {},
             "localization": localization,
         },
         generator="test",
@@ -130,7 +133,8 @@ def write_build_config(root: Path, localization: dict) \
     document = build_config.load(path.parent)
     return (path,
             run_export.orchestration_contract(document)["config_digest"],
-            document["build_identity"])
+            document["build_identity"],
+            run_export.localization_inputs_contract(document))
 
 
 def export_argv(input_dir: Path, out_dir: Path, config_path: Path,
@@ -154,9 +158,9 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            config_path, digest, build_identity = write_build_config(
-                root, localization_config())
-            data = tiny_export(input_dir, build_identity)
+            (config_path, digest, build_identity,
+             input_contract) = write_build_config(root, localization_config())
+            data = tiny_export(input_dir, build_identity, input_contract)
             argv = export_argv(
                 input_dir, root / "conflicting-run-name", config_path, digest)
             with mock.patch.object(run_export.export_ingest, "load",
@@ -168,17 +172,24 @@ class RunExportTest(unittest.TestCase):
             self.assertIn("immutable localization run identity",
                           stderr.getvalue())
 
-    def test_rejects_cross_build_inputs_and_symlinked_build_config(self):
+    def test_stage_scoped_cross_build_inputs_and_symlinked_build_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            config_path, digest, build_identity = write_build_config(
-                root, localization_config())
-            data = tiny_export(root / "localization_inputs", build_identity)
+            (config_path, digest, build_identity,
+             input_contract) = write_build_config(root, localization_config())
+            data = tiny_export(
+                root / "localization_inputs", build_identity, input_contract)
             data.manifest.config["build_identity"] = "0" * 64
-            with self.assertRaisesRegex(ValueError, "different immutable"):
+            run_export._load_config(config_path, data, digest)
+
+            changed_contract = dict(input_contract)
+            changed_contract["config_digest"] = "0" * 64
+            data.manifest.config["orchestration"] = changed_contract
+            with self.assertRaisesRegex(ValueError, "stage-scoped recipe"):
                 run_export._load_config(config_path, data, digest)
 
             data.manifest.config["build_identity"] = build_identity
+            data.manifest.config["orchestration"] = input_contract
             linked_dir = root / "linked"
             linked_dir.mkdir()
             linked_config = linked_dir / build_config.BUILD_CONFIG_NAME
@@ -190,10 +201,10 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            config_path, digest, build_identity = write_build_config(
-                root, localization_config())
+            (config_path, digest, build_identity,
+             input_contract) = write_build_config(root, localization_config())
             out = expected_run_dir(root, build_identity)
-            data = tiny_export(input_dir, build_identity)
+            data = tiny_export(input_dir, build_identity, input_contract)
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), mock.patch(
                     "sys.argv", export_argv(
@@ -232,10 +243,11 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            config_path, digest, build_identity = write_build_config(
-                root, localization_config(bearings_enabled=False))
+            (config_path, digest, build_identity,
+             input_contract) = write_build_config(
+                 root, localization_config(bearings_enabled=False))
             out = expected_run_dir(root, build_identity)
-            data = tiny_export(input_dir, build_identity)
+            data = tiny_export(input_dir, build_identity, input_contract)
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), mock.patch(
                     "sys.argv", export_argv(
@@ -252,9 +264,10 @@ class RunExportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             input_dir = root / "localization_inputs"
-            config_path, digest, build_identity = write_build_config(
-                root, localization_config(init="truth_position"))
-            data = tiny_export(input_dir, build_identity)
+            (config_path, digest, build_identity,
+             input_contract) = write_build_config(
+                 root, localization_config(init="truth_position"))
+            data = tiny_export(input_dir, build_identity, input_contract)
             argv = export_argv(
                 input_dir, expected_run_dir(root, build_identity), config_path,
                 digest)
