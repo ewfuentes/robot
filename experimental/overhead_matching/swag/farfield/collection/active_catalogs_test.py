@@ -191,6 +191,77 @@ class ActiveCatalogsTest(unittest.TestCase):
                                     "stale mapping coordinates"):
             self._plan(dataset, {spec: self._write_pbf(spec)})
 
+    def test_gps_coordinates_are_cross_checked_and_are_the_bbox_authority(self):
+        dataset = "pohang_canal_04"
+        self._write_mapping(dataset, [(36.0, 129.4)])
+        gps = self.root / "datasets" / dataset / "frames_gps.csv"
+        with gps.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        # About 0.56 m north: inside the declared <=1 m agreement contract,
+        # but observably distinct from the rounded filename/mapping value.
+        rows[0]["latitude"] = "36.000005"
+        with gps.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+        record, lats, lons = subject.read_dataset_tables(dataset, self.root)
+
+        self.assertEqual(lats, [36.000005])
+        self.assertEqual(lons, [129.4])
+        self.assertEqual(record["canonical_frame_bbox_wsen"],
+                         [129.4, 36.000005, 129.4, 36.000005])
+
+    def test_gps_disagreement_with_filename_and_mapping_fails(self):
+        dataset = "pohang_canal_04"
+        self._write_mapping(dataset, [(36.0, 129.4)])
+        gps = self.root / "datasets" / dataset / "frames_gps.csv"
+        text = gps.read_text().replace("36.0,129.4", "35.0,129.4")
+        gps.write_text(text)
+
+        with self.assertRaisesRegex(subject.ActiveCatalogError,
+                                    "more than 1 m"):
+            subject.read_dataset_tables(dataset, self.root)
+
+    def test_dataset_source_symlink_and_symlinked_root_are_rejected(self):
+        dataset = "pohang_canal_04"
+        mapping = self._write_mapping(dataset, [(36.0, 129.4)])
+        real_mapping = mapping.with_name("mapping-real.csv")
+        mapping.rename(real_mapping)
+        mapping.symlink_to(real_mapping.name)
+        with self.assertRaisesRegex(subject.ActiveCatalogError,
+                                    "regular non-symlink"):
+            subject.read_dataset_tables(dataset, self.root)
+
+        mapping.unlink()
+        real_mapping.rename(mapping)
+        linked_root = self.base / "linked-root"
+        linked_root.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(subject.ActiveCatalogError,
+                                    "symlink ancestor"):
+            subject.read_dataset_tables(dataset, linked_root)
+
+    def test_descriptor_read_detects_path_swap_after_open(self):
+        path = self.base / "source.txt"
+        path.write_bytes(b"a" * (1024 * 1024 + 1))
+        displaced = self.base / "source-old.txt"
+        real_read = subject.os.read
+        swapped = False
+
+        def read_and_swap(fd, size):
+            nonlocal swapped
+            chunk = real_read(fd, size)
+            if chunk and not swapped:
+                swapped = True
+                path.rename(displaced)
+                path.write_bytes(b"replacement")
+            return chunk
+
+        with mock.patch.object(subject.os, "read", side_effect=read_and_swap), \
+             self.assertRaisesRegex(subject.ActiveCatalogError,
+                                    "changed while it was read"):
+            subject.read_regular_file(path, what="test source")
+
     def test_canonical_gps_without_frame_file_is_accepted(self):
         dataset = "pohang_canal_04"
         self._write_mapping(dataset, [(36.0, 129.4)])

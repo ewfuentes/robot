@@ -21,11 +21,15 @@ anyone has quoted was computed against the published artifact already there.
 The artifact transaction refuses an existing output directory, records the
 exact input identity as an upstream, and fingerprints the rule sets in config.
 
-**`--clip_km` bounds the prior's extent**, for regional extracts that reach
-far past anything a vehicle could see. It is a prior, not a corridor:
-charles_river's 1 km sail sits inside a 25 x 25 km box, which is still larger
-than the 22.9 x 20.9 km harbour prior the method was validated on. The centre
-must be given explicitly, because an implicit one cannot be reproduced.
+**Spatial clipping bounds the prior's extent**, for regional extracts that
+reach far past anything a vehicle could see. It is a prior, not a corridor.
+``--clip_km`` publishes a metric square around an explicit centre;
+``--clip_bbox_wsen`` publishes an exact WGS84 rectangle. The modes are
+mutually exclusive. A reviewed ``--clip_plan`` can bind a rectangle to its
+active-scope canonical GPS/mapping bytes and to its buffer/area policy. The
+canonical datasets are derived from an explicit ``--farfield_root``; the plan
+cannot redirect the reader to alternate paths. Its expected canonical digest
+is required so a silently edited plan cannot publish a different catalog.
 
 Note the scope this deliberately does not have: `catalog/catalog.py` argues
 against class filtering for the *filter's* catalog, because spatial gating
@@ -47,9 +51,12 @@ Example:
 import argparse
 import hashlib
 import json
+import math
 import warnings
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 import geopandas as gpd
 import numpy as np
@@ -61,6 +68,9 @@ from experimental.overhead_matching.swag.farfield import publication
 from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.catalog import catalog
 from experimental.overhead_matching.swag.farfield.catalog import schema
+from experimental.overhead_matching.swag.farfield.collection import (
+    active_catalogs,
+)
 from experimental.overhead_matching.swag.farfield.dataset_tools.landmark_positive_set import (  # noqa: E501
     PositiveSetError,
     load_positive_set,
@@ -70,6 +80,32 @@ from experimental.overhead_matching.swag.farfield.dataset_tools.landmark_positiv
     signature_id,
     validate_positive_set,
 )
+
+
+CLIP_PLAN_SCHEMA = "farfield.catalog_clip_plan/v1"
+CLIP_PLAN_METRIC = (
+    "equirectangular_mid_lat_wgs84_equatorial_radius/v1"
+)
+CLIP_SCOPE_POLICY_SCHEMA = "farfield.catalog_clip_scope_policy/v1"
+CLIP_SCOPE_POLICY_KEYS = frozenset({
+    "schema", "minimum_area_floor_km2", "require_reviewed_bbox_plan",
+})
+TRUSTED_CLIP_SCOPE_POLICY_BY_NAME = MappingProxyType({
+    "boston_harbor_20260712": MappingProxyType({
+        "schema": CLIP_SCOPE_POLICY_SCHEMA,
+        "minimum_area_floor_km2": 625.0,
+        "require_reviewed_bbox_plan": True,
+    }),
+})
+CLIP_PLAN_KEYS = frozenset({
+    "schema", "scope", "output_dataset", "bbox_datasets",
+    "dataset_tables", "bbox_wsen", "scope_policy", "policy",
+})
+CLIP_POLICY_KEYS = frozenset({
+    "metric", "track_bbox_wsen", "nominal_buffer_km",
+    "minimum_buffer_km", "minimum_area_km2", "resolved_buffer_km",
+    "resolved_area_km2",
+})
 
 # Structural keys that say what a thing IS, in the far-field vocabulary. A
 # landmark with none of these carries no class a distant observer could name.
@@ -330,8 +366,457 @@ def clip_mask(gdf: gpd.GeoDataFrame, center_lat: float, center_lon: float,
     return (np.abs(east) <= half) & (np.abs(north) <= half)
 
 
+def validate_bbox_wsen(value) -> tuple[float, float, float, float]:
+    """Return a finite, ordered WGS84 ``(west, south, east, north)``."""
+    try:
+        raw = tuple(value)
+    except TypeError as exc:
+        raise ValueError(
+            "clip bbox must contain west south east north") from exc
+    if len(raw) != 4:
+        raise ValueError("clip bbox must contain west south east north")
+    if any(type(item) not in (int, float) for item in raw):
+        raise ValueError("clip bbox coordinates must be finite numbers")
+    try:
+        west, south, east, north = map(float, raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "clip bbox coordinates must be finite numbers") from exc
+    if not all(map(math.isfinite, (west, south, east, north))):
+        raise ValueError("clip bbox coordinates must be finite numbers")
+    if not (-180.0 <= west < east <= 180.0):
+        raise ValueError("clip bbox needs -180 <= west < east <= 180")
+    if not (-90.0 <= south < north <= 90.0):
+        raise ValueError("clip bbox needs -90 <= south < north <= 90")
+    return west, south, east, north
+
+
+def _validate_track_bbox_wsen(value) -> tuple[float, float, float, float]:
+    """Validate a possibly-degenerate raw trajectory extent."""
+    try:
+        raw = tuple(value)
+    except TypeError as exc:
+        raise ValueError(
+            "clip plan policy.track_bbox_wsen must contain four numbers") \
+            from exc
+    if len(raw) != 4 or any(type(item) not in (int, float) for item in raw):
+        raise ValueError(
+            "clip plan policy.track_bbox_wsen must contain four numbers")
+    try:
+        west, south, east, north = map(float, raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "clip plan policy.track_bbox_wsen must contain finite numbers") \
+            from exc
+    if not all(map(math.isfinite, (west, south, east, north))):
+        raise ValueError(
+            "clip plan policy.track_bbox_wsen must contain finite numbers")
+    if not (-180.0 <= west <= east <= 180.0):
+        raise ValueError(
+            "clip plan track bbox needs -180 <= west <= east <= 180")
+    if not (-90.0 <= south <= north <= 90.0):
+        raise ValueError(
+            "clip plan track bbox needs -90 <= south <= north <= 90")
+    return west, south, east, north
+
+
+def clip_bbox_mask(
+        gdf: gpd.GeoDataFrame,
+        bbox_wsen: tuple[float, float, float, float],
+) -> np.ndarray:
+    """True where a row's representative point is inside ``bbox_wsen``.
+
+    Bounds are inclusive. Representative points match :func:`clip_mask` and
+    keep the decision stable for concave or multipart geometries whose
+    centroid may lie outside the feature.
+    """
+    west, south, east, north = validate_bbox_wsen(bbox_wsen)
+    point = gdf.geometry.representative_point()
+    lon = np.asarray(point.x)
+    lat = np.asarray(point.y)
+    return ((west <= lon) & (lon <= east)
+            & (south <= lat) & (lat <= north))
+
+
+def _finite_plan_number(value, field: str, *, minimum=0.0,
+                        strictly_positive=False) -> float:
+    if type(value) not in (int, float):
+        raise ValueError(f"clip plan {field} must be a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"clip plan {field} must be a finite number") from exc
+    invalid = (not math.isfinite(number) or number < minimum
+               or (strictly_positive and number <= 0.0))
+    if invalid:
+        raise ValueError(
+            f"clip plan {field} must be a finite "
+            f"{'positive ' if strictly_positive else ''}number"
+            + (f" >= {minimum:g}" if minimum else ""))
+    return number
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    """Build one JSON object while refusing ambiguous duplicate keys."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _finite_json_float(text: str) -> float:
+    try:
+        value = float(text)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid JSON number {text!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {text!r}")
+    return value
+
+
+def _reject_json_constant(text: str):
+    raise ValueError(f"non-finite JSON constant {text!r}")
+
+
+def _require_exact_keys(mapping: Mapping, expected: frozenset[str],
+                        field: str) -> None:
+    actual = set(mapping)
+    if actual == expected:
+        return
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected, key=str)
+    details = []
+    if missing:
+        details.append(f"missing {missing}")
+    if unknown:
+        details.append(f"unknown {unknown}")
+    raise ValueError(f"clip plan {field} has " + "; ".join(details))
+
+
+def _trusted_scope_policy(scope_name: str) -> dict | None:
+    policy = TRUSTED_CLIP_SCOPE_POLICY_BY_NAME.get(scope_name)
+    return dict(policy) if policy is not None else None
+
+
+def _dataset_requires_reviewed_bbox_plan(dataset: str) -> bool:
+    for scope_name, policy in TRUSTED_CLIP_SCOPE_POLICY_BY_NAME.items():
+        if not policy["require_reviewed_bbox_plan"]:
+            continue
+        scope = active_catalogs.SCOPE_BY_NAME.get(scope_name)
+        if scope is not None and dataset in scope.output_datasets:
+            return True
+    return False
+
+
+def _track_metrics(track_bbox) -> tuple[float, float, float, float, float]:
+    west, south, east, north = track_bbox
+    mid_lat = (south + north) / 2.0
+    km_per_deg_lat = geo.METERS_PER_DEG_LAT / 1000.0
+    km_per_deg_lon = km_per_deg_lat * math.cos(math.radians(mid_lat))
+    if not math.isfinite(km_per_deg_lon) or km_per_deg_lon <= 0.0:
+        raise ValueError("clip plan track bbox cannot resolve longitude metres")
+    raw_width = (east - west) * km_per_deg_lon
+    raw_height = (north - south) * km_per_deg_lat
+    return (raw_width, raw_height, km_per_deg_lon, km_per_deg_lat,
+            mid_lat)
+
+
+def _resolve_clip_policy(track_bbox, nominal_buffer: float,
+                         minimum_buffer: float,
+                         minimum_area: float) -> tuple[float, float, tuple]:
+    """Return the exact minimum symmetric buffer, area, and WGS84 bbox."""
+    raw_width, raw_height, km_lon, km_lat, _ = _track_metrics(track_bbox)
+    raw_area = raw_width * raw_height
+    if minimum_area > raw_area:
+        discriminant_root = math.hypot(
+            raw_width - raw_height, 2.0 * math.sqrt(minimum_area))
+        area_root = ((minimum_area - raw_area)
+                     / (discriminant_root + raw_width + raw_height))
+    else:
+        area_root = 0.0
+    resolved = max(nominal_buffer, minimum_buffer, area_root)
+    area = ((raw_width + 2.0 * resolved)
+            * (raw_height + 2.0 * resolved))
+    # The algebraic root can round one ULP toward the infeasible side. Use the
+    # smallest representable buffer that actually satisfies the declared
+    # minimum; this keeps "at least" true in the recorded machine arithmetic.
+    while area < minimum_area:
+        next_resolved = math.nextafter(resolved, math.inf)
+        if next_resolved == resolved or not math.isfinite(next_resolved):
+            raise ValueError(
+                "clip plan minimum area has no finite representable buffer")
+        resolved = next_resolved
+        area = ((raw_width + 2.0 * resolved)
+                * (raw_height + 2.0 * resolved))
+    if not all(map(math.isfinite, (area_root, resolved, area))):
+        raise ValueError("clip plan policy overflows finite metric bounds")
+    west, south, east, north = track_bbox
+    bbox = (west - resolved / km_lon, south - resolved / km_lat,
+            east + resolved / km_lon, north + resolved / km_lat)
+    # The output must remain a representable, non-wrapping WGS84 rectangle.
+    bbox = validate_bbox_wsen(bbox)
+    return resolved, area, bbox
+
+
+def validate_clip_plan(
+        document: Mapping,
+        bbox_wsen: tuple[float, float, float, float],
+        *, output_dataset: str,
+) -> dict:
+    """Validate and return a reviewed, GPS-bound rectangular clip plan.
+
+    The trim artifact stores this complete document and its canonical digest.
+    That binds the otherwise-manual bbox to the canonical GPS files and to the
+    policy that resolved its symmetric metric buffer and minimum area.
+    """
+    if type(document) is not dict:
+        raise ValueError("clip plan must be a JSON object")
+    plan = dict(document)
+    _require_exact_keys(plan, CLIP_PLAN_KEYS, "top-level fields")
+    if plan.get("schema") != CLIP_PLAN_SCHEMA:
+        raise ValueError(
+            f"clip plan schema must be exactly {CLIP_PLAN_SCHEMA!r}")
+    if type(plan.get("scope")) is not str or not plan["scope"]:
+        raise ValueError("clip plan scope must be a non-empty string")
+    scope = active_catalogs.SCOPE_BY_NAME.get(plan["scope"])
+    if scope is None:
+        raise ValueError(
+            "clip plan scope must name an active_catalogs.SCOPE_BY_NAME entry")
+    trusted_scope_policy = _trusted_scope_policy(plan["scope"])
+    planned_scope_policy = plan.get("scope_policy")
+    if trusted_scope_policy is None:
+        if planned_scope_policy is not None:
+            raise ValueError(
+                "clip plan scope_policy must be null for an ungoverned scope")
+    else:
+        if type(planned_scope_policy) is not dict:
+            raise ValueError(
+                "clip plan scope_policy must be the trusted policy record")
+        _require_exact_keys(
+            planned_scope_policy, CLIP_SCOPE_POLICY_KEYS,
+            "scope_policy fields")
+        if planned_scope_policy != trusted_scope_policy:
+            raise ValueError(
+                "clip plan scope_policy does not match the trusted versioned "
+                "scope policy")
+    if type(plan.get("output_dataset")) is not str:
+        raise ValueError("clip plan output_dataset must be a string")
+    if plan["output_dataset"] != output_dataset:
+        raise ValueError(
+            "clip plan output_dataset does not exactly match input catalog")
+    if output_dataset not in scope.output_datasets:
+        raise ValueError(
+            "clip plan output_dataset does not belong to the active scope")
+    planned_bbox = validate_bbox_wsen(plan.get("bbox_wsen", ()))
+    if planned_bbox != tuple(bbox_wsen):
+        raise ValueError(
+            "clip plan bbox_wsen does not exactly match --clip_bbox_wsen")
+
+    datasets = plan.get("bbox_datasets")
+    if (type(datasets) is not list or not datasets
+            or any(type(value) is not str or not value
+                   for value in datasets)
+            or len(datasets) != len(set(datasets))):
+        raise ValueError(
+            "clip plan bbox_datasets must be a non-empty unique string list")
+    if datasets != list(scope.bbox_datasets):
+        raise ValueError(
+            "clip plan bbox_datasets does not exactly match active scope")
+    dataset_tables = plan.get("dataset_tables")
+    if (type(dataset_tables) is not list
+            or len(dataset_tables) != len(datasets)
+            or any(type(record) is not dict for record in dataset_tables)
+            or [record.get("dataset") for record in dataset_tables]
+            != datasets):
+        raise ValueError(
+            "clip plan dataset_tables must have one ordered record per "
+            "bbox dataset")
+
+    policy = plan.get("policy")
+    if type(policy) is not dict:
+        raise ValueError("clip plan policy must be a JSON object")
+    _require_exact_keys(policy, CLIP_POLICY_KEYS, "policy fields")
+    if policy.get("metric") != CLIP_PLAN_METRIC:
+        raise ValueError(
+            f"clip plan policy.metric must be {CLIP_PLAN_METRIC!r}")
+    track_bbox = _validate_track_bbox_wsen(
+        policy.get("track_bbox_wsen", ()))
+    nominal_buffer = _finite_plan_number(
+        policy.get("nominal_buffer_km"), "policy.nominal_buffer_km")
+    minimum_buffer = _finite_plan_number(
+        policy.get("minimum_buffer_km"), "policy.minimum_buffer_km")
+    minimum_area = _finite_plan_number(
+        policy.get("minimum_area_km2"), "policy.minimum_area_km2",
+        strictly_positive=True)
+    if (trusted_scope_policy is not None
+            and minimum_area
+            < trusted_scope_policy["minimum_area_floor_km2"]):
+        raise ValueError(
+            "clip plan policy.minimum_area_km2 is below the trusted scope "
+            f"floor of {trusted_scope_policy['minimum_area_floor_km2']:g}")
+    resolved_buffer = _finite_plan_number(
+        policy.get("resolved_buffer_km"), "policy.resolved_buffer_km")
+    resolved_area = _finite_plan_number(
+        policy.get("resolved_area_km2"), "policy.resolved_area_km2",
+        strictly_positive=True)
+    expected_buffer, expected_area, expected_bbox = _resolve_clip_policy(
+        track_bbox, nominal_buffer, minimum_buffer, minimum_area)
+    if not math.isclose(
+            resolved_buffer, expected_buffer, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError(
+            "clip plan resolved_buffer_km is not the exact policy minimum")
+    if resolved_area < minimum_area:
+        raise ValueError(
+            "clip plan resolved_area_km2 is below minimum_area_km2")
+    if not math.isclose(
+            resolved_area, expected_area, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError(
+            "clip plan resolved_area_km2 does not match track bbox and "
+            "resolved buffer")
+    if any(not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
+           for actual, expected in zip(bbox_wsen, expected_bbox)):
+        raise ValueError(
+            "clip plan bbox_wsen does not match track bbox and resolved "
+            "symmetric buffer")
+    # Prove the full document is valid canonical-JSON input before it enters
+    # an artifact manifest or identity digest.
+    try:
+        artifact.canonical_json_bytes(plan)
+    except (artifact.ArtifactValidationError, UnicodeError,
+            OverflowError) as exc:
+        raise ValueError(f"clip plan is not canonical JSON: {exc}") from exc
+    return plan
+
+
+def _live_scope_tables(scope, farfield_root: Path):
+    records = []
+    lats = []
+    lons = []
+    for dataset in scope.bbox_datasets:
+        try:
+            record, table_lats, table_lons = \
+                active_catalogs.read_dataset_tables(dataset, farfield_root)
+        except active_catalogs.ActiveCatalogError as exc:
+            raise ValueError(
+                f"cannot verify canonical dataset {dataset!r}: {exc}") from exc
+        records.append(record)
+        lats.extend(table_lats)
+        lons.extend(table_lons)
+    return records, (min(lons), min(lats), max(lons), max(lats))
+
+
+def verify_clip_plan_sources(plan: Mapping, farfield_root: Path) -> dict:
+    """Re-read root-derived canonical tables and recompute trajectory union."""
+    scope = active_catalogs.SCOPE_BY_NAME[plan["scope"]]
+    records, track_bbox = _live_scope_tables(scope, Path(farfield_root))
+    if records != plan["dataset_tables"]:
+        raise ValueError(
+            "live canonical dataset tables no longer match the reviewed plan")
+    planned_track = tuple(plan["policy"]["track_bbox_wsen"])
+    if track_bbox != planned_track:
+        raise ValueError(
+            "live canonical GPS union does not exactly match "
+            "policy.track_bbox_wsen")
+    return {
+        "farfield_root": str(Path(farfield_root)),
+        "dataset_tables": records,
+        "track_bbox_wsen": list(track_bbox),
+    }
+
+
+def build_clip_plan(*, scope_name: str, output_dataset: str,
+                    farfield_root: Path, nominal_buffer_km,
+                    minimum_buffer_km, minimum_area_km2) -> dict:
+    """Build a deterministic plan from the current active-scope tables."""
+    scope = active_catalogs.SCOPE_BY_NAME.get(scope_name)
+    if scope is None:
+        raise ValueError(f"unknown active catalog scope: {scope_name!r}")
+    if output_dataset not in scope.output_datasets:
+        raise ValueError("output dataset does not belong to active scope")
+    nominal = _finite_plan_number(
+        nominal_buffer_km, "policy.nominal_buffer_km")
+    minimum = _finite_plan_number(
+        minimum_buffer_km, "policy.minimum_buffer_km")
+    area = _finite_plan_number(
+        minimum_area_km2, "policy.minimum_area_km2",
+        strictly_positive=True)
+    trusted_scope_policy = _trusted_scope_policy(scope_name)
+    if (trusted_scope_policy is not None
+            and area < trusted_scope_policy["minimum_area_floor_km2"]):
+        raise ValueError(
+            "minimum_area_km2 is below the trusted scope floor of "
+            f"{trusted_scope_policy['minimum_area_floor_km2']:g}")
+    records, track_bbox = _live_scope_tables(scope, Path(farfield_root))
+    resolved, resolved_area, bbox = _resolve_clip_policy(
+        track_bbox, nominal, minimum, area)
+    plan = {
+        "schema": CLIP_PLAN_SCHEMA,
+        "scope": scope_name,
+        "output_dataset": output_dataset,
+        "bbox_datasets": list(scope.bbox_datasets),
+        "dataset_tables": records,
+        "bbox_wsen": list(bbox),
+        "scope_policy": trusted_scope_policy,
+        "policy": {
+            "metric": CLIP_PLAN_METRIC,
+            "track_bbox_wsen": list(track_bbox),
+            "nominal_buffer_km": nominal,
+            "minimum_buffer_km": minimum,
+            "minimum_area_km2": area,
+            "resolved_buffer_km": resolved,
+            "resolved_area_km2": resolved_area,
+        },
+    }
+    return validate_clip_plan(plan, bbox, output_dataset=output_dataset)
+
+
+def load_clip_plan(
+        path: Path,
+        expected_digest: str,
+        bbox_wsen: tuple[float, float, float, float],
+        *, output_dataset: str,
+) -> tuple[dict, str]:
+    """Read one reviewed plan and verify its canonical digest and bbox."""
+    if (type(expected_digest) is not str or len(expected_digest) != 64
+            or any(c not in "0123456789abcdef" for c in expected_digest)):
+        raise ValueError(
+            "expected clip plan digest must be a lowercase SHA-256 digest")
+    try:
+        _, encoded = active_catalogs.read_regular_file(
+            Path(path), what="clip plan", return_bytes=True)
+        assert encoded is not None
+        text = encoded.decode("utf-8")
+        document = json.loads(
+            text,
+            object_pairs_hook=_unique_json_object,
+            parse_float=_finite_json_float,
+            parse_constant=_reject_json_constant,
+        )
+    except (active_catalogs.ActiveCatalogError, UnicodeError,
+            json.JSONDecodeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"cannot read clip plan {path}: {exc}") from exc
+    plan = validate_clip_plan(
+        document, bbox_wsen, output_dataset=output_dataset)
+    try:
+        digest = artifact.sha256_json(plan)
+    except (artifact.ArtifactValidationError, UnicodeError,
+            OverflowError) as exc:
+        raise ValueError(f"clip plan is not canonical JSON: {exc}") from exc
+    if digest != expected_digest:
+        raise ValueError(
+            f"clip plan digest mismatch: expected {expected_digest}, "
+            f"found {digest}")
+    return plan, digest
+
+
 def rule_fingerprint(min_building_area_m2: float,
-                     min_building_levels: float) -> str:
+                     min_building_levels: float, *,
+                     clip_km=None, clip_center_lat=None,
+                     clip_center_lon=None, clip_bbox_wsen=None,
+                     clip_plan_digest=None) -> str:
     """Short hash of everything that decides what this trimmer keeps.
 
     Recorded next to each output so "which rules built this catalog?" is
@@ -340,7 +825,7 @@ def rule_fingerprint(min_building_area_m2: float,
     analysis had passed thresholds by hand -- and this is what would have
     settled it in one line instead of an afternoon.
     """
-    payload = json.dumps({
+    payload = {
         "hard_keys": sorted(HARD_UNOBSERVABLE_KEYS),
         "hard_tags": sorted(map(list, HARD_UNOBSERVABLE_TAGS)),
         "soft_tags": sorted(map(list, SOFT_UNOBSERVABLE_TAGS)),
@@ -354,8 +839,24 @@ def rule_fingerprint(min_building_area_m2: float,
         "keep_name_suffixes": sorted(catalog.FAR_FIELD_KEEP_NAME_SUFFIXES),
         "min_building_area_m2": min_building_area_m2,
         "min_building_levels": min_building_levels,
-    }, sort_keys=True)
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    }
+    # Preserve the established no-clip fingerprint while ensuring every
+    # spatially clipped artifact fingerprints the exact decision boundary.
+    if clip_bbox_wsen is not None:
+        payload["spatial_clip"] = {
+            "mode": "representative_point_bbox_wsen_inclusive/v1",
+            "bbox_wsen": list(validate_bbox_wsen(clip_bbox_wsen)),
+            "clip_plan_digest": clip_plan_digest,
+        }
+    elif clip_km is not None:
+        payload["spatial_clip"] = {
+            "mode": "representative_point_metric_square_inclusive/v1",
+            "box_km": clip_km,
+            "center_lat": clip_center_lat,
+            "center_lon": clip_center_lon,
+        }
+    encoded = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
 def catalog_descends_from(
@@ -492,7 +993,10 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
          allow_recall_loss: bool = False,
          allow_absent_matched_signatures: bool = False,
          clip_km=None, clip_center_lat=None,
-         clip_center_lon=None) -> gpd.GeoDataFrame:
+         clip_center_lon=None, clip_bbox_wsen=None,
+         clip_plan_path=None,
+         expected_clip_plan_digest=None,
+         farfield_root=None) -> gpd.GeoDataFrame:
     try:
         input_ref, input_path = open_catalog_artifact(input_catalog_dir)
     except artifact.ArtifactError as exc:
@@ -504,7 +1008,58 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
             f"definition -- every past number was computed against it -- so "
             f"it is immutable and versioned, never overwritten. Publish a "
             f"new artifact version.")
+    if clip_bbox_wsen is not None and any(
+            value is not None
+            for value in (clip_km, clip_center_lat, clip_center_lon)):
+        raise SystemExit(
+            "--clip_bbox_wsen is mutually exclusive with the metric-square "
+            "--clip_km/--clip_center_lat/--clip_center_lon options")
+    if clip_km is None and (clip_center_lat is not None
+                            or clip_center_lon is not None):
+        raise SystemExit(
+            "--clip_center_lat/lon may only be used with --clip_km")
+    if ((clip_plan_path is None)
+            != (expected_clip_plan_digest is None)):
+        raise SystemExit(
+            "--clip_plan and --expected_clip_plan_digest must be supplied "
+            "together")
+    if clip_plan_path is not None and clip_bbox_wsen is None:
+        raise SystemExit("--clip_plan may only be used with --clip_bbox_wsen")
+    if (clip_plan_path is None) != (farfield_root is None):
+        raise SystemExit(
+            "--farfield_root is required exactly when --clip_plan is used")
+
+    resolved_bbox = None
+    if clip_bbox_wsen is not None:
+        try:
+            resolved_bbox = validate_bbox_wsen(clip_bbox_wsen)
+        except ValueError as exc:
+            raise SystemExit(f"invalid --clip_bbox_wsen: {exc}") from exc
+    if (resolved_bbox is not None
+            and _dataset_requires_reviewed_bbox_plan(input_ref.dataset)
+            and clip_plan_path is None):
+        raise SystemExit(
+            "this governed dataset requires --clip_plan, "
+            "--expected_clip_plan_digest, and --farfield_root for exact-bbox "
+            "clipping")
+    clip_plan = None
+    clip_plan_digest = None
+    clip_plan_sources = None
+    if clip_plan_path is not None:
+        try:
+            clip_plan, clip_plan_digest = load_clip_plan(
+                Path(clip_plan_path), expected_clip_plan_digest,
+                resolved_bbox, output_dataset=input_ref.dataset)
+            clip_plan_sources = verify_clip_plan_sources(
+                clip_plan, Path(farfield_root))
+        except ValueError as exc:
+            raise SystemExit(f"invalid --clip_plan: {exc}") from exc
+
     gdf = schema.read_frame(input_path)
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        raise SystemExit(
+            "input catalog CRS must be exactly WGS84 (EPSG:4326); refusing "
+            "to apply a WGS84 clip bbox to another CRS")
     print(f"{input_path.name}: {schema.summarize(gdf)}")
 
     tags = far_field_tag_records(gdf)
@@ -518,6 +1073,8 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
                              "make the catalog impossible to reproduce")
         masks["outside_clip_box"] = ~clip_mask(gdf, clip_center_lat,
                                                clip_center_lon, clip_km)
+    if resolved_bbox is not None:
+        masks["outside_clip_bbox"] = ~clip_bbox_mask(gdf, resolved_bbox)
 
     dropped = np.zeros(len(gdf), dtype=bool)
     for mask in masks.values():
@@ -620,13 +1177,26 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
     config = {
         "min_building_area_m2": min_building_area_m2,
         "min_building_levels": min_building_levels,
+        "clip_mode": ("bbox_wsen" if resolved_bbox is not None
+                      else "metric_square" if clip_km is not None else None),
         "clip_km": clip_km,
         "clip_center_lat": clip_center_lat,
         "clip_center_lon": clip_center_lon,
+        "clip_bbox_wsen": (list(resolved_bbox)
+                           if resolved_bbox is not None else None),
+        "clip_plan": clip_plan,
+        "clip_plan_digest": clip_plan_digest,
+        "clip_plan_source_verification": clip_plan_sources,
         "rows_in": int(len(gdf)),
         "rows_out": int(kept.sum()),
         "rule_fingerprint": rule_fingerprint(min_building_area_m2,
-                                             min_building_levels),
+                                             min_building_levels,
+                                             clip_km=clip_km,
+                                             clip_center_lat=clip_center_lat,
+                                             clip_center_lon=clip_center_lon,
+                                             clip_bbox_wsen=resolved_bbox,
+                                             clip_plan_digest=
+                                             clip_plan_digest),
         "drops_per_rule": {name: int(mask.sum())
                            for name, mask in masks.items()},
         "recall_guards": {
@@ -656,6 +1226,18 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
             config=config,
             declared_outputs=("catalog.feather",)) as builder:
         out.to_feather(builder.output_path("catalog.feather"))
+        if clip_plan is not None:
+            try:
+                final_sources = verify_clip_plan_sources(
+                    clip_plan, Path(farfield_root))
+            except ValueError as exc:
+                raise SystemExit(
+                    "canonical GPS source changed before publication: "
+                    f"{exc}") from exc
+            if final_sources != clip_plan_sources:
+                raise SystemExit(
+                    "canonical GPS source identity changed before "
+                    "publication")
     print(f"\nWrote {output_dir}")
     print(f"Full catalog left untouched at {input_catalog_dir}")
     return out
@@ -690,14 +1272,31 @@ def cli(argv=None) -> int:
                         help="write anyway when the guard finds losses")
     parser.add_argument(
         "--allow_absent_matched_signatures", action="store_true",
-        help="continue when more than 40% of matched signatures are absent "
+        help="continue when more than 40%% of matched signatures are absent "
              "from the input catalog (separate from --allow_recall_loss)")
-    parser.add_argument("--clip_km", type=float, default=None,
-                        help="keep only rows inside a square box this many "
-                             "km on a side (a prior extent, not a corridor); "
-                             "needs --clip_center_lat/lon")
+    clip_group = parser.add_mutually_exclusive_group()
+    clip_group.add_argument(
+        "--clip_km", type=float, default=None,
+        help="keep only rows inside a square box this many km on a side "
+             "(a prior extent, not a corridor); needs --clip_center_lat/lon")
+    clip_group.add_argument(
+        "--clip_bbox_wsen", type=float, nargs=4, default=None,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        help="keep rows whose representative point lies inside this exact "
+             "inclusive WGS84 rectangle")
     parser.add_argument("--clip_center_lat", type=float, default=None)
     parser.add_argument("--clip_center_lon", type=float, default=None)
+    parser.add_argument(
+        "--clip_plan", type=Path, default=None,
+        help="reviewed farfield.catalog_clip_plan/v1 JSON binding a bbox to "
+             "root-derived canonical GPS sources and its buffer/area policy")
+    parser.add_argument(
+        "--farfield_root", type=Path, default=None,
+        help="canonical farfield root; required with --clip_plan so dataset "
+             "paths cannot be supplied by the plan")
+    parser.add_argument(
+        "--expected_clip_plan_digest", default=None,
+        help="required canonical JSON SHA-256 when --clip_plan is supplied")
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -709,7 +1308,11 @@ def cli(argv=None) -> int:
          allow_absent_matched_signatures=
              args.allow_absent_matched_signatures,
          clip_km=args.clip_km, clip_center_lat=args.clip_center_lat,
-         clip_center_lon=args.clip_center_lon)
+         clip_center_lon=args.clip_center_lon,
+         clip_bbox_wsen=args.clip_bbox_wsen,
+         clip_plan_path=args.clip_plan,
+         expected_clip_plan_digest=args.expected_clip_plan_digest,
+         farfield_root=args.farfield_root)
     return 0
 
 

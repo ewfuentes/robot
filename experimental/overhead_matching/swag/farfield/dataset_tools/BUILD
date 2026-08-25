@@ -474,6 +474,7 @@ py_library(
         FARFIELD + ":provenance",
         FARFIELD + "/catalog:catalog",
         FARFIELD + "/catalog:schema",
+        FARFIELD + "/collection:active_catalogs_lib",
     ],
 )
 

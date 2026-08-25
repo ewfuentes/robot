@@ -21,17 +21,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import math
+import os
 import re
 import shutil
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
-    dataset as dataset_lib,
     geometry,
     paths as paths_lib,
     provenance,
@@ -168,137 +171,340 @@ def parse_pbf_map(values: list[str] | tuple[str, ...]) -> dict[str, Path]:
     return result
 
 
-def _stat_tuple(path: Path) -> tuple[int, int, int, int]:
-    value = path.stat()
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+def _stat_tuple(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _canonical_absolute_path(path: Path, *, what: str) -> Path:
+    """Reject relative, non-normalized, or symlink-containing paths."""
+    path = Path(path)
+    if not path.is_absolute():
+        raise ActiveCatalogError(f"{what} path must be absolute: {path}")
+    normalized = Path(os.path.abspath(os.fspath(path)))
+    if path != normalized:
+        raise ActiveCatalogError(f"{what} path is not canonical: {path}")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ActiveCatalogError(f"{what} cannot be resolved: {path}") from error
+    if resolved != path:
+        raise ActiveCatalogError(
+            f"{what} is not a regular non-symlink path (symlink ancestor or "
+            f"target): {path}")
+    return path
+
+
+def _open_no_symlinks(path: Path, *, what: str, directory: bool = False
+                      ) -> tuple[int, Path]:
+    """Open an absolute path component-by-component with ``O_NOFOLLOW``."""
+    path = _canonical_absolute_path(path, what=what)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ActiveCatalogError("secure O_NOFOLLOW file reads are unavailable")
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | nofollow
+    current = os.open("/", directory_flags)
+    try:
+        for component in path.parts[1:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=current)
+            os.close(current)
+            current = next_fd
+        final_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | nofollow
+        if directory:
+            final_flags |= os.O_DIRECTORY
+        result = os.open(path.name, final_flags, dir_fd=current)
+    except OSError as error:
+        raise ActiveCatalogError(
+            f"{what} is not a secure non-symlink "
+            f"{'directory' if directory else 'file'}: {path}: {error}") from error
+    finally:
+        os.close(current)
+    return result, path
+
+
+def _assert_fd_still_names_path(fd: int, path: Path, before: os.stat_result,
+                                *, what: str) -> os.stat_result:
+    after = os.fstat(fd)
+    try:
+        named = os.stat(path, follow_symlinks=False)
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ActiveCatalogError(
+            f"{what} changed while it was read: {path}") from error
+    if (_stat_tuple(before) != _stat_tuple(after)
+            or after.st_dev != named.st_dev or after.st_ino != named.st_ino
+            or resolved != path):
+        raise ActiveCatalogError(f"{what} changed while it was read: {path}")
+    return after
+
+
+def read_regular_file(
+        path: Path, *, what: str, return_bytes: bool = False,
+) -> tuple[dict, bytes | None]:
+    """Hash one regular file from the same securely opened descriptor.
+
+    The component-wise ``O_NOFOLLOW`` open rejects symlink ancestors. Both
+    descriptor and live path identities are checked after EOF, closing the
+    pathname-swap and hash-then-parse gaps in the old table reader.
+    """
+    fd, path = _open_no_symlinks(path, what=what)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ActiveCatalogError(
+                f"{what} is not a regular non-symlink file: {path}")
+        digest = hashlib.sha256()
+        chunks = [] if return_bytes else None
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
+        after = _assert_fd_still_names_path(
+            fd, path, before, what=what)
+    finally:
+        os.close(fd)
+    identity = {
+        "path": str(path),
+        "size_bytes": after.st_size,
+        "sha256": digest.hexdigest(),
+    }
+    return identity, (b"".join(chunks) if chunks is not None else None)
 
 
 def _file_identity(path: Path, *, what: str) -> dict:
+    identity, _ = read_regular_file(path, what=what)
+    return identity
+
+
+def _csv_reader(data: bytes, path: Path) -> csv.DictReader:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ActiveCatalogError(f"{path} is not valid UTF-8") from error
+    return csv.DictReader(io.StringIO(text, newline=""))
+
+
+def _read_gps_rows(data: bytes, path: Path, dataset: str) -> dict[int, dict]:
+    reader = _csv_reader(data, path)
+    required = {"idx", "latitude", "longitude", "dist_m", "video_t_s"}
+    if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+        raise ActiveCatalogError(
+            f"{path} must contain columns {sorted(required)}")
+    result = {}
+    for line_number, row in enumerate(reader, start=2):
+        try:
+            idx = int(row["idx"])
+            lat = float(row["latitude"])
+            lon = float(row["longitude"])
+            dist_m = float(row["dist_m"])
+            video_t_s = float(row["video_t_s"])
+        except (TypeError, ValueError) as error:
+            raise ActiveCatalogError(
+                f"{dataset} GPS table has an invalid numeric field at line "
+                f"{line_number}") from error
+        values = (lat, lon, dist_m, video_t_s)
+        if (idx < 0 or idx in result or not all(map(math.isfinite, values))
+                or not -90.0 <= lat <= 90.0
+                or not -180.0 <= lon <= 180.0):
+            raise ActiveCatalogError(
+                f"{dataset} GPS table has an invalid/duplicate row at line "
+                f"{line_number}")
+        result[idx] = {
+            "lat": lat, "lon": lon,
+            "dist_m": dist_m, "video_t_s": video_t_s,
+        }
+    return result
+
+
+def _scan_regular_directory(path: Path, *, what: str) -> list[str]:
+    fd, path = _open_no_symlinks(path, what=what, directory=True)
+    try:
+        before = os.fstat(fd)
+
+        def scan() -> list[tuple[str, tuple[int, int, int, int, int, int]]]:
+            records = []
+            with os.scandir(fd) as entries:
+                for entry in entries:
+                    value = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(value.st_mode):
+                        raise ActiveCatalogError(
+                            f"{what} contains a per-JPEG symlink or "
+                            "non-regular file")
+                    records.append((entry.name, _stat_tuple(value)))
+            return sorted(records)
+
+        records = scan()
+        if scan() != records:
+            raise ActiveCatalogError(f"{what} changed while it was scanned")
+        _assert_fd_still_names_path(fd, path, before, what=what)
+    finally:
+        os.close(fd)
+    return [name for name, _ in records]
+
+
+def _read_symlink(path: Path, *, what: str) -> str:
+    """Read a symlink relative to a securely held canonical parent."""
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ActiveCatalogError(f"{what} is not a regular non-symlink file: {path}")
-    before = _stat_tuple(path)
-    digest = artifact.sha256_file(path)
-    after = _stat_tuple(path)
-    if before != after:
-        raise ActiveCatalogError(f"{what} changed while it was hashed: {path}")
-    return {
-        "path": str(path.resolve()),
-        "size_bytes": before[2],
-        "sha256": digest,
-    }
+    parent_fd, parent = _open_no_symlinks(
+        path.parent, what=f"{what} parent", directory=True)
+    try:
+        parent_before = os.fstat(parent_fd)
+        before = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise ActiveCatalogError(f"{what} is not a symlink: {path}")
+        target = os.readlink(path.name, dir_fd=parent_fd)
+        after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if _stat_tuple(before) != _stat_tuple(after):
+            raise ActiveCatalogError(f"{what} changed while it was read")
+        _assert_fd_still_names_path(
+            parent_fd, parent, parent_before, what=f"{what} parent")
+    except OSError as error:
+        raise ActiveCatalogError(f"cannot securely read {what}: {path}") from error
+    finally:
+        os.close(parent_fd)
+    return target
 
 
-def _read_dataset_tables(
+def read_dataset_tables(
         dataset: str, root: Path) -> tuple[dict, list[float], list[float]]:
-    """Bind and cross-check bbox mapping against canonical GPS/panoramas."""
-    dataset_dir = Path(root) / "datasets" / dataset
+    """Bind canonical table bytes and return their GPS-coordinate table."""
+    if (not isinstance(dataset, str) or not dataset
+            or Path(dataset).name != dataset):
+        raise ActiveCatalogError(f"invalid dataset identifier: {dataset!r}")
+    root = _canonical_absolute_path(Path(root), what="farfield_root")
+    if not root.is_dir():
+        raise ActiveCatalogError(f"farfield_root is not a directory: {root}")
+    dataset_dir = root / "datasets" / dataset
     mapping_path = dataset_dir / "pano_id_mapping.csv"
     gps_path = dataset_dir / "frames_gps.csv"
-    mapping_identity = _file_identity(
-        mapping_path, what=f"{dataset} mapping table")
-    gps_identity = _file_identity(gps_path, what=f"{dataset} GPS table")
+    mapping_identity, mapping_bytes = read_regular_file(
+        mapping_path, what=f"{dataset} mapping table", return_bytes=True)
+    gps_identity, gps_bytes = read_regular_file(
+        gps_path, what=f"{dataset} GPS table", return_bytes=True)
+    assert mapping_bytes is not None and gps_bytes is not None
 
     mapping_rows = []
     pano_ids: set[str] = set()
-    try:
-        with mapping_path.open("r", encoding="utf-8", newline="") as stream:
-            reader = csv.DictReader(stream)
-            if tuple(reader.fieldnames or ()) != MAPPING_COLUMNS:
-                raise ActiveCatalogError(
-                    f"{dataset} mapping header must be exactly "
-                    f"{list(MAPPING_COLUMNS)}, got {reader.fieldnames}")
-            for line_number, row in enumerate(reader, start=2):
-                pano_id = row["pano_id"]
-                if not pano_id or pano_id in pano_ids:
-                    raise ActiveCatalogError(
-                        f"{dataset} mapping has empty or duplicate pano_id "
-                        f"at line {line_number}")
-                if not row["filename"]:
-                    raise ActiveCatalogError(
-                        f"{dataset} mapping has an empty filename at line "
-                        f"{line_number}")
-                filename = row["filename"]
-                if (Path(filename).name != filename
-                        or not filename.lower().endswith(".jpg")):
-                    raise ActiveCatalogError(
-                        f"{dataset} mapping filename is not a JPEG basename at "
-                        f"line {line_number}")
-                try:
-                    lat = float(row["lat"])
-                    lon = float(row["lon"])
-                except ValueError as error:
-                    raise ActiveCatalogError(
-                        f"{dataset} mapping has non-numeric coordinates at "
-                        f"line {line_number}") from error
-                if (not math.isfinite(lat) or not math.isfinite(lon)
-                        or not -90.0 <= lat <= 90.0
-                        or not -180.0 <= lon <= 180.0):
-                    raise ActiveCatalogError(
-                        f"{dataset} mapping has invalid WGS84 coordinates at "
-                        f"line {line_number}")
-                pano_ids.add(pano_id)
-                mapping_rows.append((pano_id, filename, lat, lon))
-    except OSError as error:
+    reader = _csv_reader(mapping_bytes, mapping_path)
+    if tuple(reader.fieldnames or ()) != MAPPING_COLUMNS:
         raise ActiveCatalogError(
-            f"cannot read {mapping_path}: {error}") from error
+            f"{dataset} mapping header must be exactly "
+            f"{list(MAPPING_COLUMNS)}, got {reader.fieldnames}")
+    for line_number, row in enumerate(reader, start=2):
+        pano_id = row["pano_id"]
+        if not pano_id or pano_id in pano_ids:
+            raise ActiveCatalogError(
+                f"{dataset} mapping has empty or duplicate pano_id at line "
+                f"{line_number}")
+        filename = row["filename"]
+        if (not filename or Path(filename).name != filename
+                or not filename.lower().endswith(".jpg")):
+            raise ActiveCatalogError(
+                f"{dataset} mapping filename is not a JPEG basename at line "
+                f"{line_number}")
+        try:
+            lat = float(row["lat"])
+            lon = float(row["lon"])
+        except (TypeError, ValueError) as error:
+            raise ActiveCatalogError(
+                f"{dataset} mapping has non-numeric coordinates at line "
+                f"{line_number}") from error
+        if (not math.isfinite(lat) or not math.isfinite(lon)
+                or not -90.0 <= lat <= 90.0
+                or not -180.0 <= lon <= 180.0):
+            raise ActiveCatalogError(
+                f"{dataset} mapping has invalid WGS84 coordinates at line "
+                f"{line_number}")
+        pano_ids.add(pano_id)
+        mapping_rows.append((pano_id, filename, lat, lon))
     if not mapping_rows:
         raise ActiveCatalogError(
             f"{dataset} mapping table is empty: {mapping_path}")
-    if (_file_identity(mapping_path, what=f"{dataset} mapping table")
-            != mapping_identity):
-        raise ActiveCatalogError(f"{dataset} mapping changed while it was read")
+
+    gps_rows = _read_gps_rows(gps_bytes, gps_path, dataset)
 
     panorama_dir = dataset_dir / "panorama"
-    if not panorama_dir.is_symlink():
+    try:
+        panorama_target = _read_symlink(
+            panorama_dir, what=f"{dataset} panorama")
+    except ActiveCatalogError as error:
         raise ActiveCatalogError(
-            f"{dataset} panorama must be the symlink 'panorama -> frames'")
-    if panorama_dir.readlink() != Path("frames"):
+            f"{dataset} panorama must be the symlink 'panorama -> frames': "
+            f"{error}") from error
+    if panorama_target != "frames":
         raise ActiveCatalogError(
             f"{dataset} panorama symlink text must be exactly 'frames'")
     frames_dir = dataset_dir / "frames"
-    try:
-        panorama_resolved = panorama_dir.resolve(strict=True)
-    except (FileNotFoundError, RuntimeError) as error:
+    if not frames_dir.exists():
         raise ActiveCatalogError(
-            f"{dataset} panorama -> frames symlink is dangling or cyclic") from error
+            f"{dataset} panorama -> frames symlink is dangling or cyclic")
     if frames_dir.is_symlink() or not frames_dir.is_dir():
         raise ActiveCatalogError(
             f"{dataset} frames must be a real non-symlink directory")
-    try:
-        frames_resolved = frames_dir.resolve(strict=True)
-    except (FileNotFoundError, RuntimeError) as error:
-        raise ActiveCatalogError(
-            f"{dataset} frames directory cannot be resolved") from error
-    if panorama_resolved != frames_resolved:
-        raise ActiveCatalogError(
-            f"{dataset} panorama must resolve to its real frames directory")
-    panorama_entries = sorted(
-        panorama_dir.iterdir(), key=lambda path: path.name)
-    if any(path.is_symlink() or not path.is_file()
-           for path in panorama_entries):
-        raise ActiveCatalogError(
-            f"{dataset} panorama set contains a per-JPEG symlink or "
-            "non-regular file")
-    try:
-        frames = dataset_lib.load_frames(dataset_dir)
-    except dataset_lib.ContractViolation as error:
-        raise ActiveCatalogError(
-            f"{dataset} violates the canonical frame contract: {error}") from error
-    if not frames:
+    panorama_names = _scan_regular_directory(
+        frames_dir, what=f"{dataset} panorama set")
+    if not panorama_names:
         raise ActiveCatalogError(f"{dataset} canonical frame table is empty")
-    if (_file_identity(gps_path, what=f"{dataset} GPS table")
-            != gps_identity):
-        raise ActiveCatalogError(
-            f"{dataset} GPS table changed while canonical frames were loaded")
 
-    panorama_names = [path.name for path in panorama_entries]
-    frame_names = [frame.pano_stem + ".jpg" for frame in frames]
-    if (set(panorama_names) != set(frame_names)
-            or len(panorama_names) != len(frame_names)):
+    frames = []
+    used_gps = set()
+    seen_ids = set()
+    seen_stems = set()
+    for filename in panorama_names:
+        if not filename.lower().endswith(".jpg"):
+            raise ActiveCatalogError(
+                f"{dataset} panorama set contains a non-JPEG file")
+        stem = filename[:-4]
+        parts = stem.split(",")
+        if (len(parts) != 4 or parts[-1] != ""
+                or not re.fullmatch(r"f[0-9]+", parts[0])):
+            raise ActiveCatalogError(
+                f"{dataset} violates the canonical frame contract (filename): "
+                f"{filename}")
+        pano_id, lat_text, lon_text, _ = parts
+        if pano_id in seen_ids or stem in seen_stems:
+            raise ActiveCatalogError(
+                f"{dataset} has a duplicate panorama identity: {filename}")
+        try:
+            frame_lat = float(lat_text)
+            frame_lon = float(lon_text)
+        except ValueError as error:
+            raise ActiveCatalogError(
+                f"{dataset} panorama filename has invalid coordinates: "
+                f"{filename}") from error
+        if (not math.isfinite(frame_lat) or not math.isfinite(frame_lon)
+                or not -90.0 <= frame_lat <= 90.0
+                or not -180.0 <= frame_lon <= 180.0):
+            raise ActiveCatalogError(
+                f"{dataset} panorama filename has invalid coordinates: "
+                f"{filename}")
+        try:
+            gps_idx = int(pano_id[1:])
+        except ValueError as error:
+            raise ActiveCatalogError(
+                f"{dataset} panorama id is not a bounded integer: "
+                f"{pano_id}") from error
+        gps = gps_rows.get(gps_idx)
+        if gps is None:
+            raise ActiveCatalogError(
+                f"{dataset} panorama has no GPS row for idx {gps_idx}")
+        if gps_idx in used_gps:
+            raise ActiveCatalogError(
+                f"{dataset} panoramas reuse GPS idx {gps_idx}")
+        used_gps.add(gps_idx)
+        seen_ids.add(pano_id)
+        seen_stems.add(stem)
+        frames.append((pano_id, filename, frame_lat, frame_lon,
+                       gps["lat"], gps["lon"]))
+    extra_gps = sorted(set(gps_rows) - used_gps)
+    if extra_gps:
         raise ActiveCatalogError(
-            f"{dataset} panorama JPEG set does not exactly match canonical "
-            "frames")
+            f"{dataset} GPS rows without panoramas: {extra_gps[:10]}")
+    frames.sort(key=lambda frame: frame[0])
+
     if len(mapping_rows) != len(frames):
         raise ActiveCatalogError(
             f"{dataset} mapping/canonical frame counts disagree: "
@@ -306,25 +512,48 @@ def _read_dataset_tables(
     for position, (mapping_row, frame) in enumerate(
             zip(mapping_rows, frames, strict=True)):
         pano_id, mapping_name, mapping_lat, mapping_lon = mapping_row
-        if (pano_id != frame.pano_id
-                or mapping_name != frame.pano_stem + ".jpg"):
+        (frame_id, frame_name, frame_lat, frame_lon,
+         gps_lat, gps_lon) = frame
+        if pano_id != frame_id or mapping_name != frame_name:
             raise ActiveCatalogError(
                 f"{dataset} stale mapping identity disagrees with canonical "
                 f"frame at row {position}")
-        if geometry.haversine_m(
-                mapping_lat, mapping_lon, frame.lat, frame.lon) > 1.0:
+        comparisons = (
+            (mapping_lat, mapping_lon, frame_lat, frame_lon),
+            (gps_lat, gps_lon, frame_lat, frame_lon),
+            (gps_lat, gps_lon, mapping_lat, mapping_lon),
+        )
+        if any(geometry.haversine_m(*values) > 1.0
+               for values in comparisons):
             raise ActiveCatalogError(
-                f"{dataset} stale mapping coordinates disagree with canonical "
-                f"frame at row {position}")
+                f"{dataset} stale mapping coordinates or GPS coordinates "
+                "disagree with the canonical panorama by more than 1 m at "
+                f"row {position}")
 
-    lats = [frame.lat for frame in frames]
-    lons = [frame.lon for frame in frames]
+    # The GPS table, not rounded panorama filenames or the mapping cache, is
+    # the canonical trajectory used to derive the reviewed bbox.
+    lats = [frame[4] for frame in frames]
+    lons = [frame[5] for frame in frames]
+    # Close the post-parse pathname-swap window. Publication runs this whole
+    # reader again, but each individual result must also describe the live
+    # table and filename set at the instant it returns.
+    if (_file_identity(mapping_path, what=f"{dataset} mapping table")
+            != mapping_identity
+            or _file_identity(gps_path, what=f"{dataset} GPS table")
+            != gps_identity
+            or _scan_regular_directory(
+                frames_dir, what=f"{dataset} panorama set")
+            != panorama_names
+            or _read_symlink(panorama_dir, what=f"{dataset} panorama")
+            != "frames"):
+        raise ActiveCatalogError(
+            f"{dataset} canonical tables changed before validation returned")
     return ({
         "dataset": dataset,
         "pano_id_mapping": mapping_identity,
         "frames_gps": gps_identity,
         "panorama": {
-            "path": str(panorama_dir.resolve()),
+            "path": str(frames_dir),
             "relative_link": "frames",
             "jpeg_count": len(panorama_names),
             "filenames_sha256": artifact.sha256_json(panorama_names),
@@ -426,7 +655,7 @@ def build_plan(*, farfield_root: Path, scope_names: list[str] | tuple[str, ...],
         lats: list[float] = []
         lons: list[float] = []
         for dataset in scope.bbox_datasets:
-            record, table_lats, table_lons = _read_dataset_tables(dataset, root)
+            record, table_lats, table_lons = read_dataset_tables(dataset, root)
             dataset_tables.append(record)
             lats.extend(table_lats)
             lons.extend(table_lons)
@@ -509,7 +738,7 @@ def _verify_plan_digest(plan: dict, expected_digest: str | None = None) -> str:
 def _assert_plan_inputs(plan: dict) -> None:
     for scope in plan["scopes"]:
         for record in scope["dataset_tables"]:
-            current, _, _ = _read_dataset_tables(
+            current, _, _ = read_dataset_tables(
                 record["dataset"], Path(plan["farfield_root"]))
             if current != record:
                 raise ActiveCatalogError(

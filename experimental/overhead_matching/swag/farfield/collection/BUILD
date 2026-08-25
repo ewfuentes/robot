@@ -283,7 +283,6 @@ py_library(
         ":geometry_helpers",
         ":pbf_coverage_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
