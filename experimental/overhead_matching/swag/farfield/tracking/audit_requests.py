@@ -393,7 +393,7 @@ def build_request_artifact(args, paths, source_ref, source_path,
             stage="semantic_audit",
             model=args.model,
             system_prompt=sa.SYSTEM_PROMPT,
-            response_schema=sa.get_audit_schema(),
+            response_schema=sa.get_provider_audit_schema(),
             media_settings={
                 **audit_config,
                 "fov_deg": args.fov_deg,
@@ -459,32 +459,24 @@ def _require_exact_response_shape(raw, canonical, path="audit"):
 
 
 def _validate_audit_response(key: str, response: dict) -> dict:
-    """Strict provider response -> canonical TrackAudit payload."""
+    """Strict provider response -> deterministic canonical TrackAudit."""
     try:
         text = response["candidates"][0]["content"]["parts"][0]["text"]
         raw = json.loads(
             text, object_pairs_hook=_reject_duplicate_keys,
             parse_constant=lambda value: (_ for _ in ()).throw(
                 ValueError(f"non-finite JSON value {value!r}")))
-        audit_value = sa.TrackAudit.model_validate(raw).model_dump()
-        _require_exact_response_shape(raw, audit_value)
+        provider = sa.ProviderTrackAudit.model_validate(raw)
+        provider_value = provider.model_dump()
+        _require_exact_response_shape(raw, provider_value)
+        audit_value = sa.canonicalize_provider_audit(provider)
     except Exception as error:
-        raise ValueError(f"{key}: invalid TrackAudit response: {error}") \
-            from error
-    verdict = audit_value["verdict"]
-    segments = audit_value["valid_segments"]
-    if verdict == "keep":
-        if (not audit_value["single_object"]
-                or audit_value["drop_reason"] != "none" or not segments):
-            raise ValueError(
-                f"{key}: keep requires a single object and valid segments")
-    elif verdict == "keep_partial":
-        if (audit_value["single_object"]
-                or audit_value["drop_reason"] != "none" or not segments):
-            raise ValueError(
-                f"{key}: keep_partial requires split identity and segments")
-    elif audit_value["drop_reason"] == "none":
-        raise ValueError(f"{key}: drop requires a concrete drop_reason")
+        message = f"{key}: invalid ProviderTrackAudit response: {error}"
+        raise ValueError(message) from error
+    if (audit_value["verdict"] in ("keep", "keep_partial")
+            and not audit_value["valid_segments"]):
+        raise ValueError(
+            f"{key}: accepted decision requires at least one valid segment")
     for index, item in enumerate(audit_value["primary_object"]["tags"]):
         _validate_weight(item["weight"], f"{key} tag {index}")
     for index, item in enumerate(

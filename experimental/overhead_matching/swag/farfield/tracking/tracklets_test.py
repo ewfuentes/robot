@@ -151,21 +151,31 @@ class AcceptedTrackletTest(unittest.TestCase):
             tracklets.build_accepted_tracklets(
                 {1: self.track1}, {99: audit_for(self.track1)})
 
-    def test_empty_partial_is_invalid_instead_of_restoring_full_track(self):
-        with self.assertRaisesRegex(
-                tracklets.TrackletContractError, "no valid segment"):
-            tracklets.build_accepted_tracklets(
-                {2: self.track2},
-                {2: audit_for(self.track2, "keep_partial", [])})
+    def test_empty_accepted_segments_never_restore_the_full_track(self):
+        for verdict in ("keep", "keep_partial"):
+            with self.subTest(verdict=verdict):
+                with self.assertRaisesRegex(
+                        tracklets.TrackletContractError, "no valid segment"):
+                    tracklets.build_accepted_tracklets(
+                        {2: self.track2},
+                        {2: audit_for(self.track2, verdict, [])})
 
-    def test_keep_must_cover_whole_lifetime(self):
-        with self.assertRaisesRegex(
-                tracklets.TrackletContractError, "whole lifetime"):
-            tracklets.build_accepted_tracklets(
-                {1: self.track1},
-                {1: audit_for(
-                    self.track1, "keep",
-                    [{"start_t": 0, "end_t": 2}])})
+    def test_keep_may_trim_unreliable_same_object_spans(self):
+        accepted = tracklets.build_accepted_tracklets(
+            {1: self.track1},
+            {1: audit_for(
+                self.track1, "keep",
+                [{"start_t": 0, "end_t": 1},
+                 {"start_t": 4, "end_t": 5}])})
+        self.assertEqual(
+            [(segment.start_keyframe_idx, segment.end_keyframe_idx)
+             for segment in accepted[0].valid_segments],
+            [(10, 11), (14, 15)])
+        observations = tracklets.build_camera_bearing_observations(
+            accepted, PANO_W, bearing_sigma_deg=1.25)
+        self.assertEqual(
+            [observation.keyframe_idx for observation in observations],
+            [10, 11, 14, 15])
 
     def test_contradictory_verdict_fields_are_rejected(self):
         audit = audit_for(self.track2, "keep_partial")
@@ -195,13 +205,14 @@ class AcceptedTrackletTest(unittest.TestCase):
             [{"start_t": 3, "end_t": 4},
              {"start_t": 0, "end_t": 1}],
         ]
-        for segments in invalid:
-            with self.subTest(segments=segments):
-                with self.assertRaises(tracklets.TrackletContractError):
-                    tracklets.build_accepted_tracklets(
-                        {1: self.track1},
-                        {1: audit_for(
-                            self.track1, "keep_partial", segments)})
+        for verdict in ("keep", "keep_partial"):
+            for segments in invalid:
+                with self.subTest(verdict=verdict, segments=segments):
+                    with self.assertRaises(tracklets.TrackletContractError):
+                        tracklets.build_accepted_tracklets(
+                            {1: self.track1},
+                            {1: audit_for(
+                                self.track1, verdict, segments)})
 
 
 class CameraBearingObservationTest(unittest.TestCase):

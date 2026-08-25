@@ -1289,10 +1289,8 @@ class StageReuseProofTest(unittest.TestCase):
         self.assertEqual(len(request_set.units), 1)
         audit_payload = {
             "landmark_kind": "fixed_structure",
-            "single_object": True,
+            "decision": "keep_single",
             "valid_segments": [{"start_t": 0, "end_t": 2}],
-            "verdict": "keep",
-            "drop_reason": "none",
             "primary_object": {
                 "tags": [{"tag": "man_made=tower", "weight": 1.0}],
                 "name_candidates": [{

@@ -268,7 +268,9 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
     Missing audits are allowed: tracks below the recorded audit support bar
     were never requested. An audit referring to a missing track is stale and
     is an error. drop is always excluded; only valid keep and keep_partial
-    records are returned.
+    records are returned. For either accepted verdict, valid_segments is the
+    sole observation whitelist: keep records may trim unreliable spans while
+    still asserting that every retained span belongs to one physical object.
     """
     if not isinstance(tracks, Mapping) or not isinstance(audits, Mapping):
         raise TrackletContractError("tracks and audits must be mappings")
@@ -283,7 +285,7 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
             raise TrackletContractError(
                 f"audit for track {track_id!r} has no source track")
         track = tracks[track_id]
-        birth, end, _ = _validate_track(track, track_id)
+        _validate_track(track, track_id)
         audit = audits[track_id]
         if not isinstance(audit, dict):
             raise TrackletContractError(
@@ -296,16 +298,6 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
         if not segments:
             raise TrackletContractError(
                 f"accepted audit for track {track_id!r} has no valid segment")
-        if verdict == "keep":
-            expected = (birth, end)
-            actual = ((segments[0].start_keyframe_idx,
-                       segments[0].end_keyframe_idx)
-                      if len(segments) == 1 else None)
-            if actual != expected:
-                raise TrackletContractError(
-                    f"verdict=keep for track {track_id!r} must retain its "
-                    f"whole lifetime {birth}..{end}")
-
         local = _local_id(track_id)
         provenance = _audit_provenance(audits, track_id)
         actual_track_digest = _canonical_sha256(track)
