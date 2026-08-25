@@ -1,54 +1,38 @@
 #!/usr/bin/env python3
 """Verify that a set of Geofabrik extracts really covers a request bbox.
 
-Why this exists: the common OSM extractor indexes the PBF before
-it can filter by bbox, so cost scales with the file rather than the area asked
-for. That pushes you toward the smallest regional sub-extract -- and a
-sub-extract that does not reach the whole request area produces a partial catalog
-with no error at all. Folkestone makes the stakes concrete: the UK extract alone
-yields 1,708 landmarks inside the bbox while the French side holds 465,571, so
-silently dropping one side loses 99.6% of the catalog.
+An OSM extractor silently returns only the portion of a request that lies
+inside its input PBF. Requests that cross extract boundaries therefore need an
+explicit coverage check; otherwise a partial catalog looks like a successful
+one.
 
 The check uses each extract's Geofabrik **.poly** clip boundary, not its PBF
-HeaderBBox. The header bbox is only a bounding rectangle: united-kingdom's spans
-W-14.86..E2.64, which geometrically contains the whole Dover Strait including
-Calais, while the file holds no French data whatsoever. Testing against the
-header bbox therefore reports full coverage for an extract that is missing
-almost everything -- the exact failure this module exists to prevent.
-
-Ported from swag/scripts/pbf_coverage.py; the run_farfield_collection coverage
-gate now imports `check_coverage` from here as a proper package dependency (the
-old bare `from pbf_coverage import ...` only resolved when both files shared a
-directory, so under bazel the gate was unreachable). The .poly cache directory
-is an argument everywhere -- the old module-level ~/scratch default is gone.
+HeaderBBox. A header bbox is only the clip's bounding rectangle, so concave
+boundaries, holes, coastlines, and adjacent administrative areas inside that
+rectangle are not evidence that the PBF contains those places.
 
     bazel run //experimental/overhead_matching/swag/farfield/collection:pbf_coverage -- \\
-        --poly_cache_dir <osm_cache>/poly europe/france/nord-pas-de-calais-latest.osm.pbf
+        --poly_cache_dir <osm_cache>/poly <geofabrik-spec>
     ... -- --poly_cache_dir <osm_cache>/poly --bbox W S E N <spec> [<spec> ...]
 """
 
 import argparse
+import hashlib
+import json
 import math
+import re
 import struct
 import sys
 import urllib.request
 import zlib
 from pathlib import Path
 
-GEOFABRIK = "https://download.geofabrik.de"
-# A gap under this fraction of the request is treated as .poly boundary
-# resolution rather than missing data.
-# Allowed loss vs the reference set. Not tight, and deliberately so: national
-# clip polygons claim territorial water that regional ones do not, so swapping
-# whole-France for Nord-Pas-de-Calais "loses" 332 km2 of open Channel containing
-# no French land (verified: Calais, Dunkirk and Gravelines all remain covered).
-# A genuinely missing landmass looks nothing like that -- dropping the French
-# extract entirely loses 71.8% -- so the two regimes are far apart.
-COVERAGE_TOLERANCE_FRAC = 0.20
+from experimental.overhead_matching.swag.farfield import artifact
 
-# An extract contributing less than this to the request is the wrong region for
-# this bbox, whatever the totals say (e.g. picardie for the Dover Strait: 0.0%).
-MIN_USEFUL_CONTRIBUTION_FRAC = 0.005
+GEOFABRIK = "https://download.geofabrik.de"
+# Collection must retain essentially all mappable land.  Loading a national
+# extract is now fast enough that there is no alternate substitution policy.
+NORMAL_COVERAGE_TOLERANCE_FRAC = 0.005
 
 
 # ── Geofabrik .poly clip boundaries (the authority on what a file contains) ───
@@ -68,15 +52,31 @@ def fetch_poly(spec: str, cache_dir: Path) -> Path:
     """Download (and cache) the .poly for an extract spec."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    name = poly_url_for(spec).rsplit("/", 1)[-1]
-    dest = cache_dir / name
-    if dest.exists() and dest.stat().st_size > 0:
+    dest = poly_cache_path(spec, cache_dir)
+    if dest.exists() or dest.is_symlink():
+        if dest.is_symlink() or not dest.is_file() or dest.stat().st_size <= 0:
+            raise ValueError(f"invalid cached Geofabrik polygon: {dest}")
         return dest
     url = poly_url_for(spec)
     with urllib.request.urlopen(url, timeout=60) as r:
         data = r.read()
-    dest.write_bytes(data)
+    if not data:
+        raise ValueError(f"empty Geofabrik polygon response for {spec}")
+    try:
+        artifact.atomic_create_file(dest, data)
+    except FileExistsError:
+        if (dest.is_symlink() or not dest.is_file()
+                or artifact.sha256_file(dest)
+                != hashlib.sha256(data).hexdigest()):
+            raise ValueError(f"concurrent polygon cache collision: {dest}")
     return dest
+
+
+def poly_cache_path(spec: str, cache_dir: Path) -> Path:
+    """Collision-safe cache path for one full Geofabrik relative spec."""
+    basename = poly_url_for(spec).rsplit("/", 1)[-1]
+    key = hashlib.sha256(spec.encode("utf-8")).hexdigest()[:16]
+    return Path(cache_dir) / f"{key}-{basename}"
 
 
 def parse_poly(path: Path):
@@ -192,24 +192,13 @@ def _union_of(specs, cache_dir):
     return geoms, problems, (unary_union([g for _, g in geoms]) if geoms else None)
 
 
-def check_coverage(specs, bbox, cache_dir: Path,
-                   tolerance_frac=COVERAGE_TOLERANCE_FRAC,
-                   reference_specs=None):
+def check_coverage(specs, bbox, cache_dir: Path, *, pbf_paths=None):
     """Do the extracts cover everything in bbox that we need?
 
-    The pass/fail criterion is *relative to a reference* set of extracts when one
-    is given -- typically the larger parent region that a small sub-extract was
-    substituted for. That is the hazard worth failing on: swapping whole-France
-    for Nord-Pas-de-Calais to avoid an OOM must not silently drop French land
-    inside the bbox.
-
-    An absolute test cannot be the criterion for water trajectories. Geofabrik
-    clip polygons follow land/territorial boundaries, so open sea belongs to no
-    extract at all: UK + Nord-Pas-de-Calais leaves 9.5% of the Dover Strait bbox
-    "uncovered" purely because it is the middle of the Channel. That fraction is
-    reported for information, never failed on. With no reference given, coverage
-    is measured against the *mappable* part of the bbox (what any Geofabrik leaf
-    claims), so open water is not counted as a gap.
+    Geofabrik clip polygons follow land and territorial boundaries, so open sea
+    may belong to no extract. Absolute bbox coverage is reported for context,
+    while the pass/fail decision measures the *mappable* part of the bbox (what
+    any Geofabrik leaf claims). Open water is therefore not counted as a gap.
 
     Returns (ok, message, details). Unverifiable is NOT ok: a missing .poly means
     a gap cannot be ruled out, and a silent partial catalog is worse than a stop.
@@ -228,6 +217,53 @@ def check_coverage(specs, bbox, cache_dir: Path,
                 "covers_frac_of_request": (round(g.intersection(want).area / want.area, 4)
                                            if want.area else 0.0)}
                for spec, g in geoms]
+    if pbf_paths is not None:
+        if len(pbf_paths) != len(specs):
+            problems.append(("PBF inputs", "spec/path count mismatch"))
+        else:
+            from shapely.geometry import box as shapely_box
+            by_spec = {spec: geometry for spec, geometry in geoms}
+            for spec, pbf_path in zip(specs, pbf_paths, strict=True):
+                path = Path(pbf_path)
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        raise ValueError("not a regular file")
+                    expected_name = spec.rsplit("/", 1)[-1]
+                    if expected_name.endswith("-latest.osm.pbf"):
+                        prefix = expected_name.removesuffix(
+                            "latest.osm.pbf")
+                        if not re.fullmatch(
+                                re.escape(prefix) + r"\d{6}\.osm\.pbf",
+                                path.name):
+                            raise ValueError(
+                                "filename does not identify the requested spec")
+                    elif path.name != expected_name:
+                        raise ValueError(
+                            "filename does not identify the requested spec")
+                    header = header_bbox(path)
+                    if (header is None or len(header) != 4
+                            or not all(math.isfinite(value) for value in header)
+                            or header[0] >= header[2]
+                            or header[1] >= header[3]):
+                        raise ValueError("missing or invalid HeaderBBox")
+                    geometry = by_spec.get(spec)
+                    if geometry is None:
+                        raise ValueError("clip polygon was not validated")
+                    required = geometry.intersection(want)
+                    if (not required.is_empty
+                            and not shapely_box(*header).buffer(1e-9).covers(
+                                required)):
+                        raise ValueError(
+                            "HeaderBBox does not cover the requested clip area")
+                    identity = {
+                        "path": str(path.resolve()),
+                        "sha256": artifact.sha256_file(path),
+                        "header_bbox": list(header),
+                    }
+                    next(item for item in details
+                         if item["spec"] == spec)["pbf"] = identity
+                except (OSError, ValueError, artifact.ArtifactError) as error:
+                    problems.append((spec, f"invalid PBF {path}: {error}"))
     if problems:
         return False, ("cannot verify coverage (refusing to assume): "
                        + "; ".join(f"{s} -> {e}" for s, e in problems)), details
@@ -240,55 +276,30 @@ def check_coverage(specs, bbox, cache_dir: Path,
             f"(~{km2(abs_gap.area):.0f} km2) -- expected on water, where no land "
             f"extract claims the sea")
 
-    if not reference_specs:
-        # Compare against the mappable part of the bbox rather than the bbox
-        # itself, so open water is not counted as a gap.
-        target = mapped_area(bbox, cache_dir)
-        if target is None or target.is_empty:
-            return True, f"no mapped region overlaps this bbox; {info}", details
-        missed = target.difference(chosen)
-        missed_frac = missed.area / target.area
-        details.append({"mapped_area_km2": round(km2(target.area), 1),
-                        "missed_frac_of_mapped": round(missed_frac, 4)})
-        if missed_frac <= tolerance_frac:
-            return True, (f"extracts cover {100*(1-missed_frac):.1f}% of the mappable "
-                          f"area in the bbox; {info}"), details
-        mw, ms, me, mn = missed.bounds
-        return False, (f"extracts miss {100*missed_frac:.1f}% "
-                       f"(~{km2(missed.area):.0f} km2) of the mappable area in this "
-                       f"bbox; missing bounds W{mw:.4f} S{ms:.4f} E{me:.4f} "
-                       f"N{mn:.4f}. Run with --suggest to list the extracts "
-                       f"needed."), details
-
-    _, ref_problems, ref_union = _union_of(reference_specs, cache_dir)
-    if ref_problems:
-        return False, ("cannot verify against the reference extracts: "
-                       + "; ".join(f"{s} -> {e}" for s, e in ref_problems)), details
-    ref_in_bbox = want.intersection(ref_union)
-    lost = ref_in_bbox.difference(chosen)
-    lost_frac = lost.area / ref_in_bbox.area if ref_in_bbox.area else 0.0
-    details.append({"reference": list(reference_specs),
-                    "reference_area_in_bbox_km2": round(km2(ref_in_bbox.area), 1),
-                    "lost_frac_of_reference": round(lost_frac, 4)})
-
-    useless = [d["spec"] for d in details
-               if "spec" in d
-               and d["covers_frac_of_request"] < MIN_USEFUL_CONTRIBUTION_FRAC]
-    if useless:
-        return False, (f"extract(s) {useless} contribute essentially nothing to this "
-                       f"bbox -- wrong region for this trajectory"), details
-
-    if lost_frac <= tolerance_frac:
-        return True, (f"chosen extracts retain {100*(1-lost_frac):.2f}% of the "
-                      f"reference coverage inside the bbox (loss is offshore water, "
-                      f"not land, when small); {info}"), details
-
-    gw, gs, ge, gn = lost.bounds
-    return False, (f"the chosen extracts LOSE {100*lost_frac:.1f}% "
-                   f"(~{km2(lost.area):.0f} km2) of the area the reference extracts "
-                   f"{list(reference_specs)} cover inside this bbox; missing bounds "
-                   f"W{gw:.4f} S{gs:.4f} E{ge:.4f} N{gn:.4f}. Use a larger "
-                   f"sub-extract or add another one."), details
+    # Compare against the mappable part of the bbox rather than the bbox itself,
+    # so open water is not counted as a gap.
+    target = mapped_area(bbox, cache_dir)
+    if target is None or target.is_empty:
+        return False, (
+            "cannot verify coverage: the Geofabrik index contains no mappable "
+            f"region overlapping this bbox; {info}"), details
+    missed = target.difference(chosen)
+    missed_frac = missed.area / target.area
+    details.append({"mapped_area_km2": round(km2(target.area), 1),
+                    "missed_frac_of_mapped": round(missed_frac, 4)})
+    details.append({
+        "coverage_policy": "mappable_land",
+        "tolerance_frac": NORMAL_COVERAGE_TOLERANCE_FRAC,
+    })
+    if missed_frac <= NORMAL_COVERAGE_TOLERANCE_FRAC:
+        return True, (f"extracts cover {100*(1-missed_frac):.1f}% of the mappable "
+                      f"area in the bbox; {info}"), details
+    mw, ms, me, mn = missed.bounds
+    return False, (f"extracts miss {100*missed_frac:.1f}% "
+                   f"(~{km2(missed.area):.0f} km2) of the mappable area in this "
+                   f"bbox; missing bounds W{mw:.4f} S{ms:.4f} E{me:.4f} "
+                   f"N{mn:.4f}. Run with --suggest to list the extracts "
+                   f"needed."), details
 
 
 GEOFABRIK_INDEX = f"{GEOFABRIK}/index-v1.json"
@@ -299,11 +310,39 @@ def load_index(cache_dir: Path):
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     dest = cache_dir / "index-v1.json"
-    if not dest.exists() or dest.stat().st_size == 0:
+    if dest.exists() or dest.is_symlink():
+        if dest.is_symlink() or not dest.is_file() or dest.stat().st_size <= 0:
+            raise ValueError(f"invalid cached Geofabrik index: {dest}")
+    else:
         with urllib.request.urlopen(GEOFABRIK_INDEX, timeout=120) as r:
-            dest.write_bytes(r.read())
-    import json
-    return json.loads(dest.read_text())
+            data = r.read()
+        if not data:
+            raise ValueError("empty Geofabrik index response")
+        try:
+            artifact.atomic_create_file(dest, data)
+        except FileExistsError:
+            if (dest.is_symlink() or not dest.is_file()
+                    or artifact.sha256_file(dest)
+                    != hashlib.sha256(data).hexdigest()):
+                raise ValueError(f"concurrent index cache collision: {dest}")
+    try:
+        return json.loads(
+            dest.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {token!r}")),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"invalid Geofabrik index {dest}: {error}") from error
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
 
 
 def leaf_regions(cache_dir: Path):
@@ -311,31 +350,48 @@ def leaf_regions(cache_dir: Path):
     from shapely.geometry import shape
 
     index = load_index(cache_dir)
-    parents = {f["properties"].get("parent") for f in index["features"]}
+    if (not isinstance(index, dict)
+            or not isinstance(index.get("features"), list)):
+        raise ValueError("Geofabrik index must contain a features list")
+    normalized = []
+    for position, feature in enumerate(index["features"]):
+        if not isinstance(feature, dict):
+            raise ValueError(f"Geofabrik feature {position} is not an object")
+        props = feature.get("properties")
+        if (not isinstance(props, dict)
+                or not isinstance(props.get("id"), str)
+                or not props["id"]):
+            raise ValueError(f"Geofabrik feature {position} has no valid id")
+        parent = props.get("parent")
+        if parent is not None and not isinstance(parent, str):
+            raise ValueError(f"Geofabrik feature {props['id']} has invalid parent")
+        urls = props.get("urls")
+        if urls is not None and not isinstance(urls, dict):
+            raise ValueError(f"Geofabrik feature {props['id']} has invalid urls")
+        normalized.append((feature, props))
+    parents = {props.get("parent") for _, props in normalized}
     out = []
-    for feature in index["features"]:
-        props = feature["properties"]
+    for feature, props in normalized:
         url = (props.get("urls") or {}).get("pbf")
         if not url or props["id"] in parents:
             continue
-        try:
-            out.append({"id": props["id"],
-                        "spec": url.split("/download.geofabrik.de/", 1)[-1],
-                        "geom": shape(feature["geometry"])})
-        except Exception:
-            continue
+        if not isinstance(url, str):
+            raise ValueError(f"Geofabrik feature {props['id']} has invalid PBF URL")
+        geometry = shape(feature.get("geometry"))
+        if geometry.is_empty or not geometry.is_valid:
+            raise ValueError(f"Geofabrik feature {props['id']} has invalid geometry")
+        out.append({"id": props["id"],
+                    "spec": url.split("/download.geofabrik.de/", 1)[-1],
+                    "geom": geometry})
     return out
 
 
 def mapped_area(bbox, cache_dir: Path):
     """The part of bbox that any leaf region claims -- i.e. what is mappable.
 
-    This is the right target to measure coverage against, and open water is the
-    reason. Geofabrik polygons follow land and territorial boundaries, so the
-    middle of the Dover Strait belongs to no leaf region at all; asking for the
-    whole bbox to be covered forces continent-sized extracts whose only
-    contribution is nominal sea. A 45 km buffer around the Channel crossing
-    "needed" europe-latest before this, for 0 extra landmarks.
+    Geofabrik polygons follow land and territorial boundaries, so open water
+    may belong to no leaf region. Measuring against the mapped area avoids
+    requiring larger extracts merely to cover sea outside every source clip.
     """
     from shapely.geometry import box
     from shapely.ops import unary_union
@@ -397,15 +453,10 @@ def main(argv=None) -> int:
                     help="Geofabrik-relative spec, e.g. europe/france/nord-pas-de-calais-latest.osm.pbf")
     ap.add_argument("--poly_cache_dir", type=Path, required=True,
                     help="Directory for cached .poly clip boundaries and the "
-                         "Geofabrik index (the collection orchestrator uses "
-                         "<osm_cache_dir>/poly; the old hardcoded location was "
-                         "~/scratch/osm_downloads/poly)")
+                         "Geofabrik index")
     ap.add_argument("--bbox", nargs=4, type=float, metavar=("W", "S", "E", "N"))
     ap.add_argument("--suggest", action="store_true",
                     help="List the smallest Geofabrik extracts covering --bbox")
-    ap.add_argument("--reference", nargs="+", default=None,
-                    help="Parent extract(s) the chosen ones substitute for; "
-                         "coverage is failed relative to these")
     args = ap.parse_args(argv)
 
     if args.suggest:
@@ -430,18 +481,13 @@ def main(argv=None) -> int:
             print(f"  {spec}\n      ERROR {e}")
 
     if args.bbox:
-        ok, msg, details = check_coverage(args.spec, tuple(args.bbox),
-                                          args.poly_cache_dir,
-                                          reference_specs=args.reference)
+        ok, msg, details = check_coverage(
+            args.spec, tuple(args.bbox), args.poly_cache_dir)
         print(f"\n{'OK: ' if ok else 'FAIL: '}{msg}")
         for d in details:
             if "spec" in d:
                 print(f"    {d['spec'].rsplit('/', 1)[-1]}: covers "
                       f"{100*d['covers_frac_of_request']:.1f}% of the request")
-            elif "reference" in d:
-                print(f"    reference {d['reference']}: "
-                      f"{d['reference_area_in_bbox_km2']} km2 in bbox, "
-                      f"lost {100*d['lost_frac_of_reference']:.2f}%")
         return 0 if ok else 1
     return 0
 

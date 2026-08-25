@@ -1,27 +1,12 @@
 """Farfield VLM extraction prompts, response schema, and request building.
 
-Self-contained on purpose. The checkpoint branch kept the farfield prompts
-inside `swag/model/semantic_landmark_extractor.py`, which drags in torch,
-openai and pandas for what is, for this stage, prompt text plus a pydantic
-schema plus one request-shaping function. That module stays as `main` has it;
-everything the farfield extraction stage needs from it lives here instead:
+This module owns the far-field prompt and request contract:
 
-- `SYSTEM_PROMPTS`: the two farfield prompt texts, byte-identical to the
-  checkpoint branch's `SYSTEM_PROMPTS['osm_tags_farfield'/'osm_tags_farfield_v2']`
-  (the tests pin their sha256). The v1-vs-v2 story is in the comment on the
-  v2 entry; which one a run uses is a modeling choice, so the extraction
-  stage requires `--prompt_type` explicitly.
-- `USER_PROMPT`: byte-identical to `osm_tags_user_prompt` on main.
-- The response schema: a copy of main's OSM-tag pydantic models with ONE
-  deliberate difference -- `place` is a valid primary tag key, because the
-  farfield prompts direct islands and settlements to `place=island` etc.
-  (that enum addition is the reason the models are copied rather than
-  imported, over and above the dependency weight).
-- `build_request` / `write_requests`: the Gemini batch request format, ported
-  from `_create_panorama_batch_request` / `create_panorama_description_requests`,
-  including the stale-render guard (requests are restricted to the stems the
-  dataset currently contains -- a pinhole render can outlive a dataset trim,
-  and every extra stem is a paid model call for a frame nothing reads).
+- `SYSTEM_PROMPTS` and `USER_PROMPT`: prompt text selected explicitly by a run;
+- the response schema, including `place` for islands and settlements;
+- one provider-neutral semantic request with Batch and online adapters;
+- request writers restricted to the panorama stems in the current dataset, so
+  stale renders cannot produce unconsumable model calls.
 
 A prompt name is a lookup key whose text can change under it, so consumers
 that need to pin an extraction record `prompt_sha256(...)` (and the request
@@ -31,13 +16,16 @@ JSONL keeps the text verbatim as it went out).
 import base64
 import hashlib
 import json
+from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import Pool
 from pathlib import Path
-from typing import List
+from typing import Any, List, Mapping
 
 import tqdm
 from pydantic import BaseModel, Field
+
+from experimental.overhead_matching.swag.farfield import paths as paths_lib
 
 # ---------------------------------------------------------------------------
 # Prompt registry
@@ -181,30 +169,9 @@ Provide your response as a JSON object conforming to the assigned schema.
 Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
 </output_format>
 """,
-    # v2 of the far-field prompt. v1's <naming_rules> licensed recognition
-    # without constraining it to the structure's own visible features, which
-    # produced whole-scene misrecognition (a Boston Harbor panorama named with
-    # the Chicago lakefront) and bare buoy board numbers as names.
-    #
-    # Three clauses, all measured on a 22-frame control set, 3 passes each
-    # (docs/object-tracking-runbook.md, "Tuning the extraction prompt"):
-    #   - name the STRUCTURE not the SCENE
-    #   - lookalikes need a differentiator you can see
-    #   - a painted number or letter is ref=, never name=
-    # Out-of-region names and designator-as-name both went to zero, and
-    # precision rose 66% -> 74%.
-    #
-    # A fourth clause was TRIED AND REJECTED: "all the names you give for one
-    # panorama must belong to ONE locality" reads as protective but TRIPLED
-    # in-region misdirection (real wrong-bearing names 0.7 -> 2.3 per pass) -
-    # it appears to make the model commit to a locality and then name more
-    # things in it. Do not add it back.
-    #
-    # KNOWN COST, unmeasured end-to-end: fewer names overall (30 -> 20 per
-    # pass) and fewer mountain-peak names (6.3 -> 3.7). A carve-out exempting
-    # summits from the lookalike clause was tried and made everything worse
-    # (58% precision, 2.7 peak names), so the peak loss is NOT caused by that
-    # clause's ridge example and its mechanism is still unknown.
+    # v2 grounds identity in the structure's own visible features: name the
+    # structure rather than its scene, require a visible differentiator for a
+    # lookalike, and record a painted designator as `ref` rather than `name`.
     'osm_tags_farfield_v2': """<role>
 You are an expert at identifying distant landmarks in outdoor imagery and mapping them to OpenStreetMap (OSM) tags.
 </role>
@@ -355,11 +322,8 @@ def prompt_sha256(prompt_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Response schema
-#
-# Copied from swag/model/semantic_landmark_extractor.py on main, with `place`
-# added to OSMPrimaryTagKey. Everything downstream that reads the resulting
-# predictions (farfield/dataset.py) keys on this shape.
+# Response schema. This module owns the persisted far-field prediction shape
+# consumed by `farfield/dataset.py`.
 # ---------------------------------------------------------------------------
 
 class BoundingBox(BaseModel):
@@ -489,10 +453,247 @@ def response_schema() -> dict:
 # Request building
 # ---------------------------------------------------------------------------
 
+
+def _json_copy(value: Any, where: str) -> Any:
+    """Detach one JSON value while rejecting provider-invalid constants."""
+    try:
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{where} must be finite JSON: {error}") from error
+
+
+def _canonical_part(value: Mapping[str, Any], where: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be an object")
+    part = _json_copy(dict(value), where)
+    if set(part) == {"text"}:
+        if not isinstance(part["text"], str):
+            raise ValueError(f"{where}.text must be a string")
+        return part
+    if set(part) == {"inline_data"}:
+        inline = part["inline_data"]
+        if (not isinstance(inline, dict)
+                or set(inline) != {"mime_type", "data"}
+                or not isinstance(inline["mime_type"], str)
+                or not inline["mime_type"]
+                or not isinstance(inline["data"], str)
+                or not inline["data"]):
+            raise ValueError(
+                f"{where}.inline_data must contain exact non-empty "
+                "mime_type and data strings")
+        return part
+    raise ValueError(
+        f"{where} must contain exactly one canonical text or inline_data part")
+
+
+@dataclass(frozen=True)
+class SemanticRequest:
+    """Provider-neutral request from which both Vertex transports are built.
+
+    Media resolution is a semantic property here. Its provider-specific
+    placement (global for LOW/MEDIUM/HIGH, per image part for ULTRA_HIGH) is
+    owned exclusively by the adapters below.
+    """
+
+    key: str
+    system_instruction: str
+    parts: tuple[dict[str, Any], ...]
+    response_schema: dict[str, Any]
+    thinking_level: str
+    media_resolution: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("request key must be a non-empty string")
+        if (not isinstance(self.system_instruction, str)
+                or not self.system_instruction):
+            raise ValueError("system instruction must be a non-empty string")
+        if (not isinstance(self.thinking_level, str)
+                or not self.thinking_level):
+            raise ValueError("thinking level must be a non-empty string")
+        if (self.media_resolution is not None
+                and self.media_resolution not in MEDIA_RESOLUTIONS):
+            raise ValueError(
+                f"unsupported media resolution {self.media_resolution!r}")
+        if not self.parts:
+            raise ValueError("request must contain at least one content part")
+        object.__setattr__(self, "parts", tuple(
+            _canonical_part(part, f"parts[{index}]")
+            for index, part in enumerate(self.parts)))
+        if (self.media_resolution is not None
+                and not any("inline_data" in part for part in self.parts)):
+            raise ValueError(
+                "media resolution requires at least one image part")
+        schema = _json_copy(self.response_schema, "response_schema")
+        if not isinstance(schema, dict):
+            raise ValueError("response_schema must be an object")
+        object.__setattr__(self, "response_schema", schema)
+
+
+def semantic_request(
+        key: str, *, system_instruction: str,
+        parts: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+        response_schema: Mapping[str, Any], thinking_level: str,
+        media_resolution: str | None = None) -> SemanticRequest:
+    """Build the single canonical representation used by both transports."""
+    return SemanticRequest(
+        key=key,
+        system_instruction=system_instruction,
+        parts=tuple(dict(part) for part in parts),
+        response_schema=dict(response_schema),
+        thinking_level=thinking_level,
+        media_resolution=media_resolution,
+    )
+
+
+def batch_request(request: SemanticRequest) -> dict[str, Any]:
+    """Adapt a semantic request to the exact Vertex Batch request object."""
+    parts = [_json_copy(part, "request part") for part in request.parts]
+    if request.media_resolution == "MEDIA_RESOLUTION_ULTRA_HIGH":
+        for part in parts:
+            if "inline_data" in part:
+                part["media_resolution"] = {
+                    "level": request.media_resolution,
+                }
+
+    generation_config = {
+        "responseMimeType": "application/json",
+        "responseSchema": _json_copy(
+            request.response_schema, "response_schema"),
+        "thinkingConfig": {"thinkingLevel": request.thinking_level},
+    }
+    if (request.media_resolution is not None
+            and request.media_resolution != "MEDIA_RESOLUTION_ULTRA_HIGH"):
+        generation_config["mediaResolution"] = request.media_resolution
+
+    return {
+        "contents": [{"parts": parts, "role": "user"}],
+        "systemInstruction": {
+            "parts": [{"text": request.system_instruction}],
+        },
+        "generationConfig": generation_config,
+    }
+
+
+def batch_record(request: SemanticRequest) -> dict[str, Any]:
+    """Adapt a semantic request to one keyed Vertex Batch JSONL record."""
+    return {"key": request.key, "request": batch_request(request)}
+
+
+def semantic_request_from_batch(
+        key: str, value: Mapping[str, Any]) -> SemanticRequest:
+    """Recover and validate the semantic request stored in batch JSONL."""
+    if not isinstance(value, Mapping) or set(value) != {
+            "contents", "systemInstruction", "generationConfig"}:
+        raise ValueError("batch request has an invalid top-level shape")
+    contents = value["contents"]
+    if (not isinstance(contents, list) or len(contents) != 1
+            or not isinstance(contents[0], Mapping)
+            or set(contents[0]) != {"parts", "role"}
+            or contents[0]["role"] != "user"
+            or not isinstance(contents[0]["parts"], list)):
+        raise ValueError("batch request must contain one user content")
+    instruction = value["systemInstruction"]
+    if (not isinstance(instruction, Mapping)
+            or set(instruction) != {"parts"}
+            or not isinstance(instruction["parts"], list)
+            or len(instruction["parts"]) != 1
+            or not isinstance(instruction["parts"][0], Mapping)
+            or set(instruction["parts"][0]) != {"text"}):
+        raise ValueError("batch request has an invalid system instruction")
+
+    generation = value["generationConfig"]
+    required_generation = {
+        "responseMimeType", "responseSchema", "thinkingConfig",
+    }
+    if (not isinstance(generation, Mapping)
+            or set(generation) not in (
+                required_generation,
+                required_generation | {"mediaResolution"})
+            or generation["responseMimeType"] != "application/json"):
+        raise ValueError("batch request has an invalid generation config")
+    thinking = generation["thinkingConfig"]
+    if (not isinstance(thinking, Mapping)
+            or set(thinking) != {"thinkingLevel"}):
+        raise ValueError("batch request has an invalid thinking config")
+
+    parts = []
+    per_part_resolution = []
+    image_count = 0
+    for index, raw_part in enumerate(contents[0]["parts"]):
+        if not isinstance(raw_part, Mapping):
+            raise ValueError(f"batch request part {index} is not an object")
+        part = _json_copy(dict(raw_part), f"batch request part {index}")
+        has_marker = "media_resolution" in part
+        marker = part.pop("media_resolution", None)
+        if "inline_data" in part:
+            image_count += 1
+            if has_marker:
+                if (not isinstance(marker, dict)
+                        or set(marker) != {"level"}):
+                    raise ValueError(
+                        f"batch request part {index} has an invalid media "
+                        "resolution")
+                per_part_resolution.append(marker["level"])
+        elif has_marker:
+            raise ValueError(
+                "per-part media resolution is valid only on image parts")
+        parts.append(_canonical_part(part, f"batch request part {index}"))
+
+    global_resolution = generation.get("mediaResolution")
+    if global_resolution is not None and per_part_resolution:
+        raise ValueError(
+            "batch request mixes global and per-part media resolution")
+    if per_part_resolution:
+        if (len(per_part_resolution) != image_count
+                or set(per_part_resolution) != {
+                    "MEDIA_RESOLUTION_ULTRA_HIGH"}):
+            raise ValueError(
+                "ULTRA_HIGH media resolution must be set on every image part")
+        media_resolution = "MEDIA_RESOLUTION_ULTRA_HIGH"
+    else:
+        media_resolution = global_resolution
+        if media_resolution == "MEDIA_RESOLUTION_ULTRA_HIGH":
+            raise ValueError(
+                "ULTRA_HIGH media resolution must be set per image part")
+
+    return semantic_request(
+        key,
+        system_instruction=instruction["parts"][0]["text"],
+        parts=parts,
+        response_schema=generation["responseSchema"],
+        thinking_level=thinking["thinkingLevel"],
+        media_resolution=media_resolution,
+    )
+
+
+def online_request(request: SemanticRequest) -> dict[str, Any]:
+    """Adapt a semantic request to models.generate_content keyword args."""
+    adapted = batch_request(request)
+    generation = adapted["generationConfig"]
+    config = {
+        "system_instruction": request.system_instruction,
+        "response_mime_type": generation["responseMimeType"],
+        "response_schema": generation["responseSchema"],
+        "thinking_config": {
+            "thinking_level": request.thinking_level,
+        },
+    }
+    if "mediaResolution" in generation:
+        config["media_resolution"] = generation["mediaResolution"]
+    return {"contents": adapted["contents"], "config": config}
+
+
+def online_request_from_batch(
+        key: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a persisted batch request and adapt it for the online SDK."""
+    return online_request(semantic_request_from_batch(key, value))
+
+
 # Faces are rendered at 90-degree yaw intervals with a 90-degree FOV, which is
 # what panorama_to_pinhole emits and what geometry.direction_from_face_px
 # assumes when it maps a detection's box back to a camera-frame azimuth.
-PINHOLE_FACES = ("yaw_000", "yaw_090", "yaw_180", "yaw_270")
+PINHOLE_FACES = paths_lib.PINHOLE_FACES
 FACE_YAWS = (0, 90, 180, 270)
 
 # Vertex batch input file size limit; requests are split into multiple JSONL
@@ -512,51 +713,29 @@ def build_request(key: str, images: list, *, prompt_type: str,
     globally in generationConfig (a Gemini API quirk, preserved verbatim from
     the reference implementation).
     """
-    system_prompt = SYSTEM_PROMPTS[prompt_type]
-    parts = []
-    for mime_type, b64_data in images:
-        part = {
-            "inline_data": {
-                "mime_type": mime_type,
-                "data": b64_data,
-            }
-        }
-        if media_resolution == "MEDIA_RESOLUTION_ULTRA_HIGH":
-            part["media_resolution"] = {"level": media_resolution}
-        parts.append(part)
-    parts.append({"text": USER_PROMPT})
-
-    generation_config = {
-        "responseMimeType": "application/json",
-        "responseSchema": response_schema(),
-        "thinkingConfig": {"thinkingLevel": thinking_level},
-    }
-    if media_resolution != "MEDIA_RESOLUTION_ULTRA_HIGH":
-        generation_config["mediaResolution"] = media_resolution
-
-    return {
-        "key": key,
-        "request": {
-            "contents": [{
-                "parts": parts,
-                "role": "user",
-            }],
-            "systemInstruction": {
-                "parts": [{"text": system_prompt}]
-            },
-            "generationConfig": generation_config,
+    parts = [{
+        "inline_data": {
+            "mime_type": mime_type,
+            "data": b64_data,
         },
-    }
+    } for mime_type, b64_data in images]
+    parts.append({"text": USER_PROMPT})
+    return batch_record(semantic_request(
+        key,
+        system_instruction=SYSTEM_PROMPTS[prompt_type],
+        parts=parts,
+        response_schema=response_schema(),
+        thinking_level=thinking_level,
+        media_resolution=media_resolution,
+    ))
 
 
 def collect_faces(pinhole_dir: Path, panorama_dir: Path) -> dict:
     """{pano_stem: [(mime_type, face_path) x4]} for the dataset's stems.
 
-    Restricted to the stems `panorama_dir` currently contains. The pinhole
-    render is an artifact that can outlive a dataset trim (folkestone_dover
-    2026-08-17: 399 rendered stems vs 105 kept panoramas), and every extra
-    stem here is a paid model call for a frame nothing downstream reads. A
-    kept panorama with no render is an error: re-run the pinhole stage.
+    Restricted to the stems `panorama_dir` currently contains because a pinhole
+    render may outlive a dataset trim. Extra stems would create model calls no
+    downstream reader can consume. A kept panorama without a render is an error.
     """
     pinhole_dir, panorama_dir = Path(pinhole_dir), Path(panorama_dir)
     exts = ('.jpg', '.jpeg', '.png')

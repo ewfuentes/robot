@@ -15,6 +15,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:publication",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/catalog",
+        "//experimental/overhead_matching/swag/farfield/catalog:lineage",
         "//experimental/overhead_matching/swag/farfield/catalog:schema",
         "//experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager_lib",
         "//experimental/overhead_matching/swag/farfield/localization:structs",
@@ -48,11 +49,47 @@ py_test(
 )
 
 py_library(
+    name = "identity_review_lib",
+    srcs = ["identity_review.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
+    ],
+)
+
+py_binary(
+    name = "identity_review",
+    srcs = ["identity_review.py"],
+    main = "identity_review.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":identity_review_lib"],
+)
+
+py_test(
+    name = "identity_review_test",
+    srcs = ["identity_review_test.py"],
+    deps = [
+        ":identity_review_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
+py_library(
     name = "match_viewer_lib",
     srcs = ["match_viewer.py"],
+    data = [
+        "match_viewer_assets/app.js",
+        "match_viewer_assets/page.html",
+        "match_viewer_assets/style.css",
+    ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("pillow"),
+        ":identity_review_lib",
         ":match_landmarks_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:dataset",

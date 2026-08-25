@@ -1,13 +1,11 @@
 """Convert a self-collected 360 export into the dataset contract.
 
-Self-collected recordings (boston harbor legs, charles river sail) come out of
-their collect-local pipelines with globally-unique frame ids like
-`charles_river_20260727_p00255_t0510.00s.jpg` and a rich frames_gps.csv. The
-farfield ingest and `farfield/audit_dataset.py` instead require the dataset
-contract: `f{idx:04d},{lat:.6f},{lon:.6f},.jpg` filenames whose numeric part IS
+Self-collected recordings arrive with globally unique frame IDs and a rich
+frames_gps.csv. Farfield ingest and `farfield/audit_dataset.py` require the
+dataset contract: `f{idx:04d},{lat:.6f},{lon:.6f},.jpg` filenames whose index is
 the row index (the ingest join key), five row-aligned tables, and a relative
 `panorama/ -> frames` symlink. This script performs that conversion once,
-preserving the original ids and per-frame quality columns in
+preserving the original IDs and per-frame quality columns in
 extraction_log.csv.
 
 Rows with no usable position (empty latitude/longitude) cannot even be named
@@ -24,9 +22,9 @@ bearings.
 
 Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:ingest_selfcollect -- \\
-        --source_dir /data/farfield_matching/inbox/charles_river_unpack/charles_river_sail_07_27_26 \\
+        --source_dir /path/to/source_recording \\
         --frames_subdir frames_2s \\
-        --output /data/farfield_matching/datasets/charles_river_20260727 \\
+        --output /path/to/dataset \\
         --dataset_id charles_river_20260727 \\
         --width 7680 --height 3840 \\
         --raw_material raw_material/charles_river_20260727 \\
@@ -36,8 +34,11 @@ Example:
 import argparse
 import csv
 import datetime
+import fcntl
 import json
 import math
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -53,7 +54,11 @@ GPS_CONTRACT = ["idx", "video_t_s", "sensor_elapsed_s", "dist_m",
 
 INTRINSICS_COLS = ["idx", "pano_id", "projection", "width", "height",
                    "focal_norm", "k1", "k2", "hfov_deg", "vfov_deg",
-                   "heading_deg", "heading_reference", "heading_source"]
+                   "computed_compass_angle_true_deg",
+                   "compass_angle_true_deg",
+                   "heading_optical_axis_true_deg",
+                   "heading_column0_true_deg", "selected_heading_source",
+                   "focal_source"]
 
 EXTLOG_FIXED = ["frame_idx", "pano_id", "sequence_id", "sequence_position",
                 "camera_type", "geometry_source", "lat", "lng", "heading_used",
@@ -71,6 +76,25 @@ def write_rows(path: Path, rows, fieldnames):
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def publish_dataset(staging: Path, output: Path) -> None:
+    """Publish a fully staged dataset with a locked, no-clobber rename."""
+    if staging.parent.resolve() != output.parent.resolve():
+        raise ValueError("staging and output must be sibling directories")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_fd = os.open(output.parent, flags)
+    try:
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        if output.exists() or output.is_symlink():
+            raise FileExistsError(f"refusing to replace existing output: {output}")
+        os.rename(staging, output)
+        os.fsync(parent_fd)
+    finally:
+        try:
+            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(parent_fd)
 
 
 def fill_gps_course_from_track(kept: list) -> None:
@@ -124,8 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "use 7")
     p.add_argument("--extra_metadata", type=Path, default=None,
                    help="JSON merged into pipeline_metadata.json (extras win)")
-    p.add_argument("--copy", action="store_true",
-                   help="copy images instead of moving them out of source_dir")
     p.add_argument("--dry_run", action="store_true")
     return p
 
@@ -133,6 +155,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     p = build_parser()
     args = p.parse_args(argv)
+
+    out = args.output
+    staging = out.with_name(out.name + ".incomplete")
+    if out.exists() or out.is_symlink():
+        p.error(f"--output already exists; choose a new dataset path: {out}")
+    if staging.exists() or staging.is_symlink():
+        p.error(f"incomplete output already exists; inspect or remove it: "
+                f"{staging}")
+    prospective_output = out.parent.resolve() / out.name
+    source = args.source_dir.resolve()
+    source_frames = (args.source_dir / args.frames_subdir).resolve()
+    if (prospective_output == source
+            or prospective_output == source_frames
+            or prospective_output.is_relative_to(source_frames)):
+        p.error("--output may not replace --source_dir or its frame directory")
 
     extra_metadata = None
     if args.extra_metadata:
@@ -154,11 +191,34 @@ def main(argv=None) -> int:
     rows, src_cols = read_rows(args.source_dir / args.gps_csv)
     if not rows:
         sys.exit("empty frames_gps.csv")
+    required_cols = {"frame_file", "latitude", "longitude", "video_t_s"}
+    missing_cols = sorted(required_cols - set(src_cols or []))
+    if missing_cols:
+        sys.exit(f"frames_gps.csv is missing required columns: {missing_cols}")
+    names = [r["frame_file"] for r in rows]
+    if any(not name or Path(name).name != name for name in names):
+        sys.exit("frame_file values must be non-empty basenames")
+    if len(names) != len(set(names)):
+        sys.exit("frame_file values must be unique")
 
     kept = [r for r in rows
             if r["latitude"].strip() and r["longitude"].strip()]
     dropped = [r for r in rows
                if not (r["latitude"].strip() and r["longitude"].strip())]
+    if not kept:
+        sys.exit("no rows have a usable latitude/longitude")
+    for row in kept:
+        try:
+            lat = float(row["latitude"])
+            lon = float(row["longitude"])
+            video_t_s = float(row["video_t_s"])
+        except (TypeError, ValueError) as exc:
+            sys.exit(f"invalid numeric GPS row for {row['frame_file']}: {exc}")
+        if not (math.isfinite(lat) and -90 <= lat <= 90
+                and math.isfinite(lon) and -180 <= lon <= 180
+                and math.isfinite(video_t_s)):
+            sys.exit(f"non-finite or out-of-range GPS row for "
+                     f"{row['frame_file']}")
 
     course_from_track = "course_deg" not in src_cols
     if course_from_track:
@@ -170,15 +230,21 @@ def main(argv=None) -> int:
                 "" if not raw_course else f"{float(raw_course) % 360.0:.4f}")
 
     missing = [r["frame_file"] for r in rows
-               if not (frames_dir / r["frame_file"]).exists()]
+               if not (frames_dir / r["frame_file"]).is_file()
+               or (frames_dir / r["frame_file"]).is_symlink()]
     if missing:
         sys.exit(f"{len(missing)} frame files in CSV not found on disk: "
                  f"{missing[:3]}")
 
     log_start = None
     if args.log_start_utc:
-        log_start = datetime.datetime.fromisoformat(
-            args.log_start_utc.replace("Z", "+00:00"))
+        try:
+            log_start = datetime.datetime.fromisoformat(
+                args.log_start_utc.replace("Z", "+00:00"))
+        except ValueError as exc:
+            sys.exit(f"invalid --log_start_utc: {exc}")
+        if log_start.tzinfo is None:
+            sys.exit("--log_start_utc must include a timezone")
 
     id_width = max(4, len(str(len(kept) - 1)))
     print(f"{len(rows)} source rows -> keeping {len(kept)}, "
@@ -191,12 +257,11 @@ def main(argv=None) -> int:
         print(f"dry run: first kept frame {r['frame_file']} -> frames/{name}")
         return 0
 
-    out = args.output
-    (out / "frames").mkdir(parents=True, exist_ok=True)
-    trimmed = out / "trimmed_frames"
-
-    transfer = (lambda s, d: d.write_bytes(s.read_bytes())) if args.copy \
-        else (lambda s, d: s.rename(d))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging.mkdir()
+    work = staging
+    (work / "frames").mkdir()
+    trimmed = work / "trimmed_frames"
 
     gps_course_source = (
         "derived_from_positions" if course_from_track
@@ -207,7 +272,7 @@ def main(argv=None) -> int:
         pano_id = f"f{idx:0{id_width}d}"
         lat, lon = float(r["latitude"]), float(r["longitude"])
         name = f"{pano_id},{lat:.{dec}f},{lon:.{dec}f},.jpg"
-        transfer(frames_dir / r["frame_file"], out / "frames" / name)
+        shutil.copy2(frames_dir / r["frame_file"], work / "frames" / name)
 
         gps_rows.append({
             "idx": idx, "video_t_s": r["video_t_s"],
@@ -248,24 +313,28 @@ def main(argv=None) -> int:
             "width": args.width, "height": args.height,
             "focal_norm": "", "k1": "", "k2": "",
             "hfov_deg": 360.0, "vfov_deg": 180.0,
-            "heading_deg": "",
-            "heading_reference": "",
-            "heading_source": "",
+            "computed_compass_angle_true_deg": "",
+            "compass_angle_true_deg": "",
+            "heading_optical_axis_true_deg": "",
+            "heading_column0_true_deg": "",
+            "selected_heading_source": "",
+            "focal_source": "n/a",
         })
 
-    write_rows(out / "frames_gps.csv", gps_rows, GPS_CONTRACT)
-    write_rows(out / "pano_id_mapping.csv", mapping_rows,
+    write_rows(work / "frames_gps.csv", gps_rows, GPS_CONTRACT)
+    write_rows(work / "pano_id_mapping.csv", mapping_rows,
                ["pano_id", "lat", "lon", "filename"])
     extlog_cols = EXTLOG_FIXED + [
         c for c in src_cols
         if c not in GPS_CONTRACT and c not in EXTLOG_FIXED]
-    write_rows(out / "extraction_log.csv", log_rows, extlog_cols)
-    write_rows(out / "intrinsics.csv", intr_rows, INTRINSICS_COLS)
+    write_rows(work / "extraction_log.csv", log_rows, extlog_cols)
+    write_rows(work / "intrinsics.csv", intr_rows, INTRINSICS_COLS)
 
     if dropped:
         trimmed.mkdir(exist_ok=True)
         for r in dropped:
-            transfer(frames_dir / r["frame_file"], trimmed / r["frame_file"])
+            shutil.copy2(frames_dir / r["frame_file"],
+                         trimmed / r["frame_file"])
         write_rows(trimmed / "dropped_frames_gps.csv", dropped, src_cols)
         (trimmed / "trim_note.json").write_text(json.dumps({
             "dropped": len(dropped),
@@ -276,9 +345,7 @@ def main(argv=None) -> int:
             "argv": list(sys.argv),
         }, indent=1))
 
-    pano = out / "panorama"
-    if not pano.exists():
-        pano.symlink_to("frames")
+    (work / "panorama").symlink_to("frames")
 
     lats = [float(r["latitude"]) for r in kept]
     lons = [float(r["longitude"]) for r in kept]
@@ -327,8 +394,10 @@ def main(argv=None) -> int:
     }
     if extra_metadata:
         meta.update(extra_metadata)
-    (out / "pipeline_metadata.json").write_text(
+    (work / "pipeline_metadata.json").write_text(
         json.dumps(meta, indent=2) + "\n")
+
+    publish_dataset(staging, out)
 
     if dists:
         print(f"wrote {out}: {len(kept)} frames, {len(dropped)} trimmed, "

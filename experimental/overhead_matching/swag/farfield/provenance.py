@@ -1,10 +1,9 @@
-"""The one provenance writer.
+"""Lightweight provenance records for source and review side outputs.
 
-Every artifact-producing entry point records how its output was made by
-calling `write()` on the directory it just wrote. One format everywhere; an
-artifact without a manifest is a bug. This supersedes the three incompatible
-formats that grew on the checkpoint branch (`farfield_paths.write_manifest`,
-`*.provenance.json` sidecars, ad-hoc dicts).
+Canonical pipeline artifacts use the typed, content-addressed manifest in
+``farfield.artifact``. This module records the inputs and resolved recipe for
+outputs that are intentionally outside those artifact lanes. It is not a
+completion marker; callers remain responsible for transactional publication.
 
 The manifest records the five things a reader needs to reproduce or audit the
 output: the git commit of the producing code, the exact argv, the resolved
@@ -124,8 +123,8 @@ def check_version_is_new(version_dir: Path, content_digest: str) -> None:
 
     `version_dir` is `<kind>/<dataset>/<version>`; siblings are the other
     version dirs of the same dataset. A byte-identical re-release under a new
-    version name destroys the meaning of versions (it happened three times on
-    one dataset's catalog trims), so it is an error, not a warning.
+    version name destroys the meaning of versions, so it is an error rather
+    than a warning.
     """
     version_dir = Path(version_dir)
     for sibling in version_dir.parent.iterdir() if version_dir.parent.exists() else ():

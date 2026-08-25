@@ -10,7 +10,7 @@ Every column is read back from the datasets themselves; nothing here is
 hand-maintained. Regenerate after any change.
 
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:dataset_status_table -- \\
-        --dataset_path /data/farfield_matching/datasets/*
+        --dataset_path /path/to/datasets/*
 """
 
 import argparse
@@ -26,8 +26,7 @@ HEADER = ("| dataset | proj | frames | km | trims | anchor | seams | "
           "worst m/s |")
 
 # What each column is read from -- facts about the mechanism, not judgements
-# about any particular dataset (the old preamble narrated one collection's
-# calibration history, which was stale the day another collection was added).
+# about any particular dataset.
 LEGEND = """\
 Columns and their sources:
 
@@ -36,35 +35,57 @@ Columns and their sources:
 - **anchor**: verdict from `_manifests/vehicle_anchor.json`
   (`detect_vehicle_anchor`).
 - **seams / worst m/s**: `_manifests/recording_seams.json`
-  (`annotate_recording_seams`; falls back to a legacy in-metadata
-  `recording_seams` block), and the largest implied speed across its seams.
+  (`annotate_recording_seams`), and the largest implied speed across its seams.
 
 `—` means the producing tool has not been run on that dataset.
+`CORRUPT JSON` means the expected file exists but cannot be decoded; it is
+never treated as equivalent to a tool that has not run.
 """
+
+CORRUPT = "CORRUPT JSON"
+
+
+class CorruptJsonError(ValueError):
+    pass
 
 
 def read_json(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return None
+        value = json.loads(path.read_text())
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CorruptJsonError(f"invalid JSON in {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CorruptJsonError(f"JSON in {path} is not an object")
+    return value
 
 
 def collect_one(ds: Path) -> dict | None:
-    meta = read_json(ds / "pipeline_metadata.json")
+    try:
+        meta = read_json(ds / "pipeline_metadata.json")
+    except CorruptJsonError:
+        return {
+            "name": ds.name, "proj": CORRUPT, "n": "—", "km": None,
+            "trims": "—", "anchor": "—", "seams": "—", "worst": None,
+        }
     if meta is None:
         return None
     gps_path = ds / "frames_gps.csv"
     gps = (list(csv.DictReader(open(gps_path))) if gps_path.exists() else [])
-    # The sidecar is the current home; the in-metadata block is the legacy
-    # one (and what trim_dataset rebases on datasets that still carry it).
-    seams = (read_json(ds / "_manifests" / "recording_seams.json")
-             or meta.get("recording_seams") or {})
-    anchor = read_json(ds / "_manifests" / "vehicle_anchor.json") or {}
-    worst = max([s.get("implied_speed_mps") or 0.0
-                 for s in seams.get("seams", [])], default=0.0)
+    try:
+        seams = (read_json(ds / "_manifests" / "recording_seams.json")
+                 or {})
+        seams_value = seams.get("n_seams") if seams else None
+        worst = max([s.get("implied_speed_mps") or 0.0
+                     for s in seams.get("seams", [])], default=0.0)
+    except CorruptJsonError:
+        seams_value, worst = CORRUPT, None
+    try:
+        anchor = read_json(ds / "_manifests" / "vehicle_anchor.json") or {}
+        anchor_value = anchor.get("verdict", "—")
+    except CorruptJsonError:
+        anchor_value = CORRUPT
     km = 0.0
     if gps:
         dists = [float(r["dist_m"]) for r in gps]
@@ -75,8 +96,8 @@ def collect_one(ds: Path) -> dict | None:
         "n": meta.get("num_images", len(gps)),
         "km": km,
         "trims": len(meta.get("trims", [])),
-        "anchor": anchor.get("verdict", "—"),
-        "seams": seams.get("n_seams") if seams else None,
+        "anchor": anchor_value,
+        "seams": seams_value,
         "worst": worst,
     }
 
@@ -84,20 +105,20 @@ def collect_one(ds: Path) -> dict | None:
 def render(rows) -> str:
     lines = [HEADER, "|" + "---|" * 8]
     for r in sorted(rows, key=lambda x: x["name"]):
+        km = "—" if r["km"] is None else f"{r['km']:.1f}"
+        worst = "—" if r["worst"] is None else f"{r['worst']:.0f}"
         lines.append(
-            f"| `{r['name']}` | {r['proj']} | {r['n']} | {r['km']:.1f} | "
+            f"| `{r['name']}` | {r['proj']} | {r['n']} | {km} | "
             f"{r['trims']} | {r['anchor']} | "
             f"{r['seams'] if r['seams'] is not None else '—'} | "
-            f"{r['worst']:.0f} |")
+            f"{worst} |")
     return "\n".join(lines)
 
 
 def preamble() -> str:
     """Neutral, generated header: what this file is and how it was made.
 
-    Deliberately carries no dataset-specific narrative or tuning claims --
-    those live with the data that earned them, and a hardcoded story here is
-    stale the day the collection changes (REORG.md rule 8).
+    Dataset-specific notes and tuning claims belong in dataset-owned records.
     """
     created = datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds")

@@ -107,8 +107,13 @@ class MetadataContractTest(unittest.TestCase):
         with open(out / "frames_gps.csv") as f:
             gps_rows = list(csv.DictReader(f))
         self.assertEqual(len(intrinsics), len(extlog))
-        self.assertTrue(all(not row["heading_deg"] for row in intrinsics))
-        self.assertTrue(all(not row["heading_reference"]
+        for column in ("computed_compass_angle_true_deg",
+                       "compass_angle_true_deg",
+                       "heading_optical_axis_true_deg",
+                       "heading_column0_true_deg",
+                       "selected_heading_source"):
+            self.assertTrue(all(not row[column] for row in intrinsics), column)
+        self.assertTrue(all(row["focal_source"] == "n/a"
                             for row in intrinsics))
         self.assertTrue(all(not row["heading_used"] for row in extlog))
         self.assertEqual(gps_rows[0]["gps_course_deg"], "45.0000")
@@ -140,6 +145,39 @@ class MetadataContractTest(unittest.TestCase):
         self.assertEqual(
             meta["ingest"]["generator"],
             "farfield/dataset_tools/ingest_selfcollect.py")
+
+    def test_success_never_consumes_source_images(self):
+        before = sorted(path.read_bytes() for path in self.frames.glob("*.jpg"))
+        self.run_ingest()
+        after = sorted(path.read_bytes() for path in self.frames.glob("*.jpg"))
+        self.assertEqual(after, before)
+
+    def test_existing_output_is_rejected_without_clobber(self):
+        out = self.root / "existing"
+        out.mkdir()
+        marker = out / "owner.txt"
+        marker.write_text("first writer")
+        argv = ["--source_dir", str(self.root), "--gps_csv", str(self.gps),
+                "--output", str(out), "--dataset_id", "unit_test_leg",
+                "--width", str(PANO_W), "--height", str(PANO_W // 2)]
+        with self.assertRaises(SystemExit):
+            ingest.main(argv)
+        self.assertEqual(marker.read_text(), "first writer")
+        self.assertEqual(len(list(self.frames.glob("*.jpg"))), 4)
+
+    def test_bad_row_fails_preflight_without_partial_output(self):
+        rows = list(csv.DictReader(self.gps.open()))
+        rows[2]["latitude"] = "not-a-number"
+        ingest.write_rows(self.gps, rows, list(rows[0]))
+        out = self.root / "bad-output"
+        argv = ["--source_dir", str(self.root), "--gps_csv", str(self.gps),
+                "--output", str(out), "--dataset_id", "unit_test_leg",
+                "--width", str(PANO_W), "--height", str(PANO_W // 2)]
+        with self.assertRaises(SystemExit):
+            ingest.main(argv)
+        self.assertFalse(out.exists())
+        self.assertFalse(out.with_name(out.name + ".incomplete").exists())
+        self.assertEqual(len(list(self.frames.glob("*.jpg"))), 4)
 
 
 if __name__ == "__main__":

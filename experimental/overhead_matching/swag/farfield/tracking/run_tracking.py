@@ -1,8 +1,8 @@
 """Build one immutable ``object_tracks`` artifact for one configured range.
 
-The production contract is deliberately smaller than the old tracking-run
-workspace: one explicit range named ``full``, one ``tracks_full.json``
-payload, and one completed typed manifest.  Tracking, media encoding, and the
+The production contract is one explicit range named ``full``, one
+``tracks_full.json`` payload, and one completed typed manifest. Tracking,
+media encoding, and the
 static review pages all happen in ``<output_dir>.incomplete``.  Only after
 every output is finalized is the manifest written and the directory renamed
 atomically into place.  A failed invocation is therefore never reusable as a
@@ -647,10 +647,6 @@ def load_tracking_config(args):
         expected_version=build_config.value(
             document, "artifacts.frame_landmarks_version"))
     pinhole_manifest = artifact_lib.load_manifest(args.pinhole_dir)
-    if pinhole_manifest.config.get(
-            "build_identity") != document["build_identity"]:
-        raise TrackingContractError(
-            "pinhole artifact belongs to a different immutable build identity")
     pinhole_input_digests = pinhole_manifest.config.get("input_digests")
     expected_extraction_digests = {
         "pipeline_metadata": dataset_digests[

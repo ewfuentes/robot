@@ -34,7 +34,7 @@ tracklet observed across real vessel motion admits only landmarks near the true
 one; a tracklet seen once admits a whole ray of them, which is honest ambiguity
 and is reported as such via `n_consistent_catalog`.
 
-  tracker-fault  no catalog landmark at all explains this tracklet's bearings
+  geometry-unexplained  no catalog landmark explains every observed epoch
                  from the truth poses — the bearings are mutually inconsistent
                  or wrongly referenced (drifted mask, heading compensation,
                  panorama seam)
@@ -64,10 +64,9 @@ debugging instrument. Callers render it behind an explicit truth-privileged
 marking; `TrackletTriage.truth_privileged` is True so that marking cannot be
 forgotten by accident.
 
-This module also owns the SHARED table-reading helpers (`clipped_log_lr`,
-`table_lookup`, `endorsed_entries`): "endorsed" has one definition, used by the
-triage, the viewer payload and the forensics CLI alike — the old tree carried
-three drifting copies of the same clip-and-compare.
+This module owns the shared table-reading helpers (`clipped_log_lr`,
+`table_lookup`, `endorsed_entries`) so triage, the viewer payload, and the
+forensics CLI use one definition of "endorsed".
 """
 
 import dataclasses
@@ -395,7 +394,7 @@ def _residual_matrix(epochs, truth_by_kf, catalog):
 def _fit(landmark_id, residuals, ranges, index, table) -> CandidateFit:
     column = residuals[:, index]
     finite = column[np.isfinite(column)]
-    if finite.size == 0:
+    if finite.size != column.size:
         rms = max_deg = float("inf")
     else:
         rms = float(np.sqrt(np.mean(np.square(finite))))
@@ -444,14 +443,14 @@ def _triage_tracklet(tracklet_id, epochs, truth_by_kf, catalog, table,
                     MAX_RESIDUAL_TOLERANCE_DEG)
 
     residuals, ranges = _residual_matrix(epochs, truth_by_kf, catalog)
-    # RMS over the epochs where the landmark was within visibility. A landmark
-    # out of range at every epoch has no finite residual at all and must score
-    # infinity rather than an empty mean.
+    # One fixed landmark must explain every epoch. A candidate outside the
+    # recorded visibility range even once is ineligible; scoring only its
+    # visible subset would turn one accidental alignment into a perfect fit.
     visible = np.isfinite(residuals)
-    n_visible = visible.sum(axis=0)
+    complete = visible.all(axis=0)
     squared = np.where(visible, residuals, 0.0) ** 2
-    rms = np.where(n_visible > 0,
-                   np.sqrt(squared.sum(axis=0) / np.maximum(n_visible, 1)),
+    rms = np.where(complete,
+                   np.sqrt(squared.mean(axis=0)),
                    np.inf)
 
     best_index = int(np.argmin(rms))
@@ -516,7 +515,7 @@ def _triage_tracklet(tracklet_id, epochs, truth_by_kf, catalog, table,
 
     explicable = best_fit is not None and best_fit.explains(tolerance)
     if not explicable:
-        verdict = "tracker-fault"
+        verdict = "geometry-unexplained"
     elif not endorsed:
         verdict = "no-evidence"
     elif best_endorsed_fit is None or not best_endorsed_fit.explains(tolerance):
@@ -557,7 +556,7 @@ def triage_summary(triage: dict) -> str:
     counts = Counter(t.verdict for t in triage.values())
     total = len(triage)
     parts = [f"{counts.get(v, 0)}/{total} {v}"
-             for v in ("consistent", "tracker-fault", "no-evidence",
+             for v in ("consistent", "geometry-unexplained", "no-evidence",
                        "matcher-fault", "filter-fault") if counts.get(v)]
     extra = []
     anti = sum(1 for t in triage.values() if t.anti_evidence)

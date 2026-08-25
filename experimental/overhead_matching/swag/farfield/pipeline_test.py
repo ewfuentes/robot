@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     pipeline,
 )
+from experimental.overhead_matching.swag.farfield.matching import identity_review
 
 
 CONFIG_PATH = Path(__file__).parent / "configs" / "harbor_example.yaml"
@@ -49,6 +51,75 @@ class SourceConfigLoadTest(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "non-symlink"):
                 pipeline._source_video_inputs(paths)
 
+    def test_new_build_declares_an_unoccupied_post_match_review_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dataset_base = root / "datasets" / "ds"
+            panorama = dataset_base / "panorama"
+            panorama.mkdir(parents=True)
+            (dataset_base / "pipeline_metadata.json").write_text("{}\n")
+            (dataset_base / "frames_gps.csv").write_text(
+                "keyframe_idx,lat,lon\n0,0,0\n")
+            (panorama / "000000.jpg").write_bytes(b"jpeg")
+
+            checkpoint = root / "models" / "sam.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b"checkpoint")
+            motion = dataset_base / "motion.csv"
+            motion.write_text("keyframe_idx,east_m,north_m\n0,0,0\n")
+            calibration = dataset_base / "nominal_forward.json"
+            artifact.atomic_write_json(calibration, {
+                "schema": pipeline.nominal_forward.SCHEMA,
+                "frame": pipeline.nominal_forward.FRAME,
+                "dataset": "ds",
+                "version": "v1",
+                "mounting_id": "test-mount",
+                "panorama_column": 2.0,
+                "panorama_width": 4,
+                "bearing_camera_cw_deg": 0.0,
+                "uncertainty_deg": 1.0,
+                "evidence_frame_ids": ["0"],
+                "operator": "test",
+                "approved_at": "2026-08-24T12:00:00+00:00",
+                "approved": True,
+                "notes": "fixture",
+            })
+            source_config = root / "source.yaml"
+            source_config.write_text("fixture: true\n")
+
+            config = example_config()
+            config["tracking"]["sam2_checkpoint"] = str(checkpoint)
+            config["localization_inputs"]["motion_source"] = str(motion)
+            config["localization_inputs"][
+                "nominal_forward_calibration"] = str(calibration)
+            review_dir = root / "reviews" / "r1"
+            config["localization_inputs"]["identity_review_dir"] = str(
+                review_dir)
+            paths = paths_lib.FarfieldPaths(
+                dataset="ds", root=root,
+                versions=pipeline.versions_from_config(config),
+                overrides={"dataset_base": dataset_base})
+            catalog_dir = paths.catalogs
+            with artifact.ArtifactDirectoryBuilder(
+                    catalog_dir, kind=paths_lib.CATALOGS, dataset="ds",
+                    version=config["artifacts"]["catalogs_version"],
+                    generator="pipeline_test", git_commit="test", arguments=(),
+                    upstreams=(), config={},
+                    declared_outputs=("catalog.feather",)) as builder:
+                builder.output_path("catalog.feather").write_bytes(b"catalog")
+
+            inputs = pipeline._validate_build_inputs(
+                paths, config, source_config)
+            self.assertEqual(inputs["identity_review_output_dir"],
+                             str(review_dir.resolve()))
+            self.assertEqual(inputs["identity_review_phase"],
+                             "post_match_gate")
+            self.assertNotIn("identity_review_manifest_digest", inputs)
+
+            review_dir.mkdir(parents=True)
+            with self.assertRaisesRegex(FileExistsError, "must be unoccupied"):
+                pipeline._validate_build_inputs(paths, config, source_config)
+
 
 class ConfigContractTest(unittest.TestCase):
     def test_example_is_exact_and_fully_resolved(self):
@@ -59,6 +130,12 @@ class ConfigContractTest(unittest.TestCase):
         self.assertEqual(
             config["localization_inputs"]["landmark_position_sigma_m"],
             25.0)
+        self.assertIsNone(
+            config["localization_inputs"]["identity_review_dir"])
+        self.assertEqual(config["localization"]["ablation_tags"], [])
+        self.assertEqual(
+            config["localization"]["position_mass_radii_m"],
+            [50.0, 100.0, 250.0, 500.0, 1000.0])
 
     def test_missing_value_is_rejected(self):
         config = example_config()
@@ -88,6 +165,88 @@ class ConfigContractTest(unittest.TestCase):
                                     "must be int"):
             pipeline.validate_pipeline_config(config)
 
+    def test_consumer_positive_modeling_values_reject_zero_at_creation(self):
+        positive_paths = (
+            "bearing_observations.bearing_sigma_deg",
+            "gps_course.min_displacement_m",
+            "alignment_diagnostics.sun.elevation_tolerance_deg",
+            "alignment_diagnostics.sweep.coarse_step_deg",
+            "alignment_diagnostics.sweep.fine_step_deg",
+            "alignment_diagnostics.sweep.fine_halfwidth_deg",
+            "alignment_diagnostics.sweep.max_condition",
+            "localization_inputs.compatibility_clip",
+            "localization_inputs.odometry_sigma_pair_m",
+            "localization_inputs.displacement_gate_m",
+            "localization_inputs.stationary_sigma_m",
+            "localization_inputs.slow_yaw_sigma_deg",
+            "localization_inputs.max_visible_range_m",
+            "localization_inputs.landmark_position_sigma_m",
+            "localization.association_renewal_rate",
+            "localization.map_cell_size_m",
+            "localization.modes.cell_size_m",
+            "localization.modes.heading_cell_deg",
+        )
+        for path in positive_paths:
+            with self.subTest(path=path):
+                config = example_config()
+                owner = config
+                parts = path.split(".")
+                for part in parts[:-1]:
+                    owner = owner[part]
+                owner[parts[-1]] = 0.0
+                with self.assertRaisesRegex(
+                        build_config.InvalidConfigValue,
+                        rf"{path} must be > 0\.0"):
+                    pipeline.validate_pipeline_config(config)
+
+    def test_open_probability_boundaries_are_rejected_at_creation(self):
+        cases = (
+            ("localization.pi0", 0.0, r"must be > 0\.0"),
+            ("localization.pi0", 1.0, r"must be < 1\.0"),
+            ("localization.matcher_recall", 0.0, r"must be > 0\.0"),
+            ("localization.matcher_recall", 1.0, r"must be < 1\.0"),
+        )
+        for path, value, message in cases:
+            with self.subTest(path=path, value=value):
+                config = example_config()
+                owner = config
+                parts = path.split(".")
+                for part in parts[:-1]:
+                    owner = owner[part]
+                owner[parts[-1]] = value
+                with self.assertRaisesRegex(
+                        build_config.InvalidConfigValue, message):
+                    pipeline.validate_pipeline_config(config)
+
+    def test_consumer_nonnegative_boundaries_remain_inclusive(self):
+        config = example_config()
+        config["gps_course"]["smooth_window_s"] = 0.0
+        config["alignment_diagnostics"]["sun"]["min_speed_mps"] = 0.0
+        config["alignment_diagnostics"]["sweep"]["min_arc_deg"] = 0.0
+        config["alignment_diagnostics"]["sweep"]["min_support_frac"] = 0.0
+        config["localization"]["association_renewal_rate"] = 1.0
+        pipeline.validate_pipeline_config(config)
+
+    def test_diagnostic_creation_domains_match_consumer_bounds(self):
+        cases = (
+            ("alignment_diagnostics.sun.work_width", 1, r"must be >= 2"),
+            ("alignment_diagnostics.sun.elevation_tolerance_deg", 90.1,
+             r"must be <= 90\.0"),
+            ("alignment_diagnostics.sweep.min_arc_deg", 360.1,
+             r"must be <= 360\.0"),
+        )
+        for path, value, message in cases:
+            with self.subTest(path=path):
+                config = example_config()
+                owner = config
+                parts = path.split(".")
+                for part in parts[:-1]:
+                    owner = owner[part]
+                owner[parts[-1]] = value
+                with self.assertRaisesRegex(
+                        build_config.InvalidConfigValue, message):
+                    pipeline.validate_pipeline_config(config)
+
     def test_llm_transport_configuration_is_not_ambiguous(self):
         config = example_config()
         config["execution"]["llm_transport"] = "on_demand"
@@ -103,6 +262,46 @@ class ConfigContractTest(unittest.TestCase):
         with self.assertRaisesRegex(build_config.InvalidConfigValue,
                                     "shares must sum"):
             pipeline.validate_pipeline_config(config)
+
+    def test_metric_radii_and_ablation_tags_are_canonical(self):
+        config = example_config()
+        config["localization"]["position_mass_radii_m"] = [100.0, 50.0]
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "sorted"):
+            pipeline.validate_pipeline_config(config)
+
+        config = example_config()
+        config["localization"]["ablation_tags"] = ["z", "a"]
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "sorted unique"):
+            pipeline.validate_pipeline_config(config)
+
+    def test_ambiguous_truth_initialization_has_no_legacy_alias(self):
+        config = example_config()
+        config["localization"]["init"] = "truth"
+        config["localization"]["prior_sigma_m"] = 50.0
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "truth_position"):
+            pipeline.validate_pipeline_config(config)
+
+    def test_proposal_tuple_and_density_controls_are_authoritative(self):
+        proposal = example_config()["localization"]["proposal"]
+        self.assertNotIn("top_k_landmarks", proposal)
+        self.assertNotIn("max_hypotheses_per_kind", proposal)
+        self.assertEqual(proposal["exhaustive_tuple_limit"], 256)
+        self.assertEqual(proposal["min_particles_point_fix"], 32)
+        self.assertEqual(proposal["min_particles_arc"], 64)
+        self.assertEqual(proposal["min_particles_single"], 128)
+
+        for key in ("tuple_samples_per_active_solution",
+                    "min_particles_point_fix", "min_particles_arc",
+                    "min_particles_single"):
+            with self.subTest(key=key):
+                config = example_config()
+                config["localization"]["proposal"][key] = 0
+                with self.assertRaisesRegex(
+                        build_config.InvalidConfigValue, key):
+                    pipeline.validate_pipeline_config(config)
 
     def test_lane_names_are_path_free_identifiers(self):
         for key_path, value in (
@@ -137,6 +336,14 @@ class ConfigContractTest(unittest.TestCase):
                                     r"must be \[start, end\] integers"):
             pipeline.validate_pipeline_config(config)
 
+    def test_identity_review_conflicts_with_uninformative_tables(self):
+        config = example_config()
+        config["localization_inputs"]["identity_review_dir"] = "/reviews/r1"
+        config["localization_inputs"]["use_uninformative_tables"] = True
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "identity_review_dir"):
+            pipeline.validate_pipeline_config(config)
+
     def test_external_paths_are_resolved_without_mutating_source(self):
         config = example_config()
         original = copy.deepcopy(config)
@@ -150,6 +357,11 @@ class ConfigContractTest(unittest.TestCase):
         self.assertEqual(
             resolved["localization_inputs"]["nominal_forward_calibration"],
             "/datasets/ds/nominal_forward.json")
+        config["localization_inputs"]["identity_review_dir"] = "reviews/r1"
+        resolved = pipeline.resolve_config_paths(config, paths)
+        self.assertEqual(
+            resolved["localization_inputs"]["identity_review_dir"],
+            "/farfield/reviews/r1")
 
 
 class StageOrderTest(unittest.TestCase):
@@ -177,6 +389,7 @@ class StageOrderTest(unittest.TestCase):
 
 class CommandConstructionTest(unittest.TestCase):
     def setUp(self):
+        self.build_identity = "a" * 64
         self.config = pipeline.resolve_config_paths(
             example_config(),
             paths_lib.FarfieldPaths(
@@ -187,7 +400,8 @@ class CommandConstructionTest(unittest.TestCase):
             versions=pipeline.versions_from_config(self.config),
             overrides={"dataset_base": Path("/datasets/ds")})
         self.commands = pipeline.build_commands(
-            self.paths, Path("/farfield/builds/ds/b001"), self.config)
+            self.paths, Path("/farfield/builds/ds/b001"), self.config,
+            build_identity=self.build_identity)
 
     @staticmethod
     def strings(command):
@@ -208,8 +422,10 @@ class CommandConstructionTest(unittest.TestCase):
             else:
                 self.assertNotIn("--run_dir", values, stage)
         localize = self.strings(self.commands["localize"])
-        self.assertIn("/farfield/runs/260821_example_experiment/"
-                      "boston_harbor_leg2_v1", localize)
+        expected = pipeline.localization_run_dir(
+            self.paths, self.config, build_identity=self.build_identity)
+        self.assertIn(str(expected), localize)
+        self.assertIn("--tracks-v1--build-" + "a" * 64, expected.name)
 
     def test_tracking_has_exactly_one_recorded_range(self):
         track = self.strings(self.commands["track"])
@@ -231,6 +447,36 @@ class CommandConstructionTest(unittest.TestCase):
         self.assertIn("--nominal_forward_calibration", inputs)
         sigma_index = inputs.index("--landmark_position_sigma_m")
         self.assertEqual(inputs[sigma_index + 1], "25.0")
+
+    def test_identity_review_is_passed_only_when_recorded(self):
+        inputs = self.strings(self.commands["localization_inputs"])
+        self.assertNotIn("--identity_review_dir", inputs)
+        config = copy.deepcopy(self.config)
+        config["localization_inputs"]["identity_review_dir"] = "/reviews/r1"
+        commands = pipeline.build_commands(
+            self.paths, Path("/farfield/builds/ds/b001"), config,
+            build_identity=self.build_identity)
+        inputs = self.strings(commands["localization_inputs"])
+        index = inputs.index("--identity_review_dir")
+        self.assertEqual(inputs[index + 1], "/reviews/r1")
+
+    def test_viewer_uses_exact_tracker_audit_catalog_and_output_paths(self):
+        values = self.strings(pipeline.build_viewer_command(
+            self.paths, self.config, build_identity=self.build_identity))
+        self.assertEqual(values[:4], [
+            "bazel", "run", pipeline.VIEWER_TARGET, "--"])
+        expected_run = pipeline.localization_run_dir(
+            self.paths, self.config, build_identity=self.build_identity)
+        self.assertEqual(values[values.index("--run_dir") + 1],
+                         str(expected_run))
+        self.assertEqual(values[values.index("--output_dir") + 1],
+                         str(expected_run) + ".viewer")
+        self.assertEqual(values[values.index("--tracks_dir") + 1],
+                         str(self.paths.object_tracks))
+        self.assertEqual(values[values.index("--audit_dir") + 1],
+                         str(self.paths.semantic_audits))
+        self.assertEqual(values[values.index("--feather") + 1],
+                         str(self.paths.catalogs / "catalog.feather"))
 
     def test_all_llm_stages_use_one_recorded_batch_staging_prefix(self):
         for stage in ("extract", "audit", "match"):
@@ -276,6 +522,12 @@ class ManifestCompletionTest(unittest.TestCase):
             builder.output_path("payload.json").write_text("{}\n")
         return artifact.open_artifact(path)
 
+    @staticmethod
+    def shared_pinhole_config():
+        return paths_lib.pinhole_manifest_config(
+            {key: "0" * 64 for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS},
+            resolution=24, panorama_keys=("f0000",))
+
     def publish_stage(self, stage, *, upstreams=None):
         if upstreams is None:
             upstreams = pipeline.expected_upstream_refs(
@@ -283,13 +535,21 @@ class ManifestCompletionTest(unittest.TestCase):
                 build_identity=self.build_identity)
         refs = []
         for kind, version, path in pipeline._output_descriptors(
-                self.paths, self.config, stage):
+                self.paths, self.config, stage,
+                build_identity=self.build_identity):
+            output_upstreams = upstreams
+            output_config = {
+                "orchestration": pipeline.stage_contract(stage, self.config),
+                "build_identity": self.build_identity,
+            }
+            if stage == "extract" and kind == paths_lib.PINHOLE_IMAGES:
+                output_upstreams = ()
+                output_config = self.shared_pinhole_config()
+            elif stage == "extract" and kind == paths_lib.FRAME_LANDMARKS:
+                output_upstreams = (refs[0],)
             refs.append(self.publish(
-                kind, version, path, upstreams=upstreams,
-                config={
-                    "orchestration": pipeline.stage_contract(stage, self.config),
-                    "build_identity": self.build_identity,
-                }))
+                kind, version, path, upstreams=output_upstreams,
+                config=output_config))
         return tuple(refs)
 
     def publish_catalog(self):
@@ -314,9 +574,43 @@ class ManifestCompletionTest(unittest.TestCase):
             "track", self.paths, self.config,
             build_identity=self.build_identity))
 
+    def test_collection_scoped_pinhole_resolves_for_extract_and_tracking(self):
+        pinhole_ref, frame_ref = self.publish_stage("extract")
+        manifest = artifact.load_manifest(self.paths.pinhole_images)
+        self.assertEqual(dict(manifest.config), self.shared_pinhole_config())
+        self.assertNotIn("orchestration", manifest.config)
+        self.assertNotIn("build_identity", manifest.config)
+        self.assertTrue(pipeline.stage_done(
+            "extract", self.paths, self.config,
+            build_identity=self.build_identity))
+        self.assertEqual(
+            pipeline.expected_upstream_refs(
+                self.paths, self.config, "track",
+                build_identity=self.build_identity),
+            (pinhole_ref, frame_ref))
+
+    def test_frame_landmarks_cannot_detach_from_configured_pinhole(self):
+        self.publish_stage("extract")
+        manifest_path = self.paths.frame_landmarks / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["upstreams"] = []
+        artifact.atomic_write_json(manifest_path, document)
+
+        with self.assertRaisesRegex(
+                pipeline.StageContractError, "exact configured pinhole"):
+            pipeline.stage_done(
+                "extract", self.paths, self.config,
+                build_identity=self.build_identity)
+        with self.assertRaisesRegex(
+                pipeline.StageDependencyError, "exact configured pinhole"):
+            pipeline.expected_upstream_refs(
+                self.paths, self.config, "track",
+                build_identity=self.build_identity)
+
     def test_valid_partial_multi_output_stage_is_resumable(self):
         kind, version, path = pipeline._output_descriptors(
-            self.paths, self.config, "extract")[0]
+            self.paths, self.config, "extract",
+            build_identity=self.build_identity)[0]
         self.publish(
             kind, version, path,
             config={
@@ -335,7 +629,8 @@ class ManifestCompletionTest(unittest.TestCase):
         request = self.publish(
             "tracking_requests", "request-v1", self.root / "request")
         kind, version, path = pipeline._output_descriptors(
-            self.paths, self.config, "track")[0]
+            self.paths, self.config, "track",
+            build_identity=self.build_identity)[0]
         self.publish(
             kind, version, path, upstreams=(*expected, request),
             config={
@@ -419,6 +714,72 @@ class ManifestCompletionTest(unittest.TestCase):
         self.publish_stage("localize")
         self.assertTrue(pipeline.stage_done(
             "localize", self.paths, self.config,
+            build_identity=self.build_identity))
+
+    def test_identity_review_is_a_post_match_typed_gate(self):
+        self.config["localization_inputs"]["identity_review_dir"] = str(
+            self.root / "identity_reviews" / "r1")
+        self.publish_catalog()
+        self.publish_stage("extract")
+        self.publish_stage("track")
+        self.publish_stage("audit")
+        self.publish_stage("bearings")
+
+        upstreams = pipeline.expected_upstream_refs(
+            self.paths, self.config, "match",
+            build_identity=self.build_identity)
+        match_dir = self.paths.landmark_matches
+        match_config = {
+            "orchestration": pipeline.stage_contract("match", self.config),
+            "build_identity": self.build_identity,
+            "phase": "canonical_results",
+            "coverage": "complete",
+            "n_expected": 1,
+            "n_successful": 1,
+            "n_tracklets_expected": 1,
+            "n_tracklets_successful": 1,
+        }
+        with artifact.ArtifactDirectoryBuilder(
+                match_dir, kind=paths_lib.LANDMARK_MATCHES, dataset="ds",
+                version=self.config["artifacts"][
+                    "landmark_matches_version"],
+                generator="pipeline_test", git_commit="test", arguments=(),
+                upstreams=upstreams, config=match_config,
+                declared_outputs=("matches.json",)) as builder:
+            artifact.atomic_write_json(builder.output_path("matches.json"), {
+                "trk-1": {"matches": [{"landmark_id": "lm-1"}]},
+            })
+        with self.assertRaisesRegex(
+                pipeline.StageDependencyError, "identity-review gate"):
+            pipeline.expected_upstream_refs(
+                self.paths, self.config, "localization_inputs",
+                build_identity=self.build_identity)
+
+        matching_ref, candidates = identity_review.matching_candidates(
+            match_dir)
+        draft = identity_review.draft_document(matching_ref, candidates)
+        draft["rows"][0].update({
+            "decision": "confirmed",
+            "landmark_ids": ["lm-1"],
+            "reviewer": "reviewer@example.com",
+            "timestamp": "2026-08-24T12:00:00+00:00",
+            "notes": "checked",
+        })
+        input_json = self.root / "identity_review_input.json"
+        artifact.atomic_write_json(input_json, draft)
+        review_dir = Path(
+            self.config["localization_inputs"]["identity_review_dir"])
+        review_ref = identity_review.publish(
+            dataset="ds", matching_dir=match_dir, input_json=input_json,
+            output_dir=review_dir, version="r1")
+
+        expected = pipeline.expected_upstream_refs(
+            self.paths, self.config, "localization_inputs",
+            build_identity=self.build_identity)
+        self.assertEqual(expected[-1], review_ref)
+        self.publish_stage("localization_inputs", upstreams=expected)
+        self.assertTrue(pipeline.stage_done(
+            "localization_inputs", self.paths, self.config,
             build_identity=self.build_identity))
 
 

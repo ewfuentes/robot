@@ -1,16 +1,23 @@
 """Tests for extract_landmarks_from_enc (hermetic — synthetic layers + the
 real S-57 enum tables shipped inside the pyogrio wheel)."""
 
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 import geopandas as gpd
 from shapely.geometry import LineString, Point
 
 from experimental.overhead_matching.swag.farfield.catalog import (
     catalog as catalog_lib,
+)
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    download_enc_cells,
 )
 from experimental.overhead_matching.swag.farfield.catalog import (
     schema as ls,
@@ -20,6 +27,9 @@ from experimental.overhead_matching.swag.farfield.dataset_tools import (
 )
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     feather_utils,
+)
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    source_publication,
 )
 
 
@@ -303,11 +313,12 @@ class FeatherFrameTest(unittest.TestCase):
                           "('enc', '0226DAA31B00')"])
         self.assertEqual(gdf["landmark_type"].tolist(), ["enc", "enc"])
         self.assertNotIn("pruned_props", gdf.columns)
-        self.assertEqual(tuple(gdf.columns), ls.META_COLUMNS)
+        self.assertEqual(tuple(gdf.columns),
+                         (*ls.META_COLUMNS, "object_class"))
         self.assertEqual(str(gdf.crs), "EPSG:4326")
         # Tags live in the `tags` dict column (catalog/schema.py), and a
         # landmark carries only the keys it actually has.
-        self.assertTrue(ls.is_dict_schema(gdf))
+        self.assertIn(ls.TAGS_COLUMN, gdf.columns)
         tag_dicts = ls.tag_dicts(gdf)
         self.assertEqual(tag_dicts[0],
                          {"man_made": "buoy", "name": "Buoy 2",
@@ -315,7 +326,7 @@ class FeatherFrameTest(unittest.TestCase):
         self.assertEqual(tag_dicts[1],
                          {"man_made": "pier", "object_class": "SLCONS"})
         self.assertNotIn("name", tag_dicts[1])
-        self.assertNotIn("object_class", gdf.columns)
+        self.assertEqual(gdf["object_class"].tolist(), ["BOYLAT", "SLCONS"])
 
     def test_dedupe_excludes_object_class_from_decoded_tags(self):
         features = [
@@ -345,10 +356,70 @@ class FeatherFrameTest(unittest.TestCase):
         self.assertEqual([f["lnam"] for f in kept], ["A"])
 
 
+class PublicationTest(unittest.TestCase):
+
+    def test_main_binds_validated_cell_bytes_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr(
+                    "ENC_ROOT/US5BOSCD/US5BOSCD.000", b"chart bytes")
+            download_enc_cells.download_cell(
+                "US5BOSCD", root, fetch_fn=lambda _: buffer.getvalue())
+            selection = root / "selection.json"
+            download_enc_cells.main(
+                cells=["US5BOSCD"], catalog_state=None, bbox=None, band=5,
+                output_dir=root, selection_output=selection, force=False,
+                fetch_fn=lambda _: self.fail("cached cell should not fetch"))
+            layer = make_layer([{"LNAM": "A"}], [Point(-71.0, 42.0)])
+            output = root / "enc_v1"
+            with mock.patch.object(ele, "load_s57_enum_tables",
+                                   return_value={}), mock.patch.object(
+                                       ele, "read_cells",
+                                       return_value={"DAYMAR": layer}) as read:
+                result = ele.main(
+                    root, selection, output, bbox=None,
+                    include_buoys=True, landmark_type="enc",
+                    dedupe_tolerance_m=0.0)
+                reused = ele.main(
+                    root, selection, output, bbox=None,
+                    include_buoys=True, landmark_type="enc",
+                    dedupe_tolerance_m=0.0)
+                with self.assertRaisesRegex(ValueError,
+                                            "provenance differs"):
+                    ele.main(
+                        root, selection, output, bbox=None,
+                        include_buoys=True, landmark_type="enc",
+                        dedupe_tolerance_m=1.0)
+            self.assertEqual(read.call_count, 1)
+            self.assertEqual(reused["id"].tolist(), result["id"].tolist())
+            feather, sidecar, staging = source_publication.output_paths(output)
+            published = ls.read_frame(feather)
+            self.assertEqual(schema_ids := published["id"].tolist(),
+                             result["id"].tolist())
+            self.assertEqual(schema_ids, ["('enc', 'A')"])
+            self.assertEqual(result["object_class"].tolist(), ["DAYMAR"])
+            self.assertEqual(published["object_class"].tolist(), ["DAYMAR"])
+            self.assertEqual(ls.tag_dicts(published)[0]["object_class"],
+                             "DAYMAR")
+            record = json.loads(sidecar.read_text())
+            self.assertEqual(record["schema"],
+                             source_publication.SOURCE_PROVENANCE_SCHEMA)
+            self.assertTrue(record["complete"])
+            self.assertEqual(record["output_sha256"],
+                             artifact.sha256_file(feather))
+            self.assertIn("US5BOSCD", record["input_digests"])
+            self.assertEqual(record["arguments"]["selection_sha256"],
+                             artifact.sha256_file(selection))
+            self.assertFalse(staging.exists())
+            self.assertEqual(reused["object_class"].tolist(), ["DAYMAR"])
+            self.assertEqual(ls.tag_dicts(reused)[0]["object_class"],
+                             "DAYMAR")
+
+
 class BboxFromDatasetTest(unittest.TestCase):
-    """THE one bbox_from_dataset (feather_utils): reads the farfield dataset
-    contract, falls back to the legacy VIGOR-style file, and errors loudly
-    with neither."""
+    """bbox_from_dataset reads only the current farfield dataset contract."""
 
     def test_reads_pipeline_metadata_bbox(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,14 +430,14 @@ class BboxFromDatasetTest(unittest.TestCase):
             self.assertEqual(feather_utils.bbox_from_dataset(ds),
                              (-71.1, 42.2, -70.9, 42.4))
 
-    def test_falls_back_to_satellite_bbox(self):
+    def test_satellite_bbox_is_not_a_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             ds = Path(tmp)
             (ds / "satellite_bbox.json").write_text(json.dumps(
                 {"west": -71.1, "south": 42.2, "east": -70.9,
                  "north": 42.4}))
-            self.assertEqual(feather_utils.bbox_from_dataset(ds),
-                             (-71.1, 42.2, -70.9, 42.4))
+            with self.assertRaises(FileNotFoundError):
+                feather_utils.bbox_from_dataset(ds)
 
     def test_missing_bbox_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:

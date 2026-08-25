@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """GPS-consistency and image-density QC for candidate trajectories.
 
-    bazel run //experimental/overhead_matching/swag/farfield/collection:qc_candidates -- --seeds 957814683411464,548801286115301
-    bazel run //experimental/overhead_matching/swag/farfield/collection:qc_candidates -- --local <farfield_root>/datasets/seattle
+    bazel run //experimental/overhead_matching/swag/farfield/collection:qc_candidates -- --seeds <pkey,...>
+    bazel run //experimental/overhead_matching/swag/farfield/collection:qc_candidates -- --local <dataset_dir>
     bazel run //experimental/overhead_matching/swag/farfield/collection:qc_candidates -- --seeds ... --output qc.json
 
 Sits between discovery (`discover_tracks.py`, tile geometry only) and
@@ -11,26 +11,23 @@ per seed answers the two questions the tiles cannot:
 
   * **Is the motion usable?** A track whose direction of travel oscillates —
     GPS marching forward/backward, heading flapping — cannot be worked with:
-    mount-offset calibration pairs frames by metres travelled, and the odometry
-    producer derives course from position differences. Big *occasional* jumps
+    course diagnostics and odometry derive motion from position differences.
+    Big *occasional* jumps
     are fine (recording gaps; the stitcher's seam logic handles them), so jumps
     are detected first and excluded from every direction statistic rather than
     letting them poison the answer.
   * **Is it dense enough to track?** Mapillary datasets have no source video,
-    so SAM2 propagates between the frames themselves; the collected sets were
-    built at --min_spacing_m 5. A raw capture with 40 m between frames cannot
-    be densified after the fact.
+    so SAM2 propagates between the frames themselves. A sparse raw capture
+    cannot be densified after the fact.
 
 Direction statistics use only "moving" steps (>= JITTER_FLOOR_M): below GPS
 noise a bearing is meaningless, and counting jitter as backtracking would fail
 every red light. The same reasoning as seed_to_trajectory's 0.5 m `moved`
 floor, but stricter because we take a *direction*, not just a length.
 
-`--local` computes the identical metrics from a collected dataset's
-frames_gps.csv, so thresholds are calibrated against tracks with known
-verdicts (seattle good, harima_b_pano rejected for noise) instead of invented.
-Density is NOT comparable in local mode — collected sets are already
-subsampled to 5 m spacing — so only consistency verdicts apply there.
+`--local` computes the same motion metrics from a collected dataset's
+frames_gps.csv. Density is not comparable in local mode because collected sets
+are already subsampled, so only consistency verdicts apply there.
 """
 
 import argparse
@@ -43,9 +40,8 @@ from pathlib import Path
 from experimental.overhead_matching.swag.farfield import geometry
 
 # --------------------------------------------------------------------------
-# thresholds on bare (lat, lng) tuples so the same code serves API images and
-# local CSV rows; the local-metres conversion is geometry.enu_from_latlon (the
-# one ENU, REORG.md rule 1)
+# Thresholds on bare (lat, lng) tuples let the same code serve API images and
+# local CSV rows; `geometry.enu_from_latlon` owns the local-metre conversion.
 # --------------------------------------------------------------------------
 
 JITTER_FLOOR_M = 3.0      # below this a step has no meaningful direction
@@ -145,11 +141,7 @@ def motion_consistency(points: list[tuple], times_ms: list = None) -> dict:
 
 
 # --------------------------------------------------------------------------
-# verdicts — thresholds calibrated on collected datasets with known outcomes
-# (see the table in the module run log / Sightline Scout artifact):
-# seattle / mississippi_rural / nyc_east_river pass cleanly; harima_b_pano
-# (rejected 2026-08-13 for GPS noise) and kurashiki (worst kept) must land in
-# WARN/FAIL territory on consistency.
+# Verdict thresholds for directional consistency and raw-sequence density.
 # --------------------------------------------------------------------------
 
 def judge(m: dict, local: bool = False) -> tuple[str, list]:

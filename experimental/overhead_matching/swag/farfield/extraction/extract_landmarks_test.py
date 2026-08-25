@@ -16,6 +16,9 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     testing,
 )
+from experimental.overhead_matching.swag.farfield.collection import (
+    run_farfield_collection as collection_runner,
+)
 from experimental.overhead_matching.swag.farfield.extraction import (
     extract_landmarks as ex,
     prompts,
@@ -23,6 +26,7 @@ from experimental.overhead_matching.swag.farfield.extraction import (
 
 
 RESOLUTION = 24
+REAL_PROCESS_PANORAMAS = ex.panorama_to_pinhole.process_panoramas
 
 
 def provider_prediction(*, landmarks=None):
@@ -127,14 +131,10 @@ class ExtractionFixture(unittest.TestCase):
 
     def fake_render(self, input_dir, output_dir, fov_x, fov_y, res_x,
                     res_y, num_workers):
-        del input_dir, fov_x, fov_y, num_workers
         self.assertEqual((res_x, res_y), (RESOLUTION, RESOLUTION))
-        for stem in self.stems:
-            face_dir = Path(output_dir) / stem
-            face_dir.mkdir(parents=True, exist_ok=True)
-            for face in prompts.PINHOLE_FACES:
-                Image.new("RGB", (res_x, res_y), (20, 80, 140)).save(
-                    face_dir / f"{face}.jpg")
+        REAL_PROCESS_PANORAMAS(
+            input_dir, output_dir, fov_x, fov_y, res_x, res_y,
+            num_workers=num_workers)
 
     def fake_success_transport(self, execution, input_path, output_path, *, tag):
         del execution, tag
@@ -266,10 +266,11 @@ class TypedPublicationTest(ExtractionFixture):
         self.assertEqual(pinhole_manifest.upstreams, ())
         self.assertEqual(len(pinhole_manifest.declared_outputs),
                          self.N_FRAMES * len(prompts.PINHOLE_FACES))
-        self.assertEqual(pinhole_manifest.config["orchestration"]["stage"],
-                         "extract")
-        self.assertEqual(pinhole_manifest.config["selected_config"],
-                         ex.load_context(self.args).selected)
+        context = ex.load_context(self.args)
+        self.assertEqual(
+            dict(pinhole_manifest.config), ex._pinhole_config(context))
+        self.assertNotIn("orchestration", pinhole_manifest.config)
+        self.assertNotIn("build_identity", pinhole_manifest.config)
 
         frame_manifest = artifact.load_manifest(self.args.output_dir)
         self.assertEqual(frame_manifest.declared_outputs,
@@ -338,8 +339,137 @@ class TypedPublicationTest(ExtractionFixture):
         self.assertEqual(reused, pinhole_ref)
         self.assertEqual(frame_ref.kind, paths_lib.FRAME_LANDMARKS)
 
+    def test_collection_published_pinhole_is_reused_without_rendering(self):
+        collection_args = argparse.Namespace(
+            output_base=self.dataset_base.parent,
+            pinhole_base=self.tmp / "artifacts" / paths_lib.PINHOLE_IMAGES,
+            pinhole_version="pinhole-v3",
+            pinhole_res=RESOLUTION,
+            convert_workers=1,
+            dry_run=False,
+        )
+
+        def collection_render(target, argv, description, args):
+            del target, description, args
+            REAL_PROCESS_PANORAMAS(
+                Path(argv[0]), Path(argv[1]),
+                ex.FACE_FOV_RAD, ex.FACE_FOV_RAD,
+                RESOLUTION, RESOLUTION, num_workers=1)
+            return True
+
+        with mock.patch.object(
+                collection_runner, "run_bazel",
+                side_effect=collection_render), mock.patch.object(
+                    collection_runner.publication.indexes, "refresh"):
+            self.assertTrue(collection_runner.stage_pinhole(
+                "testset", {"pano": True}, collection_args))
+
+        self.args.pinhole_output_dir = (
+            collection_args.pinhole_base / "testset" / "pinhole-v3")
+        context = ex.load_context(self.args)
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError(
+                    "collection-published pinholes must be reused")):
+            pinhole_ref = ex.ensure_pinhole_artifact(self.args, context)
+
+        manifest = artifact.load_manifest(self.args.pinhole_output_dir)
+        self.assertEqual(dict(manifest.config), ex._pinhole_config(context))
+        self.assertEqual(
+            manifest.declared_outputs, ex._pinhole_outputs(context))
+        self.assertEqual(pinhole_ref.kind, paths_lib.PINHOLE_IMAGES)
+
+    def test_corrupt_jpeg_is_rejected_before_publication(self):
+        context = ex.load_context(self.args)
+
+        def corrupt_render(input_dir, output_dir, fov_x, fov_y, res_x,
+                           res_y, num_workers):
+            self.fake_render(
+                input_dir, output_dir, fov_x, fov_y, res_x, res_y,
+                num_workers)
+            target = (
+                Path(output_dir) / self.stems[1] / "yaw_090.jpg")
+            target.write_bytes(b"not a jpeg")
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=corrupt_render):
+            with self.assertRaisesRegex(ValueError, "not a decodable JPEG"):
+                ex.ensure_pinhole_artifact(self.args, context)
+        self.assertFalse(self.args.pinhole_output_dir.exists())
+
+    def test_wrong_dimensions_on_last_face_are_rejected(self):
+        context = ex.load_context(self.args)
+
+        def wrong_size_render(input_dir, output_dir, fov_x, fov_y, res_x,
+                              res_y, num_workers):
+            self.fake_render(
+                input_dir, output_dir, fov_x, fov_y, res_x, res_y,
+                num_workers)
+            target = (
+                Path(output_dir) / self.stems[-1] / "yaw_270.jpg")
+            Image.new("RGB", (res_x, res_y - 1)).save(target)
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=wrong_size_render):
+            with self.assertRaisesRegex(ValueError, "expected 24x24"):
+                ex.ensure_pinhole_artifact(self.args, context)
+        self.assertFalse(self.args.pinhole_output_dir.exists())
+
+    def test_reuse_reproduces_sampled_faces_from_current_source_bytes(self):
+        context = ex.load_context(self.args)
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=self.fake_render):
+            ex.ensure_pinhole_artifact(self.args, context)
+
+        source = self.dataset_base / "panorama" / f"{self.stems[0]}.jpg"
+        with Image.open(source) as original:
+            size = original.size
+        Image.new("RGB", size, (255, 0, 255)).save(source)
+        with self.assertRaisesRegex(
+                ValueError, "does not reproduce its source panorama"):
+            ex.ensure_pinhole_artifact(self.args, context)
+
 
 class CompleteCoverageResumeTest(ExtractionFixture):
+    def test_pre_output_failure_reserves_a_fresh_raw_path(self):
+        raw_paths = []
+
+        def fail_before_output(execution, input_path, output_path, *, tag):
+            del execution, input_path, tag
+            raw_paths.append(Path(output_path))
+            raise RuntimeError("provider stopped before local output")
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=self.fake_render), mock.patch.object(
+                    ex.vbm, "run_requests", side_effect=fail_before_output):
+            with self.assertRaisesRegex(RuntimeError, "before local output"):
+                ex.run(self.args)
+
+        def repair(execution, input_path, output_path, *, tag):
+            del execution, tag
+            raw_paths.append(Path(output_path))
+            records = [json.loads(line) for line in
+                       Path(input_path).read_text().splitlines()]
+            with Path(output_path).open("x") as stream:
+                for record in records:
+                    stream.write(json.dumps({
+                        "key": record["key"],
+                        "response": response(provider_prediction()),
+                    }) + "\n")
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError("pinhole must be reused")), \
+                mock.patch.object(ex.vbm, "run_requests", side_effect=repair):
+            ex.run(self.args)
+
+        self.assertEqual([path.name for path in raw_paths],
+                         ["raw_0000.jsonl", "raw_0001.jsonl"])
+
     def test_partial_attempts_do_not_publish_and_rerun_only_missing_keys(self):
         first_keys = []
 

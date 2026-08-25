@@ -1,7 +1,7 @@
 """The one implementation of a dataset's `checksums.sha256` regeneration.
 
-Datasets are frozen (REORG.md rule 7). ``trim_dataset`` is the one explicit,
-checksum-regenerating mutator in this package and calls ``regenerate`` here so
+Datasets are immutable outside explicit dataset-mutating tools.
+``trim_dataset`` calls ``regenerate`` here so
 the manifest format and exclusion list have one owner. Calibration diagnostics
 never mutate dataset metadata; approved nominal-forward records are immutable
 build inputs.

@@ -36,9 +36,9 @@ CONVIS/BOYSHP/CATLAM/CATCAM -> description.
 Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_enc -- \\
         --enc_root /data/farfield_matching/raw_material/enc_cells \\
-        --cells US5BOSCC US5BOSCD \\
+        --selection /path/to/enc_selection.json \\
         --dedupe_tolerance_m 10 \\
-        --output_path /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/sources/enc_v1
+        --output_path /data/farfield_matching/raw_material/catalog_sources/boston_harbor_leg1/enc_v1
 """
 
 import os
@@ -50,7 +50,6 @@ os.environ.setdefault("OGR_S57_OPTIONS", "LIST_AS_STRING=ON")
 
 import argparse  # noqa: E402
 import csv  # noqa: E402
-import json  # noqa: E402
 import math  # noqa: E402
 import re  # noqa: E402
 import sys  # noqa: E402
@@ -62,13 +61,16 @@ import pandas as pd  # noqa: E402
 import pyogrio  # noqa: E402
 
 from experimental.overhead_matching.swag.farfield import (  # noqa: E402
+    artifact,
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.catalog import (  # noqa: E402,E501
     schema,
 )
 from experimental.overhead_matching.swag.farfield.dataset_tools import (  # noqa: E402,E501
+    download_enc_cells,
     feather_utils,
+    source_publication,
 )
 
 BUOY_CLASS_TO_SEAMARK = {
@@ -266,13 +268,9 @@ def designator_from_name(name: str):
     """The number or letter painted on a mark, pulled out of its ENC name.
 
     The extractor reads these off the images and reports them as `ref=`, but
-    the catalog only ever carried them buried inside `name`, so the two could
-    not meet: a detection tagged `ref=16` matched nothing, while a detection
-    *named* `16` let the matcher pick one of the three "Buoy 16" rows in
-    Boston Harbor - which sit 19.4 km apart. Publishing the designator as its
-    own tag puts every mark carrying that number on an equal footing in the
-    evidence (91% of named buoys in this catalog share their designator with
-    another, a median 14.7 km apart).
+    the catalog may carry them inside `name`. Publishing the designator as its
+    own tag lets detection and catalog evidence use the same field while
+    preserving every candidate that shares a designator.
 
     That makes a disjunction *possible*, not automatic: nothing downstream
     forces same-`ref` rows to be scored equally. The matcher is an LLM and
@@ -490,7 +488,7 @@ def read_cells(enc_root: Path, cells: list) -> dict:
 
     LNAM (agency + feature id) is globally unique and stable, so the same
     physical feature appearing in adjacent cells is kept once, from the first
-    cell in --cells order.
+    cell in immutable selection-record order.
     """
     per_class: dict = {}
     seen_lnam: set = set()
@@ -519,18 +517,22 @@ def read_cells(enc_root: Path, cells: list) -> dict:
 
 def features_to_geodataframe(features: list,
                              landmark_type: str) -> gpd.GeoDataFrame:
-    """Build the exact four-column compact catalog frame.
+    """Build a compact catalog frame with ENC source provenance.
 
-    ENC ``object_class`` is source provenance carried in each row's canonical
-    tags object. It is not a fifth structural column.
+    ``object_class`` remains a real structural column for source tooling and is
+    mirrored into canonical tags for current tag-only catalog consumers.
     """
-    return schema.build_frame(
+    frame = schema.build_frame(
         ids=[f"('enc', '{feature['lnam']}')" for feature in features],
         geometries=[feature["geometry"] for feature in features],
         landmark_types=[landmark_type] * len(features),
         tags=[{**feature["tags"], "object_class": feature["object_class"]}
               for feature in features],
     )
+    frame["object_class"] = [feature["object_class"] for feature in features]
+    # Exercise the same mirror/collision check used after a persisted read.
+    schema.tag_dicts(frame)
+    return frame
 
 
 def filter_features_to_bbox(features: list, bbox: tuple) -> list:
@@ -543,9 +545,74 @@ def filter_features_to_bbox(features: list, bbox: tuple) -> list:
     return kept
 
 
-def main(enc_root: Path, cells: list, output_path: Path,
+def enc_input_digests(enc_root: Path, cells: list) -> dict:
+    """Validate and bind every mutable S-57 byte consumed by this build."""
+    if not cells:
+        raise ValueError("at least one ENC cell is required")
+    if len(cells) != len(set(cells)):
+        raise ValueError("ENC cell identifiers must be unique")
+    digests = {}
+    for cell in cells:
+        cell_dir = enc_root / "ENC_ROOT" / cell
+        manifest = download_enc_cells.validate_cell(cell_dir, cell)
+        digests[cell] = {
+            "cell_content_sha256": artifact.sha256_directory(cell_dir),
+            "cell_manifest_sha256": artifact.sha256_file(
+                cell_dir / download_enc_cells.CELL_MANIFEST_NAME),
+            "archive_sha256": manifest["archive_sha256"],
+        }
+    return digests
+
+
+def main(enc_root: Path, selection_path: Path, output_path: Path,
          bbox: tuple | None, include_buoys: bool, landmark_type: str,
          dedupe_tolerance_m: float) -> gpd.GeoDataFrame:
+    selection_path = Path(selection_path)
+    selection_sha256 = artifact.sha256_file(selection_path)
+    selection = download_enc_cells.validate_selection(
+        selection_path, enc_root)
+    cells = selection["cells"]
+    if (selection["bbox"] is not None
+            and (bbox is None or list(bbox) != selection["bbox"])):
+        raise ValueError(
+            "extraction bbox must exactly match the catalog selection bbox")
+    input_digests = enc_input_digests(enc_root, cells)
+    feather_path = source_publication.output_paths(output_path)[0]
+    provenance_base = {
+        "tool": "farfield/dataset_tools/extract_landmarks_from_enc.py",
+        "git_commit": provenance.git_commit(),
+        "argv": list(sys.argv),
+        "arguments": {
+            "enc_root": str(enc_root),
+            "selection": str(selection_path.resolve()),
+            "selection_sha256": selection_sha256,
+            "cells": list(cells),
+            "output_path": str(feather_path),
+            "bbox": list(bbox) if bbox else None,
+            "include_buoys": include_buoys,
+            "landmark_type": landmark_type,
+            "dedupe_tolerance_m": dedupe_tolerance_m,
+        },
+        "input_digests": input_digests,
+    }
+
+    def expected_provenance(_frame, document):
+        skipped = document.get("skipped")
+        if (not isinstance(skipped, dict)
+                or not all(isinstance(key, str)
+                           and not isinstance(value, bool)
+                           and isinstance(value, int) and value >= 0
+                           for key, value in skipped.items())):
+            raise ValueError(
+                "completed ENC source has invalid skipped diagnostics")
+        return {**provenance_base, "skipped": skipped}
+
+    completed = source_publication.reuse_completed(
+        output_path, expected_provenance)
+    if completed is not None:
+        print(f"Reusing exact completed source {feather_path}")
+        return completed
+    source_publication.preflight_output(output_path)
     enums = load_s57_enum_tables()
     per_class = read_cells(enc_root, cells)
     print("Layer feature counts (LNAM-deduped): "
@@ -572,26 +639,16 @@ def main(enc_root: Path, cells: list, output_path: Path,
     print("\n".join(f"{key}    {value}" for key, value in counts.most_common()))
     print(f"named: {sum(1 for tags in tag_records if tags.get('name'))}")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    feather_path = output_path.with_suffix(".feather")
-    gdf.to_feather(feather_path)
-    sidecar = feather_path.with_suffix(".provenance.json")
-    sidecar.write_text(json.dumps({
-        "tool": "farfield/dataset_tools/extract_landmarks_from_enc.py",
-        "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
-        "arguments": {
-            "enc_root": str(enc_root),
-            "cells": list(cells),
-            "output_path": str(feather_path),
-            "bbox": list(bbox) if bbox else None,
-            "include_buoys": include_buoys,
-            "landmark_type": landmark_type,
-            "dedupe_tolerance_m": dedupe_tolerance_m,
-        },
-        "rows_out": int(len(gdf)),
-        "skipped": dict(skipped),
-    }, indent=1))
+    selection_after = download_enc_cells.validate_selection(
+        selection_path, enc_root)
+    if (artifact.sha256_file(selection_path) != selection_sha256
+            or selection_after != selection
+            or enc_input_digests(enc_root, cells) != input_digests):
+        raise RuntimeError(
+            "ENC selection or cell content changed during extraction; "
+            "refusing to publish")
+    feather_path, sidecar = source_publication.publish(
+        gdf, output_path, {**provenance_base, "skipped": dict(skipped)})
     print(f"Wrote {feather_path}")
     print(f"      {sidecar}")
     return gdf
@@ -601,12 +658,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    # Required: three hardcoded copies of one ENC root existed on the
-    # checkpoint branch; zero defaults now (REORG.md rule 2).
     parser.add_argument("--enc_root", type=Path, required=True,
                         help="Directory holding ENC_ROOT/ (see "
                              "download_enc_cells.py)")
-    parser.add_argument("--cells", nargs="+", required=True)
+    parser.add_argument("--selection", type=Path, required=True,
+                        help="Immutable selection record from "
+                             "download_enc_cells.py")
     parser.add_argument("--output_path", type=Path, required=True,
                         help="Output path; .feather suffix is applied")
     bbox_group = parser.add_mutually_exclusive_group()
@@ -614,21 +671,18 @@ if __name__ == "__main__":
                             metavar=("WEST", "SOUTH", "EAST", "NORTH"))
     bbox_group.add_argument("--dataset_path", type=Path,
                             help="farfield dataset dir; bbox from its "
-                                 "pipeline_metadata.json (legacy: "
-                                 "satellite_bbox.json), buffered by "
+                                 "pipeline_metadata.json, buffered by "
                                  "--bbox_buffer_frac")
     parser.add_argument("--bbox_buffer_frac", type=float, default=None,
                         help="fraction of the dataset bbox span added on "
-                             "every side (required with --dataset_path; "
-                             "previously 0.1)")
+                             "every side (required with --dataset_path)")
     parser.add_argument("--exclude_buoys", action="store_true",
                         help="Drop floating buoys (BOY* classes)")
     parser.add_argument("--landmark_type", default="enc",
                         help="Provenance value for the landmark_type column")
     parser.add_argument("--dedupe_tolerance_m", type=float, required=True,
                         help="Merge identical-tag features whose geometries "
-                             "are within this distance; 0 disables "
-                             "(previously 10.0)")
+                             "are within this distance; 0 disables")
     args = parser.parse_args()
 
     resolved_bbox = None
@@ -636,14 +690,13 @@ if __name__ == "__main__":
         resolved_bbox = tuple(args.bbox)
     elif args.dataset_path:
         if args.bbox_buffer_frac is None:
-            parser.error("--dataset_path needs --bbox_buffer_frac (the "
-                         "buffer shapes which rows the catalog contains; "
-                         "previously 0.1)")
+            parser.error("--dataset_path needs --bbox_buffer_frac because "
+                         "the buffer shapes which rows the catalog contains")
         resolved_bbox = feather_utils.buffered_bbox(
             feather_utils.bbox_from_dataset(args.dataset_path),
             args.bbox_buffer_frac)
 
-    main(enc_root=args.enc_root, cells=args.cells,
+    main(enc_root=args.enc_root, selection_path=args.selection,
          output_path=args.output_path, bbox=resolved_bbox,
          include_buoys=not args.exclude_buoys,
          landmark_type=args.landmark_type,

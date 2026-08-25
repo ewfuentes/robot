@@ -1,0 +1,64 @@
+body{font-family:sans-serif;background:#161616;color:#ddd;margin:16px}
+a{color:#8bf}code{color:#cfc}
+.q{background:#1b2430;border-left:3px solid #4af;padding:8px 12px;
+border-radius:5px;max-width:100%;margin:6px 0}
+table{border-collapse:collapse;margin:8px 0;width:100%;
+max-width:100%}
+td,th{padding:4px 10px;font-size:13px;border-bottom:1px solid #303030;
+text-align:left;vertical-align:top}th{color:#89a;font-size:11.5px;
+text-transform:uppercase;letter-spacing:.08em}
+.instance{color:#3c8;font-weight:bold}.category{color:#89f}
+.wide{color:#fa2}.conf{font-variant-numeric:tabular-nums}
+.agree{color:#3ecf8e}.iffy{color:#e3b341}
+.disagree{color:#f2777a;font-weight:bold}
+img{height:120px;border-radius:4px;margin:3px 3px 0 0;
+vertical-align:top}
+h2{margin-top:26px;border-top:1px solid #2c2c2c;padding-top:14px;
+font-size:19px}
+.nomatch{color:#999}
+.links{font-size:12.5px;margin:6px 0}
+.nochips{color:#a88;font-size:12.5px;font-style:italic;margin:6px 0}
+
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(420px,46vw);
+gap:18px;align-items:start}
+/* A grid child defaults to min-width:auto, which is its *content* width -- a
+   1000px panorama chip then widens the column and slides under the map. This
+   plus the scrolling .chips strip keeps wide evidence inside its own pane.
+   min-width:0 is the whole fix; the column needs no overflow of its own. */
+.list{min-width:0}
+.chips{display:flex;gap:5px;overflow-x:auto;padding-bottom:5px;
+scrollbar-width:thin}
+.chips img{flex:0 0 auto;height:120px;width:auto;max-width:none}
+.rows{font-size:12.5px}
+.rows td{padding:3px 8px}
+.osm{white-space:nowrap}
+@media (max-width:1100px){.wrap{grid-template-columns:1fr}
+.mapcol{position:static !important;height:70vh !important}}
+.mapcol{position:sticky;top:12px;height:calc(100vh - 28px);display:flex;
+flex-direction:column;gap:6px}
+#cv{flex:1;width:100%;background:#0e1319;border:1px solid #2b3540;
+border-radius:6px;cursor:grab;touch-action:none;display:block;min-height:0}
+#cv.drag{cursor:grabbing}
+.mapbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;
+color:#8fa3b5}
+.mapbar button{background:#1b2430;color:#cfe0f0;border:1px solid #34455a;
+border-radius:4px;padding:3px 9px;font-size:12px;cursor:pointer;
+font-family:inherit}
+.mapbar button:hover{background:#243244}
+.mapbar a{background:#1b2430;border:1px solid #34455a;border-radius:4px;
+padding:3px 9px;text-decoration:none}
+.mapbar a:hover{background:#243244}
+#ll-what{color:#cfe0f0}
+.mapbar button[aria-pressed=true]{background:#2d4358;border-color:#4af}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:#8fa3b5}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;
+margin-right:4px;vertical-align:middle}
+.tip{min-height:34px;font-size:12px;color:#cfe0f0;background:#131a22;
+border:1px solid #263140;border-radius:5px;padding:5px 8px;
+overflow-wrap:anywhere}
+.card{border-left:3px solid #2b3540;padding-left:10px;margin:0 0 6px 0}
+.card.sel{border-left-color:#fa2;background:#1a1c1f}
+h2{cursor:pointer}
+h2:hover{color:#fff}
+.mapnote{color:#c93;font-size:12px;margin:4px 0}
+.pin{color:#8fa3b5;font-size:11.5px}

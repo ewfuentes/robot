@@ -1,8 +1,7 @@
 """Extract one compact far-field landmark catalog from an OSM PBF.
 
-This is the far-field owner of OSM-to-Feather conversion.  The historical
-cross-view writer deliberately keeps its own schema and behavior; collection
-stage 5 calls this target with an explicit WGS84 bounding box instead.
+This is the far-field owner of OSM-to-Feather conversion. Collection stage 5
+calls this target with an explicit WGS84 bounding box.
 
 The common libosmium extractor selects an element when it carries any key in
 ``TAG_FILTER_KEYS``.  Once selected, all of the element's raw OSM tags are
@@ -20,15 +19,14 @@ Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_osm -- \\
         --pbf_file /path/to/region.osm.pbf \\
         --bbox -71.2 42.2 -70.8 42.5 \\
-        --node_margin_deg 0.5 \\
-        --output_path /path/to/landmarks/sources/osm_region_v1
+        --output_path /path/to/farfield/raw_material/catalog_sources/<dataset>/osm_region_v1
 """
 
 import argparse
 import hashlib
-import json
 import math
 import os
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -38,17 +36,18 @@ import geopandas as gpd
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from common.openstreetmap import extract_landmarks_python as elm
-from experimental.overhead_matching.swag.farfield import provenance
+from experimental.overhead_matching.swag.farfield import artifact, provenance
 from experimental.overhead_matching.swag.farfield.catalog import schema
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    source_publication,
+)
 
-PROVENANCE_SCHEMA = "farfield_osm_extraction/v1"
 REGION_ID = "requested_bbox"
 
 # These are element-selection keys, not the persisted tag vocabulary.  The
 # extractor returns every tag on a selected element and schema.build_frame
-# stores that complete mapping as canonical JSON.  Keep the long-standing OSM
-# selection families while explicitly adding the far-field structural families
-# that the old cross-view target omitted (notably place and seamark:type).
+# stores that complete mapping as canonical JSON. The selection includes both
+# common OSM landmark families and far-field structural families.
 TAG_FILTER_KEYS = (
     "aeroway",
     "amenity",
@@ -117,20 +116,6 @@ def validate_bbox(bbox) -> tuple[float, float, float, float]:
     if south >= north:
         raise ValueError("bbox south must be less than north")
     return values
-
-
-def validate_node_margin_deg(value: float) -> float:
-    """Accept exactly -1 (full index) or a finite nonnegative margin."""
-    if isinstance(value, bool):
-        raise ValueError("node_margin_deg must be -1 or a nonnegative number")
-    try:
-        margin = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "node_margin_deg must be -1 or a nonnegative number") from exc
-    if not math.isfinite(margin) or (margin < 0.0 and margin != -1.0):
-        raise ValueError("node_margin_deg must be -1 or a nonnegative number")
-    return margin
 
 
 def create_shapely_geometry(geometry):
@@ -246,46 +231,55 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_frame_atomically(frame: gpd.GeoDataFrame, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=f".{destination.stem}.", suffix=".partial.feather",
-        dir=destination.parent)
-    os.close(descriptor)
-    temporary = Path(temp_name)
+def smart_preextract(source: Path, bbox, output_path: Path,
+                     *, osmium_binary: str = "osmium") -> tuple[Path, dict]:
+    """Create a dependency-complete bounded PBF with osmium's smart strategy."""
+    source = Path(source)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workspace = Path(tempfile.mkdtemp(
+        prefix=f".{output_path.stem}.smart.",
+        suffix=artifact.INCOMPLETE_SUFFIX,
+        dir=output_path.parent,
+    ))
+    completed = workspace / "bounded.osm.pbf"
+    partial = workspace / "bounded.partial.osm.pbf"
     try:
-        frame.to_feather(temporary)
-        # Validate the persisted representation, not only the in-memory frame.
-        persisted = schema.read_frame(temporary)
-        if len(persisted) != len(frame):
-            raise RuntimeError(
-                f"persisted row count changed from {len(frame)} to "
-                f"{len(persisted)}")
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        _fsync_directory(destination.parent)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _write_json_atomically(record: dict, destination: Path) -> None:
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=f".{destination.stem}.", suffix=".partial.json",
-        dir=destination.parent)
-    temporary = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "w") as handle:
-            json.dump(record, handle, indent=1, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        _fsync_directory(destination.parent)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+        version_result = subprocess.run(
+            [osmium_binary, "--version"], check=True, text=True,
+            capture_output=True)
+        subprocess.run([
+            osmium_binary,
+            "extract",
+            "--strategy",
+            "smart",
+            "--bbox",
+            ",".join(f"{value:.12g}" for value in bbox),
+            "--output",
+            str(partial),
+            str(source),
+        ], check=True, text=True, capture_output=True)
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            f"osmium executable is unavailable ({osmium_binary!r}); refusing "
+            "to fall back to incomplete vertex truncation") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or str(error)).strip()
+        raise RuntimeError(f"osmium smart pre-extract failed: {detail}") from error
+    if partial.is_symlink() or not partial.is_file() \
+            or partial.stat().st_size <= 0:
+        raise RuntimeError(
+            f"osmium did not produce a non-empty regular PBF: {partial}")
+    identity = {
+        "osmium_version": version_result.stdout.strip(),
+        "strategy": "smart",
+        "bbox_wgs84": list(bbox),
+        "size_bytes": partial.stat().st_size,
+        "sha256": _sha256(partial),
+    }
+    os.replace(partial, completed)
+    _fsync_directory(completed.parent)
+    return completed, identity
 
 
 def _diagnostics(frame: gpd.GeoDataFrame,
@@ -324,13 +318,12 @@ def _diagnostics(frame: gpd.GeoDataFrame,
 
 
 def main(pbf_file: Path, bbox, output_path: Path,
-         node_margin_deg: float) -> gpd.GeoDataFrame:
+         *, osmium_binary: str = "osmium") -> gpd.GeoDataFrame:
     """Extract, validate, atomically write, and describe one OSM source table."""
     pbf_file = Path(pbf_file)
     if not pbf_file.is_file():
         raise FileNotFoundError(f"OSM PBF does not exist or is not a file: {pbf_file}")
     bbox = validate_bbox(bbox)
-    node_margin_deg = validate_node_margin_deg(node_margin_deg)
 
     source_before = _stat_identity(pbf_file)
     source_sha256 = _sha256(pbf_file)
@@ -338,17 +331,68 @@ def main(pbf_file: Path, bbox, output_path: Path,
     if not _same_stat(source_before, source_after_hash):
         raise RuntimeError(f"source PBF changed while it was hashed: {pbf_file}")
 
+    feather_path = source_publication.output_paths(output_path)[0]
+    provenance_base = {
+        "tool": "farfield/dataset_tools/extract_landmarks_from_osm.py",
+        "git_commit": provenance.git_commit(),
+        "argv": list(sys.argv),
+        "arguments": {
+            "bbox_wgs84": list(bbox),
+            "output_path": str(feather_path),
+            "geometry_index_mode": "smart_preextract_then_full_index",
+            "tag_filter_keys": list(TAG_FILTER_KEYS),
+        },
+    }
+
+    def expected_provenance(frame, document):
+        inputs = document.get("inputs")
+        smart = (inputs.get("smart_preextract")
+                 if isinstance(inputs, dict) else None)
+        if (not isinstance(smart, dict)
+                or set(smart) != {
+                    "osmium_version", "strategy", "bbox_wgs84",
+                    "size_bytes", "sha256"}
+                or not isinstance(smart["osmium_version"], str)
+                or not smart["osmium_version"]
+                or smart["strategy"] != "smart"
+                or smart["bbox_wgs84"] != list(bbox)
+                or isinstance(smart["size_bytes"], bool)
+                or not isinstance(smart["size_bytes"], int)
+                or smart["size_bytes"] <= 0
+                or not isinstance(smart["sha256"], str)
+                or len(smart["sha256"]) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in smart["sha256"])):
+            raise ValueError(
+                "completed OSM source has invalid smart-preextract identity")
+        return {
+            **provenance_base,
+            "inputs": {
+                "pbf": {**source_after_hash, "sha256": source_sha256},
+                "smart_preextract": smart,
+            },
+            "output_contract": {
+                "catalog_schema_version": schema.SCHEMA_VERSION,
+                "columns": list(frame.columns),
+            },
+            "diagnostics": _diagnostics(frame, bbox),
+        }
+
+    completed = source_publication.reuse_completed(
+        output_path, expected_provenance)
+    if completed is not None:
+        print(f"Reusing exact completed source {feather_path}")
+        return completed
+    feather_path, sidecar, _ = source_publication.preflight_output(output_path)
+
+    bounded_pbf, preextract_identity = smart_preextract(
+        pbf_file, bbox, Path(output_path), osmium_binary=osmium_binary)
     bbox_object = elm.BoundingBox(*bbox)
     tag_filters = {key: True for key in TAG_FILTER_KEYS}
-    print(f"Extracting OSM landmarks from {pbf_file}")
+    print(f"Extracting OSM landmarks from smart pre-extract {bounded_pbf}")
     print(f"  bbox (west south east north): {bbox}")
-    if node_margin_deg >= 0.0:
-        print(
-            "  WARNING: bounded node index is an explicit degraded geometry "
-            f"mode (bbox + {node_margin_deg:g} deg); selected ways may lose "
-            "vertices outside that margin")
     results = elm.extract_landmarks(
-        str(pbf_file), {REGION_ID: bbox_object}, tag_filters, node_margin_deg)
+        str(bounded_pbf), {REGION_ID: bbox_object}, tag_filters)
     unexpected_regions = sorted({region for region, _ in results} - {REGION_ID})
     if unexpected_regions:
         raise RuntimeError(
@@ -368,40 +412,35 @@ def main(pbf_file: Path, bbox, output_path: Path,
         f"place={diagnostics['place_rows']}, "
         f"seamark:type={diagnostics['seamark_type_rows']}")
 
-    feather_path = Path(output_path).with_suffix(".feather")
-    _write_frame_atomically(frame, feather_path)
-    output_identity = _stat_identity(feather_path)
-    output_identity["sha256"] = _sha256(feather_path)
-
-    sidecar = feather_path.with_suffix(".provenance.json")
-    record = {
-        "schema": PROVENANCE_SCHEMA,
-        "tool": "farfield/dataset_tools/extract_landmarks_from_osm.py",
-        "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
+    feather_path, sidecar = source_publication.publish(frame, output_path, {
+        **provenance_base,
         "inputs": {
             "pbf": {
                 **source_after_extraction,
                 "sha256": source_sha256,
             },
+            "smart_preextract": preextract_identity,
         },
-        "arguments": {
-            "bbox_wgs84": list(bbox),
-            "output_path": str(feather_path),
-            "node_margin_deg": node_margin_deg,
-            "geometry_index_mode": (
-                "full" if node_margin_deg < 0.0 else "bounded_degraded"
-            ),
-            "tag_filter_keys": list(TAG_FILTER_KEYS),
-        },
-        "output": {
-            **output_identity,
+        "output_contract": {
             "catalog_schema_version": schema.SCHEMA_VERSION,
             "columns": list(frame.columns),
         },
         "diagnostics": diagnostics,
-    }
-    _write_json_atomically(record, sidecar)
+    })
+    try:
+        bounded_pbf.unlink()
+        workspace = bounded_pbf.parent
+        expected_prefix = f".{Path(output_path).stem}.smart."
+        if (workspace.parent.resolve() == Path(output_path).parent.resolve()
+                and workspace.name.startswith(expected_prefix)
+                and workspace.name.endswith(artifact.INCOMPLETE_SUFFIX)):
+            workspace.rmdir()
+            _fsync_directory(workspace.parent)
+        else:
+            _fsync_directory(workspace)
+    except OSError as error:
+        print(f"WARNING: published output is complete, but private smart "
+              f"pre-extract cleanup failed: {error}")
     print(f"Wrote {feather_path}")
     print(f"      {sidecar}")
     return frame
@@ -428,12 +467,9 @@ if __name__ == "__main__":
         help="output path; the .feather suffix is applied",
     )
     parser.add_argument(
-        "--node_margin_deg",
-        required=True,
-        type=float,
-        help="-1 retains the full node-location index; a nonnegative margin "
-             "explicitly enables the common extractor's bounded/degraded "
-             "geometry mode",
+        "--osmium_binary",
+        default="osmium",
+        help="osmium executable used for the required smart pre-extract",
     )
     arguments = parser.parse_args()
     try:
@@ -441,7 +477,7 @@ if __name__ == "__main__":
             pbf_file=arguments.pbf_file,
             bbox=arguments.bbox,
             output_path=arguments.output_path,
-            node_margin_deg=arguments.node_margin_deg,
+            osmium_binary=arguments.osmium_binary,
         )
-    except (FileNotFoundError, RuntimeError, ValueError) as error:
+    except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as error:
         parser.error(str(error))

@@ -103,7 +103,7 @@ class ScenarioConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 class ScenarioData:
     config: ScenarioConfig
     frame: geo.RegionFrame
-    # What the filter is given: positions carry catalog_position_sigma_m.
+    # What the filter is given, including the configured uniform map sigma.
     catalog: catalog_mod.LandmarkCatalog
     # Where the landmarks really are (bearings are generated from these).
     true_east_m: np.ndarray
@@ -306,9 +306,16 @@ def generate(config: ScenarioConfig) -> ScenarioData:
 
     true_east_m = np.asarray(landmark_east_m, dtype=np.float64)
     true_north_m = np.asarray(landmark_north_m, dtype=np.float64)
+    configured_sigmas = {
+        float(landmark.position_sigma_m) for landmark in config.landmarks}
+    if len(configured_sigmas) != 1:
+        raise ValueError(
+            "synthetic landmarks must use one uniform position_sigma_m")
+    configured_position_sigma_m = configured_sigmas.pop()
     catalog = catalog_mod.LandmarkCatalog(
         landmark_ids, true_east_m, true_north_m,
-        max_visible_range_m=config.max_visible_range_m)
+        max_visible_range_m=config.max_visible_range_m,
+        position_sigma_m=configured_position_sigma_m)
     if config.catalog_position_sigma_m > 0.0:
         catalog = catalog.perturbed(config.catalog_position_sigma_m, rng)
 
@@ -323,9 +330,9 @@ def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
                  north_m: float) -> ScenarioData:
     """Teleport the vehicle mid-run, leaving odometry unaware (T-F6).
 
-    Truth and bearings move; the odometry deltas do not, which is exactly
-    what makes this a kidnap rather than a large motion — the filter is given
-    a consistent world that simply is not where it believes it is.
+    Truth and post-kidnap bearing ideals move; odometry does not. Existing
+    bearing residuals are transferred to the moved ideal, preserving noise,
+    bias, and outliers. Pre-kidnap measurements remain byte-identical.
     """
     truth = [structs.TruthPose(
         keyframe_idx=pose.keyframe_idx,
@@ -334,22 +341,39 @@ def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
         north_m=pose.north_m + (north_m if pose.keyframe_idx >= at_keyframe
                                 else 0.0),
         course_world_cw_deg=pose.course_world_cw_deg) for pose in data.truth]
-    truth_by_kf = {t.keyframe_idx: t for t in truth}
+    old_truth_by_kf = {item.keyframe_idx: item for item in data.truth}
+    new_truth_by_kf = {item.keyframe_idx: item for item in truth}
 
     measurements = []
-    for meas in data.measurements:
-        pose = truth_by_kf[meas.anchor_keyframe_idx]
-        index = data.catalog.index_of(meas.tracklet_id.removeprefix("trk_"))
-        world = math.atan2(data.true_east_m[index] - pose.east_m,
-                           data.true_north_m[index] - pose.north_m)
-        forward_world_cw_deg = (
-            pose.course_world_cw_deg + data.config.course_bias_deg) % 360.0
+    for measurement in data.measurements:
+        if measurement.anchor_keyframe_idx < at_keyframe:
+            measurements.append(measurement)
+            continue
+        old_pose = old_truth_by_kf[measurement.anchor_keyframe_idx]
+        new_pose = new_truth_by_kf[measurement.anchor_keyframe_idx]
+        index = data.catalog.index_of(
+            measurement.tracklet_id.removeprefix("trk_"))
+        landmark_east = float(data.true_east_m[index])
+        landmark_north = float(data.true_north_m[index])
+
+        def ideal_bearing(pose):
+            world = math.atan2(landmark_east - pose.east_m,
+                               landmark_north - pose.north_m)
+            forward_world = math.radians(
+                (pose.course_world_cw_deg
+                 + data.config.course_bias_deg) % 360.0)
+            return float(geo.wrap_rad(world - forward_world))
+
+        old_ideal = ideal_bearing(old_pose)
+        residual = float(geo.wrap_rad(
+            math.radians(measurement.bearing_forward_cw_deg) - old_ideal))
+        moved_bearing = float(geo.wrap_rad(
+            ideal_bearing(new_pose) + residual))
         measurements.append(structs.TrackletMeasurement(
-            tracklet_id=meas.tracklet_id,
-            anchor_keyframe_idx=meas.anchor_keyframe_idx,
-            bearing_forward_cw_deg=math.degrees(float(geo.wrap_rad(
-                world - math.radians(forward_world_cw_deg)))) % 360.0,
-            kappa=meas.kappa))
+            tracklet_id=measurement.tracklet_id,
+            anchor_keyframe_idx=measurement.anchor_keyframe_idx,
+            bearing_forward_cw_deg=math.degrees(moved_bearing) % 360.0,
+            kappa=measurement.kappa))
     return dataclasses.replace(data, truth=truth, measurements=measurements)
 
 

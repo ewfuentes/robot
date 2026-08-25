@@ -1,4 +1,5 @@
 import math
+import pickle
 import unittest
 
 import numpy as np
@@ -136,6 +137,15 @@ class GeneratedInputConsistencyTest(unittest.TestCase):
             self.assertEqual(b.sigma_m, a.sigma_m)
             self.assertEqual(b.sigma_yaw_rad, a.sigma_yaw_rad)
 
+    def test_filter_catalog_uses_the_manifest_landmark_sigma(self):
+        data = scenario.generate(scenario.harbor_loop(
+            max_visible_range_m=10000.0))
+        configured = {landmark.position_sigma_m
+                      for landmark in data.config.landmarks}
+        self.assertEqual(len(configured), 1)
+        np.testing.assert_allclose(
+            data.catalog.position_sigma_m, configured.pop())
+
     def test_catalog_error_moves_only_the_filters_copy(self):
         data = scenario.generate(scenario.harbor_loop(
             max_visible_range_m=10000.0, catalog_position_sigma_m=25.0))
@@ -165,6 +175,46 @@ class GeneratedInputConsistencyTest(unittest.TestCase):
             self.assertAlmostEqual(pose.east_m, 0.0, places=6)
             self.assertAlmostEqual(
                 pose.course_world_cw_deg, 0.0, places=6)
+
+    def test_kidnap_preserves_measurement_bytes_and_residuals(self):
+        data = scenario.generate(scenario.harbor_loop(
+            max_visible_range_m=10000.0, bearing_sigma_deg=4.0,
+            bearing_bias_deg=2.0, outlier_frac=0.3))
+        at_keyframe = data.n_keyframes // 2
+        moved = scenario.apply_kidnap(
+            data, at_keyframe, east_m=1400.0, north_m=-900.0)
+
+        before_pre = [item for item in data.measurements
+                      if item.anchor_keyframe_idx < at_keyframe]
+        after_pre = [item for item in moved.measurements
+                     if item.anchor_keyframe_idx < at_keyframe]
+        self.assertEqual(pickle.dumps(after_pre), pickle.dumps(before_pre))
+
+        def residuals(measurements, truth):
+            truth_by_keyframe = {item.keyframe_idx: item for item in truth}
+            values = []
+            for measurement in measurements:
+                if measurement.anchor_keyframe_idx < at_keyframe:
+                    continue
+                pose = truth_by_keyframe[measurement.anchor_keyframe_idx]
+                index = data.catalog.index_of(
+                    measurement.tracklet_id.removeprefix("trk_"))
+                world = math.atan2(
+                    float(data.true_east_m[index]) - pose.east_m,
+                    float(data.true_north_m[index]) - pose.north_m)
+                forward = math.radians(
+                    pose.course_world_cw_deg + data.config.course_bias_deg)
+                ideal = float(geo.wrap_rad(world - forward))
+                values.append(float(geo.wrap_rad(
+                    math.radians(measurement.bearing_forward_cw_deg)
+                    - ideal)))
+            return np.asarray(values)
+
+        original_residuals = residuals(data.measurements, data.truth)
+        moved_residuals = residuals(moved.measurements, moved.truth)
+        self.assertGreater(original_residuals.size, 0)
+        np.testing.assert_allclose(
+            moved_residuals, original_residuals, atol=1e-12)
 
     def test_generation_deterministic(self):
         a = scenario.generate(scenario.harbor_loop(max_visible_range_m=10000.0))

@@ -1,8 +1,7 @@
 """Track builder: chains SAM interval propagation across keyframes into
 mask-anchored tracks, with VLM detections attached as evidence.
 
-Design (see the m2 single-interval spike on the checkpoint branch this grew
-from):
+Design:
 - Identity lives in the SAM masklet. Detections vote on semantics and
   reliability; they only redefine geometry on a clean 1:1 re-anchor.
 - Association uses asymmetric containment, not Hungarian 1:1: a detection can
@@ -35,17 +34,10 @@ from experimental.overhead_matching.swag.farfield.tracking.perf_profile import (
 class TrackBuilderConfig:
     """Every threshold the tracker tunes on, recorded verbatim per run.
 
-    RESOLUTION WARNING (2026-08-20 audit finding): every pixel-valued
-    threshold below (`window_px`, `window_quantum`, `window_max_px`,
-    `min_mask_area_px`, `drift_gate_px`) is an ABSOLUTE pixel count, tuned on
-    8K panoramas (7680 px wide). On a pano of a different width the same
-    numbers mean physically different angular sizes -- a 1024 px window is 48
-    deg of a 7680 px pano but 96 deg of a 3840 px one -- so the defaults are
-    NOT resolution-portable. `reference_pano_width` has no default for
-    exactly this reason: the stage sets it from the actual pano width and it
-    is recorded into the artifact, so a consumer comparing runs (or a future
-    resolution-relative rework) can detect the mismatch instead of silently
-    inheriting mistuned thresholds.
+    Pixel-valued thresholds below (`window_px`, `window_quantum`,
+    `window_max_px`, `min_mask_area_px`, `drift_gate_px`) are absolute pixel
+    counts and are not resolution-portable. `reference_pano_width` is required
+    and recorded so consumers can detect a resolution mismatch.
 
     There is deliberately no per-threshold CLI override: the whole config is
     constructed from these defaults by the tracking stage and recorded
@@ -60,32 +52,25 @@ class TrackBuilderConfig:
     # class docstring).
     reference_pano_width: int
     # Base (minimum) tracking-window size. Windows grow per track with the
-    # object's current extent: near-field objects (the fort at closest
-    # approach measured 1361 px against a fixed 1024 window) otherwise get
-    # clipped at the window edge, and clipping is a runaway - a clipped
+    # object's current extent. Large objects otherwise get clipped at the
+    # window edge, and clipping is a runaway: a clipped
     # mask's centroid is biased away from the object center, so the next
-    # window re-centers wrong and clips more (T14 eroded 46k -> 805 px^2).
+    # window re-centers incorrectly and clips more.
     window_px: int = 1024
     window_extent_factor: float = 2.0   # window >= factor * object extent
     window_quantum: int = 512           # round window sizes up to multiples
     window_max_px: int = 3072
-    # Support classification (thresholds anchored on M2 measurements).
+    # Support classification.
     clean_iou: float = 0.45
     # Coherence floor for merge_superset: a superset detection must itself
     # be meaningfully filled by the mask. A mask speck inside a giant box
-    # scores inter/mask 1.0 by construction (T172: a dying island-remnant
-    # mask was kept alive 50 keyframes by successive OTHER islands' boxes at
-    # inter/box 0.01-0.08, stealing the track across three islands). Below
-    # the floor the detection is classified "context": recorded for Level-2
-    # merge/occlusion evidence but not counted as support. Genuine
-    # granularity supersets (fort) measure inter/box 0.16-0.40.
+    # scores inter/mask 1.0 by construction. Below the floor the detection is
+    # classified "context": recorded for merge/occlusion evidence but not
+    # counted as support.
     superset_min_inter_over_box: float = 0.10
     # Containment guard: a clean re-anchor may not discard more than
     # (1 - this) of the current mask. Re-anchoring is an identity rewrite;
-    # a box that only covers part of the mask is truncating it (T0/f0011:
-    # a displaced box scored iou 0.46 against a spread mask with
-    # inter/mask 0.63 and stole the track onto the neighboring building;
-    # every healthy re-anchor measured >= 0.77).
+    # a box that only covers part of the mask is truncating it.
     reanchor_min_inter_over_mask: float = 0.75
     superset_inter_over_mask: float = 0.7
     superset_max_inter_over_box: float = 0.4
@@ -95,19 +80,14 @@ class TrackBuilderConfig:
     weak_min_containment: float = 0.5
     # A containment-only weak support must show SOME mutual agreement: a
     # giant occluding/neighboring box whose edge happens to cover half the
-    # mask has inter/box ~ 0 and is not evidence (T185/f0268: a foreground
-    # island's box covered 0.52 of a background island's mask with iou 0.00,
-    # polluting votes and suppressing the occluder's own track seed).
+    # mask has inter/box near zero and is not evidence.
     weak_min_complement: float = 0.10
     # Birth gating: mask health at the prompt frame.
     birth_min_coverage: float = 0.15  # mask&box / box area
     birth_max_spill: float = 0.5      # mask outside box / mask area
     birth_min_dominant_cc: float = 0.6  # largest component / mask area
-    # Stop rules. Two-tier patience: detections flicker on established
-    # tracks (a crane survived a 5-keyframe gap), but tracks that were never
-    # supported after birth are one-shot VLM detections - in the full-leg1
-    # run 138/294 tracks had zero post-birth support and each zombie-
-    # propagated 15 keyframes (~1/3 of total runtime) before starving.
+    # Stop rules. Established tracks tolerate detection flicker, while tracks
+    # never supported after birth use a shorter patience.
     patience_keyframes: int = 15
     patience_unsupported_keyframes: int = 3
     min_mask_area_px: int = 20
@@ -330,6 +310,7 @@ class TrackBuilder:
         if not plans:
             with PROFILE.phase("track_overlaps"):
                 self._record_track_overlaps(keyframe + 1)
+            self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
             return
 
         with PROFILE.phase("propagate_batch", items=len(plans)):
@@ -348,10 +329,16 @@ class TrackBuilder:
                     health = mask_health(masks[0], prompt_box, cfg)
                 track.birth_mask = masks[0]
                 track.birth_origin = origins[0]
+                ys, xs = np.nonzero(masks[0])
+                bbox = ([int(xs.min()), int(ys.min()),
+                         int(xs.max()), int(ys.max())] if len(xs) else None)
                 track.records.append({
                     "keyframe": keyframe, "action": "birth",
                     "window_origin": [round(origins[0][0], 1), origins[0][1]],
                     "window_px": int(crops[0].shape[0]),
+                    "mask_area": int(masks[0].sum()),
+                    "mask_bbox_window": bbox,
+                    "supports": [],
                     "health": health,
                 })
                 if not health["ok"]:

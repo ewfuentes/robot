@@ -14,18 +14,13 @@ motion contract is not generic robotics SE(2), whose yaw is normally
 counterclockwise-positive. Producers normalize serialized bearings with
 `% 360`; consumers compare angles with the wrap helpers in
 `farfield.geometry`, never by subtraction. Nothing upstream is north-aligned.
-
-Tuning provenance: several defaults below were set by measured experiments on
-the harbor/mountain datasets. The numbers are the record; the experiment
-narratives live in docs/farfield (they used to live inline here, which made
-this file half lab notebook).
 """
 
 import msgspec
 
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
 
-SCHEMA_VERSION = "0.5"
+SCHEMA_VERSION = "0.7"
 
 
 class LandmarkEntry(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -35,6 +30,11 @@ class LandmarkEntry(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     lon_deg: float
     type_key: str
     position_sigma_m: float
+    # Complete anchor-relative convex-hull/linestring geometry. Point features
+    # leave both arrays empty. The arrays are parallel and never truncated.
+    hull_east_m: list[float] = []
+    hull_north_m: list[float] = []
+
 
 
 class CompatibilityEntry(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -105,14 +105,12 @@ class UniformBoxInit(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
 class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     """Mixture proposal for global init and recovery (design doc §5.5).
 
-    Defaults are the tuned production values; every one is echoed into the
-    run manifest, so a run's numbers are always its own record.
+    Every resolved value is echoed into the run manifest.
     """
     enabled: bool = True
-    # Fire at the first keyframe carrying bearings so the initial belief
-    # comes from resected poses rather than a uniform box. Only honored for
-    # an UNINFORMATIVE prior (UniformBoxInit): init-injecting into a local
-    # Gaussian prior hands an uncalibrated matcher the belief (§5.5).
+    # Fire on the first observable recent-bearing window so an uninformative
+    # UniformBoxInit can be replaced by resected poses. An informative local
+    # Gaussian prior is never subject to this initialization injection.
     on_init: bool = True
     # Kidnapped detection fires on the FRACTION of recent measurements that
     # were null-dominated, not on a consecutive run: a displaced belief
@@ -129,20 +127,29 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Minimum keyframes between events; recovery needs time to take hold.
     refractory_keyframes: int = 10
 
-    # Hypothesis generation.
-    # Candidate identities per tracklet, from its table's top entries. Must
-    # be large enough to enumerate a matcher tie whole — truncating inside a
-    # tie means confidently resecting from a coin-flip identity.
-    top_k_landmarks: int = 64
+    # Hypothesis generation. Every table entry better than its default is a
+    # candidate; computation is bounded by the particle budget rather than by
+    # truncating a candidate list or a tied hypothesis list.
     max_tracklets: int = 5
-    # Per-kind combination budgets, spent cheapest-kind-first so a
-    # three-landmark explosion cannot starve the always-available
-    # single-landmark hypotheses. A combination that does not fit the
-    # remaining budget is skipped WHOLE, never enumerated part-way.
-    max_combinations_single: int = 512
-    max_combinations_pair: int = 4000
-    max_combinations_triple: int = 8000
-    max_hypotheses_per_kind: int = 256
+    # Small Cartesian spaces are enumerated exactly. Large spaces receive a
+    # deterministic systematic sample sized from the number of pose solutions
+    # the injected particle budget can support.
+    exhaustive_tuple_limit: int = 256
+    tuple_samples_per_active_solution: int = 8
+    # Minimum density around an activated solution when the kind's particle
+    # share is large enough. With a smaller total budget, one solution receives
+    # the available samples rather than violating the exact-count invariant.
+    min_particles_point_fix: int = 32
+    min_particles_arc: int = 64
+    min_particles_single: int = 128
+    # Near-identical solutions share one activation budget. Greedy selection
+    # then balances compatibility evidence with pose-space diversity.
+    solution_cluster_position_m: float = 75.0
+    solution_cluster_heading_deg: float = 8.0
+    pose_diversity_weight: float = 0.25
+    # Long arcs need more samples to maintain comparable linear density.
+    arc_length_reference_m: float = 1000.0
+    arc_length_weight_cap: float = 10.0
     # Resection residual tolerance, in standard deviations of the bearing
     # measurement. It MUST scale with sigma — the residual of a true fix
     # grows with bearing noise, so a fixed ceiling rejects real solutions.
@@ -161,11 +168,8 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     evidence_gate_margin_nats: float = 1.0
     # Charge log(n_hypotheses) for choosing the best of N hypotheses that
     # were each constructed to explain the very window they are scored on —
-    # the multiple-comparisons correction one level up. Without it the flat
-    # margin gets EASIER to clear the more hypotheses an event generates.
-    # Never disable this because a broken-data run looked worse: on data
-    # where the filter tracks, the charge is what stops a late marginal
-    # injection from destroying a converged belief.
+    # a multiple-comparisons correction that keeps the gate comparable as the
+    # number of generated hypotheses changes.
     evidence_gate_selection_charge: bool = True
     # OBSERVABILITY, not a tuning knob: a pose is three unknowns and one
     # bearing is one equation, so an injection resected from fewer than
@@ -186,11 +190,8 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     share_pair: float = 0.35
     share_single: float = 0.15
 
-    # Injection.
-    # Fraction of particle mass replaced by proposed poses. Do NOT tune
-    # this DOWN to be cautious — the effect is not monotonic: a partial
-    # injection drags the belief toward a wrong hypothesis without leaving
-    # enough mass on the alternatives to keep the posterior honest.
+    # Fraction of particle mass replaced by proposed poses. The value controls
+    # the tradeoff between retaining the incumbent and representing alternatives.
     inject_fraction: float = 0.5
     # FLOOR on the injected spread, not the spread itself: each hypothesis
     # carries its own spread (~sigma_bearing * range), and this only bounds
@@ -216,15 +217,12 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     n_particles: int
     seed: int
     init: GaussianInit | UniformBoxInit
-    # Per-tracklet-class null-hypothesis probability. 0.2 rather than a
-    # token few percent: with an uncalibrated matcher (§6) the null is what
-    # stops the filter chasing accidentally-aligned clutter into a
-    # confident wrong fix, and VLM false positives are common.
+    # Per-tracklet null-hypothesis probability. With an uncalibrated matcher,
+    # the null prevents incidental clutter alignments from forcing an identity.
     pi0: float = 0.2
     ess_resample_frac: float = 0.5
     # Heading random-walk noise per keyframe, in quadrature with each
-    # increment's own sigma_yaw_rad: the hedge for yaw drift the producer
-    # does not declare. Deleting this hedge nulls the bearings.
+    # increment's sigma_yaw_rad, covers yaw drift not declared by the producer.
     heading_random_walk_deg: float = 1.0
     # Kernel bandwidth for regularized resampling, as a multiple of the
     # Silverman-style rule sigma * n^(-1/6). Required for consistency: at 0
@@ -254,14 +252,13 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # eps: outlier rate within a correct association — a committed tracklet
     # can still emit a bad bearing (partial occlusion, panorama seam).
     association_outlier_rate: float = 0.1
-    # Probability the true landmark appears among a table's ENDORSED
-    # entries (given any exist) — a matcher property used to build the
-    # proper identity posterior. Without it, a whole-map catalog claims the
-    # true landmark is almost surely one the matcher rejected.
+    # Probability the true landmark appears among a table's endorsed entries
+    # (given any exist), used to split a proper identity posterior between
+    # endorsed and unendorsed candidates.
     matcher_recall: float = 0.5
-    # Responsibilities below this are dropped from REPORTED association
-    # posteriors (likelihoods are never truncated); whole-map catalogs make
-    # the dense dicts dominate run time and artifact size otherwise.
+    # Responsibilities below this are dropped from reported association
+    # posteriors (likelihoods are never truncated), bounding dense-catalog
+    # run time and artifact size.
     min_reported_responsibility: float = 1e-6
     proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
     modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
@@ -313,6 +310,29 @@ class AssociationPosterior(msgspec.Struct):
     surprise_share: float = 0.0
 
 
+class PositionMassMetricConfig(msgspec.Struct, frozen=True,
+                               forbid_unknown_fields=True):
+    """Identity and resolved radii for the primary truth-aware run metric."""
+    metric_id: str
+    metric_version: str
+    radii_m: list[float]
+
+
+class BearingResidualDiagnostic(msgspec.Struct, frozen=True,
+                                forbid_unknown_fields=True):
+    """One explicitly posterior-predictive bearing-model diagnostic."""
+    keyframe_idx: int
+    tracklet_id: str
+    mode_id: int | None
+    pose_east_m: float
+    pose_north_m: float
+    pose_heading_cw_deg: float
+    null_share: float
+    null_dominated: bool
+    landmark_id: str | None
+    association_probability: float | None
+    signed_residual_deg: float | None
+
 class HealthRecord(msgspec.Struct):
     """Tier-0 health scalars, one per keyframe (design doc §5.6/§7.1).
 
@@ -342,6 +362,9 @@ class HealthRecord(msgspec.Struct):
     # Shannon entropy of the mode weights, in nats: 0 when the belief is
     # effectively unimodal, log(k) when k modes share the mass equally.
     mode_entropy_nats: float = 0.0
+    # Fully keyed values from RunManifest.position_mass_metric. Populated at
+    # every keyframe when truth positions are available; empty otherwise.
+    position_probability_mass: dict[str, float] = {}
 
 
 class ProposalEvent(msgspec.Struct):
@@ -358,6 +381,14 @@ class ProposalEvent(msgspec.Struct):
     n_tracklets_considered: int
     n_combinations_examined: int
     n_combinations_skipped: int
+    particle_budget: int = 0
+    n_combinations_total: int = 0
+    n_combinations_enumerated: int = 0
+    n_combinations_sampled: int = 0
+    n_combinations_geometry_pruned: int = 0
+    n_partially_represented_ties: int = 0
+    n_solution_clusters_merged: int = 0
+    represented_compatibility_mass: float = 0.0
     # Evidence gate (§5.5): a rejected event has n_injected 0 and
     # gate_passed False. Scores are window log-likelihoods in nats.
     gate_passed: bool = True
@@ -383,14 +414,11 @@ class TruthPose(msgspec.Struct):
 class RunManifest(msgspec.Struct):
     """The run's own record: config echo, provenance, replay surface.
 
-    Provenance fields are REQUIRED (schema 0.3). A run that cannot name its
-    inputs is not reproducible, and every manifest on the previous disk had
-    them as None — which is why they are no longer optional:
+    Required provenance includes:
       - max_visible_range_m: the catalog visibility radius this run was
-        built with. A replay that guesses it silently changes which
-        positions the proposal thinks a landmark could be seen from.
+        built with, which shapes proposal hypotheses;
       - export_dir: where the inputs came from. Synthetic runs record
-        "synthetic:<scenario>" explicitly rather than omitting it.
+        "synthetic:<scenario>" explicitly;
       - git_commit / argv / created: who made this, how, when.
     """
     schema_version: str
@@ -413,3 +441,12 @@ class RunManifest(msgspec.Struct):
     argv: list[str]
     created: str
     particle_history_sha256: str = ""
+    # Explicit control classification. These tags identify ablations without
+    # overloading matcher_version, which must continue to identify table bytes.
+    ablation_tags: list[str] = []
+    # Truth is optional. When present, schema identifies truth.jsonl and the
+    # optional artifact mapping identifies its immutable external source.
+    truth_position_artifact: dict[str, str] | None = None
+    truth_position_schema: str | None = None
+    # Resolved primary-metric identity/config. None when no truth is present.
+    position_mass_metric: PositionMassMetricConfig | None = None

@@ -1,9 +1,7 @@
 """The one HTML page helper for farfield viewers.
 
-Every stage viewer builds its page through `page()` so the tree has ONE
-stylesheet (the old stages carried 14 divergent inline copies of the same
-CSS) and every page gets a provenance footer for free (generator, git
-commit, timestamp) — the audit's "no viewer records what made it" fix.
+Every stage viewer builds its page through `page()` so styling is consistent
+and every page records its generator, git commit, and timestamp.
 
 Pages are self-contained static HTML with relative links and no network:
 `python -m http.server` at the data root must render everything.

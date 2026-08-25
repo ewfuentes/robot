@@ -1,10 +1,8 @@
 """Opt-in phase timing for the tracking loop.
 
 Off unless `TRACK_PROFILE=1`, so it can live permanently in the hot path: the
-disabled `phase()` is a generator that yields immediately, which costs far less
-than the work it wraps. It exists because guessing where this loop spends its
-time has been wrong twice (JPEG round-trip, video decode), and hand-patching
-timers in and out risks leaving instrumentation behind.
+disabled `phase()` is a generator that yields immediately. Keeping the named
+phases in place makes profiling runs comparable without changing orchestration.
 
 GPU work is asynchronous, so a timer that does not synchronize charges the wait
 for a kernel to whichever phase happens to read its result. `phase()` therefore
@@ -14,7 +12,7 @@ the point of a profile, and why wall-clock comparisons are always taken with
 profiling off.
 
     TRACK_PROFILE=1 bazel run ...farfield/tracking:run_tracking -- \\
-        --dataset X --range r 0 20 ...
+        --dataset X --k_start 0 --k_end 20 ...
 """
 
 import contextlib

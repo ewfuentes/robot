@@ -24,7 +24,6 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 # tightens is the signature of closing in on the real sun rather than of
 # overfitting: the gate cannot see the quantity being estimated. Widen this
 # only for a platform with genuine pitch, and expect the ghost back when you do.
-# Tuning history: see docs/farfield (previously inline here).
 ELEVATION_TOLERANCE_DEG = 3.0
 
 # A blob must be this bright relative to the frame's own dynamic range. The
@@ -85,8 +84,12 @@ def brightest_blob_in_band(pano: np.ndarray, elevation_deg: float,
                            bright_fraction: float = BRIGHT_FRACTION,
                            max_width_deg: float = MAX_BLOB_WIDTH_DEG,
                            mask: np.ndarray | None = None):
-    """(az_camera_deg, elevation_deg, n_pixels) of the brightest compact blob
-    whose elevation is consistent with `elevation_deg`, or None.
+    """Return the brightest compact blob in the requested elevation band.
+
+    The result is ``(az_camera_deg, elevation_deg, n_pixels,
+    centre_x_px, centre_y_px)`` in the supplied image. Pixel coordinates are
+    retained so a diagnostic publisher can show the exact evidence to a
+    human reviewer instead of exposing only a derived angle.
 
     Only rows inside the elevation band are searched, which is what keeps the
     water's sun-glitter -- as bright as the sun and always below the horizon
@@ -152,7 +155,7 @@ def brightest_blob_in_band(pano: np.ndarray, elevation_deg: float,
                 / (2 * math.pi) * width) % width
     mean_row = float((weights * (rows_idx + row_lo)).sum() / weights.sum())
     az, el = geo.direction_from_pano_px(mean_col, mean_row, width, height)
-    return az, el, int(weights.size)
+    return az, el, int(weights.size), float(mean_col), float(mean_row)
 
 
 def rig_mask(greys, bright_fraction: float = BRIGHT_FRACTION):

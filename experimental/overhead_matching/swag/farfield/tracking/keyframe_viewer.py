@@ -209,10 +209,8 @@ def recorded_config(artifact) -> tb.TrackBuilderConfig:
     """The TrackBuilderConfig this artifact was BUILT with.
 
     Reconstructed from the dict the tracking stage stored via
-    dataclasses.asdict. Constructing a fresh TrackBuilderConfig() here
-    instead would silently re-classify an old run's supports under today's
-    thresholds (and is impossible anyway: reference_pano_width has no
-    default, by design).
+    dataclasses.asdict. A fresh configuration could classify supports under
+    different thresholds, so the recorded values are mandatory.
     """
     config = artifact.get("config")
     if not config:
@@ -403,10 +401,8 @@ def main():
         for task in tasks:
             _render_task(task)
     else:
-        # Processes, not threads: PIL holds the GIL enough that 4 and 12 threads
-        # both measured 1.9x (2026-08-18), while each keyframe is an independent
-        # 8K JPEG decode plus derived writes -- embarrassingly parallel given
-        # separate interpreters.
+        # Each task performs an independent panorama decode and derived-image
+        # write. Processes let those CPU-heavy tasks run in separate interpreters.
         with cf.ProcessPoolExecutor(max_workers=workers) as pool:
             for _ in pool.map(_render_task, tasks, chunksize=4):
                 pass

@@ -109,6 +109,23 @@ class InscribedArcTest(unittest.TestCase):
                                           landmarks[0][1] - north))
         np.testing.assert_allclose(observed, signed, atol=1e-6)
 
+    def test_direct_sampling_returns_exact_counts_for_narrow_arc(self):
+        landmarks = [(0.0, 0.0), (1000.0, 0.0)]
+        signed = math.radians(171.0)
+        arc = resection.arcs_for_signed_angle(
+            *landmarks[0], *landmarks[1], signed)[0]
+        for count in (1, 2, 17):
+            east, north = resection.sample_arc(
+                arc, *landmarks[0], *landmarks[1], count,
+                np.random.default_rng(9))
+            self.assertEqual(east.size, count)
+            observed = geo.wrap_rad(
+                geo.compass_bearing_rad(
+                    landmarks[1][0] - east, landmarks[1][1] - north)
+                - geo.compass_bearing_rad(
+                    landmarks[0][0] - east, landmarks[0][1] - north))
+            np.testing.assert_allclose(observed, signed, atol=1e-6)
+
     def test_radius_matches_closed_form(self):
         gamma = math.radians(30.0)
         arcs = resection.inscribed_angle_arcs(0.0, 0.0, 1000.0, 0.0, gamma)
@@ -169,24 +186,18 @@ class ResectThreeTest(unittest.TestCase):
             self.assertLess(best.residual_rad, 1e-6)
         self.assertGreater(tested, 150, "too many configurations rejected")
 
-    def test_tolerance_separates_truth_from_near_misses(self):
-        """Spurious circle intersections can sit only a couple of degrees
-        off, so the tolerance is load-bearing: too loose and fiction
-        survives, too tight and every noisy fix is discarded."""
+    def test_signed_arcs_remove_mirror_near_misses(self):
+        """Even a loose residual gate cannot resurrect an intersection on the
+        side contradicted by the identified signed bearings."""
         pose = (300.0, -400.0, 0.9)
         bearings = _bearings_from(pose, self._LANDMARKS)
-        tight = resection.resect_three(self._LANDMARKS, bearings,
-                                       residual_tolerance_rad=1e-4)
-        self.assertEqual(len(tight), 1)
-        loose = resection.resect_three(self._LANDMARKS, bearings,
-                                       residual_tolerance_rad=math.radians(10))
-        self.assertGreater(len(loose), 1)
-        # Whatever the tolerance, truth ranks first and the extras are real
-        # alternatives rather than duplicates.
-        self.assertAlmostEqual(loose[0].east_m, pose[0], delta=1e-3)
-        self.assertTrue(all(
-            math.hypot(a.east_m - b.east_m, a.north_m - b.north_m) > 1.0
-            for i, a in enumerate(loose) for b in loose[i + 1:]))
+        for tolerance in (1e-4, math.radians(10.0)):
+            solutions = resection.resect_three(
+                self._LANDMARKS, bearings,
+                residual_tolerance_rad=tolerance)
+            self.assertEqual(len(solutions), 1)
+            self.assertAlmostEqual(solutions[0].east_m, pose[0], delta=1e-3)
+            self.assertAlmostEqual(solutions[0].north_m, pose[1], delta=1e-3)
 
     def test_rejects_collinear_landmarks(self):
         collinear = [(-1000.0, 0.0), (0.0, 0.0), (1000.0, 0.0)]

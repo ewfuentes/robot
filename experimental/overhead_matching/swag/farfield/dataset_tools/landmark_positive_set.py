@@ -42,9 +42,17 @@ MATCHING_OUTPUTS = tuple(sorted((
 )))
 POSITIVE_SET_SCHEMA = "farfield.landmark_positive_set.v2"
 MATCH_KEYS = frozenset({
-    "landmark_id", "signature", "match_type", "confidence",
+    "landmark_id", "per_call_candidate_scores", "aggregate_confidence",
+    "aggregation_rule", "match_type", "signature_id", "signature_display",
 })
-POSITIVE_KEYS = MATCH_KEYS | {"tracklet_id"}
+POSITIVE_KEYS = frozenset({
+    "tracklet_id", "landmark_id", "signature_id", "signature_display",
+    "match_type", "aggregate_confidence",
+})
+SIGNATURE_KEYS = frozenset({
+    "canonical_tags", "display_label", "landmark_ids",
+})
+CANDIDATE_AGGREGATION_RULE = "maximum_per_landmark_across_calls_v1"
 DOCUMENT_KEYS = frozenset({
     "schema", "generator", "git_commit", "matching", "catalog",
     "n_tracklets", "n_positives", "positives",
@@ -121,33 +129,67 @@ def open_catalog_artifact(
 
 
 def format_signature(tags: dict) -> str:
-    """Return the matcher's canonical tag-signature text."""
+    """Return the matcher's display label (never its machine identity)."""
     return "; ".join(f"{key}={value}" for key, value in sorted(tags.items()))
 
 
-def _validate_signatures(value: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+def signature_id(tags: dict) -> str:
+    """Return the matcher's collision-resistant canonical signature identity."""
+    return f"sha256:{artifact.sha256_json(tags)}"
+
+
+def _validate_signatures(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if not value:
         raise PositiveSetError("matching signatures.json must not be empty")
     result = {}
     owner = {}
-    for signature, landmark_ids in value.items():
-        if not isinstance(signature, str) or not signature:
-            raise PositiveSetError("matching contains an empty signature")
+    for canonical_id, entry in value.items():
+        if not isinstance(canonical_id, str) or not canonical_id:
+            raise PositiveSetError("matching contains an empty signature id")
+        if not isinstance(entry, dict):
+            raise PositiveSetError(
+                f"signature {canonical_id!r} metadata must be an object")
+        _exact_keys(entry, SIGNATURE_KEYS, f"signature {canonical_id!r}")
+        tags = entry["canonical_tags"]
+        if (not isinstance(tags, dict) or not tags
+                or any(not isinstance(key, str) or not key
+                       or not isinstance(tag_value, str) or not tag_value
+                       for key, tag_value in tags.items())):
+            raise PositiveSetError(
+                f"signature {canonical_id!r} canonical_tags must be a "
+                "non-empty string map")
+        expected_id = signature_id(tags)
+        if canonical_id != expected_id:
+            raise PositiveSetError(
+                f"signature {canonical_id!r} digest does not match its "
+                f"canonical_tags (expected {expected_id!r})")
+        display_label = entry["display_label"]
+        expected_display = format_signature(tags)
+        if display_label != expected_display:
+            raise PositiveSetError(
+                f"signature {canonical_id!r} display label does not match "
+                "its canonical_tags")
+        landmark_ids = entry["landmark_ids"]
         if not isinstance(landmark_ids, list) or not landmark_ids:
             raise PositiveSetError(
-                f"signature {signature!r} must map to a non-empty list")
+                f"signature {canonical_id!r} must name a non-empty landmark "
+                "id list")
         if not all(isinstance(item, str) and item for item in landmark_ids):
             raise PositiveSetError(
-                f"signature {signature!r} contains an invalid landmark id")
+                f"signature {canonical_id!r} contains an invalid landmark id")
         if len(landmark_ids) != len(set(landmark_ids)):
             raise PositiveSetError(
-                f"signature {signature!r} repeats a landmark id")
+                f"signature {canonical_id!r} repeats a landmark id")
         for landmark_id in landmark_ids:
-            previous = owner.setdefault(landmark_id, signature)
-            if previous != signature:
+            previous = owner.setdefault(landmark_id, canonical_id)
+            if previous != canonical_id:
                 raise PositiveSetError(
                     f"landmark {landmark_id!r} belongs to multiple signatures")
-        result[signature] = tuple(landmark_ids)
+        result[canonical_id] = {
+            "canonical_tags": dict(tags),
+            "display_label": display_label,
+            "landmark_ids": tuple(landmark_ids),
+        }
     return result
 
 
@@ -160,7 +202,7 @@ def _finite_confidence(value: Any, what: str) -> float:
 
 
 def _validate_matches(
-        value: dict[str, Any], signatures: dict[str, tuple[str, ...]],
+        value: dict[str, Any], signatures: dict[str, dict[str, Any]],
         *, n_tracklets: int,
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     if len(value) != n_tracklets:
@@ -184,7 +226,7 @@ def _validate_matches(
             _exact_keys(match, MATCH_KEYS,
                         f"tracklet {tracklet_id!r} match {index}")
             landmark_id = match["landmark_id"]
-            signature = match["signature"]
+            canonical_id = match["signature_id"]
             match_type = match["match_type"]
             if not isinstance(landmark_id, str) or not landmark_id:
                 raise PositiveSetError(
@@ -194,26 +236,53 @@ def _validate_matches(
                 raise PositiveSetError(
                     f"tracklet {tracklet_id!r} repeats landmark {landmark_id!r}")
             seen_ids.add(landmark_id)
-            if not isinstance(signature, str) or signature not in signatures:
+            if (not isinstance(canonical_id, str)
+                    or canonical_id not in signatures):
                 raise PositiveSetError(
                     f"tracklet {tracklet_id!r} references unknown signature "
-                    f"{signature!r}")
-            if landmark_id not in signatures[signature]:
+                    f"{canonical_id!r}")
+            signature = signatures[canonical_id]
+            if landmark_id not in signature["landmark_ids"]:
                 raise PositiveSetError(
                     f"landmark {landmark_id!r} is not bound to signature "
-                    f"{signature!r}")
+                    f"{canonical_id!r}")
+            if match["signature_display"] != signature["display_label"]:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} signature display "
+                    "does not match signatures.json")
             if match_type not in ("instance", "category"):
                 raise PositiveSetError(
                     f"tracklet {tracklet_id!r} has invalid match_type "
                     f"{match_type!r}")
+            per_call_scores = match["per_call_candidate_scores"]
+            if not isinstance(per_call_scores, list) or not per_call_scores:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} must record "
+                    "per-call candidate scores")
+            scores = [
+                _finite_confidence(
+                    score,
+                    f"tracklet {tracklet_id!r} match {index} per-call score")
+                for score in per_call_scores
+            ]
+            aggregate_confidence = _finite_confidence(
+                match["aggregate_confidence"],
+                f"tracklet {tracklet_id!r} aggregate confidence")
+            if aggregate_confidence != max(scores):
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} aggregate "
+                    "confidence is not the maximum per-call score")
+            if match["aggregation_rule"] != CANDIDATE_AGGREGATION_RULE:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} has an unknown "
+                    "candidate aggregation rule")
             matches.append({
                 "tracklet_id": tracklet_id,
                 "landmark_id": landmark_id,
-                "signature": signature,
+                "signature_id": canonical_id,
+                "signature_display": signature["display_label"],
                 "match_type": match_type,
-                "confidence": _finite_confidence(
-                    match["confidence"],
-                    f"tracklet {tracklet_id!r} confidence"),
+                "aggregate_confidence": aggregate_confidence,
             })
         n_landmarks = _count(record.get("n_landmarks"),
                              f"tracklet {tracklet_id!r} n_landmarks")
@@ -223,7 +292,7 @@ def _validate_matches(
                 "matches list")
         n_signatures = _count(record.get("n_signatures"),
                               f"tracklet {tracklet_id!r} n_signatures")
-        if n_signatures != len({item["signature"] for item in matches}):
+        if n_signatures != len({item["signature_id"] for item in matches}):
             raise PositiveSetError(
                 f"tracklet {tracklet_id!r} n_signatures is inconsistent")
         result[tracklet_id] = tuple(matches)
@@ -234,7 +303,7 @@ def open_matching_artifact(
         matching_dir: Path,
         *, expected_catalog_ref: artifact.ArtifactRef | None = None,
 ) -> tuple[artifact.ArtifactRef, artifact.ArtifactRef,
-           dict[str, tuple[dict[str, Any], ...]], dict[str, tuple[str, ...]]]:
+           dict[str, tuple[dict[str, Any], ...]], dict[str, dict[str, Any]]]:
     """Load a complete typed matching artifact and validate its final join."""
     matching_dir = Path(matching_dir)
     expected_dataset = (expected_catalog_ref.dataset
@@ -306,7 +375,7 @@ def build(matching_dir: Path) -> dict[str, Any]:
         for tracklet_id in sorted(matches)
         for match in sorted(
             matches[tracklet_id],
-            key=lambda item: (item["landmark_id"], item["signature"]),
+            key=lambda item: (item["landmark_id"], item["signature_id"]),
         )
     ]
     return {
@@ -373,23 +442,29 @@ def validate_positive_set(
                     f"positive set {source} positive {index}")
         tracklet_id = record["tracklet_id"]
         landmark_id = record["landmark_id"]
-        signature = record["signature"]
+        canonical_id = record["signature_id"]
         if not isinstance(tracklet_id, str) or not tracklet_id:
             raise PositiveSetError(
                 f"positive set {source} positive {index} has invalid tracklet")
         if not isinstance(landmark_id, str) or not landmark_id:
             raise PositiveSetError(
                 f"positive set {source} positive {index} has invalid landmark")
-        if not isinstance(signature, str) or not signature:
+        if not isinstance(canonical_id, str) or not canonical_id:
             raise PositiveSetError(
-                f"positive set {source} positive {index} has invalid signature")
+                f"positive set {source} positive {index} has invalid signature "
+                "id")
+        if (not isinstance(record["signature_display"], str)
+                or not record["signature_display"]):
+            raise PositiveSetError(
+                f"positive set {source} positive {index} has invalid signature "
+                "display")
         if record["match_type"] not in ("instance", "category"):
             raise PositiveSetError(
                 f"positive set {source} positive {index} has invalid "
                 "match_type")
         _finite_confidence(
-            record["confidence"],
-            f"positive set {source} positive {index} confidence")
+            record["aggregate_confidence"],
+            f"positive set {source} positive {index} aggregate confidence")
         identity = (tracklet_id, landmark_id)
         if identity in identities:
             raise PositiveSetError(
@@ -415,12 +490,14 @@ def load_positive_set(
 def recall(positive_set: dict,
            surviving_signatures: set[str]) -> tuple[float, list[dict]]:
     """Fraction of distinct positive signatures with a surviving landmark."""
-    signatures = {record["signature"] for record in positive_set["positives"]}
+    signatures = {
+        record["signature_id"] for record in positive_set["positives"]
+    }
     if not signatures:
         return 1.0, []
     lost = signatures - surviving_signatures
     detail = [record for record in positive_set["positives"]
-              if record["signature"] in lost]
+              if record["signature_id"] in lost]
     return (len(signatures) - len(lost)) / len(signatures), detail
 
 

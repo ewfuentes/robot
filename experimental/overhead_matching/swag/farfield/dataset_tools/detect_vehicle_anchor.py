@@ -46,11 +46,9 @@ Reading the output: compare the whole-run figure against short windows.
 
 Each dataset's verdict is written to `<dataset>/_manifests/vehicle_anchor.json`
 (the derived triage lane), which is where `dataset_status_table` reads it.
-The old tool only wrote a combined JSON when asked, with no default location,
-so the status table usually found nothing.
 
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:detect_vehicle_anchor -- \\
-        --dataset_path /data/farfield_matching/datasets/*
+        --dataset_path /path/to/datasets/*
 """
 
 import argparse
@@ -85,25 +83,22 @@ def box_blur(a, k=5):
     return (c[k:, k:] - c[:-k, k:] - c[k:, :-k] + c[:-k, :-k]) / (k * k)
 
 
-def resolve_frame_path(ds: Path, rows, i, listing):
-    """Locate row i's image, tolerating the two layouts in use.
+def resolve_frame_path(ds: Path, rows, i):
+    """Resolve row ``i`` by its recorded filename or reject the dataset.
 
     The self-collected datasets symlink `panorama/` to `frames/`, so either
     works. boston_harbor's `panorama/` instead holds separately *renamed*
-    copies -- its `frame_file` is `f0000_t00070.00s_d00000m.jpg`, which exists
-    only under `frames/` -- so the row's own name has to be tried there first
-    and index alignment kept as a last resort. Looking only in `panorama/`
-    resolves nothing on that dataset, which is how this silently reported
-    "0.0% anchor" for boston_harbor_leg1 when the truth was "no image was
-    read".
+    copies -- its recorded name may exist only under `frames/`. Positional
+    fallback is forbidden: a different sorted panorama entry is not evidence
+    that it belongs to this CSV row.
     """
     name = rows[i]["frame_file"]
     for candidate in (ds / "frames" / name, ds / "panorama" / name):
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
-    if i < len(listing):
-        return listing[i]
-    return None
+    raise FileNotFoundError(
+        f"frame {i} names {name!r}, but that regular file exists in neither "
+        f"{ds / 'frames'} nor {ds / 'panorama'}")
 
 
 def persistence_map(ds: Path, rows, index_range, n_samples, work_w):
@@ -112,13 +107,10 @@ def persistence_map(ds: Path, rows, index_range, n_samples, work_w):
     count = min(n_samples, hi - lo + 1)
     if count < 4:
         return None, None
-    listing = sorted((ds / "panorama").glob("*.jpg"))
     idxs = np.linspace(lo, hi, count).astype(int)
     acc_img = acc_edge = None
     for i in idxs:
-        path = resolve_frame_path(ds, rows, int(i), listing)
-        if path is None or not path.exists():
-            continue
+        path = resolve_frame_path(ds, rows, int(i))
         im = Image.open(path).convert("L")
         height = max(1, round(work_w * im.height / im.width))
         a = np.asarray(im.resize((work_w, height), Image.BILINEAR),
@@ -127,8 +119,6 @@ def persistence_map(ds: Path, rows, index_range, n_samples, work_w):
             acc_img, acc_edge = np.zeros_like(a), np.zeros_like(a)
         acc_img += a
         acc_edge += np.abs(np.gradient(a, axis=1))
-    if acc_img is None:
-        return None, None
     mean_img = acc_img / len(idxs)
     numerator = box_blur(np.abs(np.gradient(mean_img, axis=1)))
     denominator = box_blur(acc_edge / len(idxs))
@@ -174,6 +164,11 @@ def classify(global_frac, window_fracs, rigid_ratio=0.5,
 def analyse(ds: Path, args):
     rows = list(csv.DictReader(open(ds / "frames_gps.csv")))
     n = len(rows)
+    # Validate the complete recorded join before sampling. A missing
+    # unsampled row is still a corrupt dataset and must not be hidden by a
+    # plausible verdict computed from the rows that happened to resolve.
+    for index in range(n):
+        resolve_frame_path(ds, rows, index)
     if n < args.window + 2:
         print(f"{ds.name}: only {n} frames, skipping")
         return None

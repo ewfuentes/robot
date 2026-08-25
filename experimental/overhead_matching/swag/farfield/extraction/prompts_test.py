@@ -134,6 +134,71 @@ class BuildRequestTest(unittest.TestCase):
                 media_resolution="MEDIA_RESOLUTION_HIGH",
                 thinking_level="HIGH")
 
+    def test_every_media_resolution_round_trips_to_exact_online_placement(self):
+        for resolution in prompts.MEDIA_RESOLUTIONS:
+            with self.subTest(resolution=resolution):
+                record = prompts.build_request(
+                    "stem0", self.IMAGES,
+                    prompt_type="osm_tags_farfield_v2",
+                    media_resolution=resolution,
+                    thinking_level="MEDIUM")
+                semantic = prompts.semantic_request_from_batch(
+                    record["key"], record["request"])
+                self.assertEqual(semantic.media_resolution, resolution)
+                self.assertEqual(prompts.batch_record(semantic), record)
+
+                online = prompts.online_request(semantic)
+                config = online["config"]
+                self.assertEqual(
+                    config["thinking_config"], {
+                        "thinking_level": "MEDIUM",
+                    })
+                image_parts = online["contents"][0]["parts"][:4]
+                if resolution == "MEDIA_RESOLUTION_ULTRA_HIGH":
+                    self.assertNotIn("media_resolution", config)
+                    self.assertTrue(all(
+                        part["media_resolution"] == {"level": resolution}
+                        for part in image_parts))
+                else:
+                    self.assertEqual(config["media_resolution"], resolution)
+                    self.assertTrue(all(
+                        "media_resolution" not in part
+                        for part in image_parts))
+
+    def test_no_media_resolution_is_valid_for_text_or_audit_requests(self):
+        semantic = prompts.semantic_request(
+            "audit",
+            system_instruction="audit system",
+            parts=[
+                {"text": "dossier"},
+                {"inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": "AAAA",
+                }},
+            ],
+            response_schema={"type": "object"},
+            thinking_level="HIGH",
+        )
+        batch = prompts.batch_record(semantic)
+        self.assertNotIn(
+            "mediaResolution",
+            batch["request"]["generationConfig"])
+        online = prompts.online_request_from_batch(
+            batch["key"], batch["request"])
+        self.assertNotIn("media_resolution", online["config"])
+        self.assertNotIn(
+            "media_resolution", online["contents"][0]["parts"][1])
+
+    def test_mixed_or_partial_ultra_high_placement_is_rejected(self):
+        record = prompts.build_request(
+            "stem0", self.IMAGES, prompt_type="osm_tags_farfield",
+            media_resolution="MEDIA_RESOLUTION_ULTRA_HIGH",
+            thinking_level="LOW")
+        request = record["request"]
+        del request["contents"][0]["parts"][0]["media_resolution"]
+        with self.assertRaisesRegex(ValueError, "every image part"):
+            prompts.online_request_from_batch(record["key"], request)
+
 
 if __name__ == "__main__":
     unittest.main()

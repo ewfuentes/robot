@@ -1,6 +1,6 @@
 """Tests for the matcher, on a tiny synthetic run. No network anywhere:
 requests are built with --build_only, results are fabricated in the shape
-vertex_batch_manager writes, and aggregation runs with --aggregate_only."""
+the stage transport writes, and aggregation runs with --aggregate_only."""
 
 import hashlib
 import json
@@ -38,7 +38,13 @@ def write_feather(path: Path) -> Path:
         ids=["('node', 101)", "('node', 102)", "('node', 103)",
              "('lights', 7)", "('node', 999)"],
         geometries=[
-            shapely.Point(ANCHOR_LON + 0.001, ANCHOR_LAT + 0.001),
+            shapely.Polygon([
+                (ANCHOR_LON + 0.0008, ANCHOR_LAT + 0.0008),
+                (ANCHOR_LON + 0.0012, ANCHOR_LAT + 0.0008),
+                (ANCHOR_LON + 0.0012, ANCHOR_LAT + 0.0012),
+                (ANCHOR_LON + 0.0008, ANCHOR_LAT + 0.0012),
+                (ANCHOR_LON + 0.0008, ANCHOR_LAT + 0.0008),
+            ]),
             shapely.Point(ANCHOR_LON + 0.002, ANCHOR_LAT + 0.001),
             shapely.Point(ANCHOR_LON + 0.002, ANCHOR_LAT + 0.002),
             shapely.Point(ANCHOR_LON - 0.001, ANCHOR_LAT - 0.001),
@@ -180,6 +186,15 @@ def write_bound_inputs(root: Path):
             generator="test:catalog",
             git_commit="test",
             arguments=(),
+            config={
+                "schema": schema.FULL_ARTIFACT_SCHEMA,
+                "source_coverage": {
+                    "schema": "farfield_catalog_source_coverage/v2",
+                    "status": "passed",
+                    "message": "all requested source area covered",
+                    "details": [],
+                },
+            },
             declared_outputs=("catalog.feather",)) as builder:
         write_feather(builder.output_path("catalog.feather"))
     return tracks_dir, audit_dir, catalog_dir
@@ -269,17 +284,41 @@ class SignatureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             feather = write_feather(Path(tmp) / "cat.feather")
             table = ml.build_map_signatures(feather)
-            self.assertEqual(
-                set(table),
-                {"man_made=lighthouse; name=Graves Light",
-                 "man_made=tower",
-                 "object_class=LIGHTS"})
-            self.assertEqual(table["man_made=lighthouse; name=Graves Light"],
+            lighthouse = ml.signature({
+                "man_made": "lighthouse", "name": "Graves Light"})
+            tower = ml.signature({"man_made": "tower"})
+            lights = ml.signature({"object_class": "LIGHTS"})
+            self.assertEqual(set(table), {lighthouse, tower, lights})
+            self.assertTrue(all(key.startswith("sha256:") for key in table))
+            self.assertEqual(table[lighthouse]["display_label"],
+                             "man_made=lighthouse; name=Graves Light")
+            self.assertEqual(table[lighthouse]["landmark_ids"],
                              ["osm:node:101"])
-            self.assertEqual(sorted(table["man_made=tower"]),
+            self.assertEqual(sorted(table[tower]["landmark_ids"]),
                              ["osm:node:102", "osm:node:103"])
             # ENC row keeps its source prefix; the untagged row is gone.
-            self.assertEqual(table["object_class=LIGHTS"], ["enc:lights:7"])
+            self.assertEqual(table[lights]["landmark_ids"], ["enc:lights:7"])
+
+    def test_digest_identity_does_not_confuse_delimiter_text(self):
+        # Both old display strings are "a=b; c=d"; canonical tag JSON differs.
+        self.assertEqual(
+            ml.signature_display({"a": "b; c=d"}),
+            ml.signature_display({"a": "b", "c": "d"}))
+        self.assertNotEqual(
+            ml.signature({"a": "b; c=d"}),
+            ml.signature({"a": "b", "c": "d"}))
+
+    def test_repeated_global_catalog_id_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "duplicate.feather"
+            schema.build_frame(
+                ids=["node:1", "osm:node:1"],
+                geometries=[shapely.Point(0, 0), shapely.Point(0, 0)],
+                landmark_types=["osm", "osm"],
+                tags=[{"man_made": "tower"}, {"man_made": "tower"}],
+            ).to_feather(path)
+            with self.assertRaisesRegex(ValueError, "globally namespaced"):
+                ml.build_map_signatures(path)
 
 
 class ConfidenceMathTest(unittest.TestCase):
@@ -290,7 +329,7 @@ class ConfidenceMathTest(unittest.TestCase):
         self.assertEqual(ml.to_log_lr(0.0), -4.0)  # clipped
 
     def test_global_no_match(self):
-        matches = {"a": (0.7, "instance", "sig")}
+        matches = {"a": {"aggregate_confidence": 0.7}}
         self.assertAlmostEqual(ml.global_no_match(matches, [0.9, 0.9]), 0.3)
         self.assertAlmostEqual(ml.global_no_match({}, [0.8, 0.6]), 0.7)
         self.assertEqual(ml.global_no_match({}, []), 1.0)
@@ -315,7 +354,7 @@ class ResponseValidationTest(unittest.TestCase):
     metadata = {
         "batch_keys": ["T1", "T2"],
         "chunk_index": 0,
-        "chunk_signatures": ["man_made=lighthouse", "man_made=tower"],
+        "chunk_signature_ids": ["sig-lighthouse", "sig-tower"],
     }
 
     @staticmethod
@@ -388,6 +427,11 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
             "--orchestration_config_digest", orchestration_digest,
             "--online",
         ]
+        self.aggregate_flags = [
+            "--dataset", DATASET,
+            "--output_dir", str(self.match_dir),
+            "--aggregate_only",
+        ]
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -402,28 +446,36 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         match for T2 that must be dropped."""
         snapshot = llm_lifecycle.load_request_set(
             self.work_dir / llm_lifecycle.REQUEST_SET_NAME)
+        semantic = json.loads(
+            (self.work_dir / ml.WORK_SNAPSHOT_NAME).read_text())
+        by_display = {
+            entry["display_label"]: signature_id
+            for signature_id, entry in semantic["signatures"].items()
+        }
+        lighthouse = by_display["man_made=lighthouse; name=Graves Light"]
+        tower = by_display["man_made=tower"]
+        lights = by_display["object_class=LIGHTS"]
         with open(self.work_dir / ml.TRANSPORT_RESULTS_NAME, "w") as f:
             for unit in snapshot.units:
                 key = unit.key
                 record = unit.metadata
-                chunk = record["chunk_signatures"]
+                chunk = record["chunk_signature_ids"]
                 entries = []
                 for i, tid in enumerate(record["batch_keys"]):
                     local_id = tid.rsplit("#", 1)[-1]
                     set_2 = []
                     if (local_id == "T1" and
-                            "man_made=lighthouse; name=Graves Light" in chunk):
+                            lighthouse in chunk):
                         set_2.append({
-                            "set_2_id": chunk.index(
-                                "man_made=lighthouse; name=Graves Light"),
+                            "set_2_id": chunk.index(lighthouse),
                             "match_type": "instance", "confidence": 0.9})
-                    if local_id == "T2" and "man_made=tower" in chunk:
+                    if local_id == "T2" and tower in chunk:
                         set_2.append({
-                            "set_2_id": chunk.index("man_made=tower"),
+                            "set_2_id": chunk.index(tower),
                             "match_type": "instance", "confidence": 0.6})
-                    if local_id == "T2" and "object_class=LIGHTS" in chunk:
+                    if local_id == "T2" and lights in chunk:
                         set_2.append({
-                            "set_2_id": chunk.index("object_class=LIGHTS"),
+                            "set_2_id": chunk.index(lights),
                             "match_type": "category", "confidence": 0.01})
                     entries.append({"set_1_id": i, "set_2_matches": set_2,
                                     "no_match_confidence":
@@ -459,7 +511,8 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         # --- signatures.json -------------------------------------------------
         signatures = json.loads(
             (self.work_dir / ml.SIGNATURES_NAME).read_text())
-        self.assertEqual(sorted(signatures["man_made=tower"]),
+        tower_id = ml.signature({"man_made": "tower"})
+        self.assertEqual(sorted(signatures[tower_id]["landmark_ids"]),
                          ["osm:node:102", "osm:node:103"])
         snapshot = llm_lifecycle.load_request_set(
             self.work_dir / llm_lifecycle.REQUEST_SET_NAME)
@@ -471,7 +524,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         # --- aggregate --------------------------------------------------------
         self._fabricate_results()
-        run_main(self.flags + ["--aggregate_only"])
+        run_main(self.aggregate_flags)
 
         # Raw provider output is retained as bound attempts, while the only
         # publishable aggregation input is complete canonical output.
@@ -514,6 +567,10 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertEqual(settings["n_set1"], 2)
         self.assertEqual(settings["n_signatures"], 3)
         self.assertEqual(settings["required_result_coverage"], "complete")
+        self.assertEqual(settings["score_contract"]["score_policy"],
+                         "clipped_logit_compat_v1")
+        self.assertEqual(settings["score_contract"]["score_calibration"],
+                         "uncalibrated")
         self.assertEqual(settings["request_set_fingerprint"],
                          snapshot.fingerprint)
         self.assertNotIn("min_supports", settings)
@@ -530,8 +587,13 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertEqual(t1["matches"][0]["landmark_id"], "osm:node:101")
         self.assertEqual(t1["matches"][0]["match_type"], "instance")
         # Global null is 1 - best confidence, not a per-slice fusion.
-        self.assertAlmostEqual(t1["no_match_confidence"], 0.1)
-        self.assertEqual(t1["per_slice_no_match"]["n"], 2)
+        self.assertAlmostEqual(t1["aggregate_no_match_confidence"], 0.1)
+        self.assertEqual(t1["per_call_no_match_confidence"]["n"], 2)
+        self.assertEqual(t1["uniqueness"], {
+            "aggregate_score": 4.0,
+            "per_call_scores": [4, 4],
+            "aggregation_rule": "arithmetic_mean_across_calls_v1",
+        })
 
         t2 = matches_by_local["T2"]
         # The signature expanded to 2 rows > --instance_max_rows 1, so the
@@ -541,7 +603,13 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertEqual(t2["n_downgraded_to_category"], 2)
         for m in t2["matches"]:
             self.assertEqual(m["match_type"], "category")
-            self.assertAlmostEqual(m["confidence"], 0.6)
+            self.assertEqual(m["per_call_candidate_scores"], [0.6])
+            self.assertNotIn("candidate_score", m)
+            self.assertAlmostEqual(m["aggregate_confidence"], 0.6)
+            self.assertEqual(
+                m["aggregation_rule"],
+                "maximum_per_landmark_across_calls_v1")
+            self.assertTrue(m["signature_id"].startswith("sha256:"))
         self.assertNotIn("enc:lights:7",
                          [m["landmark_id"] for m in t2["matches"]])
 
@@ -554,7 +622,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         import math
         t1_table = by_id["T1"]
-        self.assertEqual(t1_table.matcher_version, "llm_chunked_v1_high")
+        self.assertEqual(t1_table.matcher_version, "llm_chunked_v2_high")
         self.assertEqual(len(t1_table.entries), 1)
         self.assertAlmostEqual(t1_table.entries[0].log_lr,
                                math.log(0.9 / 0.1), places=6)
@@ -578,6 +646,32 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
             run_main(flags + ["--build_only"])
         self.assertIn("input artifact", str(ctx.exception))
 
+    def test_catalog_without_passed_source_coverage_is_rejected(self):
+        failed_dir = Path(self._tmp.name) / "failed-catalog" / CATALOG_VERSION
+        with artifact.ArtifactDirectoryBuilder(
+                failed_dir,
+                kind=paths_lib.CATALOGS,
+                dataset=DATASET,
+                version=CATALOG_VERSION,
+                generator="test:failed-catalog",
+                git_commit="test",
+                arguments=(),
+                config={
+                    "schema": schema.FULL_ARTIFACT_SCHEMA,
+                    "source_coverage": {
+                        "schema": "farfield_catalog_source_coverage/v2",
+                        "status": "failed",
+                        "message": "requested source area is incomplete",
+                        "details": [],
+                    },
+                },
+                declared_outputs=("catalog.feather",)) as builder:
+            write_feather(builder.output_path("catalog.feather"))
+        flags = list(self.flags)
+        flags[flags.index("--catalog_dir") + 1] = str(failed_dir)
+        with self.assertRaisesRegex(SystemExit, "status='passed'"):
+            run_main(flags + ["--build_only"])
+
     def test_one_missing_request_refuses_all_publication(self):
         self._build()
         self._fabricate_results()
@@ -588,7 +682,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 llm_lifecycle.IncompleteCoverageError,
                 "complete, unique successful coverage"):
-            run_main(self.flags + ["--aggregate_only"])
+            run_main(self.aggregate_flags)
         self.assertFalse(self.match_dir.exists())
 
     def test_duplicate_success_refuses_ambiguous_selection(self):
@@ -600,12 +694,47 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 llm_lifecycle.IncompleteCoverageError,
                 "duplicate valid responses"):
-            run_main(self.flags + ["--aggregate_only"])
+            run_main(self.aggregate_flags)
         self.assertFalse(self.match_dir.exists())
 
     def test_model_cannot_override_build_config(self):
         with self.assertRaises(SystemExit):
             run_main(self.flags + ["--model", "other", "--build_only"])
+
+    def test_nonpositive_execution_controls_are_rejected(self):
+        for flag in ("--parallel", "--poll_interval"):
+            with self.subTest(flag=flag), self.assertRaises(SystemExit):
+                run_main(self.flags + [flag, "0", "--build_only"])
+
+    def test_aggregate_does_not_reopen_mutable_semantic_inputs(self):
+        self._build()
+        self._fabricate_results()
+        self.tracks_dir.rename(self.tracks_dir.with_name("tracks-moved"))
+        self.audit_dir.rename(self.audit_dir.with_name("audits-moved"))
+        self.catalog_dir.rename(self.catalog_dir.with_name("catalog-moved"))
+        self.build_config.rename(self.build_config.with_name("recipe-moved"))
+        run_main(self.aggregate_flags)
+        self.assertTrue((self.match_dir / ml.MATCHES_NAME).is_file())
+
+    def test_aggregate_rejects_mutable_replacement_inputs(self):
+        self._build()
+        with self.assertRaises(SystemExit):
+            run_main(self.aggregate_flags + [
+                "--catalog_dir", str(self.catalog_dir)])
+
+    def test_aggregate_rejects_snapshot_semantics_not_bound_to_requests(self):
+        self._build()
+        self._fabricate_results()
+        snapshot_path = self.work_dir / ml.WORK_SNAPSHOT_NAME
+        snapshot = json.loads(snapshot_path.read_text())
+        first = sorted(snapshot["queries"])[0]
+        snapshot["queries"][first] += "\nforged semantic replacement"
+        snapshot_path.write_text(
+            artifact.canonical_json_bytes(snapshot).decode() + "\n")
+        with self.assertRaisesRegex(
+                SystemExit, "do not exactly encode the frozen queries"):
+            run_main(self.aggregate_flags)
+        self.assertFalse(self.match_dir.exists())
 
 
 if __name__ == "__main__":

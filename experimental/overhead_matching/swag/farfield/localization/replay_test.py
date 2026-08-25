@@ -22,6 +22,7 @@ is used and that a manifest without one is unreplayable, never guessed at.
 """
 
 import dataclasses
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -170,6 +171,18 @@ class ReplayFidelityTest(unittest.TestCase):
                                        VISIBLE_RANGE_M)
             self.assertEqual(inputs.max_visible_range_m, VISIBLE_RANGE_M)
 
+    def test_replay_catalog_preserves_recorded_position_uncertainty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, _, _ = _harbor_run(Path(tmp))
+            data = run_io.read_run(run_dir)
+            inputs = replay_mod.load_inputs(run_dir, data=data)
+            expected = np.array(
+                [landmark.position_sigma_m
+                 for landmark in data.manifest.landmarks])
+            np.testing.assert_array_equal(
+                inputs.catalog.position_sigma_m, expected)
+            self.assertTrue(np.all(expected > 0.0))
+
     def test_missing_visible_range_is_unreplayable_not_assumed(self):
         """A manifest without the radius cannot exist under schema 0.3; a
         hand-mutilated one must be reported unreplayable, never replayed
@@ -229,6 +242,34 @@ class ReplayFidelityTest(unittest.TestCase):
             self.assertFalse(result.hash_match)
             self.assertIn("DIVERGED", result.report())
 
+    def test_edited_replay_first_requires_matching_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, data, _ = _harbor_run(Path(tmp))
+            raw = msgspec.json.decode(
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
+            raw["particle_history_sha256"] = "0" * 64
+            _write_tampered_run_manifest(run_dir, raw)
+            victim = data.measurements[0].tracklet_id
+            with self.assertRaisesRegex(
+                    replay_mod.ReplayDivergence,
+                    "unedited baseline diverged"):
+                replay_mod.replay(
+                    run_dir,
+                    edits=replay_mod.Edits(drop_tracklets=(victim,)))
+
+    def test_hashless_baseline_is_not_replayable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, _, _ = _harbor_run(Path(tmp))
+            raw = msgspec.json.decode(
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
+            raw["particle_history_sha256"] = ""
+            _write_tampered_run_manifest(run_dir, raw)
+            status = replay_mod.replayability(run_dir)
+            self.assertFalse(status.has_particle_history_hash)
+            self.assertFalse(status.replayable)
+            with self.assertRaises(ValueError):
+                replay_mod.replay(run_dir)
+
 
 class EditsTest(unittest.TestCase):
     def test_dropping_a_tracklet_removes_only_its_measurements(self):
@@ -286,6 +327,34 @@ class EditsTest(unittest.TestCase):
             self.assertEqual(entries[fresh], 2.5)
             self.assertTrue(existing <= set(entries))
 
+    def test_unknown_edit_identities_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, data, _ = _harbor_run(Path(tmp))
+            inputs = replay_mod.load_inputs(run_dir)
+            tracklet_id = next(iter(inputs.tables))
+            with self.assertRaisesRegex(ValueError, "unknown IDs"):
+                replay_mod.apply_edits(inputs, replay_mod.Edits(
+                    drop_tracklets=("misspelled-tracklet",)))
+            with self.assertRaisesRegex(ValueError, "unknown landmark"):
+                replay_mod.apply_edits(inputs, replay_mod.Edits(
+                    force_landmark={tracklet_id: "not-in-catalog"}))
+            with self.assertRaisesRegex(ValueError, "unknown landmarks"):
+                replay_mod.apply_edits(inputs, replay_mod.Edits(
+                    log_lr={tracklet_id: {"not-in-catalog": 1.0}}))
+
+    def test_noop_and_conflicting_edits_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, _, _ = _harbor_run(Path(tmp))
+            inputs = replay_mod.load_inputs(run_dir)
+            tracklet_id = inputs.measurements[0].tracklet_id
+            with self.assertRaisesRegex(ValueError, "no-op"):
+                replay_mod.apply_edits(inputs, replay_mod.Edits(
+                    pi0=inputs.config.pi0))
+            with self.assertRaisesRegex(ValueError, "both dropped and"):
+                replay_mod.apply_edits(inputs, replay_mod.Edits(
+                    drop_tracklets=(tracklet_id,),
+                    keep_only_tracklets=(tracklet_id,)))
+
     def test_config_edits_are_applied_and_isolated(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir, _, _, config = _harbor_run(Path(tmp))
@@ -308,9 +377,16 @@ class EditsTest(unittest.TestCase):
     def test_default_counterfactual_dir_is_a_sibling_sidecar(self):
         """A ghost must not mutate the completed artifact it questions."""
         edits = replay_mod.Edits(drop_tracklets=("LT7",))
-        out = replay_mod.default_counterfactual_dir(Path("/data/run_x"), edits)
-        self.assertEqual(out.parent, Path("/data/run_x.counterfactuals"))
+        out = replay_mod.default_counterfactual_dir(Path("/tmp/run_x"), edits)
+        self.assertEqual(out.parent, Path("/tmp/run_x.counterfactuals"))
         self.assertEqual(out.name, edits.slug())
+
+    def test_counterfactual_slug_includes_full_edit_digest(self):
+        common = "tracklet-" + "x" * 100
+        first = replay_mod.Edits(drop_tracklets=(common + "a",))
+        second = replay_mod.Edits(drop_tracklets=(common + "b",))
+        self.assertNotEqual(first.slug(), second.slug())
+        self.assertLessEqual(len(first.slug()), 78)
 
     def test_counterfactual_writes_a_readable_run_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -320,6 +396,7 @@ class EditsTest(unittest.TestCase):
             result = replay_mod.replay(
                 run_dir, edits=replay_mod.Edits(drop_tracklets=(victim,)))
             self.assertIsNone(result.hash_match)
+            self.assertTrue(result.baseline_hash_match)
             self.assertFalse(result.faithful)
 
             ghost_dir = tmp / "ghost"
@@ -329,6 +406,12 @@ class EditsTest(unittest.TestCase):
             self.assertIn(victim, ghost.manifest.scenario_name)
             self.assertEqual(ghost.manifest.particle_history_sha256,
                              result.history.particle_history_sha256)
+            self.assertNotEqual(ghost.manifest.git_commit, "test")
+            self.assertNotEqual(ghost.manifest.argv, ["replay_test"])
+            counterfactual = msgspec.json.decode(
+                (ghost_dir / "counterfactual.json").read_bytes())
+            self.assertTrue(counterfactual["baseline_hash_verified"])
+            self.assertEqual(len(counterfactual["edit_digest"]), 64)
             # The ghost is itself replayable: forensics can recurse.
             self.assertTrue(replay_mod.replay(ghost_dir).hash_match)
 
@@ -462,6 +545,52 @@ class AttributionTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 attribution.read_cache(run_dir, expected_sha256="f" * 64)
+
+    def test_cache_rejects_truncated_payload_and_bad_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _harbor_run(Path(tmp))
+            cache, _ = attribution.compute(run_dir)
+            attribution.write_cache(run_dir, cache)
+            directory = attribution.cache_dir(run_dir)
+            meta_path = directory / attribution.META_NAME
+            meta = json.loads(meta_path.read_text())
+            payload = directory / meta["payload_file"]
+            original_payload = payload.read_bytes()
+            payload.write_bytes(original_payload[:-20])
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                attribution.read_cache(
+                    run_dir,
+                    expected_sha256=cache.particle_history_sha256)
+
+            payload.write_bytes(original_payload)
+            meta = json.loads(meta_path.read_text())
+            meta["n_contributions"] += 1
+            meta_path.write_text(json.dumps(meta))
+            with self.assertRaisesRegex(ValueError, "row count"):
+                attribution.read_cache(
+                    run_dir,
+                    expected_sha256=cache.particle_history_sha256)
+
+    def test_cache_rejects_stale_algorithm_and_missing_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _harbor_run(Path(tmp))
+            cache, _ = attribution.compute(run_dir)
+            attribution.write_cache(run_dir, cache)
+            meta_path = attribution.cache_dir(run_dir) / attribution.META_NAME
+            meta = json.loads(meta_path.read_text())
+            meta["algorithm"] = "old-attribution/v0"
+            meta_path.write_text(json.dumps(meta))
+            with self.assertRaisesRegex(ValueError, "stale attribution"):
+                attribution.read_cache(run_dir)
+
+            attribution.write_cache(run_dir, cache)
+            meta = json.loads(meta_path.read_text())
+            meta["particle_history_sha256"] = ""
+            meta_path.write_text(json.dumps(meta))
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                attribution.read_cache(run_dir)
 
     def test_read_cache_is_none_when_absent(self):
         with tempfile.TemporaryDirectory() as tmp:

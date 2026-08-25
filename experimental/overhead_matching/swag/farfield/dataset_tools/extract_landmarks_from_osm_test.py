@@ -11,9 +11,13 @@ from unittest import mock
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from common.openstreetmap import extract_landmarks_python as elm
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     extract_landmarks_from_osm as subject,
+)
+from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    source_publication,
 )
 
 
@@ -72,13 +76,6 @@ class ValidationTest(unittest.TestCase):
         ):
             with self.subTest(bbox=bbox), self.assertRaises(ValueError):
                 subject.validate_bbox(bbox)
-
-    def test_node_margin_requires_explicit_full_or_bounded_mode(self):
-        self.assertEqual(subject.validate_node_margin_deg(-1), -1.0)
-        self.assertEqual(subject.validate_node_margin_deg(0.25), 0.25)
-        for value in (-0.1, float("inf"), True, "not-a-number"):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                subject.validate_node_margin_deg(value)
 
     def test_filters_include_farfield_osm_families(self):
         self.assertTrue({
@@ -183,6 +180,51 @@ class CompactFrameTest(unittest.TestCase):
 
 
 class PublicationTest(unittest.TestCase):
+    def test_smart_preextract_preserves_complete_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "country.osm.pbf"
+            source.write_bytes(b"country")
+            output = root / "catalog"
+            commands = []
+
+            def run(command, **kwargs):
+                commands.append((command, kwargs))
+                if command[1] == "--version":
+                    return SimpleNamespace(stdout="osmium version 1.16.0\n")
+                partial = Path(command[command.index("--output") + 1])
+                partial.write_bytes(b"bounded-pbf")
+                return SimpleNamespace(stdout="")
+
+            with mock.patch.object(subject.subprocess, "run", side_effect=run):
+                bounded, identity = subject.smart_preextract(
+                    source, (-71.2, 41.8, -70.8, 42.2), output,
+                    osmium_binary="test-osmium")
+
+            self.assertEqual(commands[0][0], ["test-osmium", "--version"])
+            self.assertTrue(bounded.parent.name.startswith(".catalog.smart."))
+            self.assertTrue(bounded.parent.name.endswith(".incomplete"))
+            self.assertEqual(commands[1][0], [
+                "test-osmium",
+                "extract",
+                "--strategy",
+                "smart",
+                "--bbox",
+                "-71.2,41.8,-70.8,42.2",
+                "--output",
+                str(bounded.parent / "bounded.partial.osm.pbf"),
+                str(source),
+            ])
+            self.assertEqual(bounded.name, "bounded.osm.pbf")
+            self.assertEqual(bounded.read_bytes(), b"bounded-pbf")
+            self.assertEqual(identity["strategy"], "smart")
+            self.assertEqual(identity["osmium_version"], "osmium version 1.16.0")
+            self.assertEqual(
+                identity["sha256"],
+                hashlib.sha256(b"bounded-pbf").hexdigest())
+            self.assertFalse(
+                (root / ".catalog.smart.partial.osm.pbf").exists())
+
     def test_main_writes_compact_feather_and_extraction_provenance(self):
         extracted = feature(
             elm.OsmType.NODE,
@@ -199,10 +241,22 @@ class PublicationTest(unittest.TestCase):
             pbf = root / "source.osm.pbf"
             pbf.write_bytes(b"small hermetic stand-in")
             output = root / "catalog"
+            bounded = root / ".catalog.smart.osm.pbf"
+            bounded.write_bytes(b"bounded stand-in")
+            preextract = {
+                "osmium_version": "osmium version test",
+                "strategy": "smart",
+                "bbox_wgs84": [-71.2, 41.8, -70.8, 42.2],
+                "size_bytes": bounded.stat().st_size,
+                "sha256": subject._sha256(bounded),
+            }
 
             with mock.patch.object(
                     subject.elm, "extract_landmarks",
-                    return_value=[(subject.REGION_ID, extracted)]) as extract:
+                    return_value=[(subject.REGION_ID, extracted)]) as extract, \
+                 mock.patch.object(
+                     subject, "smart_preextract",
+                     return_value=(bounded, preextract)) as preextract_call:
                 with mock.patch.object(
                         subject.provenance, "git_commit",
                         return_value="abc123"):
@@ -210,18 +264,23 @@ class PublicationTest(unittest.TestCase):
                         pbf,
                         (-71.2, 41.8, -70.8, 42.2),
                         output,
-                        0.5,
+                    )
+                    reused = subject.main(
+                        pbf,
+                        (-71.2, 41.8, -70.8, 42.2),
+                        output,
                     )
 
             feather = output.with_suffix(".feather")
             sidecar = output.with_suffix(".provenance.json")
             persisted = schema.read_frame(feather)
             self.assertEqual(returned["id"].tolist(), ["osm:node:42"])
+            self.assertEqual(reused["id"].tolist(), ["osm:node:42"])
             self.assertEqual(persisted["id"].tolist(), ["osm:node:42"])
             self.assertEqual(list(persisted.columns), list(schema.META_COLUMNS))
 
             args, _ = extract.call_args
-            self.assertEqual(args[0], str(pbf))
+            self.assertEqual(args[0], str(bounded))
             self.assertEqual(set(args[1]), {subject.REGION_ID})
             self.assertEqual(
                 (args[1][subject.REGION_ID].left_deg,
@@ -232,10 +291,15 @@ class PublicationTest(unittest.TestCase):
             )
             self.assertTrue(args[2]["place"])
             self.assertTrue(args[2]["seamark:type"])
-            self.assertEqual(args[3], 0.5)
+            self.assertEqual(len(args), 3)
+            self.assertEqual(extract.call_count, 1)
+            self.assertEqual(preextract_call.call_count, 1)
 
             record = json.loads(sidecar.read_text())
-            self.assertEqual(record["schema"], subject.PROVENANCE_SCHEMA)
+            self.assertEqual(
+                record["schema"],
+                source_publication.SOURCE_PROVENANCE_SCHEMA)
+            self.assertTrue(record["complete"])
             self.assertEqual(record["git_commit"], "abc123")
             self.assertEqual(
                 record["arguments"]["bbox_wgs84"],
@@ -243,19 +307,21 @@ class PublicationTest(unittest.TestCase):
             )
             self.assertEqual(
                 record["arguments"]["geometry_index_mode"],
-                "bounded_degraded",
+                "smart_preextract_then_full_index",
             )
             self.assertEqual(
                 record["inputs"]["pbf"]["sha256"],
                 hashlib.sha256(pbf.read_bytes()).hexdigest(),
             )
+            self.assertEqual(record["inputs"]["smart_preextract"], preextract)
             self.assertEqual(record["diagnostics"]["rows_out"], 1)
             self.assertEqual(record["diagnostics"]["by_osm_type"], {"node": 1})
             self.assertEqual(record["diagnostics"]["seamark_type_rows"], 1)
             self.assertEqual(
-                record["output"]["columns"], list(schema.META_COLUMNS))
+                record["output_contract"]["columns"],
+                list(schema.META_COLUMNS))
             self.assertEqual(
-                record["output"]["sha256"], subject._sha256(feather))
+                record["output_sha256"], artifact.sha256_file(feather))
             self.assertEqual(list(root.glob("*.partial.*")), [])
             self.assertEqual(list(root.glob(".*.partial.*")), [])
 
@@ -265,17 +331,30 @@ class PublicationTest(unittest.TestCase):
             pbf = root / "source.osm.pbf"
             pbf.write_bytes(b"empty result stand-in")
             output = root / "empty.feather"
+            bounded = root / ".empty.smart.osm.pbf"
+            bounded.write_bytes(b"bounded stand-in")
             with mock.patch.object(
-                    subject.elm, "extract_landmarks", return_value=[]):
+                    subject.elm, "extract_landmarks", return_value=[]), \
+                 mock.patch.object(
+                     subject, "smart_preextract",
+                     return_value=(bounded, {
+                         "osmium_version": "test",
+                         "strategy": "smart",
+                         "bbox_wgs84": [-71.2, 41.8, -70.8, 42.2],
+                         "size_bytes": bounded.stat().st_size,
+                         "sha256": subject._sha256(bounded),
+                     })):
                 frame = subject.main(
-                    pbf, (-71.2, 41.8, -70.8, 42.2), output, -1)
+                    pbf, (-71.2, 41.8, -70.8, 42.2), output)
 
             self.assertEqual(len(frame), 0)
             persisted = schema.read_frame(output)
             self.assertEqual(len(persisted), 0)
             record = json.loads(
                 output.with_suffix(".provenance.json").read_text())
-            self.assertEqual(record["arguments"]["geometry_index_mode"], "full")
+            self.assertEqual(
+                record["arguments"]["geometry_index_mode"],
+                "smart_preextract_then_full_index")
             self.assertEqual(record["diagnostics"]["rows_out"], 0)
             self.assertIsNone(
                 record["diagnostics"]["geometry_bounds_wgs84"])

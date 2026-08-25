@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -25,12 +26,17 @@ def fabricate_results(match_dir: Path) -> None:
     work_dir = ml.matching_work_dir(match_dir)
     snapshot = llm_lifecycle.load_request_set(
         work_dir / llm_lifecycle.REQUEST_SET_NAME)
-    lighthouse = "man_made=lighthouse; name=Graves Light"
+    semantic = json.loads(
+        (work_dir / ml.WORK_SNAPSHOT_NAME).read_text())
+    lighthouse = next(
+        signature_id for signature_id, entry in semantic["signatures"].items()
+        if entry["display_label"]
+        == "man_made=lighthouse; name=Graves Light")
     with open(work_dir / ml.TRANSPORT_RESULTS_NAME, "w") as f:
         for unit in snapshot.units:
             key = unit.key
             record = unit.metadata
-            chunk = record["chunk_signatures"]
+            chunk = record["chunk_signature_ids"]
             entries = []
             for i, tid in enumerate(record["batch_keys"]):
                 local_id = tid.rsplit("#", 1)[-1]
@@ -87,7 +93,11 @@ class ViewerTest(unittest.TestCase):
         ]
         run_main(ml, cls.match_flags + ["--build_only"])
         fabricate_results(cls.match_dir)
-        run_main(ml, cls.match_flags + ["--aggregate_only"])
+        run_main(ml, [
+            "--dataset", DATASET,
+            "--output_dir", str(cls.match_dir),
+            "--aggregate_only",
+        ])
 
         cls.calibration_path = cls.root / "nominal_forward.json"
         pano_width = 360
@@ -118,7 +128,7 @@ class ViewerTest(unittest.TestCase):
         return [
             "--dataset", DATASET,
             "--dataset_base", str(self.dataset_base),
-            "--matches_dir", str(self.match_dir),
+            "--matching_dir", str(self.match_dir),
             "--tracks_dir", str(self.tracks_dir),
             "--audit_dir", str(self.audit_dir),
             "--catalog_dir", str(self.catalog_dir),
@@ -128,6 +138,17 @@ class ViewerTest(unittest.TestCase):
 
     def _page(self, output_name):
         return self.root / output_name / "index.html"
+
+    def test_file_backed_assets_render_one_self_contained_page(self):
+        rendered = mv.render_page(["<main>sentinel</main>"])
+        self.assertTrue(rendered.startswith(
+            "<html><head><title>matches</title><meta charset='utf-8'><style>"))
+        self.assertIn("<main>sentinel</main>", rendered)
+        self.assertIn(".mapcol{position:sticky", rendered)
+        self.assertNotIn("@@STYLE@@", rendered)
+        self.assertNotIn("@@BODY@@", rendered)
+        self.assertNotIn("<link ", rendered)
+        self.assertNotIn("<script src=", rendered)
 
     def test_no_map_page_renders(self):
         run_main(
@@ -140,6 +161,11 @@ class ViewerTest(unittest.TestCase):
         # not next(glob)).
         self.assertIn("track_seg0_T1.html", page)
         self.assertIn("semantic_audit/review/index.html#T1", page)
+        self.assertIn("aggregate confidence", page)
+        self.assertNotIn("<th>probability</th>", page)
+        self.assertTrue(
+            (self._page("review-no-map").parent /
+             "identity_review_draft.json").is_file())
 
     def test_uniqueness_comes_from_complete_canonical_results(self):
         uniqueness = mv.load_uniqueness(self.match_dir)
@@ -200,6 +226,18 @@ class ViewerTest(unittest.TestCase):
         self.assertTrue(by_local["T1"]["rays"])
         target_ids = [t[4] for t in by_local["T1"]["targets"]]
         self.assertIn("osm:node:101", target_ids)
+        lighthouse = next(
+            target for target in by_local["T1"]["targets"]
+            if target[4] == "osm:node:101")
+        # The polygon's complete closed convex hull is embedded, not sampled.
+        self.assertEqual(len(lighthouse[10]), 10)
+        hull_e = lighthouse[10][0::2]
+        hull_n = lighthouse[10][1::2]
+        self.assertLessEqual(payload["bounds"][0], min(hull_e))
+        self.assertGreaterEqual(payload["bounds"][1], max(hull_e))
+        self.assertLessEqual(payload["bounds"][2], min(hull_n))
+        self.assertGreaterEqual(payload["bounds"][3], max(hull_n))
+        self.assertIn("const hull = g[10] || []", page)
         # Self-contained page: provenance manifest beside it.
         self.assertTrue(
             (self._page("review-map").parent / "manifest.json").exists())
@@ -224,6 +262,26 @@ class ViewerTest(unittest.TestCase):
             bare.mkdir()
             with self.assertRaises(SystemExit):
                 mv.load_settings(bare)
+
+    def test_sparse_frame_ids_use_real_frame_mapping(self):
+        frames = [types.SimpleNamespace(frame_idx=10),
+                  types.SimpleNamespace(frame_idx=40)]
+        lookup = mv.frame_pose_lookup(
+            frames, [1.0, 2.0], [3.0, 4.0], [90.0, 180.0])
+        self.assertEqual(lookup[40], (2.0, 4.0, 180.0))
+        self.assertNotIn(1, lookup)
+
+    def test_signed_circular_rotation_fit_handles_wrap_and_half_turn(self):
+        wrapped = mv.circular_fit_deg([179.0, -179.0, 180.0])
+        self.assertGreater(wrapped["resultant_length"], 0.99)
+        self.assertAlmostEqual(abs(wrapped["rotation_deg"]), 180.0, places=6)
+        self.assertLess(wrapped["median_abs_postfit_deg"], 2.0)
+        mixed = mv.circular_fit_deg([-80.0, 10.0, 100.0])
+        self.assertLess(mixed["resultant_length"], 0.5)
+        # A measured 10° ray toward a due-east (90°) row is 10 - 90 = -80°.
+        rays = [[0, 0.0, 0.0, 10.0, 0.0, 1.0]]
+        self.assertAlmostEqual(
+            mv.bearing_residual_deg(rays, 1.0, 0.0), -80.0)
 
 
 if __name__ == "__main__":

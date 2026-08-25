@@ -21,6 +21,7 @@ for every request.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -30,6 +31,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+import numpy as np
+from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
@@ -75,6 +79,7 @@ EXTRACTION_CONFIG_KEYS = (
 
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _RAW_SHARD_RE = re.compile(r"raw_(\d+)\.jsonl\Z")
+_PENDING_SHARD_RE = re.compile(r"pending_(\d+)\.jsonl\Z")
 _REF_IDENTITY_KEYS = frozenset({
     "kind", "dataset", "version", "manifest_digest", "content_digest",
 })
@@ -445,28 +450,18 @@ def load_context(args: argparse.Namespace) -> ExtractionContext:
 
 
 def _pinhole_outputs(context: ExtractionContext) -> tuple[str, ...]:
-    return tuple(sorted(
-        f"{stem}/{face}.jpg"
-        for stem in context.stems
-        for face in prompts.PINHOLE_FACES))
+    return paths_lib.pinhole_declared_outputs(context.stems)
 
 
 def _pinhole_config(context: ExtractionContext) -> dict[str, Any]:
-    return {
-        "orchestration": context.orchestration,
-        "build_identity": context.document["build_identity"],
-        "selected_config": context.selected,
-        "input_digests": context.input_digests,
-        "geometry": {
-            "fov_deg": 90.0,
-            "faces": list(prompts.PINHOLE_FACES),
-            "resolution_x": context.selected["extraction.pinhole_resolution"],
-            "resolution_y": context.selected["extraction.pinhole_resolution"],
-            "n_panoramas": len(context.frames),
-            "layout": "one directory per panorama stem; four JPEG faces",
-        },
-        "panorama_keys": list(context.stems),
+    source_digests = {
+        key: context.document["inputs"][key]
+        for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS
     }
+    return paths_lib.pinhole_manifest_config(
+        source_digests,
+        resolution=context.selected["extraction.pinhole_resolution"],
+        panorama_keys=context.stems)
 
 
 def _validate_manifest(path: Path, *, upstreams: Sequence[artifact.ArtifactRef],
@@ -481,6 +476,79 @@ def _validate_manifest(path: Path, *, upstreams: Sequence[artifact.ArtifactRef],
         raise ValueError(f"{path} has different declared outputs")
 
 
+def _decode_pinhole_face(path: Path, resolution: int) -> np.ndarray:
+    """Decode one required JPEG and enforce its exact pixel dimensions."""
+    try:
+        with Image.open(path) as image:
+            image.load()
+            if image.format != "JPEG":
+                raise ValueError(f"{path} is not a JPEG image")
+            if image.size != (resolution, resolution):
+                raise ValueError(
+                    f"{path} has dimensions {image.size[0]}x{image.size[1]}; "
+                    f"expected {resolution}x{resolution}")
+            return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
+    except OSError as error:
+        raise ValueError(f"{path} is not a decodable JPEG: {error}") from error
+
+
+def _sample_frame_indices(n_frames: int) -> tuple[int, ...]:
+    """Deterministic first/middle/last sample, without duplicate indices."""
+    return tuple(sorted({0, n_frames // 2, n_frames - 1}))
+
+
+def _expected_decoded_face(
+        panorama: np.ndarray, resolution: int, yaw_deg: int) -> np.ndarray:
+    projected = panorama_to_pinhole.reproject_pinhole(
+        panorama,
+        (resolution, resolution),
+        (FACE_FOV_RAD, FACE_FOV_RAD),
+        yaw=math.radians(yaw_deg),
+        pitch=0.0,
+    )
+    pixels = np.clip(projected * 255.0, 0, 255).astype(np.uint8)
+    encoded = io.BytesIO()
+    Image.fromarray(pixels).save(encoded, format="JPEG")
+    encoded.seek(0)
+    with Image.open(encoded) as image:
+        image.load()
+        return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
+
+
+def validate_pinhole_images(path: Path, context: ExtractionContext) -> None:
+    """Validate every face and reproduce all faces for three fixed panoramas."""
+    path = Path(path)
+    resolution = context.selected["extraction.pinhole_resolution"]
+    for relative in _pinhole_outputs(context):
+        _decode_pinhole_face(path / relative, resolution)
+
+    for index in _sample_frame_indices(len(context.frames)):
+        frame = context.frames[index]
+        panorama_path = context.panorama_dir / f"{frame.pano_stem}.jpg"
+        try:
+            with Image.open(panorama_path) as image:
+                image.load()
+                panorama = np.asarray(image, dtype=np.float32) / 255.0
+        except OSError as error:
+            raise ValueError(
+                f"{panorama_path} cannot reproduce pinhole validation "
+                f"samples: {error}") from error
+        if panorama.ndim != 3:
+            raise ValueError(
+                f"{panorama_path} must decode to a multi-channel image")
+        for face, yaw_deg in zip(prompts.PINHOLE_FACES, prompts.FACE_YAWS):
+            face_path = path / frame.pano_stem / f"{face}.jpg"
+            actual = _decode_pinhole_face(face_path, resolution)
+            expected = _expected_decoded_face(
+                panorama, resolution, yaw_deg)
+            if not np.array_equal(actual, expected):
+                difference = np.abs(
+                    actual.astype(np.int16) - expected.astype(np.int16))
+                raise ValueError(
+                    f"{face_path} does not reproduce its source panorama "
+                    f"(maximum channel difference {int(difference.max())})")
+
+
 def ensure_pinhole_artifact(
         args: argparse.Namespace, context: ExtractionContext,
         *, arguments: Sequence[str] = ()) -> artifact.ArtifactRef:
@@ -489,6 +557,7 @@ def ensure_pinhole_artifact(
     outputs = _pinhole_outputs(context)
     config = _pinhole_config(context)
     if destination.exists() or destination.is_symlink():
+        validate_pinhole_images(destination, context)
         ref = artifact.open_artifact(
             destination,
             expected_kind=paths_lib.PINHOLE_IMAGES,
@@ -520,6 +589,7 @@ def ensure_pinhole_artifact(
             resolution,
             num_workers=NUM_WORKERS,
         )
+        validate_pinhole_images(builder.path, context)
     assert builder.artifact_ref is not None
     return builder.artifact_ref
 
@@ -892,8 +962,8 @@ def execute_pending(
     transport_dir.mkdir(parents=True, exist_ok=True)
     indices = [int(match.group(1))
                for path in transport_dir.iterdir()
-               if path.is_file()
-               for match in [_RAW_SHARD_RE.fullmatch(path.name)]
+               for pattern in (_PENDING_SHARD_RE, _RAW_SHARD_RE)
+               for match in [pattern.fullmatch(path.name)]
                if match]
     next_index = max(indices, default=-1) + 1
     pending_paths = []
@@ -902,7 +972,7 @@ def execute_pending(
         index = next_index + offset
         pending_path = transport_dir / f"pending_{index:04d}.jsonl"
         raw_path = transport_dir / f"raw_{index:04d}.jsonl"
-        artifact.atomic_write_file(pending_path, content)
+        artifact.atomic_create_file(pending_path, content)
         pending_paths.append(pending_path)
         shards.append((index, pending_path, raw_path))
 

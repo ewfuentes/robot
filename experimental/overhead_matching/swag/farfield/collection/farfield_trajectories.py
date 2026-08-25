@@ -25,8 +25,7 @@ Fields on a TRAJECTORIES entry:
              API, not assumed: Mapillary reports panos as either "spherical" or
              "equirectangular".
   osm        Geofabrik extract(s) covering the area, relative to the Geofabrik
-             root. NOTE Geofabrik renamed great-britain -> united-kingdom, and
-             the old paths 301-redirect to a broken URL, so UK sub-regions are
+             root. UK sub-regions use
              europe/united-kingdom/england/<county>. May be a list when a
              trajectory's far-field spans a national border (e.g. a Channel
              crossing sees both the English and French coasts); each extract
@@ -36,14 +35,8 @@ Fields on a TRAJECTORIES entry:
   landmark_buffer_km  Optional per-trajectory override of the landmark bbox
              buffer. Needed where one shore is far from the track (see
              folkestone_dover).
-  osm_reference  Optional. A larger parent extract a sub-extract substitutes
-             for; the collection coverage gate fails if the chosen set loses
-             coverage relative to it. Only needed if you deliberately pick a
-             sub-extract.
   enc_state  NOAA ENC catalog state code, or None where NOAA has no coverage.
-             NOAA charts are US-only, so UK/Japan/Morocco get OSM-only catalogs
-             and are measurably thinner in fixed navaids (beacons 4%, buoys
-             20%, lights 27% present in OSM for the Boston comparison).
+             NOAA charts are US-only, so other regions use OSM-only catalogs.
   note       what the user picked it for
 """
 
@@ -54,26 +47,12 @@ TRAJECTORIES = {
         # A Channel crossing sees both coasts, and each national extract holds
         # only its own side. The track starts off Dunkirk, so the French
         # coastline is the nearer far-field for the first half of it.
-        # National extracts are fine now: with the tags-as-dict schema and the
-        # bounded node index, whole France (4.7 GB) extracts in 1:37 at 3.0 GB,
-        # versus 28 GB and climbing before. Sub-extracts were only ever an
-        # OOM workaround, and mixing them invites mismatched snapshot dates --
-        # france-250101 against nord-pas-de-calais-260812 differs by 19 months
-        # of mapping, ~44k features on this bbox.
-        # Belgium is in for the same reason at the other end: the 45 km buffer
-        # reaches 2.832 E, and the Belgian coast starts at ~2.55 E, so the strip
-        # from the French border past Nieuwpoort sits inside the bbox 15-40 km
-        # east of the track. Without it 14.3% of the bbox's mappable land has no
-        # extract behind it.
+        # National extracts keep source snapshots consistent across the bbox.
+        # Belgium covers the far-field coast east of the track.
         "osm": ["europe/united-kingdom-latest.osm.pbf",
                 "europe/france-latest.osm.pbf",
                 "europe/belgium-latest.osm.pbf"],
-        # The stitched chain covers only the Dunkirk half of the crossing, so the
-        # English shore is 31-40 km west of the track's western end (Dover 31.4,
-        # Folkestone 40.4). The default 25 km buffer reaches 1.4007 E and misses
-        # both, leaving a catalog that is ~99.6% French with nothing on the coast
-        # the ferry is steaming toward. Chalk cliffs that tall are visible across
-        # the Strait, so they belong in the catalog.
+        # The wider buffer includes the visible English shore west of the track.
         "landmark_buffer_km": 45.0,
         "enc_state": None,
         "note": "leaving big harbor, cranes; 7680x3840. TRIMMED 2026-08-17 "
@@ -373,18 +352,14 @@ REJECTED_TRAJECTORIES = {
     },
 }
 
-# The pilot set used to validate the tooling end to end: one panoramic, one
-# perspective. (kurashiki_pano_dense was the third until its 2026-08-17
-# rejection; see REJECTED_TRAJECTORIES.)
+# The pilot set exercises one panoramic and one perspective trajectory.
 PILOT = ["folkestone_dover", "nyc_east_river"]
 
 
 def collectable() -> dict:
     """Registry entries worth collecting.
 
-    With the registry split into TRAJECTORIES / REJECTED_TRAJECTORIES this is
-    simply TRAJECTORIES; the function survives so callers state their intent
-    and so the split is enforced where it matters.
+    The function makes callers state that rejected trajectories are excluded.
     """
     bad = [k for k, v in TRAJECTORIES.items()
            if v.get("rejected") or v.get("duplicate_of")]

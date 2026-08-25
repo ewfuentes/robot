@@ -48,13 +48,16 @@ Usage:
 """
 
 import dataclasses
+import math
+import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import msgspec
 import numpy as np
 
-from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import artifact, provenance
 from common.python.serialization import MSGSPEC_STRUCT_OPTS, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
@@ -70,6 +73,12 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # forensics_cli and viewer_server both build paths through
 # default_counterfactual_dir.
 COUNTERFACTUAL_DIR_SUFFIX = ".counterfactuals"
+
+
+def _edits_document(edits: "Edits") -> dict:
+    """Plain JSON value used as the one canonical edit identity."""
+    return msgspec.json.decode(msgspec.json.encode(
+        edits, enc_hook=msgspec_enc_hook))
 
 
 class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -136,10 +145,12 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
         return "; ".join(parts) or "unmodified"
 
     def slug(self) -> str:
-        """Filesystem-safe short name, for counterfactual run directories."""
+        """Readable filesystem name plus collision-resistant edit identity."""
         text = self.describe().replace("unmodified", "baseline")
         keep = [c if (c.isalnum() or c in "-_") else "_" for c in text]
-        return "".join(keep)[:80].strip("_") or "baseline"
+        readable = "".join(keep)[:60].strip("_") or "baseline"
+        identity = artifact.sha256_json(_edits_document(self))[:16]
+        return f"{readable}--{identity}"
 
 
 def default_counterfactual_dir(run_dir: Path, edits: Edits) -> Path:
@@ -161,6 +172,7 @@ class Replayability:
     schema_version: str
     missing_config_keys: tuple[str, ...]
     has_max_visible_range: bool
+    has_particle_history_hash: bool
     notes: tuple[str, ...]
 
     def report(self) -> str:
@@ -227,14 +239,16 @@ def replayability(run_dir: Path) -> Replayability:
             "max_visible_range_m is not recorded; the proposal's visibility "
             "geometry is undetermined, so this run cannot be replayed by "
             "this build (schema 0.3 made the field required)")
-    if not raw.get("particle_history_sha256"):
+    has_history_hash = bool(raw.get("particle_history_sha256"))
+    if not has_history_hash:
         notes.append("no particle_history_sha256, so a replay cannot be "
                      "verified against the original")
     return Replayability(
         replayable=(not missing and schema == structs.SCHEMA_VERSION
-                    and has_range),
+                    and has_range and has_history_hash),
         schema_version=schema, missing_config_keys=missing,
-        has_max_visible_range=has_range, notes=tuple(notes))
+        has_max_visible_range=has_range,
+        has_particle_history_hash=has_history_hash, notes=tuple(notes))
 
 
 @dataclasses.dataclass
@@ -273,6 +287,7 @@ def build_catalog(manifest: structs.RunManifest, max_visible_range_m: float,
         np.array([lm.lon_deg for lm in manifest.landmarks]))
     return catalog_mod.LandmarkCatalog(
         [lm.landmark_id for lm in manifest.landmarks], east, north,
+        position_sigma_m=[lm.position_sigma_m for lm in manifest.landmarks],
         max_visible_range_m=max_visible_range_m)
 
 
@@ -298,7 +313,7 @@ def load_inputs(run_dir: Path,
 
 def _edit_table(table: structs.CompatibilityTable, overrides: dict
                 ) -> structs.CompatibilityTable:
-    """Apply landmark_id -> log_lr overrides, appending unknown landmarks."""
+    """Apply validated landmark_id -> log_lr overrides."""
     entries = {entry.landmark_id: entry.log_lr for entry in table.entries}
     entries.update(overrides)
     return msgspec.structs.replace(table, entries=[
@@ -308,6 +323,67 @@ def _edit_table(table: structs.CompatibilityTable, overrides: dict
 
 def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
     """A counterfactual's inputs. Never mutates `inputs`."""
+    measurement_ids = {item.tracklet_id for item in inputs.measurements}
+    table_ids = set(inputs.tables)
+    catalog_ids = set(inputs.catalog.landmark_ids)
+
+    def _unique_known(values, known, where):
+        values = tuple(values)
+        if len(values) != len(set(values)):
+            raise ValueError(f"{where} contains duplicate IDs")
+        unknown = sorted(set(values) - known)
+        if unknown:
+            raise ValueError(f"{where} contains unknown IDs: {unknown}")
+        return set(values)
+
+    dropped = _unique_known(
+        edits.drop_tracklets, measurement_ids, "drop_tracklets")
+    kept = None
+    if edits.keep_only_tracklets is not None:
+        kept = _unique_known(
+            edits.keep_only_tracklets, measurement_ids,
+            "keep_only_tracklets")
+        overlap = dropped & kept
+        if overlap:
+            raise ValueError(
+                "tracklets cannot be both dropped and retained: "
+                f"{sorted(overlap)}")
+    override_tracklets = set(edits.log_lr) | set(edits.force_landmark)
+    unknown_tables = sorted(override_tracklets - table_ids)
+    if unknown_tables:
+        raise ValueError(
+            f"table edits contain unknown tracklet IDs: {unknown_tables}")
+    overlap_edits = set(edits.log_lr) & set(edits.force_landmark)
+    if overlap_edits:
+        raise ValueError(
+            "a tracklet cannot have both force_landmark and log_lr edits: "
+            f"{sorted(overlap_edits)}")
+    inactive = override_tracklets & dropped
+    if inactive or (kept is not None and override_tracklets - kept):
+        raise ValueError(
+            "table edits must refer to tracklets retained by the "
+            "counterfactual")
+    for tracklet_id, landmark_id in edits.force_landmark.items():
+        if landmark_id not in catalog_ids:
+            raise ValueError(
+                f"force_landmark[{tracklet_id!r}] references unknown "
+                f"landmark {landmark_id!r}")
+    for tracklet_id, overrides in edits.log_lr.items():
+        if not overrides:
+            raise ValueError(f"log_lr[{tracklet_id!r}] must not be empty")
+        unknown = sorted(set(overrides) - catalog_ids)
+        if unknown:
+            raise ValueError(
+                f"log_lr[{tracklet_id!r}] references unknown landmarks: "
+                f"{unknown}")
+        for landmark_id, value in overrides.items():
+            if (isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))):
+                raise ValueError(
+                    f"log_lr[{tracklet_id!r}][{landmark_id!r}] must be "
+                    "finite numeric")
+
     config = inputs.config
     replacements = {}
     for name, field in (("pi0", "pi0"), ("matcher_recall", "matcher_recall"),
@@ -329,12 +405,10 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
         config = msgspec.structs.replace(config, **replacements)
 
     measurements = inputs.measurements
-    if edits.drop_tracklets:
-        dropped = set(edits.drop_tracklets)
+    if dropped:
         measurements = [m for m in measurements
                         if m.tracklet_id not in dropped]
-    if edits.keep_only_tracklets is not None:
-        kept = set(edits.keep_only_tracklets)
+    if kept is not None:
         measurements = [m for m in measurements if m.tracklet_id in kept]
 
     tables = inputs.tables
@@ -349,8 +423,13 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
         for tracklet_id, overrides in edits.log_lr.items():
             tables[tracklet_id] = _edit_table(tables[tracklet_id], overrides)
 
-    return dataclasses.replace(inputs, config=config,
-                               measurements=measurements, tables=tables)
+    result = dataclasses.replace(inputs, config=config,
+                                 measurements=measurements, tables=tables)
+    if (not edits.is_empty and result.config == inputs.config
+            and result.measurements == inputs.measurements
+            and result.tables == inputs.tables):
+        raise ValueError("counterfactual edits are a no-op")
+    return result
 
 
 @dataclasses.dataclass
@@ -366,6 +445,9 @@ class ReplayResult:
     replayability: Replayability
     recorded_sha256: str
     replayed_sha256: str
+    # Edited runs are valid counterfactuals only after this build first
+    # reproduces the unedited source run exactly.
+    baseline_hash_match: bool | None = None
 
     @property
     def faithful(self) -> bool:
@@ -380,6 +462,8 @@ class ReplayResult:
                  f"{self.elapsed_s:.1f}s"]
         if not self.edits.is_empty:
             lines.append(f"  counterfactual: {self.edits.describe()}")
+            if self.baseline_hash_match:
+                lines.append("  unedited baseline hash MATCHES")
         if self.hash_match is True:
             lines.append(f"  history hash MATCHES "
                          f"{self.recorded_sha256[:12]} — bit-exact "
@@ -409,7 +493,29 @@ def replay(run_dir: Path, edits: Edits | None = None,
     edits = edits or Edits()
     inputs = load_inputs(run_dir, data=data)
     status = replayability(run_dir)
+    if verify and not status.replayable:
+        raise ValueError(
+            "the run directory does not fully determine a verified replay\n"
+            + status.report())
     edited = apply_edits(inputs, edits) if not edits.is_empty else inputs
+
+    recorded = inputs.manifest.particle_history_sha256 or ""
+    baseline_hash_match = None
+    if not edits.is_empty and verify:
+        baseline = pf.run_filter(
+            inputs.config, inputs.catalog, inputs.odometry,
+            inputs.measurements, inputs.tables)
+        baseline_hash_match = baseline.particle_history_sha256 == recorded
+        if not baseline_hash_match:
+            baseline_result = ReplayResult(
+                history=baseline, inputs=inputs, edits=Edits(), elapsed_s=0.0,
+                hash_match=False, replayability=status,
+                recorded_sha256=recorded,
+                replayed_sha256=baseline.particle_history_sha256,
+                baseline_hash_match=False)
+            raise ReplayDivergence(
+                baseline_result,
+                reason="unedited baseline diverged; counterfactual refused")
 
     start = time.perf_counter()
     history = pf.run_filter(edited.config, edited.catalog, edited.odometry,
@@ -417,20 +523,18 @@ def replay(run_dir: Path, edits: Edits | None = None,
                             observer=observer)
     elapsed = time.perf_counter() - start
 
-    recorded = inputs.manifest.particle_history_sha256 or ""
     hash_match = None
     if edits.is_empty and recorded:
         hash_match = history.particle_history_sha256 == recorded
     result = ReplayResult(
         history=history, inputs=edited, edits=edits, elapsed_s=elapsed,
         hash_match=hash_match, replayability=status, recorded_sha256=recorded,
-        replayed_sha256=history.particle_history_sha256)
+        replayed_sha256=history.particle_history_sha256,
+        baseline_hash_match=(hash_match if edits.is_empty
+                             else baseline_hash_match))
 
     if verify and hash_match is False:
         raise ReplayDivergence(result)
-    if verify and edits.is_empty and not status.replayable:
-        raise ReplayDivergence(result, reason=(
-            "the run directory does not fully determine a replay"))
     return result
 
 
@@ -465,14 +569,19 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
         filter_config=result.inputs.config,
         max_visible_range_m=result.inputs.max_visible_range_m,
         particle_history_sha256=result.history.particle_history_sha256,
-        run_kind=run_kind)
+        run_kind=run_kind,
+        git_commit=provenance.git_commit(),
+        argv=list(sys.argv),
+        created=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     source_ref = artifact.open_artifact(source_run_dir)
     source_artifact = artifact.load_manifest(source_run_dir)
     counterfactual = msgspec.json.encode({
         "source_run_dir": str(Path(source_run_dir).resolve()),
         "edits": result.edits,
+        "edit_digest": artifact.sha256_json(_edits_document(result.edits)),
         "describe": result.edits.describe(),
         "elapsed_s": round(result.elapsed_s, 2),
+        "baseline_hash_verified": result.baseline_hash_match is True,
     }, enc_hook=msgspec_enc_hook)
     consumed_tracklets = {
         measurement.tracklet_id for measurement in result.inputs.measurements
@@ -490,6 +599,10 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
                      artifact_config={
                          "run_kind": run_kind,
                          "source_run": source_ref.to_dict(),
+                         "counterfactual_edits": _edits_document(
+                             result.edits),
+                         "counterfactual_edit_digest": artifact.sha256_json(
+                             _edits_document(result.edits)),
                      },
                      generator=("//experimental/overhead_matching/swag/"
                                 "farfield/localization:replay"),

@@ -1,39 +1,26 @@
 #!/usr/bin/env python3
 """Find candidate far-field trajectories in a region, without a seed link.
 
-Every trajectory in `farfield_trajectories.py` started as a Mapillary app URL
-someone found by browsing. That does not scale, and it biases the collection
-toward what is easy to stumble onto -- which is how 22 of 22 entries ended up
-being boats.
-
-This inverts it. Given a region, pull every sequence from the coverage vector
-tiles, filter to the ones that could plausibly carry a far-field capture, and
-emit them as candidates:
+Given a region, read its Mapillary coverage vector tiles, filter the sequences
+that could plausibly carry a far-field capture, and emit them as candidates:
 
     # 1. what tracks are there?
     bazel run //experimental/overhead_matching/swag/farfield/collection:discover_tracks -- \\
         --region geneva_lakeshore --zoom 12 --min_length_km 2 --output /tmp/geneva_tracks.json
 
-    # 2. what could they see? The viewshed scorer (farfield_viewshed /
-    #    farfield_landmarks) is site-search tooling that was not ported; it
-    #    lives on the refactor-farfield checkpoint branch under swag/scripts/.
+    # 2. optionally score the output with a separately produced viewshed file
 
     # 3. registry stanzas for the winners
     bazel run //experimental/overhead_matching/swag/farfield/collection:discover_tracks -- \\
         --region geneva_lakeshore --scored /tmp/geneva_scored.json --emit_registry --top 5
 
-Why tiles and not `/images`: the Graph API rejects any bbox over 0.010 square
-degrees and separately rejects dense areas on volume, both as HTTP 500. A region
-sweep with it subdivides exponentially and never finishes -- the collection
-README records depth 10 in SF, Seattle and London. One z12 tile covers ~10 km
-with no cap at all. See `mapillary_lib/vector_tiles.py`.
+Coverage tiles support area-scale discovery without the Graph API's bounding-box
+area and dense-result limits. See `collection/vector_tiles.py`.
 
 The handoff back to the existing pipeline is `image_id`, which the sequence
 layer carries: it is exactly the seed pKey that `seed_to_trajectory.py` stitches
-from. So a discovered candidate drops straight into the registry with no manual
-URL-copying step, and stitching still runs the same way -- which matters,
-because a tile sequence is one Mapillary fragment, and the whole trip is
-typically an order of magnitude longer (Folkestone: 500 images to 10,711).
+from. A discovered candidate can therefore enter the registry directly, while
+the stitcher expands a tile sequence fragment to its complete trip.
 """
 
 import argparse
@@ -213,33 +200,15 @@ def cluster_tracks(candidates: list[dict], max_gap_km: float = 3.0,
                    max_time_gap_h: float = 2.0) -> list[list[dict]]:
     """Group candidates that are probably one trip.
 
-    Three conditions, all required: **same creator**, **endpoints within
-    max_gap_km**, and **start times within max_time_gap_h**. Proximity alone
-    over-merges badly on a road like CO-82, where a dozen unrelated drivers
-    cover the same 40 km and would collapse into one fictional trip. Requiring
-    the creator to match keeps a cluster to what `seed_to_trajectory.py` could
-    actually stitch, since Mapillary splits one capture at 500 or 1000 images
-    and the pieces keep their uploader. Without the time condition a mapper who
-    starts from home for eight years chains into one multi-year "trip" — the
-    group is then a campaign, and its km total describes nothing collectable.
+    Three conditions are required: same creator, endpoints within `max_gap_km`,
+    and start times within `max_time_gap_h`. Creator and time prevent nearby
+    unrelated captures from chaining into a fictional trip. Tile timestamps
+    describe sequence starts rather than seam times, so the clustering window
+    is intentionally broader than the stitcher's per-image seam threshold.
 
-    The time window is hours, not the stitcher's 300 s, because tiles carry one
-    timestamp per sequence — the capture start — so two fragments of one outing
-    differ by the whole duration of the earlier fragment (a 500-image fragment
-    at photo cadence runs tens of minutes; a slow ferry fragment can exceed an
-    hour). 2 h tells outings apart from campaigns without splitting a long
-    crossing. A candidate with no timestamp never merges (strict: an unknown
-    time is not evidence of adjacency); tracks files saved before captured_ms
-    was recorded therefore cluster per-sequence. max_time_gap_h <= 0 disables
-    the condition.
-
-    A timestamp repeated verbatim across many of one creator's sequences is
-    treated as missing for the same reason. A working clock cannot stamp two
-    fragment starts with the same millisecond, let alone 180 of them — which is
-    exactly what a clock-less camera in Denver did (every fragment of a
-    1,200 km campaign says 1989-05-29 06:01:00), and identical stamps satisfy
-    "adjacent in time" vacuously. Same lesson as kurashiki's all-zero
-    compass_angle: a field that is identical everywhere is not data.
+    Missing or implausibly repeated timestamps provide no adjacency evidence
+    and do not merge. `max_time_gap_h <= 0` explicitly disables the time
+    condition.
 
     This is a hint for reading the list, not a claim: stitching is decided by
     sequence continuity in stage 1, which has the per-image timestamps and
@@ -360,19 +329,18 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--zoom", type=int, default=None,
                         help="Tile zoom for the coverage scan; required for a "
-                             "scan. The old default was 12 (~10 km tiles, "
-                             "positions good to ~2.4 m — plenty for screening)")
+                             "scan")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--min_length_km", type=float, default=None,
                         help="Drop tracks shorter than this; required for a "
-                             "scan (the old default was 2.0)")
+                             "scan")
     parser.add_argument("--pano_only", action="store_true")
     parser.add_argument("--include_foot", action="store_true")
     parser.add_argument("--after_year", type=int,
                         help="Optional filter; omitting it keeps all years")
     parser.add_argument("--min_quality", type=float, default=None,
                         help="Optional Mapillary quality_score floor; omitting "
-                             "it keeps everything (the old default 0.0 did too)")
+                             "it keeps everything")
     parser.add_argument("--scored", type=Path,
                         help="viewshed output, to rank and annotate by")
     parser.add_argument("--tracks", type=Path,
@@ -383,24 +351,21 @@ def main():
                         help="print Mapillary app links, grouped into probable trips")
     parser.add_argument("--max_gap_km", type=float, default=None,
                         help="endpoint gap under which same-creator tracks "
-                             "group; required with --urls (the old default "
-                             "was 3.0)")
+                             "group; required with --urls")
     parser.add_argument("--max_time_gap_h", type=float, default=None,
                         help="start-time gap under which same-creator tracks "
                              "group; hours because tiles carry one timestamp "
                              "per sequence, so fragments of one outing differ "
                              "by the earlier fragment's whole duration. "
                              "<=0 disables the time condition. Required with "
-                             "--urls (the old default was 2.0)")
+                             "--urls")
     parser.add_argument("--urls_per_cluster", type=int, default=3)
     parser.add_argument("--top", type=int, default=10)
     args = parser.parse_args()
 
-    # Assumption-carrying values are required for the mode that uses them,
-    # with the old defaults quoted in --help (REORG.md rule 2).
+    # Grouping thresholds are explicit inputs to URL-cluster generation.
     if args.urls and (args.max_gap_km is None or args.max_time_gap_h is None):
-        parser.error("--urls requires --max_gap_km and --max_time_gap_h "
-                     "(the old defaults were 3.0 km and 2.0 h)")
+        parser.error("--urls requires --max_gap_km and --max_time_gap_h")
 
     if args.list_regions:
         for geometry in geometries():
@@ -452,8 +417,7 @@ def main():
         return
 
     if args.zoom is None or args.min_length_km is None:
-        parser.error("a coverage scan requires --zoom and --min_length_km "
-                     "(the old defaults were 12 and 2.0)")
+        parser.error("a coverage scan requires --zoom and --min_length_km")
 
     print(f"Region {region_name}: {bbox}", file=sys.stderr)
     client = VectorTileClient()

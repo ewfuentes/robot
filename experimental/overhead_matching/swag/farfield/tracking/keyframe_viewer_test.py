@@ -157,6 +157,15 @@ class LoadTrackArtifactsTest(unittest.TestCase):
                 seam_min_y_iou=0.31))
         self.assertEqual(inputs.frame_landmarks_dir, frames_dir.resolve())
 
+        other_frames = testing.make_predictions(
+            self.root / "other_frames",
+            {stem: [testing.landmark("Different", [(0, 1, 1, 2, 2)])]},
+            dataset_name="viewer_test")
+        with self.assertRaisesRegex(
+                SystemExit, "not the exact artifact bound by tracks"):
+            kv.load_viewer_inputs(
+                self.tracks_dir, dataset_base, other_frames)
+
         panorama = next((dataset_base / "panorama").glob("*.jpg"))
         panorama.write_bytes(panorama.read_bytes() + b"changed")
         with self.assertRaisesRegex(SystemExit, "bytes do not match"):

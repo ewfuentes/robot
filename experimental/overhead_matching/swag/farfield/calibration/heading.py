@@ -7,10 +7,9 @@ while the vehicle is stationary (e.g. at the dock), so course samples are
 computed between anchor points spaced a minimum displacement apart and
 interpolated / held elsewhere.
 
-Course here is always derived from POSITIONS. The intrinsics' `heading_deg`
-column is never consulted: its meaning varies per dataset (compass vs camera
-yaw, mount offset sometimes already folded in), while positions mean one
-thing everywhere.
+Course here is always derived from POSITIONS. Intrinsics preserve raw and
+selected camera orientation diagnostics, but are never consulted here; only
+the position trajectory supplies GPS course.
 """
 
 import math

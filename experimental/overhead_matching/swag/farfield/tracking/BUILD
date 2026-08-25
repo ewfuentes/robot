@@ -230,6 +230,7 @@ py_library(
         ":track_builder",
         ":viz_common",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield/extraction:prompts",
     ],
 )
 
@@ -285,6 +286,7 @@ py_test(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:pipeline_lib",
         "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/extraction:prompts",
     ],
 )
 

@@ -1,12 +1,9 @@
 """One source of truth for the farfield data-root layout.
 
 Every stage needs the same handful of paths for a dataset -- panoramas, the
-`frame_landmarks` artifact, the source video, the map catalog -- and resolving
-them from one place makes the whole set move together. Before this module each
-tracking stage carried its own hardcoded copy pointing at one dataset, which is
-a *silent wrong answer* rather than a crash: a stage defaulting to leg1's video
-while being handed leg2's panoramas builds tracks from the wrong imagery and
-reports no error at all.
+`frame_landmarks` artifact, the source video, and the map catalog. Resolving
+them together prevents a command from combining products from different
+datasets while still producing plausible output.
 
 The layout, encoded once, here:
 
@@ -88,6 +85,13 @@ DATASET_SOURCE_DIGEST_KEYS = (
     DATASET_PANORAMA_SHA256,
 )
 
+# PINHOLE_IMAGES is shaped only by the frozen dataset and this projection.
+# Keep this contract outside the extraction stage so collection can publish it
+# once and any build using the same versioned projection can reuse it exactly.
+PINHOLE_FACES = ("yaw_000", "yaw_090", "yaw_180", "yaw_270")
+PINHOLE_FOV_DEG = 90.0
+PINHOLE_LAYOUT = "one directory per panorama stem; four JPEG faces"
+
 
 def default_root() -> Path:
     """Disk root, overridable by `FARFIELD_ROOT` for a mirror or a test tree."""
@@ -154,6 +158,49 @@ def dataset_source_digests(dataset_base: Path) -> dict[str, str]:
         DATASET_PIPELINE_METADATA_SHA256: metadata_digest,
         DATASET_FRAMES_GPS_SHA256: gps_digest,
         DATASET_PANORAMA_SHA256: artifact.sha256_json(records),
+    }
+
+
+def pinhole_declared_outputs(
+        panorama_keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Canonical complete output set for ordered panorama identities."""
+    keys = tuple(panorama_keys)
+    if (not keys or len(keys) != len(set(keys))
+            or any(not isinstance(key, str) or not key
+                   or Path(key).name != key for key in keys)):
+        raise ValueError("panorama_keys must be non-empty, unique safe basenames")
+    return tuple(sorted(
+        f"{key}/{face}.jpg"
+        for key in keys
+        for face in PINHOLE_FACES))
+
+
+def pinhole_manifest_config(
+        source_digests: dict[str, str], *, resolution: int,
+        panorama_keys: tuple[str, ...] | list[str]) -> dict:
+    """Dataset-and-projection identity shared by every pinhole producer."""
+    keys = tuple(panorama_keys)
+    # Validate keys here as well so callers cannot publish a config whose
+    # declared output set cannot be represented by the shared contract.
+    pinhole_declared_outputs(keys)
+    if type(resolution) is not int or resolution <= 0:
+        raise ValueError("pinhole resolution must be a positive integer")
+    return {
+        "input_digests": {
+            "pipeline_metadata": source_digests[
+                DATASET_PIPELINE_METADATA_SHA256],
+            "frames_gps": source_digests[DATASET_FRAMES_GPS_SHA256],
+            "panorama_directory": source_digests[DATASET_PANORAMA_SHA256],
+        },
+        "geometry": {
+            "fov_deg": PINHOLE_FOV_DEG,
+            "faces": list(PINHOLE_FACES),
+            "resolution_x": resolution,
+            "resolution_y": resolution,
+            "n_panoramas": len(keys),
+            "layout": PINHOLE_LAYOUT,
+        },
+        "panorama_keys": list(keys),
     }
 
 

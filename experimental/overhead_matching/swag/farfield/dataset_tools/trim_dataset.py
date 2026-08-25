@@ -24,33 +24,30 @@ renumber forces an image rename, and the rename has to reach
 `frames_gps.csv`, `extraction_log.csv`, `intrinsics.csv` and
 `pano_id_mapping.csv` together or the dataset silently comes apart. It also
 has to reach every record keyed on frame indices: `recording_seams` entries
-name the frame each odometry break sits after, and an earlier version left
-them pointing at pre-trim indices — well-formed, silently wrong. This trim
-rebases them (see `rebase_seams`).
+name the frame each odometry break sits after, so this trim rebases them (see
+`rebase_seams`).
 
-This is one of the two explicit dataset-mutating tools (REORG.md rule 7); it
-finishes by regenerating `checksums.sha256` through the shared implementation
-in `checksums.py`.
+It finishes by regenerating `checksums.sha256` through the shared
+implementation in `checksums.py`.
 
 Indices in --keep/--drop are ORIGINAL frame indices (half-open, Python slice
 semantics), read off the timelapse via `--video_fps` if that is easier:
 
     # keep only the first 11 seconds of a 15 fps timelapse
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:trim_dataset -- \\
-        --dataset_path /data/farfield_matching/datasets/fukuoka_yumechan_a \\
+        --dataset_path /path/to/dataset \\
         --keep 0:165 --reason "operator swings the camera after t=11 s" --dry_run
 
     # thin a 3 m collect to a 10 m grid, into its own trim directory
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:trim_dataset -- \\
-        --dataset_path /data/farfield_matching/datasets/charles_river_20260727 \\
+        --dataset_path /path/to/dataset \\
         --spacing_m 10 --trim_dir trimmed_frames_for_density \\
         --reason "3.1 m/frame is ~10x denser than far-field extraction needs"
 
 Dropped images and the original CSVs move to `--trim_dir` inside the dataset,
-so a trim is reversible and costs no extra disk. Give each *kind* of trim its
-own directory: the dropped frames then say why they were dropped by where they
-sit, and `dropped_frames.csv` in each directory records the same thing per
-file for anyone who merges them back together.
+so a trim is reversible and costs no extra disk. Give each trim invocation its
+own directory: publication is no-clobber, so a later trim cannot replace or
+append to the first trim's restore material.
 """
 
 import argparse
@@ -58,6 +55,7 @@ import bisect
 import csv
 import datetime
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -201,22 +199,8 @@ def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
     """frames_gps for the kept subset: renumbered, with dist_m rebased to zero.
 
     `dist_m` rebases because it describes the trimmed trajectory. `video_t_s`
-    and `sensor_elapsed_s` do NOT: they are addresses into the source video
-    and the sensor log, neither of which the trim touches. An earlier version
-    rebased them to zero at the new first frame, reasoning that the result
-    should be "indistinguishable from one collected over that range" -- but
-    the mp4 still starts where it always started, so every kept frame then
-    addressed content earlier than itself by the first kept frame's original
-    `video_t_s`.
-
-    Note that a head cut is not required to trigger this: on
-    charles_river_20260727 the trim was a *density* thin that kept frame 0,
-    and the damage was still 510 s, because the dataset's frames were exported
-    starting at video t=510 (`video.export_start_video_t_s`) and zeroing the
-    column threw that offset away. Tracking then cropped every window from a
-    different part of the sail (verified 2026-08-18 by cross-correlating
-    frames against their panoramas: 0.49-0.74 as stored, 0.999-1.000 once
-    restored). Carry both columns through verbatim.
+    and `sensor_elapsed_s` remain unchanged because they address the source
+    video and sensor log, neither of which the trim rewrites.
 
     Where dist_m comes from depends on what was cut. A *range* trim removes
     stretches of track, so the distance must be re-derived from the surviving
@@ -224,12 +208,9 @@ def rebuild_gps_rows(gps_rows, log_rows, keep, kind="range"):
     the removed stretch. Across a cut that adds the straight-line jump, which
     is what the converter does at a stitch seam.
 
-    A *density* trim removes no track at all, so the original column is still
-    the right answer and is re-used rebased. It matters: `dist_m` is normally
-    accumulated along the dataset's smoothed/bridged track, while re-deriving
-    it walks the raw reported positions and picks up their noise instead. On
-    the charles collect the two differ by 6.7%, so re-deriving would make a
-    trim that removes nothing report a *longer* trajectory than before it ran.
+    A *density* trim removes no track, so the original smoothed/bridged distance
+    column remains authoritative and is reused after rebasing. Re-deriving it
+    from raw reported positions would introduce position noise.
     """
     out = []
     cumulative_m = 0.0
@@ -350,50 +331,213 @@ def write_dropped_csv(backup_dir: Path, gps_rows, log_rows, dropped, kind,
     return path
 
 
+TRIM_REQUIRED_COLUMNS = {
+    "frames_gps.csv": {"idx", "video_t_s", "dist_m", "latitude",
+                       "longitude", "frame_file"},
+    "extraction_log.csv": {"frame_idx", "pano_id", "sequence_id",
+                           "geometry_source", "captured_at",
+                           "output_filename"},
+    "intrinsics.csv": {"idx", "pano_id"},
+    "pano_id_mapping.csv": {"pano_id", "filename"},
+}
+
+
+def preflight_trim(ds: Path, keep, trim_dir: str,
+                   kind: str = "range") -> dict:
+    """Resolve and validate every trim input and destination without writes."""
+    ds = Path(ds)
+    if ds.is_symlink() or not ds.is_dir():
+        raise ValueError(f"dataset must be a regular directory: {ds}")
+    trim_path = Path(trim_dir)
+    if (not trim_dir or trim_path.is_absolute() or len(trim_path.parts) != 1
+            or trim_path.name in (".", "..")):
+        raise ValueError("trim_dir must be one path-free directory name")
+    backup_dir = ds / trim_dir
+    if backup_dir.exists() or backup_dir.is_symlink():
+        raise FileExistsError(
+            f"trim output already exists; choose a new --trim_dir: {backup_dir}")
+    staging = ds.parent / f".{ds.name}.trim_dataset.incomplete"
+    if staging.exists() or staging.is_symlink():
+        raise FileExistsError(
+            f"incomplete trim transaction exists; inspect or remove: {staging}")
+
+    tables = {}
+    for name in CSV_NAMES:
+        rows, fields = read_csv(ds / name)
+        if not fields or len(fields) != len(set(fields)):
+            raise ValueError(f"{name} has missing or duplicate column names")
+        missing = sorted(TRIM_REQUIRED_COLUMNS[name] - set(fields))
+        if missing:
+            raise ValueError(f"{name} is missing required columns {missing}")
+        tables[name] = (rows, fields)
+    gps_rows, _ = tables["frames_gps.csv"]
+    n = len(gps_rows)
+    if n == 0:
+        raise ValueError("cannot trim an empty dataset")
+    for name, (rows, _) in tables.items():
+        if len(rows) != n:
+            raise ValueError(
+                f"{name} has {len(rows)} rows; expected {n} row-aligned rows")
+    keep = list(keep)
+    if (not keep or any(type(index) is not int for index in keep)
+            or keep != sorted(set(keep))
+            or keep[0] < 0 or keep[-1] >= n):
+        raise ValueError(
+            f"keep indices must be a non-empty sorted unique subset of 0:{n}")
+
+    log_rows, _ = tables["extraction_log.csv"]
+    intr_rows, _ = tables["intrinsics.csv"]
+    map_rows, _ = tables["pano_id_mapping.csv"]
+    frame_names = []
+    for index in range(n):
+        pano_id = f"f{index:04d}"
+        try:
+            indices = (int(gps_rows[index]["idx"]),
+                       int(log_rows[index]["frame_idx"]),
+                       int(intr_rows[index]["idx"]))
+            float(gps_rows[index]["video_t_s"])
+            float(gps_rows[index]["dist_m"])
+            float(gps_rows[index]["latitude"])
+            float(gps_rows[index]["longitude"])
+            int(log_rows[index]["captured_at"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"row {index} has an invalid typed value: {exc}") from exc
+        if indices != (index, index, index):
+            raise ValueError(
+                f"row {index} index join mismatch: gps/log/intrinsics={indices}")
+        panos = (log_rows[index]["pano_id"], intr_rows[index]["pano_id"],
+                 map_rows[index]["pano_id"])
+        if panos != (pano_id, pano_id, pano_id):
+            raise ValueError(
+                f"row {index} pano_id join mismatch: expected {pano_id}, got {panos}")
+        names = (gps_rows[index]["frame_file"],
+                 log_rows[index]["output_filename"],
+                 map_rows[index]["filename"])
+        if len(set(names)) != 1:
+            raise ValueError(f"row {index} frame filename join mismatch: {names}")
+        name = names[0]
+        if not name or Path(name).name != name:
+            raise ValueError(f"row {index} frame_file must be a safe basename")
+        frame_names.append(name)
+    if len(frame_names) != len(set(frame_names)):
+        raise ValueError("frame_file join keys must be unique")
+
+    panorama = ds / "panorama"
+    frames_dir = panorama.resolve()
+    if (not frames_dir.is_dir()
+            or frames_dir.parent != ds.resolve()
+            or frames_dir == ds.resolve()):
+        raise ValueError(
+            "panorama must resolve to a direct child directory of the dataset")
+    for name in frame_names:
+        path = frames_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError(f"recorded frame is not a regular file: {path}")
+
+    meta_path = ds / "pipeline_metadata.json"
+    meta = json.loads(meta_path.read_text())
+    if not isinstance(meta, dict):
+        raise ValueError("pipeline_metadata.json must contain a JSON object")
+    if "trims" in meta and not isinstance(meta["trims"], list):
+        raise ValueError("pipeline_metadata.json trims must be a JSON list")
+    if ("recording_seams" in meta
+            and not isinstance(meta["recording_seams"], dict)):
+        raise ValueError(
+            "pipeline_metadata.json recording_seams must be a JSON object")
+    if isinstance(meta.get("recording_seams"), dict):
+        rebase_seams(meta["recording_seams"], keep, kind)
+
+    from experimental.overhead_matching.swag.farfield.dataset_tools import (
+        make_dataset_timelapse as tl,
+    )
+    tl.reject_legacy_views(ds)
+    timelapse = tl.view_output_dir(ds)
+    timelapse_incomplete = timelapse.with_name(
+        timelapse.name + ".incomplete")
+    if timelapse_incomplete.exists() or timelapse_incomplete.is_symlink():
+        raise FileExistsError(
+            "incomplete timelapse blocks a trim transaction: "
+            f"{timelapse_incomplete}")
+    has_timelapse = timelapse.exists() or timelapse.is_symlink()
+    if has_timelapse:
+        tl.validate_completed(ds)
+
+    seams_path = ds / SEAMS_SIDECAR
+    seams = None
+    if seams_path.exists():
+        if seams_path.is_symlink() or not seams_path.is_file():
+            raise ValueError(f"recording seams sidecar is not regular: {seams_path}")
+        seams = json.loads(seams_path.read_text())
+        if not isinstance(seams, dict):
+            raise ValueError("recording_seams.json must contain a JSON object")
+        rebase_seams(seams, keep, kind)
+
+    generated_names = [
+        new_frame_file(gps_rows[old]["frame_file"], new_index)
+        for new_index, old in enumerate(keep)
+    ]
+    if (len(generated_names) != len(set(generated_names))
+            or any(Path(name).name != name for name in generated_names)):
+        raise ValueError("trim would produce duplicate or unsafe frame names")
+
+    # Exercise every result-shaping calculation now. Any malformed retained
+    # row fails before a frame, table, checksum, or archive path is touched.
+    rebuild_gps_rows(gps_rows, log_rows, keep, kind)
+    return {
+        "dataset": ds,
+        "backup_dir": backup_dir,
+        "staging": staging,
+        "frames_dir": frames_dir,
+        "tables": tables,
+        "metadata": meta,
+        "seams": seams,
+        "timelapse": timelapse,
+        "has_timelapse": has_timelapse,
+        "keep": keep,
+    }
+
+
 def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
-               trim_dir: str = "trimmed_frames", kind: str = "range"):
-    tables = {name: read_csv(ds / name) for name in CSV_NAMES}
+               trim_dir: str = "trimmed_frames", kind: str = "range",
+               regenerate=None):
+    plan = preflight_trim(ds, keep, trim_dir, kind)
+    ds = plan["dataset"]
+    keep = plan["keep"]
+    tables = plan["tables"]
     gps_rows, gps_fields = tables["frames_gps.csv"]
     log_rows, log_fields = tables["extraction_log.csv"]
     n = len(gps_rows)
     keep_set = set(keep)
-
-    backup_dir = ds / trim_dir
-    backup_dir.mkdir(exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    for name in CSV_NAMES:
-        shutil.copy2(ds / name, backup_dir / f"{stamp}.{name}")
+    backup_dir = plan["backup_dir"]
+    staging = plan["staging"]
+    frames_dir = plan["frames_dir"]
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dropped = [i for i in range(n) if i not in keep_set]
-    write_dropped_csv(backup_dir, gps_rows, log_rows, dropped, kind, reason,
-                      stamp)
+    staging.mkdir()
+    archive = staging / "archive"
+    new_files = staging / "new_files"
+    new_frames = staging / "new_frames"
+    rollback = staging / "rollback"
+    for path in (archive, new_files, new_frames, rollback):
+        path.mkdir()
 
-    # Images first: move every dropped file out, THEN renumber. A kept frame's
-    # new index is always <= its old one, so an ascending rename can only ever
-    # land on a name that has already been vacated. Renaming before the moves
-    # would clobber a dropped file that still had to be preserved.
-    frames_dir = (ds / "panorama").resolve()
-    moved = 0
-    for old in range(n):
-        if old in keep_set:
-            continue
-        src = frames_dir / gps_rows[old]["frame_file"]
-        if src.exists():
-            shutil.move(str(src), str(backup_dir / src.name))
-            moved += 1
+    for name in CSV_NAMES:
+        shutil.copy2(ds / name, archive / f"{stamp}.{name}")
+    write_dropped_csv(archive, gps_rows, log_rows, dropped, kind, reason,
+                      stamp)
+    for old in dropped:
+        source = frames_dir / gps_rows[old]["frame_file"]
+        os.link(source, archive / source.name, follow_symlinks=False)
     renamed = 0
     for new_idx, old in enumerate(keep):
         old_name = gps_rows[old]["frame_file"]
         new_name = new_frame_file(old_name, new_idx)
-        if old_name == new_name:
-            continue
-        src, dst = frames_dir / old_name, frames_dir / new_name
-        if dst.exists():
-            raise FileExistsError(f"rename target already present: {dst}")
-        src.rename(dst)
-        renamed += 1
+        os.link(frames_dir / old_name, new_frames / new_name,
+                follow_symlinks=False)
+        renamed += old_name != new_name
 
     new_gps = rebuild_gps_rows(gps_rows, log_rows, keep, kind)
-    write_csv(ds / "frames_gps.csv", new_gps, gps_fields)
+    write_csv(new_files / "frames_gps.csv", new_gps, gps_fields)
 
     new_log = []
     for new_idx, old in enumerate(keep):
@@ -403,7 +547,7 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
         row["output_filename"] = new_frame_file(row["output_filename"],
                                                 new_idx)
         new_log.append(row)
-    write_csv(ds / "extraction_log.csv", new_log, log_fields)
+    write_csv(new_files / "extraction_log.csv", new_log, log_fields)
 
     intr_rows, intr_fields = tables["intrinsics.csv"]
     new_intr = []
@@ -412,7 +556,7 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
         row["idx"] = new_idx
         row["pano_id"] = f"f{new_idx:04d}"
         new_intr.append(row)
-    write_csv(ds / "intrinsics.csv", new_intr, intr_fields)
+    write_csv(new_files / "intrinsics.csv", new_intr, intr_fields)
 
     map_rows, map_fields = tables["pano_id_mapping.csv"]
     new_map = []
@@ -421,10 +565,9 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
         row["pano_id"] = f"f{new_idx:04d}"
         row["filename"] = new_frame_file(row["filename"], new_idx)
         new_map.append(row)
-    write_csv(ds / "pano_id_mapping.csv", new_map, map_fields)
+    write_csv(new_files / "pano_id_mapping.csv", new_map, map_fields)
 
-    meta_path = ds / "pipeline_metadata.json"
-    meta = json.load(open(meta_path))
+    meta = plan["metadata"]
     kept_log = [log_rows[i] for i in keep]
     meta["num_images"] = len(keep)
     meta["captured_at_ms"] = int(kept_log[0]["captured_at"])
@@ -490,22 +633,22 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
     # recording_seams are keyed on frame indices, which this trim just
     # renumbered — for EVERY trim kind, density included (a density trim keeps
     # the geometry but still renumbers). Both homes of the record are
-    # rebased: the legacy in-metadata block and the _manifests/ sidecar the
-    # ported annotate_recording_seams writes.
+    # rebased in both metadata and the derived sidecar.
     n_rebased_homes = 0
     if isinstance(meta.get("recording_seams"), dict):
         meta["recording_seams"] = rebase_seams(meta["recording_seams"], keep,
                                                kind)
         n_rebased_homes += 1
-    seams_sidecar = ds / SEAMS_SIDECAR
-    if seams_sidecar.exists():
-        seams_sidecar.write_text(json.dumps(
-            rebase_seams(json.loads(seams_sidecar.read_text()), keep, kind),
-            indent=1) + "\n")
+    if plan["seams"] is not None:
+        staged_seams = new_files / SEAMS_SIDECAR
+        staged_seams.parent.mkdir(parents=True)
+        staged_seams.write_text(json.dumps(
+            rebase_seams(plan["seams"], keep, kind), indent=1) + "\n")
         n_rebased_homes += 1
 
-    json.dump(meta, open(meta_path, "w"), indent=2)
-    (backup_dir / "trim_note.json").write_text(json.dumps({
+    (new_files / "pipeline_metadata.json").write_text(
+        json.dumps(meta, indent=2) + "\n")
+    (archive / "trim_note.json").write_text(json.dumps({
         "dropped": len(dropped),
         "trim_kind": kind,
         "reason": reason,
@@ -516,33 +659,103 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
         "restore": "dropped_frames.csv maps every file here back to its "
                    "original index; the pre-trim CSVs are the "
                    f"{stamp}.*.csv copies in this directory",
-    }, indent=1))
-    return {"moved": moved, "renamed": renamed, "backup": str(backup_dir),
+    }, indent=1) + "\n")
+
+    changed = [Path(name) for name in CSV_NAMES]
+    changed.append(Path("pipeline_metadata.json"))
+    if plan["seams"] is not None:
+        changed.append(SEAMS_SIDECAR)
+    checksum = ds / checksums.CHECKSUM_FILE
+    checksum_backup = rollback / checksums.CHECKSUM_FILE
+    had_checksum = checksum.is_file() and not checksum.is_symlink()
+    if checksum.exists() and not had_checksum:
+        raise ValueError(f"checksum manifest is not a regular file: {checksum}")
+    if had_checksum:
+        shutil.copy2(checksum, checksum_backup)
+
+    moved_originals = []
+    archived_timelapse = archive / "pre_trim_timelapse"
+    timelapse_moved = False
+    frames_original_moved = frames_swapped = archive_published = False
+    try:
+        if plan["has_timelapse"]:
+            os.rename(plan["timelapse"], archived_timelapse)
+            timelapse_moved = True
+        old_frames = rollback / "frames"
+        os.rename(frames_dir, old_frames)
+        frames_original_moved = True
+        os.rename(new_frames, frames_dir)
+        frames_swapped = True
+        for relative in changed:
+            current = ds / relative
+            saved = rollback / "files" / relative
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(current, saved)
+            moved_originals.append(relative)
+            os.rename(new_files / relative, current)
+        os.rename(archive, backup_dir)
+        archive_published = True
+        if regenerate is not None:
+            regenerate()
+        checksum_count = checksums.regenerate(ds)
+    except BaseException:
+        if archive_published and backup_dir.exists():
+            os.rename(backup_dir, archive)
+        if timelapse_moved or not plan["has_timelapse"]:
+            failed_review = staging / "failed_timelapse"
+            for label, candidate in (
+                    ("complete", plan["timelapse"]),
+                    ("incomplete", plan["timelapse"].with_name(
+                        plan["timelapse"].name + ".incomplete"))):
+                if candidate.exists() or candidate.is_symlink():
+                    failed_review.mkdir(exist_ok=True)
+                    os.rename(candidate, failed_review / label)
+        failed_files = staging / "failed_files"
+        for relative in reversed(moved_originals):
+            current = ds / relative
+            if current.exists() or current.is_symlink():
+                failed = failed_files / relative
+                failed.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(current, failed)
+            saved = rollback / "files" / relative
+            if saved.exists() or saved.is_symlink():
+                current.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(saved, current)
+        if frames_swapped and frames_dir.exists():
+            os.rename(frames_dir, staging / "failed_frames")
+        if frames_original_moved and (rollback / "frames").exists():
+            os.rename(rollback / "frames", frames_dir)
+        if had_checksum:
+            shutil.copy2(checksum_backup, checksum)
+        elif checksum.exists() or checksum.is_symlink():
+            checksum.unlink()
+        if timelapse_moved:
+            plan["timelapse"].parent.mkdir(parents=True, exist_ok=True)
+            os.rename(archived_timelapse, plan["timelapse"])
+        raise
+
+    # The replaced frame directory can now be removed: every kept inode is
+    # linked from the new directory and every dropped inode from the archive.
+    shutil.rmtree(rollback / "frames")
+    shutil.rmtree(staging)
+    return {"moved": len(dropped), "renamed": renamed,
+            "backup": str(backup_dir),
             "kept_ranges": ranges, "n_dropped": len(dropped),
-            "n_seam_records_rebased": n_rebased_homes}
+            "n_seam_records_rebased": n_rebased_homes,
+            "checksum_count": checksum_count}
 
 
 def regenerate_views(ds: Path, fps: int, max_frames: int | None):
     """Re-render trajectory.png and gps_timelapse.mp4 so review sees the trim.
 
-    Stale views are worse than absent ones here: the whole point of the trim
-    is that someone watched the video and objected to part of it, so leaving
-    the old video in place invites a second reviewer to re-report a fault that
-    has already been cut out.
+    Views must represent the current frame set so review cannot report an
+    already-trimmed interval.
     """
     from experimental.overhead_matching.swag.farfield.dataset_tools import (
         make_dataset_timelapse as tl,
     )
 
-    paths, lats, lons, times, dists = tl.load_frames(ds)
-    if len(paths) < 2:
-        print(f"  WARNING: {len(paths)} frames left; skipping view "
-              f"regeneration")
-        return False
-    out_dir = tl.view_output_dir(ds)
-    tl.stage_plot(ds, lats, lons, times, dists, out_dir / tl.TRAJECTORY_NAME)
-    tl.stage_video(paths, lats, lons, out_dir / tl.TIMELAPSE_NAME,
-                   1280, fps, max_frames or None)
+    tl.render(ds, 1280, fps, max_frames or None, False)
     return True
 
 
@@ -562,7 +775,8 @@ def main(argv=None):
                    help="directory inside the dataset for dropped frames and "
                         "pre-trim CSVs (default: trimmed_frames, or "
                         "trimmed_frames_for_density with --spacing_m). Give "
-                        "each kind of trim its own so the reason survives")
+                        "each trim invocation its own; publication never "
+                        "overwrites an existing restore directory")
     p.add_argument("--reason", default="",
                    help="recorded in pipeline_metadata.json")
     p.add_argument("--video_fps", type=float, default=None,
@@ -598,6 +812,8 @@ def main(argv=None):
     trim_dir = args.trim_dir or (
         "trimmed_frames_for_density" if kind == "density"
         else "trimmed_frames")
+    # Dry runs validate exactly the same complete contract as real runs.
+    preflight_trim(ds, keep, trim_dir, kind)
 
     before = summarize(gps_rows, log_rows, list(range(n)))
     after = summarize(gps_rows, log_rows, keep)
@@ -627,8 +843,12 @@ def main(argv=None):
         print("DRY RUN — nothing written")
         return 0
 
+    regenerate = (None if args.no_regenerate else
+                  lambda: regenerate_views(
+                      ds, args.timelapse_fps, args.timelapse_max_frames))
     info = apply_trim(ds, keep, args.reason, args.video_fps,
-                      trim_dir=trim_dir, kind=kind)
+                      trim_dir=trim_dir, kind=kind,
+                      regenerate=regenerate)
     ranges = info["kept_ranges"]
     if len(ranges) > MAX_RECORDED_RANGES:
         print(f"  kept {len(ranges)} original runs (listed per frame in "
@@ -640,9 +860,7 @@ def main(argv=None):
     if info["n_seam_records_rebased"]:
         print(f"  rebased {info['n_seam_records_rebased']} recording_seams "
               f"record(s) onto the new frame numbering")
-    if not args.no_regenerate:
-        regenerate_views(ds, args.timelapse_fps, args.timelapse_max_frames)
-    n_sums = checksums.regenerate(ds)
+    n_sums = info["checksum_count"]
     if n_sums:
         print(f"  regenerated {checksums.CHECKSUM_FILE} over {n_sums} files")
     print("  NOTE: the dataset identity and frame set changed; regenerate "
@@ -651,7 +869,7 @@ def main(argv=None):
     meta = json.load(open(ds / "pipeline_metadata.json"))
     if meta.get("projection") == "equirectangular":
         print("  NOTE: equirectangular dataset — pinhole faces reference the "
-              "old pano_ids and must be regenerated.")
+              "pre-trim pano_ids and must be regenerated.")
     return 0
 
 

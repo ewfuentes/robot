@@ -1,8 +1,6 @@
 """Data model for Mapillary images, sequences, and bounding boxes.
 
-Ported from `swag/mapillary_tools/models.py`. The local haversine that used to
-live here is gone: `farfield.geometry.haversine_m` is the one haversine
-(REORG.md rule 1), and `PanoSequence.compute_length` goes through it.
+`PanoSequence.compute_length` uses the shared `farfield.geometry.haversine_m`.
 """
 
 from dataclasses import dataclass, field

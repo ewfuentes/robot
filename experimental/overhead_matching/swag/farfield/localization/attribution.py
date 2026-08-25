@@ -68,7 +68,10 @@ live modes rather than with particles, so it stays flat as the filter grows.
 """
 
 import dataclasses
+import hashlib
+import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 import msgspec
@@ -80,14 +83,31 @@ from common.python.serialization import (
     msgspec_dec_hook,
     msgspec_enc_hook,
 )
+from experimental.overhead_matching.swag.farfield import artifact, provenance
 from experimental.overhead_matching.swag.farfield.localization import (
     filter as pf,
     replay as replay_mod,
 )
 
-CACHE_NAME = "tier3_attribution.jsonl"
+CACHE_PAYLOAD_PREFIX = "tier3_attribution-"
 META_NAME = "tier3_attribution_meta.json"
 SIDECAR_SUFFIX = ".attribution"
+CACHE_SCHEMA = "farfield_attribution_cache/v1"
+ALGORITHM_VERSION = "log_share_decomposition/v1"
+_META_KEYS = frozenset({
+    "schema",
+    "algorithm",
+    "generator_git_commit",
+    "created",
+    "particle_history_sha256",
+    "scenario_name",
+    "n_keyframes",
+    "verified_against_manifest",
+    "payload_file",
+    "payload_sha256",
+    "n_contributions",
+    "n_group_weights",
+})
 # The whole-belief group. Not a mode id: mode ids are small non-negative ints
 # assigned by the tracker, and -1 already means "unclustered particle".
 ALL_GROUPS = -1000
@@ -284,23 +304,92 @@ def cache_dir(run_dir: Path) -> Path:
 
 
 def write_cache(run_dir: Path, cache: AttributionCache) -> Path:
-    """Write the Tier-3 cache in a sibling of the run it describes."""
+    """Atomically publish a verified Tier-3 cache beside its source run.
+
+    The immutable, digest-named payload is written first and the metadata
+    pointer last. A crash therefore leaves either the previous complete cache
+    or a cache that the strict reader rejects, never a plausible partial log.
+    """
+    if not cache.verified_against_manifest:
+        raise ValueError(
+            "refusing to publish attribution that was not verified against "
+            "the source run manifest")
+    _require_sha256(cache.particle_history_sha256,
+                    "particle_history_sha256")
+    if (isinstance(cache.n_keyframes, bool)
+            or not isinstance(cache.n_keyframes, int)
+            or cache.n_keyframes <= 0):
+        raise ValueError("attribution n_keyframes must be a positive integer")
+    if not isinstance(cache.scenario_name, str) or not cache.scenario_name:
+        raise ValueError("attribution scenario_name must be non-empty")
+
     directory = cache_dir(run_dir)
+    if directory.is_symlink():
+        raise ValueError(f"attribution cache directory is a symlink: {directory}")
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / CACHE_NAME
-    with open(path, "wb") as f:
-        for record in cache.contributions + cache.group_weights:
-            f.write(msgspec.json.encode(record, enc_hook=msgspec_enc_hook))
-            f.write(b"\n")
-    (directory / META_NAME).write_bytes(msgspec.json.encode({
+    if not directory.is_dir():
+        raise ValueError(f"attribution cache path is not a directory: {directory}")
+    rows = [msgspec.json.encode(record, enc_hook=msgspec_enc_hook)
+            for record in cache.contributions + cache.group_weights]
+    payload = b"".join(row + b"\n" for row in rows)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    payload_name = f"{CACHE_PAYLOAD_PREFIX}{payload_sha256}.jsonl"
+    path = directory / payload_name
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+            raise ValueError(
+                f"existing attribution payload disagrees with its digest: {path}")
+    else:
+        artifact.atomic_create_file(path, payload)
+    artifact.atomic_write_json(directory / META_NAME, {
+        "schema": CACHE_SCHEMA,
+        "algorithm": ALGORITHM_VERSION,
+        "generator_git_commit": provenance.git_commit(),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "particle_history_sha256": cache.particle_history_sha256,
         "scenario_name": cache.scenario_name,
         "n_keyframes": cache.n_keyframes,
         "verified_against_manifest": cache.verified_against_manifest,
+        "payload_file": payload_name,
+        "payload_sha256": payload_sha256,
         "n_contributions": len(cache.contributions),
         "n_group_weights": len(cache.group_weights),
-    }, enc_hook=msgspec_enc_hook))
+    })
     return path
+
+
+def _require_sha256(value, where: str) -> str:
+    if (not isinstance(value, str) or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        raise ValueError(f"{where} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate attribution metadata key {key!r}")
+        result[key] = value
+    return result
+
+
+def _load_meta(path: Path) -> dict:
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-finite attribution metadata value {token}")))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid attribution metadata {path}: {error}") from error
+    if not isinstance(value, dict) or set(value) != _META_KEYS:
+        actual = set(value) if isinstance(value, dict) else set()
+        raise ValueError(
+            f"invalid attribution metadata keys: "
+            f"missing={sorted(_META_KEYS - actual)}, "
+            f"unknown={sorted(actual - _META_KEYS)}")
+    return value
 
 
 def read_cache(run_dir: Path, expected_sha256: str | None = None
@@ -313,34 +402,88 @@ def read_cache(run_dir: Path, expected_sha256: str | None = None
     """
     directory = cache_dir(run_dir)
     meta_path = directory / META_NAME
-    cache_path = directory / CACHE_NAME
-    if not meta_path.exists() or not cache_path.exists():
+    if not meta_path.exists() and not meta_path.is_symlink():
         return None
-    meta = msgspec.json.decode(meta_path.read_bytes())
-    if (expected_sha256 and meta.get("particle_history_sha256")
-            and meta["particle_history_sha256"] != expected_sha256):
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f"invalid attribution cache directory {directory}")
+    if meta_path.is_symlink() or not meta_path.is_file():
+        raise ValueError(f"invalid attribution metadata path {meta_path}")
+    meta = _load_meta(meta_path)
+    if meta["schema"] != CACHE_SCHEMA:
+        raise ValueError(
+            f"unsupported attribution cache schema {meta['schema']!r}")
+    if meta["algorithm"] != ALGORITHM_VERSION:
+        raise ValueError(
+            f"stale attribution algorithm {meta['algorithm']!r}; recompute it")
+    cached_sha256 = _require_sha256(
+        meta["particle_history_sha256"], "cached particle_history_sha256")
+    if expected_sha256:
+        _require_sha256(expected_sha256, "expected particle_history_sha256")
+    if expected_sha256 and cached_sha256 != expected_sha256:
         raise ValueError(
             f"attribution cache in {directory} was computed against history "
-            f"{meta['particle_history_sha256'][:12]} but the run records "
+            f"{cached_sha256[:12]} but the run records "
             f"{expected_sha256[:12]}; recompute it")
+    if meta["verified_against_manifest"] is not True:
+        raise ValueError(
+            "attribution cache was not verified against its run manifest")
+    for key in ("n_keyframes", "n_contributions", "n_group_weights"):
+        value = meta[key]
+        minimum = 1 if key == "n_keyframes" else 0
+        if (isinstance(value, bool) or not isinstance(value, int)
+                or value < minimum):
+            raise ValueError(f"attribution metadata {key} is invalid")
+    if not isinstance(meta["scenario_name"], str) or not meta["scenario_name"]:
+        raise ValueError("attribution metadata scenario_name is invalid")
+    if (not isinstance(meta["generator_git_commit"], str)
+            or not meta["generator_git_commit"]):
+        raise ValueError("attribution generator_git_commit is invalid")
+    if not isinstance(meta["created"], str) or not meta["created"]:
+        raise ValueError("attribution created timestamp is invalid")
+    payload_sha256 = _require_sha256(
+        meta["payload_sha256"], "attribution payload_sha256")
+    expected_name = f"{CACHE_PAYLOAD_PREFIX}{payload_sha256}.jsonl"
+    if meta["payload_file"] != expected_name:
+        raise ValueError("attribution payload filename does not match digest")
+    cache_path = directory / expected_name
+    if cache_path.is_symlink() or not cache_path.is_file():
+        raise ValueError(f"attribution payload is missing: {cache_path}")
+    payload = cache_path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != payload_sha256:
+        raise ValueError("attribution payload checksum mismatch")
 
     contributions, group_weights = [], []
     # The msgspec tag field is "kind", and Contribution also has a semantic
     # field called kind; the tag is what selects the record type.
     by_tag = {"Contribution": (Contribution, contributions),
               "GroupWeight": (GroupWeight, group_weights)}
-    for line in cache_path.read_bytes().splitlines():
+    lines = payload.splitlines()
+    if len(lines) != meta["n_contributions"] + meta["n_group_weights"]:
+        raise ValueError("attribution payload row count disagrees with metadata")
+    for row_number, line in enumerate(lines, start=1):
         if not line.strip():
-            continue
-        record_type, sink = by_tag[msgspec.json.decode(line)["kind"]]
-        sink.append(msgspec.json.decode(line, type=record_type,
-                                        dec_hook=msgspec_dec_hook))
+            raise ValueError(f"attribution payload row {row_number} is empty")
+        try:
+            decoded = msgspec.json.decode(line)
+            tag = decoded.get("kind") if isinstance(decoded, dict) else None
+            if tag not in by_tag:
+                raise ValueError(f"unknown record kind {tag!r}")
+            record_type, sink = by_tag[tag]
+            sink.append(msgspec.json.decode(
+                line, type=record_type, dec_hook=msgspec_dec_hook))
+        except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as error:
+            raise ValueError(
+                f"invalid attribution payload row {row_number}: {error}") \
+                from error
+    if (len(contributions) != meta["n_contributions"]
+            or len(group_weights) != meta["n_group_weights"]):
+        raise ValueError("attribution payload type counts disagree with metadata")
     return AttributionCache(
-        particle_history_sha256=meta.get("particle_history_sha256", ""),
-        scenario_name=meta.get("scenario_name", ""),
-        n_keyframes=meta.get("n_keyframes", 0),
+        particle_history_sha256=cached_sha256,
+        scenario_name=meta["scenario_name"],
+        n_keyframes=meta["n_keyframes"],
         contributions=contributions, group_weights=group_weights,
-        verified_against_manifest=meta.get("verified_against_manifest", False))
+        verified_against_manifest=True)
 
 
 @dataclasses.dataclass

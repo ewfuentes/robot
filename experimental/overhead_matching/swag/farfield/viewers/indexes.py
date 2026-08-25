@@ -246,10 +246,6 @@ def _refresh_locked(data_root: Path) -> dict:
                              f'index.html">{pg.esc(version.name)}</a>')
                 cells.append(f"{inner} <span class='muted'>{generator} "
                              f"{created}</span>")
-            loose = [p.name for p in ds.iterdir()
-                     if p.is_file() and p.suffix in (".feather", ".json")]
-            for name in sorted(loose):
-                cells.append(f'<a href="{ds.name}/{name}">{pg.esc(name)}</a>')
             krows.append([f"{pg.esc(ds.name)}", "<br>".join(cells)])
         emit(kind, f"artifacts / {kind.name}",
              pg.table(["dataset", "versions"], krows),

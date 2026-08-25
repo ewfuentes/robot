@@ -5,8 +5,8 @@ right for a forensic record but tells you very little about what a place actuall
 looks like. This fetches raster imagery for one run and writes it in the layout
 `viewer.py --satellite` consumes.
 
-**Two levels, because one cannot serve both jobs.** A catalog extent is 23-31 km
-and the trajectory inside it is 0.4-18 km, so:
+**Two levels, because one cannot serve both jobs.** Catalog context and detailed
+trajectory inspection require different raster scales:
 
   wide   the whole catalog extent at a coarse zoom. Context: which side of the
          harbour, where the built-up area stops. Blurry if you zoom in, and that
@@ -94,10 +94,8 @@ def tile_span(lat_min, lat_max, lon_min, lon_max, zoom):
 def find_release(date: str, session) -> tuple[int, str]:
     """(release number, label) for the Wayback release nearest `date`.
 
-    `date` is YYYY-MM or YYYY-MM-DD. Matched by the DATE in each release's
-    title, never by release number: Wayback numbers are not chronological
-    (picking the largest number once returned a 2023-08-31 release as if it
-    were current — a silently three-year-old backdrop).
+    `date` is YYYY-MM or YYYY-MM-DD. Match the date in each release title;
+    Wayback release numbers are not chronological.
     """
     config = session.get(WAYBACK_CONFIG_URL, timeout=30).json()
     releases = []
@@ -176,14 +174,7 @@ def layer_plan(name, lat_min, lat_max, lon_min, lon_max, zoom):
 
 
 def fit_zoom(name, lat_min, lat_max, lon_min, lon_max, max_zoom, budget):
-    """The highest zoom <= max_zoom whose tile count fits `budget`.
-
-    A fixed zoom cannot serve this corpus: the same z18 that costs 99 tiles over
-    mount_washington leg1's 0.4 km track costs 11,730 over boston leg3's 18 km
-    one. Asking for the sharpest imagery that fits a tile budget is the request
-    someone actually has, so the tool answers that instead of making them bisect
-    a zoom by hand.
-    """
+    """Return the highest zoom no greater than ``max_zoom`` within ``budget``."""
     for zoom in range(max_zoom, 8, -1):
         plan = layer_plan(name, lat_min, lat_max, lon_min, lon_max, zoom)
         if plan["n_tiles"] <= budget:
@@ -208,6 +199,22 @@ def trajectory_enu(data) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError(
             "satellite underlay needs truth or estimated health positions")
     return east, north
+
+
+def catalog_latlon(manifest, frame) -> tuple[np.ndarray, np.ndarray]:
+    """Catalog extent including every exact hull/linestring vertex."""
+    lat = [landmark.lat_deg for landmark in manifest.landmarks]
+    lon = [landmark.lon_deg for landmark in manifest.landmarks]
+    for landmark in manifest.landmarks:
+        if not landmark.hull_east_m:
+            continue
+        hull_lat, hull_lon = frame.latlon_from_enu(
+            np.asarray(landmark.hull_east_m, dtype=np.float64),
+            np.asarray(landmark.hull_north_m, dtype=np.float64))
+        lat.extend(np.asarray(hull_lat).tolist())
+        lon.extend(np.asarray(hull_lon).tolist())
+    return (np.asarray(lat, dtype=np.float64),
+            np.asarray(lon, dtype=np.float64))
 
 
 def main():
@@ -237,8 +244,7 @@ def main():
     frame = geo.RegionFrame(manifest.anchor_lat_deg, manifest.anchor_lon_deg)
 
     # wide: the catalog's own extent. fine: the trajectory plus a margin.
-    lat = np.array([lm.lat_deg for lm in manifest.landmarks], dtype=np.float64)
-    lon = np.array([lm.lon_deg for lm in manifest.landmarks], dtype=np.float64)
+    lat, lon = catalog_latlon(manifest, frame)
     east, north = trajectory_enu(data)
     t_lat, t_lon = frame.latlon_from_enu(
         np.array([east.min() - args.fine_margin_m,

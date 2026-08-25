@@ -314,11 +314,27 @@ def publish_supporting_artifact(
     return artifact.open_artifact(output_dir)
 
 
+def signature_tags(display: str) -> dict[str, str]:
+    return dict(field.split("=", 1) for field in display.split("; "))
+
+
+def signature_id_for_display(display: str) -> str:
+    return positive_set.signature_id(signature_tags(display))
+
+
+def signature_entry(display: str, landmark_ids: list[str]) -> dict:
+    return {
+        "canonical_tags": signature_tags(display),
+        "display_label": positive_set.format_signature(signature_tags(display)),
+        "landmark_ids": landmark_ids,
+    }
+
+
 def publish_matches(
         root: Path, catalog_ref: artifact.ArtifactRef, entries,
         version: str = "matches_v1",
 ) -> tuple[Path, artifact.ArtifactRef]:
-    """Publish [(tracklet, signature, confidence)] as LANDMARK_MATCHES."""
+    """Publish [(tracklet, signature display, confidence)] as LANDMARK_MATCHES."""
     tracks_ref = publish_supporting_artifact(
         root, paths_lib.OBJECT_TRACKS, f"tracks_for_{version}")
     audits_ref = publish_supporting_artifact(
@@ -327,15 +343,22 @@ def publish_matches(
     signatures = {}
     for i, (tracklet, signature, confidence) in enumerate(entries):
         landmark_id = f"osm:way:{i}"
-        signatures.setdefault(signature, []).append(landmark_id)
+        canonical_id = signature_id_for_display(signature)
+        entry = signatures.setdefault(
+            canonical_id, signature_entry(signature, []))
+        canonical_display = entry["display_label"]
+        entry["landmark_ids"].append(landmark_id)
         matches[tracklet] = {
             "n_landmarks": 1,
             "n_signatures": 1,
             "matches": [{
                 "landmark_id": landmark_id,
-                "signature": signature,
-                "confidence": confidence,
+                "per_call_candidate_scores": [confidence],
+                "aggregate_confidence": confidence,
+                "aggregation_rule": positive_set.CANDIDATE_AGGREGATION_RULE,
                 "match_type": "instance",
+                "signature_id": canonical_id,
+                "signature_display": canonical_display,
             }],
         }
     if not matches:
@@ -344,7 +367,11 @@ def publish_matches(
             "n_signatures": 0,
             "matches": [],
         }}
-        signatures = {"man_made=unused": ["osm:way:unused"]}
+        unused = "man_made=unused"
+        signatures = {
+            signature_id_for_display(unused):
+                signature_entry(unused, ["osm:way:unused"]),
+        }
     output_dir = root / version
     with artifact.ArtifactDirectoryBuilder(
             output_dir,
@@ -399,7 +426,7 @@ class EvidenceIsOptionalTest(unittest.TestCase):
                      Point(-71.0, 42.3))]
             source = publish_catalog(root / "source", rows)
             source_ref = artifact.open_artifact(source)
-            matching_dir, _ = publish_matches(
+            matching_dir, matching_ref = publish_matches(
                 root / "matching", source_ref,
                 [("LT0", "man_made=tower", 0.9)])
             positive = root / "positive.json"
@@ -412,12 +439,24 @@ class EvidenceIsOptionalTest(unittest.TestCase):
                     matched_from=[matching_dir], confidence_floor=0.8)
             plain_manifest = artifact.load_manifest(unguarded)
             guarded_manifest = artifact.load_manifest(guarded)
+            positive_sha256 = artifact.sha256_file(positive)
             plain_bytes = (unguarded / "catalog.feather").read_bytes()
             guarded_bytes = (guarded / "catalog.feather").read_bytes()
 
-        self.assertEqual(guarded_manifest.upstreams, (source_ref,))
-        self.assertEqual(guarded_manifest.upstreams, plain_manifest.upstreams)
-        self.assertEqual(guarded_manifest.config, plain_manifest.config)
+        self.assertEqual(plain_manifest.upstreams, (source_ref,))
+        self.assertEqual(
+            guarded_manifest.upstreams, (source_ref, matching_ref))
+        plain_config = dict(plain_manifest.config)
+        guarded_config = dict(guarded_manifest.config)
+        plain_guards = plain_config.pop("recall_guards")
+        guarded_guards = guarded_config.pop("recall_guards")
+        self.assertEqual(guarded_config, plain_config)
+        self.assertEqual(plain_guards["matching_artifacts"], [])
+        self.assertEqual(
+            guarded_guards["matching_artifacts"], [matching_ref.to_dict()])
+        self.assertEqual(
+            guarded_guards["positive_set_sha256"],
+            positive_sha256)
         self.assertEqual(guarded_manifest.declared_outputs,
                          plain_manifest.declared_outputs)
         self.assertEqual(guarded_manifest.content_digest,
@@ -442,8 +481,10 @@ class MatchedRecallGuardTest(unittest.TestCase):
                  ("LT1", "amenity=bench", 0.2)])
             found, refs = tc.matched_signatures(
                 [matching_dir], 0.5, source_ref)
-        self.assertEqual(sorted(found), ["man_made=lighthouse"])
-        self.assertEqual(found["man_made=lighthouse"][0][1], "LT0")
+        expected = signature_id_for_display("man_made=lighthouse")
+        self.assertEqual(sorted(found), [expected])
+        self.assertEqual(found[expected][0][1], "LT0")
+        self.assertEqual(found[expected][0][4], "man_made=lighthouse")
         self.assertEqual(refs, (matching_ref,))
 
     def test_rejects_a_loose_matches_file(self):
@@ -472,7 +513,30 @@ class MatchedRecallGuardTest(unittest.TestCase):
                 [("LT0", "man_made=tower", 0.9)])
             found, _ = tc.matched_signatures(
                 [matching_dir], 0.5, source_ref)
-        self.assertEqual(set(found), {"man_made=tower"})
+        self.assertEqual(
+            set(found), {signature_id_for_display("man_made=tower")})
+
+    def test_display_collision_does_not_satisfy_digest_recall(self):
+        one_tag = {"a": "x; b=y"}
+        two_tags = {"a": "x", "b": "y"}
+        display = positive_set.format_signature(one_tag)
+        self.assertEqual(display, positive_set.format_signature(two_tags))
+        one_id = positive_set.signature_id(one_tag)
+        two_id = positive_set.signature_id(two_tags)
+        self.assertNotEqual(one_id, two_id)
+        matched = {
+            one_id: [("matches_v1", "LT0", 0.9, "instance", display)],
+        }
+
+        lost, absent = tc.report_matched_recall(
+            matched,
+            [two_tags],
+            np.array([True]),
+            {"none": np.array([False])},
+        )
+
+        self.assertEqual(lost, [])
+        self.assertEqual(absent, [one_id])
 
     def test_missing_matching_artifact_is_an_error_not_a_silent_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -525,30 +589,56 @@ class MatchedRecallGuardTest(unittest.TestCase):
                 tmp, [("osm:node:1", {"amenity": "bench"},
                        Point(-71.0, 42.3))])
             source_ref = artifact.open_artifact(source)
-            matches, _ = publish_matches(
+            matches, matching_ref = publish_matches(
                 tmp, source_ref, [("LT0", "amenity=bench", 0.9)])
             tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
                     matched_from=[matches], allow_recall_loss=True)
             manifest = artifact.load_manifest(tmp / "v2_trimmed")
-        self.assertEqual(manifest.upstreams, (source_ref,))
-        self.assertNotIn("recall_guard", manifest.config)
+        self.assertEqual(manifest.upstreams, (source_ref, matching_ref))
+        self.assertTrue(manifest.config["recall_guards"]["allow_recall_loss"])
 
-    def test_signatures_from_another_region_do_not_block_a_write(self):
-        """A run from a different dataset matches signatures this table never
-        held; that is not a rule dropping something."""
+    def test_more_than_40_percent_absent_requires_a_distinct_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             source = publish_catalog(
                 tmp, [("osm:node:1", {"man_made": "lighthouse"},
                        Point(-70.89, 42.32))])
             source_ref = artifact.open_artifact(source)
-            matches, _ = publish_matches(
+            matches, matching_ref = publish_matches(
                 tmp, source_ref,
                 [("LT0", "natural=peak; name=Mt Adams", 0.9)])
-            tc.main(source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
-                    matched_from=[matches])
+            with self.assertRaisesRegex(SystemExit, "100.0%.*absent"):
+                tc.main(source, tmp / "blocked", None, 2000.0, 6.0, False,
+                        matched_from=[matches])
+            tc.main(
+                source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                matched_from=[matches], allow_absent_matched_signatures=True)
             manifest = artifact.load_manifest(tmp / "v2_trimmed")
-        self.assertEqual(manifest.upstreams, (source_ref,))
+        self.assertEqual(manifest.upstreams, (source_ref, matching_ref))
+        self.assertTrue(
+            manifest.config["recall_guards"][
+                "allow_absent_matched_signatures"])
+
+    def test_exactly_40_percent_absent_does_not_need_the_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                ("a", {"man_made": "tower"}, Point(-71.0, 42.30)),
+                ("b", {"man_made": "lighthouse"}, Point(-71.0, 42.31)),
+                ("c", {"man_made": "pier"}, Point(-71.0, 42.32)),
+            ]
+            source = publish_catalog(root, rows)
+            matches, _ = publish_matches(
+                root, artifact.open_artifact(source), [
+                    ("LT0", "man_made=tower", 0.9),
+                    ("LT1", "man_made=lighthouse", 0.9),
+                    ("LT2", "man_made=pier", 0.9),
+                    ("LT3", "natural=peak; name=A", 0.9),
+                    ("LT4", "natural=peak; name=B", 0.9),
+                ])
+            tc.main(source, root / "trimmed", None, 2000.0, 6.0, False,
+                    matched_from=[matches])
+            self.assertTrue((root / "trimmed" / "manifest.json").is_file())
 
     def test_passes_when_the_matched_signature_survives(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -615,15 +705,18 @@ class PositiveSetIdentityTest(unittest.TestCase):
             source = publish_catalog(
                 tmp, [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
             source_ref = artifact.open_artifact(source)
-            matching_dir, _ = publish_matches(
+            matching_dir, matching_ref = publish_matches(
                 tmp, source_ref, [])
             positive = self.write_positive(
                 tmp / "positive.json", matching_dir)
             output = tmp / "v2"
             tc.main(source, output, positive, 2000.0, 6.0, False)
             manifest = artifact.load_manifest(output)
-        self.assertEqual(manifest.upstreams, (source_ref,))
-        self.assertNotIn("recall_guard", manifest.config)
+            positive_sha256 = artifact.sha256_file(positive)
+        self.assertEqual(manifest.upstreams, (source_ref, matching_ref))
+        self.assertEqual(
+            manifest.config["recall_guards"]["positive_set_sha256"],
+            positive_sha256)
 
     def test_positive_set_from_a_prior_trim_of_the_full_catalog_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -634,14 +727,14 @@ class PositiveSetIdentityTest(unittest.TestCase):
             prior_trim = publish_catalog(
                 root / "trimmed", rows, version="trimmed_v1",
                 upstreams=(source_ref,))
-            matching_dir, _ = publish_matches(
+            matching_dir, matching_ref = publish_matches(
                 root / "matching", artifact.open_artifact(prior_trim),
                 [("LT0", "man_made=tower", 0.9)])
             positive = self.write_positive(root / "positive.json", matching_dir)
             output = root / "trimmed_v2"
             tc.main(source, output, positive, 2000.0, 6.0, False)
             manifest = artifact.load_manifest(output)
-        self.assertEqual(manifest.upstreams, (source_ref,))
+        self.assertEqual(manifest.upstreams, (source_ref, matching_ref))
 
     def test_positive_set_from_another_catalog_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

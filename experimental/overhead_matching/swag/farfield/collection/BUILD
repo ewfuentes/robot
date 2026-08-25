@@ -175,6 +175,15 @@ py_binary(
     deps = [":seed_to_trajectory_lib"],
 )
 
+py_test(
+    name = "seed_to_trajectory_test",
+    srcs = ["seed_to_trajectory_test.py"],
+    deps = [
+        ":models",
+        ":seed_to_trajectory_lib",
+    ],
+)
+
 py_library(
     name = "extract_stitch_lib",
     srcs = ["extract_stitch.py"],
@@ -182,6 +191,8 @@ py_library(
     deps = [
         requirement("pillow"),
         ":api",
+        ":seed_to_trajectory_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -191,6 +202,15 @@ py_binary(
     name = "extract_stitch",
     srcs = ["extract_stitch.py"],
     deps = [":extract_stitch_lib"],
+)
+
+py_test(
+    name = "extract_stitch_test",
+    srcs = ["extract_stitch_test.py"],
+    deps = [
+        requirement("pillow"),
+        ":extract_stitch_lib",
+    ],
 )
 
 py_library(
@@ -204,8 +224,12 @@ py_library(
         requirement("numpy"),
         requirement("opencv-python"),
         requirement("tqdm"),
+        ":extract_stitch_lib",
         ":models",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:audit_dataset_lib",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
 )
@@ -231,6 +255,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("shapely"),
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
@@ -240,9 +265,26 @@ py_binary(
     deps = [":pbf_coverage_lib"],
 )
 
+py_test(
+    name = "pbf_coverage_test",
+    srcs = ["pbf_coverage_test.py"],
+    deps = [
+        requirement("shapely"),
+        ":pbf_coverage_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
 py_library(
     name = "run_farfield_collection_lib",
     srcs = ["run_farfield_collection.py"],
+    data = [
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:download_enc_cells",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_enc",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_osm",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:merge_landmark_feathers",
+        "//experimental/overhead_matching/swag/scripts:panorama_to_pinhole",
+    ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":extract_stitch_lib",
@@ -251,12 +293,15 @@ py_library(
         ":mapillary_to_vigor_lib",
         ":pbf_coverage_lib",
         ":seed_to_trajectory_lib",
+        requirement("pillow"),
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:audit_dataset_lib",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
         "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:download_enc_cells_lib",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:make_dataset_timelapse_lib",
         "//experimental/overhead_matching/swag/farfield/dataset_tools:plot_landmarks_lib",
         "//experimental/overhead_matching/swag/farfield/dataset_tools:trim_catalog_lib",
     ],
@@ -272,6 +317,7 @@ py_test(
     name = "run_farfield_collection_test",
     srcs = ["run_farfield_collection_test.py"],
     deps = [
+        requirement("pillow"),
         ":run_farfield_collection_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:paths",

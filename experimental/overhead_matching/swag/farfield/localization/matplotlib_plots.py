@@ -1,4 +1,4 @@
-"""Plot a bearing-only localization run directory.
+"""Publish static matplotlib plots for a localization run directory.
 
 Reads only the self-describing run dir written by run_io.py and publishes
 <run_dir>.plots/{map.png,strip.png} plus an optional particle animation
@@ -69,6 +69,11 @@ def _draw_landmarks(data, ax):
     """
     lm_east, lm_north = _landmark_positions(data)
     count = len(data.manifest.landmarks)
+    for landmark in data.manifest.landmarks:
+        if len(landmark.hull_east_m) >= 2:
+            ax.plot(landmark.hull_east_m, landmark.hull_north_m,
+                    color="0.45", lw=0.7, alpha=0.55, zorder=2)
+
     if count > _MAX_LABELLED_LANDMARKS:
         ax.scatter(lm_east, lm_north, s=1.5, alpha=0.25, color="0.6",
                    zorder=1, label=f"catalog ({count:,} landmarks)")
@@ -158,6 +163,19 @@ def _draw_strip(data, axes):
     keyframes = [h.keyframe_idx for h in data.health]
     resample_kfs = [h.keyframe_idx for h in data.health if h.resampled]
 
+    metric_config = data.manifest.position_mass_metric
+    if metric_config is not None:
+        for radius_m in metric_config.radii_m:
+            key = metrics.position_mass_metric_key(metric_config, radius_m)
+            values = [record.position_probability_mass[key]
+                      for record in data.health]
+            axes[0].plot(
+                keyframes, values, lw=1.0,
+                label=f"within {radius_m:g} m")
+        axes[0].legend(fontsize=7)
+    axes[0].set_ylabel("posterior mass")
+    axes[0].set_ylim(-0.02, 1.02)
+
     if data.truth:
         # The metrics arrays cover only keyframes that HAVE truth (real
         # exports carry truth only where GPS was valid), so they are plotted
@@ -167,48 +185,60 @@ def _draw_strip(data, axes):
                      if h.keyframe_idx in truth_kfs]
         errors = metrics.position_errors_m(data.health, data.truth)
         heading_errors = metrics.heading_errors_deg(data.health, data.truth)
-        axes[0].plot(error_kfs, errors, lw=1.0, label="mean error")
-        axes[0].plot(error_kfs, metrics.map_position_errors_m(data.health,
+        axes[1].plot(error_kfs, errors, lw=1.0, label="mean error")
+        axes[1].plot(error_kfs, metrics.map_position_errors_m(data.health,
                                                               data.truth),
                      lw=0.8, color="tab:purple", ls="--", label="MAP error")
         # Reported sigma next to actual error: if the band sits below the
         # error line the filter is overconfident, which is the defect that
         # accuracy-only plots hide (see consistency_test.py).
-        axes[0].plot(keyframes, [h.position_std_m for h in data.health],
+        axes[1].plot(keyframes, [h.position_std_m for h in data.health],
                      lw=0.8, color="tab:green", label="reported sigma")
-        axes[0].set_ylabel("pos err (m)")
-        axes[0].set_yscale("log")
-        axes[0].legend(fontsize=7)
-        axes[1].plot(error_kfs, heading_errors, lw=1.0, label="error")
-        axes[1].plot(keyframes, [h.heading_std_deg for h in data.health],
-                     lw=0.8, color="tab:green", label="reported sigma")
-        axes[1].set_ylabel("heading err (deg)")
+        axes[1].set_ylabel("pos err (m)")
         axes[1].set_yscale("log")
         axes[1].legend(fontsize=7)
+        axes[2].plot(error_kfs, heading_errors, lw=1.0, label="error")
+        axes[2].plot(keyframes, [h.heading_std_deg for h in data.health],
+                     lw=0.8, color="tab:green", label="reported sigma")
+        axes[2].set_ylabel("heading err (deg)")
+        axes[2].set_yscale("log")
+        axes[2].legend(fontsize=7)
+    else:
+        axes[1].plot(keyframes, [h.position_std_m for h in data.health],
+                     lw=0.8, color="tab:green", label="reported sigma")
+        axes[1].set_ylabel("position σ (m)")
+        axes[1].set_yscale("log")
+        axes[1].legend(fontsize=7)
+        axes[2].plot(keyframes, [h.heading_std_deg for h in data.health],
+                     lw=0.8, color="tab:green", label="reported sigma")
+        axes[2].set_ylabel("heading σ (deg)")
+        axes[2].set_yscale("log")
+        axes[2].legend(fontsize=7)
+
     for kf in resample_kfs:
         axes[0].axvline(kf, color="0.85", lw=0.5, zorder=0)
 
-    axes[2].plot(keyframes, [h.ess for h in data.health], lw=1.0)
+    axes[3].plot(keyframes, [h.ess for h in data.health], lw=1.0)
     n_particles = data.manifest.filter_config.n_particles
     threshold = data.manifest.filter_config.ess_resample_frac * n_particles
-    axes[2].axhline(threshold, color="tab:red", lw=0.8, ls="--",
+    axes[3].axhline(threshold, color="tab:red", lw=0.8, ls="--",
                     label="resample threshold")
-    axes[2].set_ylabel("ESS")
-    axes[2].set_yscale("log")
-    axes[2].legend(fontsize=7)
+    axes[3].set_ylabel("ESS")
+    axes[3].set_yscale("log")
+    axes[3].legend(fontsize=7)
 
     assoc_kf, assoc_null = [], []
     for record in data.health:
         for assoc in record.associations:
             assoc_kf.append(record.keyframe_idx)
             assoc_null.append(assoc.null_share)
-    axes[3].scatter(assoc_kf, assoc_null, s=6, alpha=0.6)
-    axes[3].plot(keyframes, [h.proposal_weight_share for h in data.health],
+    axes[4].scatter(assoc_kf, assoc_null, s=6, alpha=0.6)
+    axes[4].plot(keyframes, [h.proposal_weight_share for h in data.health],
                  lw=0.8, color="tab:purple", label="proposal-descended mass")
-    axes[3].set_ylabel("null share")
-    axes[3].set_ylim(-0.05, 1.05)
-    axes[3].set_xlabel("keyframe")
-    axes[3].legend(fontsize=7)
+    axes[4].set_ylabel("null share")
+    axes[4].set_ylim(-0.05, 1.05)
+    axes[4].set_xlabel("keyframe")
+    axes[4].legend(fontsize=7)
     # Proposal events are the §7.3 auto-bookmarks: the debugging table of
     # contents, so mark them on every panel.
     for event in data.proposal_events:
@@ -292,7 +322,7 @@ def main():
         fig.savefig(plots_dir / "map.png", dpi=150)
         plt.close(fig)
 
-        fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+        fig, axes = plt.subplots(5, 1, figsize=(10, 10), sharex=True)
         _draw_strip(data, axes)
         fig.tight_layout()
         fig.savefig(plots_dir / "strip.png", dpi=150)

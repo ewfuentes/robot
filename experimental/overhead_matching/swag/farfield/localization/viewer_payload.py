@@ -41,6 +41,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics,
     replay as replay_mod,
     run_io,
+    sources as sources_mod,
 )
 
 # Enough particles to read a cloud's shape, few enough to inline for every
@@ -108,6 +109,32 @@ def _landmark_positions(manifest, frame):
         np.array([lm.lon_deg for lm in manifest.landmarks]))
 
 
+def _landmark_geometry(landmark) -> dict | None:
+    if len(landmark.hull_east_m) < 2:
+        return None
+    points = [[float(east), float(north)] for east, north in zip(
+        landmark.hull_east_m, landmark.hull_north_m)]
+    kind = ("polygon" if len(points) >= 4 and points[0] == points[-1]
+            else "linestring")
+    return {
+        "id": landmark.landmark_id,
+        "kind": kind,
+        "points": points,
+    }
+
+
+def _catalog_bounds(east, north, landmarks, margin: float = 2000.0):
+    all_east = [float(value) for value in east]
+    all_north = [float(value) for value in north]
+    for landmark in landmarks:
+        all_east.extend(float(value) for value in landmark.hull_east_m)
+        all_north.extend(float(value) for value in landmark.hull_north_m)
+    if not all_east:
+        return None
+    return (min(all_east) - margin, max(all_east) + margin,
+            min(all_north) - margin, max(all_north) + margin)
+
+
 def referenced_landmark_ids(data) -> set:
     """Landmarks the run actually talks about.
 
@@ -164,6 +191,9 @@ def _health_payload(data, truth_by_kf) -> list:
             "entropy": round(record.mode_entropy_nats, 3),
             "proposalShare": round(record.proposal_weight_share, 3),
             "nMeas": record.n_measurements,
+            "positionMass": {
+                key: round(value, 8) for key, value in sorted(
+                    record.position_probability_mass.items())},
             "modes": [{
                 "id": mode.mode_id, "w": round(mode.weight, 4),
                 "e": round(mode.mean_east_m, 1),
@@ -218,7 +248,7 @@ def _mode_trajectories(data) -> list:
     return sorted(trajectories.values(), key=lambda m: m["id"])
 
 
-def _tracklet_dossiers(data, cache, triage,
+def _tracklet_dossiers(data, cache, triage, bundle,
                        max_table_entries: int = 40) -> list:
     """The §7.4 view-3 payload: one tracklet's whole life in one object."""
     epochs_by_tracklet: dict[str, list] = {}
@@ -286,6 +316,24 @@ def _tracklet_dossiers(data, cache, triage,
         verdict = triage.get(tracklet_id)
         if verdict is not None:
             entry["triage"] = _triage_payload(verdict)
+        source = bundle.get(tracklet_id) if bundle is not None else None
+        if source is not None:
+            entry["source"] = {
+                "localId": source.local_id,
+                "sourceTrackId": source.source_track_id,
+                "name": source.name,
+                "tags": list(source.tags),
+                "description": source.description,
+                "features": list(source.features),
+                "unresolved": source.unresolved,
+                "nSupports": source.n_supports,
+                "span": list(source.keyframe_span),
+                "validSegments": [
+                    list(segment) for segment in source.valid_segments],
+                "verdict": source.verdict,
+                "confidence": source.confidence,
+                "chip": source.chip_data_uri,
+            }
         out.append(entry)
     return out
 
@@ -456,8 +504,10 @@ def _satellite_payload(directory, notes) -> dict | None:
     return {"layers": layers, "source": spec.get("source", "unstated")}
 
 
-def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
+def build(run_dir: Path, tracks_dir: Path | None = None,
+          audit_dir: Path | None = None, feather: Path | None = None, ghost_dirs=(),
           max_particles: int = MAX_PARTICLES_PER_FRAME,
+          embed_source_chips: bool = True,
           with_basemap: bool = True,
           basemap_detail: float = 1.0,
           satellite: Path | None = None) -> dict:
@@ -497,6 +547,17 @@ def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
     triage = forensics.triage_tracklets(data, catalog)
     events = forensics.derive_events(data)
 
+    if (tracks_dir is None) != (audit_dir is None):
+        raise ValueError("tracks_dir and audit_dir must be supplied together")
+    bundle = None
+    if tracks_dir is not None:
+        tracklet_ids = {
+            measurement.tracklet_id for measurement in data.measurements}
+        bundle = sources_mod.load(
+            run_dir, tracks_dir, audit_dir, tracklet_ids,
+            embed_chips=embed_source_chips)
+        notes.extend(bundle.notes)
+
     referenced = referenced_landmark_ids(data)
     truth_by_kf = {t.keyframe_idx: t for t in data.truth}
 
@@ -511,11 +572,7 @@ def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
             "m": [int(v) for v in arrays["mode_id"][index]],
         }
 
-    bounds = None
-    if east.size:
-        margin = 2000.0
-        bounds = (float(east.min()) - margin, float(east.max()) + margin,
-                  float(north.min()) - margin, float(north.max()) + margin)
+    bounds = _catalog_bounds(east, north, manifest.landmarks)
     basemap = (basemap_mod.build(feather, manifest.anchor_lat_deg,
                                  manifest.anchor_lon_deg, bounds_enu=bounds,
                                  detail=basemap_detail)
@@ -542,9 +599,28 @@ def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
             "nEndorsed": len(endorsed),
         })
 
+    landmark_geometry = []
+    for landmark in manifest.landmarks:
+        geometry = _landmark_geometry(landmark)
+        if geometry is not None:
+            geometry["referenced"] = landmark.landmark_id in referenced
+            landmark_geometry.append(geometry)
+    metric_config = manifest.position_mass_metric
+
     return {
         "run": {
             "scenario": manifest.scenario_name,
+            "runKind": manifest.run_kind,
+            "initialization": manifest.initialization_kind,
+            "bearingsConsumed": manifest.bearings_consumed,
+            "ablationTags": list(manifest.ablation_tags),
+            "truthPositionArtifact": manifest.truth_position_artifact,
+            "truthPositionSchema": manifest.truth_position_schema,
+            "positionMassMetric": (None if metric_config is None else {
+                "id": metric_config.metric_id,
+                "version": metric_config.metric_version,
+                "radiiM": list(metric_config.radii_m),
+            }),
             "nKeyframes": manifest.n_keyframes,
             "nParticles": manifest.filter_config.n_particles,
             "seed": manifest.filter_config.seed,
@@ -567,6 +643,7 @@ def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
         "backdrop": [[int(round(float(e))), int(round(float(n)))]
                      for lm, e, n in zip(manifest.landmarks, east, north)
                      if lm.landmark_id not in referenced],
+        "landmarkGeometry": landmark_geometry,
         "basemap": basemap.to_payload(),
         "satellite": _satellite_payload(satellite, notes),
         "truth": [[round(t.east_m, 1), round(t.north_m, 1)]
@@ -575,7 +652,7 @@ def build(run_dir: Path, feather: Path | None = None, ghost_dirs=(),
         "checkpoints": checkpoints,
         "measurements": measurements,
         "modes": _mode_trajectories(data),
-        "tracklets": _tracklet_dossiers(data, cache, triage),
+        "tracklets": _tracklet_dossiers(data, cache, triage, bundle),
         "attribution": _attribution_payload(cache, data),
         "events": [dataclasses.asdict(e) for e in events],
         "triageSummary": forensics.triage_summary(triage),

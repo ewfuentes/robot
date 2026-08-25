@@ -127,6 +127,37 @@ class BuildConfigTest(unittest.TestCase):
                 self.build_dir, dataset="ds", config=config, schema=SCHEMA,
                 generator="test", inputs={})
 
+    def test_exclusive_minimum_rejects_boundary(self):
+        spec = build_config.ValueSpec((int, float), exclusive_minimum=0.0)
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    r"gain must be > 0\.0"):
+            spec.validate("gain", 0.0)
+        spec.validate("gain", 1e-12)
+
+    def test_exclusive_minimum_cannot_conflict_with_other_bounds(self):
+        with self.assertRaisesRegex(ValueError, "cannot combine"):
+            build_config.ValueSpec(
+                (int, float), minimum=0.0, exclusive_minimum=0.0)
+        with self.assertRaisesRegex(ValueError, "below maximum"):
+            build_config.ValueSpec(
+                (int, float), exclusive_minimum=1.0, maximum=1.0)
+
+    def test_exclusive_maximum_rejects_boundary(self):
+        spec = build_config.ValueSpec((int, float), exclusive_maximum=1.0)
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    r"probability must be < 1\.0"):
+            spec.validate("probability", 1.0)
+        spec.validate("probability", 1.0 - 1e-12)
+
+    def test_exclusive_maximum_cannot_conflict_with_other_bounds(self):
+        with self.assertRaisesRegex(ValueError, "cannot combine"):
+            build_config.ValueSpec(
+                (int, float), maximum=1.0, exclusive_maximum=1.0)
+        with self.assertRaisesRegex(ValueError, "exclusive bounds are empty"):
+            build_config.ValueSpec(
+                (int, float), exclusive_minimum=1.0, exclusive_maximum=1.0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

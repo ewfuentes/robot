@@ -16,8 +16,6 @@ import msgspec
 import shapely
 from pathlib import Path
 import pandas as pd
-
-from experimental.overhead_matching.swag.data import landmark_schema
 import geopandas as gpd
 import numpy as np
 from scipy.spatial import cKDTree
@@ -198,8 +196,7 @@ def load_landmark_geojson(path: Path, zoom_level: int):
         return shapely.ops.transform(coord_transform, geometry)
 
     df["geometry_px"] = df["geometry"].apply(convert_geometry_to_pixels)
-    # Works for both the dict and the legacy wide layout.
-    df["pruned_props"] = [prune_landmark(d) for d in landmark_schema.row_dicts(df)]
+    df["pruned_props"] = df.apply(lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
 
     return df
 
@@ -516,8 +513,10 @@ class VigorDataset(torch.utils.data.Dataset):
             # Pre-compute dict representation to avoid repeated conversions in __getitem__
             log_progress("Pre-computing landmark dict representations...")
             dict_start_time = time.time()
-            self._landmark_metadata['as_dict'] = landmark_schema.row_dicts_with_index(
-                self._landmark_metadata)
+            self._landmark_metadata['as_dict'] = [
+                series_to_dict_with_index(row.dropna())
+                for _, row in self._landmark_metadata.iterrows()
+            ]
             dict_end_time = time.time()
             log_progress(f"Pre-computed dicts for {len(self._landmark_metadata)} landmarks")
             log_progress(f"Took {dict_end_time - dict_start_time: 0.3} s")

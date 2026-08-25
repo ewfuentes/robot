@@ -1,9 +1,4 @@
-"""Trim a landmark feather to entries a far-field observer could match.
-
-The harbor feather is 156 k landmarks, of which ~47 % are untagged
-`building=yes` footprints and ~30 % is street furniture -- benches, crossings,
-waste baskets, CCTV cameras -- that nothing observed from a boat can ever
-correspond to. This drops those rows and writes a smaller catalog trim.
+"""Trim a landmark catalog to entries a far-field observer could match.
 
 **The full table is never modified.** Trimming publishes a new artifact; the
 input stays as the fallback whenever a landmark turns out to be missing.
@@ -11,7 +6,7 @@ input stays as the fallback whenever a landmark turns out to be missing.
 **Input and output are published CATALOGS artifacts**, never loose Feather
 files. Each contains exactly `catalog.feather` plus its typed manifest. The
 output manifest binds the exact input ArtifactRef and all trim configuration;
-`datasets/` is frozen (REORG.md rule 7).
+the dataset remains immutable.
 
 **Recall evidence is optional.** Catalog construction and trimming precede
 matching, so a new dataset must be able to publish its trimmed catalog without
@@ -68,11 +63,11 @@ from experimental.overhead_matching.swag.farfield.catalog import catalog
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.dataset_tools.landmark_positive_set import (  # noqa: E501
     PositiveSetError,
-    format_signature,
     load_positive_set,
     open_catalog_artifact,
     open_matching_artifact,
     recall,
+    signature_id,
     validate_positive_set,
 )
 
@@ -410,15 +405,7 @@ def matched_signatures(
         sources: list, confidence_floor: float,
         expected_catalog_ref: artifact.ArtifactRef,
 ) -> tuple[dict, tuple[artifact.ArtifactRef, ...]]:
-    """Load signatures only from complete, catalog-bound matching artifacts.
-
-    The positive-set guard asks whether a rule drops a *labelled* match. This
-    asks the stronger question -- whether it drops something a matcher
-    already chose on a real run -- which is the check that caught two
-    proposed rules that looked obviously right: dropping signatures that span
-    many rows (leg1 matched `man_made=pier` across 375 of them) and dropping
-    by physical extent (matched features include islands ~1 km across).
-    """
+    """Load signatures only from complete, catalog-bound matching artifacts."""
     found = {}
     references = []
     for source in sources:
@@ -438,47 +425,41 @@ def matched_signatures(
         label = matching_ref.version
         for tracklet, records in matches.items():
             for match in records:
-                if match.get("confidence", 0.0) < confidence_floor:
+                confidence = match["aggregate_confidence"]
+                if confidence < confidence_floor:
                     continue
-                found.setdefault(match["signature"], []).append(
-                    (label, tracklet, match["confidence"],
-                     match.get("match_type", "?")))
+                found.setdefault(match["signature_id"], []).append(
+                    (label, tracklet, confidence, match["match_type"],
+                     match["signature_display"]))
     return found, tuple(references)
 
 
 def report_matched_recall(matched: dict, tags: list, kept: np.ndarray,
-                          masks: dict) -> list:
-    """Print how the rules treat already-matched signatures; return the lost.
-
-    Only signatures this table actually contains can be *lost by a rule*. A
-    signature the matcher chose on some other region is simply not here,
-    which is not this tool's business -- counting it as a loss would make the
-    guard unusable with any run but one, so those are reported separately and
-    do not block a write.
-    """
+                          masks: dict) -> tuple[list, list]:
+    """Print how rules treat matched signatures; return (lost, absent)."""
     by_signature = {}
     for i, tag in enumerate(tags):
-        by_signature.setdefault(format_signature(tag), []).append(i)
-    surviving = {format_signature(tags[i]) for i in np.flatnonzero(kept)}
+        by_signature.setdefault(signature_id(tag), []).append(i)
+    surviving = {signature_id(tags[i]) for i in np.flatnonzero(kept)}
     absent = sorted(s for s in matched if s not in by_signature)
     lost = sorted(set(matched) - surviving - set(absent))
     print(f"\nRECALL on {len(matched)} signatures matched by real runs: "
           f"{len(matched) - len(lost) - len(absent)}/"
           f"{len(matched) - len(absent)} of the ones this table holds survive"
-          + (f"; {len(absent)} are not in this table at all (different "
-             f"region or catalog vintage)" if absent else ""))
+          + (f"; {len(absent)} are absent from this catalog "
+             f"({100 * len(absent) / len(matched):.1f}%)" if absent else ""))
     if not lost:
-        return lost
+        return lost, absent
     print("LOST signatures a matcher already chose -- fix the rule:")
     for signature in lost[:15]:
         # Which rule is responsible: the rules that fired on the rows
         # carrying this signature.
         blame = sorted({name for name, mask in masks.items()
                         for i in by_signature[signature] if mask[i]})
-        run, tracklet, confidence, kind = matched[signature][0]
+        run, tracklet, confidence, kind, display = matched[signature][0]
         print(f"  [{','.join(blame)}] {run}/{tracklet} {kind} "
-              f"{confidence:.2f}: {signature[:70]}")
-    return lost
+              f"{confidence:.2f}: {display[:70]} ({signature[:19]}...)")
+    return lost, absent
 
 
 def positive_set_identity(positive_set: dict, source: Path,
@@ -509,6 +490,7 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
          min_building_area_m2: float, min_building_levels: float,
          dry_run: bool, matched_from=None, confidence_floor: float = 0.5,
          allow_recall_loss: bool = False,
+         allow_absent_matched_signatures: bool = False,
          clip_km=None, clip_center_lat=None,
          clip_center_lon=None) -> gpd.GeoDataFrame:
     try:
@@ -556,6 +538,13 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
     by_source = Counter(gdf["landmark_type"][kept])
     print(f"by source: {dict(by_source)}")
 
+    guard_refs = []
+    positive_set_sha256 = None
+    n_positive_signatures = 0
+    n_lost_positive_signatures = 0
+    n_matched_signatures = 0
+    n_lost_matched_signatures = 0
+    n_absent_matched_signatures = 0
     lost_positives = []
     if positive_set_path is not None:
         positive_set_path = Path(positive_set_path)
@@ -564,31 +553,54 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
         except (artifact.ArtifactError, PositiveSetError) as exc:
             raise SystemExit(
                 f"invalid positive set {positive_set_path}: {exc}") from exc
-        positive_set_identity(positive_set, positive_set_path, input_ref)
-        surviving = {format_signature(tags[i]) for i in np.flatnonzero(kept)}
+        positive_matching_ref, _ = positive_set_identity(
+            positive_set, positive_set_path, input_ref)
+        guard_refs.append(positive_matching_ref)
+        positive_set_sha256 = artifact.sha256_file(positive_set_path)
+        surviving = {signature_id(tags[i]) for i in np.flatnonzero(kept)}
         score, lost_positives = recall(positive_set, surviving)
-        n_signatures = len({p["signature"]
-                            for p in positive_set["positives"]})
+        n_positive_signatures = len({p["signature_id"]
+                                     for p in positive_set["positives"]})
+        n_lost_positive_signatures = len({
+            p["signature_id"] for p in lost_positives
+        })
         print(f"\nRECALL on final matching positives: {score:.4f} "
-              f"({n_signatures - len({p['signature'] for p in lost_positives})}"
-              f"/{n_signatures} signatures survive)")
+              f"({n_positive_signatures - n_lost_positive_signatures}/"
+              f"{n_positive_signatures} "
+              "signatures survive)")
         if lost_positives:
             print("LOST labelled matches -- fix the rule, do not accept "
                   "this:")
             for record in lost_positives[:15]:
                 print(f"  {record['tracklet_id']} [{record['match_type']}] "
-                      f"{record['signature'][:88]}")
+                      f"{record['signature_display'][:88]} "
+                      f"({record['signature_id'][:19]}...)")
         if lost_positives and not allow_recall_loss:
             raise SystemExit(
-                f"\nrefusing to write: {len({p['signature'] for p in lost_positives})} "
+                f"\nrefusing to write: {n_lost_positive_signatures} "
                 f"labelled positive signature(s) would be dropped. Fix the "
                 f"rule, or pass --allow_recall_loss if the loss is intended.")
 
     lost_matches = []
     if matched_from:
-        matched, _ = matched_signatures(
+        matched, matching_refs = matched_signatures(
             matched_from, confidence_floor, input_ref)
-        lost_matches = report_matched_recall(matched, tags, kept, masks)
+        guard_refs.extend(matching_refs)
+        n_matched_signatures = len(matched)
+        lost_matches, absent_matches = report_matched_recall(
+            matched, tags, kept, masks)
+        n_lost_matched_signatures = len(lost_matches)
+        n_absent_matched_signatures = len(absent_matches)
+        absent_fraction = (len(absent_matches) / len(matched)
+                           if matched else 0.0)
+        if absent_fraction > 0.40 and not allow_absent_matched_signatures:
+            raise SystemExit(
+                f"\nrefusing to write: {len(absent_matches)}/{len(matched)} "
+                f"matched signatures ({100 * absent_fraction:.1f}%) are "
+                "absent from the input catalog. This evidence does not "
+                "provide catalog recall coverage; pass "
+                "--allow_absent_matched_signatures only after confirming "
+                "the mismatch is intentional.")
         if lost_matches and not allow_recall_loss:
             raise SystemExit(
                 f"\nrefusing to write: {len(lost_matches)} signature(s) that "
@@ -601,6 +613,10 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
         return gdf
 
     out = gdf[kept].reset_index(drop=True)
+    unique_guard_refs = []
+    for reference in guard_refs:
+        if reference not in unique_guard_refs:
+            unique_guard_refs.append(reference)
     config = {
         "min_building_area_m2": min_building_area_m2,
         "min_building_levels": min_building_levels,
@@ -613,6 +629,21 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
                                              min_building_levels),
         "drops_per_rule": {name: int(mask.sum())
                            for name, mask in masks.items()},
+        "recall_guards": {
+            "positive_set_sha256": positive_set_sha256,
+            "matching_artifacts": [
+                reference.to_dict() for reference in unique_guard_refs
+            ],
+            "confidence_floor": confidence_floor,
+            "allow_recall_loss": allow_recall_loss,
+            "allow_absent_matched_signatures":
+                allow_absent_matched_signatures,
+            "n_positive_signatures": n_positive_signatures,
+            "n_lost_positive_signatures": n_lost_positive_signatures,
+            "n_matched_signatures": n_matched_signatures,
+            "n_lost_matched_signatures": n_lost_matched_signatures,
+            "n_absent_matched_signatures": n_absent_matched_signatures,
+        },
     }
     with publication.published_artifact(
             output_dir,
@@ -621,7 +652,7 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
             version=output_dir.name,
             generator="farfield/dataset_tools/trim_catalog.py",
             git_commit=provenance.git_commit(),
-            upstreams=(input_ref,),
+            upstreams=(input_ref, *unique_guard_refs),
             config=config,
             declared_outputs=("catalog.feather",)) as builder:
         out.to_feather(builder.output_path("catalog.feather"))
@@ -642,16 +673,11 @@ def cli(argv=None) -> int:
     parser.add_argument("--positive_set", type=Path, default=None,
                         help="schema-v2 landmark_positive_set.py JSON; lost "
                              "positives refuse the write")
-    # Thresholds are required: they were tuned on Boston Harbor and do not
-    # transfer silently to another environment (REORG.md rule 2).
+    # Thresholds shape the result and therefore are required.
     parser.add_argument("--min_building_area_m2", type=float, required=True,
-                        help="untagged buildings smaller than this are "
-                             "dropped (previously 2000.0, tuned on "
-                             "boston_harbor)")
+                        help="untagged buildings smaller than this are dropped")
     parser.add_argument("--min_building_levels", type=float, required=True,
-                        help="untagged buildings shorter than this are "
-                             "dropped (previously 6.0, tuned on "
-                             "boston_harbor)")
+                        help="untagged buildings shorter than this are dropped")
     parser.add_argument("--matched_from", type=Path, action="append",
                         default=[], metavar="LANDMARK_MATCHES_DIR",
                         help="a completed typed matching artifact to guard "
@@ -661,6 +687,10 @@ def cli(argv=None) -> int:
                         help="ignore matches below this confidence (0.5)")
     parser.add_argument("--allow_recall_loss", action="store_true",
                         help="write anyway when the guard finds losses")
+    parser.add_argument(
+        "--allow_absent_matched_signatures", action="store_true",
+        help="continue when more than 40% of matched signatures are absent "
+             "from the input catalog (separate from --allow_recall_loss)")
     parser.add_argument("--clip_km", type=float, default=None,
                         help="keep only rows inside a square box this many "
                              "km on a side (a prior extent, not a corridor); "
@@ -675,6 +705,8 @@ def cli(argv=None) -> int:
          matched_from=args.matched_from,
          confidence_floor=args.confidence_floor,
          allow_recall_loss=args.allow_recall_loss,
+         allow_absent_matched_signatures=
+             args.allow_absent_matched_signatures,
          clip_km=args.clip_km, clip_center_lat=args.clip_center_lat,
          clip_center_lon=args.clip_center_lon)
     return 0

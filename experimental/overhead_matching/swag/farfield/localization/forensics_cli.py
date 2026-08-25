@@ -327,7 +327,8 @@ def cmd_triage(args) -> int:
         # Most-negative contribution first when attribution is available, else
         # faults before consistent: either way the top of the list is where the
         # error budget lives.
-        order = {"tracker-fault": 0, "matcher-fault": 1, "filter-fault": 2,
+        order = {"geometry-unexplained": 0, "matcher-fault": 1,
+                 "filter-fault": 2,
                  "no-evidence": 3, "consistent": 4}
         rows.sort(key=lambda r: (nats.get(r.tracklet_id, 0.0)
                                  if nats else order.get(r.verdict, 9)))

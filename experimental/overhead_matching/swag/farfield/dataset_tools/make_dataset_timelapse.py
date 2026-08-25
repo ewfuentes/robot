@@ -11,14 +11,15 @@ positions have come apart — a stitched trajectory that jumps, an ordering that
 is not temporal, a frame sequence that runs backwards. Those are all obvious
 in fifteen seconds of video and invisible in a summary table.
 
-Outputs default under the dataset's `_manifests/` directory (the derived,
-tool-rewritten lane beside the frozen definition; excluded from
-checksums.sha256). A dataset that already carries top-level views from before
-this convention gets those regenerated in place instead, so no stale copy is
-left behind to send a reviewer chasing an already-cut fault.
+Outputs are published together under the dataset's
+`_manifests/timelapse/` directory (the derived lane beside the frozen
+definition; excluded from checksums.sha256). The directory is built as a
+sibling `.incomplete` artifact and becomes visible with one no-clobber rename,
+so a reviewer can never mistake one new view plus one stale or missing view for
+a completed review set.
 
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:make_dataset_timelapse -- \\
-        --dataset_path /data/farfield_matching/datasets/folkestone_dover [more...]
+        --dataset_path /path/to/dataset [more...]
 """
 
 import argparse
@@ -36,42 +37,57 @@ import numpy as np  # noqa: E402
 from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
 from PIL import Image  # noqa: E402
 
+from experimental.overhead_matching.swag.farfield import (  # noqa: E402
+    artifact,
+    paths as paths_lib,
+    publication,
+    provenance,
+)
+
 TRAJECTORY_NAME = "trajectory.png"
 TIMELAPSE_NAME = "gps_timelapse.mp4"
+REVIEW_DIRECTORY_NAME = "timelapse"
+REVIEW_KIND = "dataset_timelapse"
+REVIEW_VERSION = "v1"
 
 
 def view_output_dir(dataset_path: Path) -> Path:
-    """Where this dataset's review views live.
-
-    New datasets: `_manifests/` (derived lane, checksum-excluded). Datasets
-    that already carry top-level views keep them there — regenerating beside a
-    stale copy would leave the stale one to be reviewed.
-    """
+    """Return the one transactional directory containing both review views."""
     dataset_path = Path(dataset_path)
-    if ((dataset_path / TRAJECTORY_NAME).exists()
-            or (dataset_path / TIMELAPSE_NAME).exists()):
-        return dataset_path
-    return dataset_path / "_manifests"
+    return dataset_path / "_manifests" / REVIEW_DIRECTORY_NAME
 
 
 def load_frames(dataset_path: Path):
     """(frame paths, lats, lons, times, dists) in dataset order."""
-    rows = list(csv.DictReader(open(dataset_path / "frames_gps.csv")))
+    with (dataset_path / "frames_gps.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
     pano_dir = dataset_path / "panorama"
     paths, lats, lons, times, dists = [], [], [], [], []
-    missing = 0
+    frame_names = []
     for row in rows:
-        path = pano_dir / row["frame_file"]
-        if not path.exists():
-            missing += 1
-            continue
+        frame_file = row.get("frame_file")
+        if (not frame_file or Path(frame_file).name != frame_file
+                or frame_file in frame_names):
+            raise ValueError(
+                f"invalid or duplicate frames_gps.csv frame_file {frame_file!r}")
+        frame_names.append(frame_file)
+        path = pano_dir / frame_file
+        target = path.resolve()
+        if not target.is_file() or target.is_symlink():
+            raise ValueError(
+                f"frames_gps.csv references no regular image: {path}")
         paths.append(path)
         lats.append(float(row["latitude"]))
         lons.append(float(row["longitude"]))
         times.append(float(row["video_t_s"]))
         dists.append(float(row["dist_m"]))
-    if missing:
-        print(f"  WARNING: {missing} row(s) in frames_gps.csv have no image")
+    panorama_names = sorted(path.name for path in pano_dir.glob("*.jpg"))
+    if sorted(frame_names) != panorama_names:
+        missing_rows = sorted(set(panorama_names) - set(frame_names))
+        missing_images = sorted(set(frame_names) - set(panorama_names))
+        raise ValueError(
+            "frames_gps.csv and panorama JPEGs do not have exact coverage: "
+            f"unlisted_images={missing_rows}, missing_images={missing_images}")
     return (paths, np.array(lats), np.array(lons), np.array(times),
             np.array(dists))
 
@@ -190,21 +206,153 @@ def stage_video(paths, lats, lons, out: Path, width: int, fps: int,
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _review_outputs(skip_video: bool) -> tuple[str, ...]:
+    names = [TRAJECTORY_NAME]
+    if not skip_video:
+        names.append(TIMELAPSE_NAME)
+    return tuple(sorted(names))
+
+
+def _input_digests(dataset: Path) -> tuple[dict[str, str], dict[str, str]]:
+    source_digests = paths_lib.dataset_source_digests(dataset)
+    return source_digests, {
+        "pipeline_metadata": source_digests[
+            paths_lib.DATASET_PIPELINE_METADATA_SHA256],
+        "frames_gps": source_digests[
+            paths_lib.DATASET_FRAMES_GPS_SHA256],
+        "panorama_directory": source_digests[
+            paths_lib.DATASET_PANORAMA_SHA256],
+    }
+
+
+def _validate_review_outputs(root: Path, outputs: tuple[str, ...]) -> None:
+    trajectory = root / TRAJECTORY_NAME
+    if trajectory.is_symlink() or not trajectory.is_file():
+        raise ValueError(f"trajectory output is not a regular file: {trajectory}")
+    try:
+        with Image.open(trajectory) as image:
+            image.load()
+            if image.format != "PNG" or image.width < 1 or image.height < 1:
+                raise ValueError(
+                    f"trajectory output is not a valid PNG: {trajectory}")
+    except OSError as exc:
+        raise ValueError(
+            f"trajectory output is not a decodable PNG: {trajectory}") from exc
+
+    if TIMELAPSE_NAME in outputs:
+        video = root / TIMELAPSE_NAME
+        if video.is_symlink() or not video.is_file():
+            raise ValueError(f"timelapse output is not a regular file: {video}")
+        with video.open("rb") as stream:
+            header = stream.read(12)
+        if len(header) < 12 or header[4:8] != b"ftyp":
+            raise ValueError(f"timelapse output is not an MP4 file: {video}")
+
+
+def reject_legacy_views(dataset: Path) -> None:
+    legacy = [
+        dataset / name
+        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME)
+    ] + [
+        dataset / "_manifests" / name
+        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME)
+    ]
+    present = [path for path in legacy if path.exists() or path.is_symlink()]
+    if present:
+        raise FileExistsError(
+            "legacy timelapse outputs would conflict with the transactional "
+            f"review artifact; move or remove them explicitly: {present}")
+
+
+def validate_completed(
+        dataset: Path, *, expected_config: dict | None = None,
+        expected_outputs: tuple[str, ...] | None = None,
+) -> artifact.ArtifactRef:
+    """Validate a completed review artifact against current dataset bytes."""
+    dataset = Path(dataset)
+    out_dir = view_output_dir(dataset)
+    reference = artifact.open_artifact(
+        out_dir,
+        expected_kind=REVIEW_KIND,
+        expected_dataset=dataset.name,
+        expected_version=REVIEW_VERSION)
+    manifest = artifact.load_manifest(out_dir)
+    outputs = manifest.declared_outputs
+    if outputs not in (_review_outputs(False), _review_outputs(True)):
+        raise ValueError(
+            f"completed timelapse has invalid outputs: {out_dir}")
+    if expected_outputs is not None and outputs != expected_outputs:
+        raise ValueError(
+            f"completed timelapse has different outputs: {out_dir}")
+    if expected_config is not None:
+        if dict(manifest.config) != expected_config:
+            raise ValueError(
+                f"completed timelapse has a different identity: {out_dir}")
+    elif manifest.config.get("input_digests") != _input_digests(dataset)[1]:
+        raise ValueError(
+            f"completed timelapse does not bind current dataset bytes: "
+            f"{out_dir}")
+    _validate_review_outputs(out_dir, outputs)
+    return reference
+
+
 def render(dataset: Path, width: int, fps: int, max_frames: int | None,
-           skip_video: bool) -> None:
-    for required in ("frames_gps.csv", "panorama"):
-        if not (dataset / required).exists():
-            raise SystemExit(f"{dataset} has no {required}")
+           skip_video: bool) -> artifact.ArtifactRef:
+    dataset = Path(dataset)
+    for required in ("pipeline_metadata.json", "frames_gps.csv", "panorama"):
+        path = dataset / required
+        missing = (not path.is_dir() if required == "panorama"
+                   else path.is_symlink() or not path.is_file())
+        if missing:
+            raise ValueError(f"{dataset} has no regular {required}")
+    reject_legacy_views(dataset)
+    source_digests, input_digests = _input_digests(dataset)
     paths, lats, lons, times, dists = load_frames(dataset)
     if len(paths) < 2:
-        raise SystemExit(f"{dataset}: need at least 2 frames, got "
+        raise ValueError(f"{dataset}: need at least 2 frames, got "
                          f"{len(paths)}")
     print(f"{dataset.name}: {len(paths)} frames, {dists[-1] / 1000:.2f} km")
     out_dir = view_output_dir(dataset)
-    stage_plot(dataset, lats, lons, times, dists, out_dir / TRAJECTORY_NAME)
-    if not skip_video:
-        stage_video(paths, lats, lons, out_dir / TIMELAPSE_NAME,
-                    width, fps, max_frames)
+    outputs = _review_outputs(skip_video)
+    config = {
+        "input_digests": input_digests,
+        "render": {
+            "width": width,
+            "fps": fps,
+            "max_frames": max_frames,
+            "skip_video": skip_video,
+            "n_frames": len(paths),
+        },
+    }
+    if out_dir.exists() or out_dir.is_symlink():
+        reference = validate_completed(
+            dataset, expected_config=config, expected_outputs=outputs)
+        print(f"  reusing complete timelapse review artifact {out_dir}")
+        return reference
+
+    with publication.published_artifact(
+            out_dir,
+            kind=REVIEW_KIND,
+            dataset=dataset.name,
+            version=REVIEW_VERSION,
+            generator="farfield.dataset_tools.make_dataset_timelapse",
+            git_commit=provenance.git_commit(),
+            config=config,
+            declared_outputs=outputs) as builder:
+        stage_plot(
+            dataset, lats, lons, times, dists,
+            builder.output_path(TRAJECTORY_NAME))
+        if not skip_video:
+            stage_video(
+                paths, lats, lons,
+                builder.output_path(TIMELAPSE_NAME),
+                width, fps, max_frames)
+        _validate_review_outputs(builder.path, outputs)
+        if _input_digests(dataset)[0] != source_digests:
+            raise ValueError(
+                "dataset source bytes changed during timelapse rendering")
+    assert builder.artifact_ref is not None
+    return builder.artifact_ref
 
 
 def main(argv=None) -> int:

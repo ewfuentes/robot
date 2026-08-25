@@ -34,6 +34,28 @@ py_library(
     ],
 )
 
+py_library(
+    name = "lineage",
+    srcs = ["lineage.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":schema",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
+py_test(
+    name = "lineage_test",
+    srcs = ["lineage_test.py"],
+    deps = [
+        ":lineage",
+        ":schema",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
 py_test(
     name = "catalog_test",
     srcs = ["catalog_test.py"],

@@ -11,8 +11,30 @@ from experimental.overhead_matching.swag.farfield.dataset_tools import (
 
 
 DATASET = "test_dataset"
-SIGNATURE = "man_made=tower"
+SIGNATURE_TAGS = {"man_made": "tower"}
+SIGNATURE = positive_set.format_signature(SIGNATURE_TAGS)
+SIGNATURE_ID = positive_set.signature_id(SIGNATURE_TAGS)
 LANDMARK_ID = "osm:node:1"
+
+
+def signature_entry(tags: dict, landmark_ids: list[str]) -> dict:
+    return {
+        "canonical_tags": tags,
+        "display_label": positive_set.format_signature(tags),
+        "landmark_ids": landmark_ids,
+    }
+
+
+def match_entry(landmark_id: str = LANDMARK_ID, confidence: float = 0.9) -> dict:
+    return {
+        "landmark_id": landmark_id,
+        "per_call_candidate_scores": [confidence],
+        "aggregate_confidence": confidence,
+        "aggregation_rule": positive_set.CANDIDATE_AGGREGATION_RULE,
+        "match_type": "instance",
+        "signature_id": SIGNATURE_ID,
+        "signature_display": SIGNATURE,
+    }
 
 
 def publish_simple_artifact(
@@ -43,12 +65,7 @@ def default_matches() -> dict:
         "LT1": {
             "n_landmarks": 1,
             "n_signatures": 1,
-            "matches": [{
-                "landmark_id": LANDMARK_ID,
-                "signature": SIGNATURE,
-                "confidence": 0.9,
-                "match_type": "instance",
-            }],
+            "matches": [match_entry()],
         },
         "LT2": {
             "n_landmarks": 0,
@@ -70,8 +87,9 @@ def publish_matching(
     _, audits_ref = publish_simple_artifact(
         root, paths_lib.SEMANTIC_AUDITS, "audits_v1", "audits.json")
     matches = default_matches() if matches is None else matches
-    signatures = ({SIGNATURE: [LANDMARK_ID]}
-                  if signatures is None else signatures)
+    signatures = (
+        {SIGNATURE_ID: signature_entry(SIGNATURE_TAGS, [LANDMARK_ID])}
+        if signatures is None else signatures)
     manifest_config = {
         "phase": "canonical_results",
         "coverage": "complete",
@@ -123,9 +141,10 @@ class PositiveSetMatchingContractTest(unittest.TestCase):
         self.assertEqual(record["positives"], [{
             "tracklet_id": "LT1",
             "landmark_id": LANDMARK_ID,
-            "signature": SIGNATURE,
-            "confidence": 0.9,
+            "signature_id": SIGNATURE_ID,
+            "signature_display": SIGNATURE,
             "match_type": "instance",
+            "aggregate_confidence": 0.9,
         }])
         self.assertNotIn("position_sigma_m", record)
         self.assertNotIn("pairing_dir", record)
@@ -198,8 +217,14 @@ class PositiveSetMatchingContractTest(unittest.TestCase):
 
     def test_match_must_reference_signature_and_landmark_binding(self):
         cases = (
-            ({"other=signature": [LANDMARK_ID]}, "unknown signature"),
-            ({SIGNATURE: ["osm:node:2"]}, "not bound"),
+            ({
+                positive_set.signature_id({"other": "signature"}):
+                    signature_entry({"other": "signature"}, [LANDMARK_ID]),
+            }, "unknown signature"),
+            ({
+                SIGNATURE_ID:
+                    signature_entry(SIGNATURE_TAGS, ["osm:node:2"]),
+            }, "not bound"),
         )
         for signatures, message in cases:
             with self.subTest(signatures=signatures):
@@ -211,6 +236,54 @@ class PositiveSetMatchingContractTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                             positive_set.PositiveSetError, message):
                         positive_set.build(matching_dir)
+
+    def test_match_must_preserve_canonical_aggregation_and_display(self):
+        cases = (
+            ({"signature_display": "not the canonical display"},
+             "signature display"),
+            ({"per_call_candidate_scores": [0.8, 0.7],
+              "aggregate_confidence": 0.7},
+             "not the maximum"),
+            ({"aggregation_rule": "some_other_rule"},
+             "aggregation rule"),
+        )
+        for updates, message in cases:
+            with self.subTest(updates=updates):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    _, catalog_ref = publish_catalog(root)
+                    matches = default_matches()
+                    matches["LT1"]["matches"][0].update(updates)
+                    matching_dir, _ = publish_matching(
+                        root, catalog_ref, matches=matches)
+                    with self.assertRaisesRegex(
+                            positive_set.PositiveSetError, message):
+                        positive_set.build(matching_dir)
+
+    def test_signature_metadata_is_bound_to_its_digest_and_display(self):
+        cases = (
+            ({
+                SIGNATURE_ID:
+                    signature_entry({"man_made": "lighthouse"}, [LANDMARK_ID]),
+            }, "digest"),
+            ({
+                SIGNATURE_ID: {
+                    **signature_entry(SIGNATURE_TAGS, [LANDMARK_ID]),
+                    "display_label": "not canonical",
+                },
+            }, "display label"),
+        )
+        for signatures, message in cases:
+            with self.subTest(signatures=signatures):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    _, catalog_ref = publish_catalog(root)
+                    matching_dir, _ = publish_matching(
+                        root, catalog_ref, signatures=signatures)
+                    with self.assertRaisesRegex(
+                            positive_set.PositiveSetError, message):
+                        positive_set.build(matching_dir)
+
 
     def test_manifest_tracklet_count_must_match_matches_json(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -248,6 +321,25 @@ class PositiveSetSchemaTest(unittest.TestCase):
             with self.assertRaisesRegex(
                     positive_set.PositiveSetError, "keys"):
                 positive_set.load_positive_set(source)
+
+    def test_display_collision_cannot_satisfy_digest_recall(self):
+        one_tag = {"a": "x; b=y"}
+        two_tags = {"a": "x", "b": "y"}
+        self.assertEqual(
+            positive_set.format_signature(one_tag),
+            positive_set.format_signature(two_tags),
+        )
+        one_id = positive_set.signature_id(one_tag)
+        two_id = positive_set.signature_id(two_tags)
+        self.assertNotEqual(one_id, two_id)
+
+        record = {"signature_id": one_id}
+        score, lost = positive_set.recall(
+            {"positives": [record]},
+            {two_id},
+        )
+        self.assertEqual(score, 0.0)
+        self.assertEqual(lost, [record])
 
     def test_loose_catalog_file_is_not_an_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:

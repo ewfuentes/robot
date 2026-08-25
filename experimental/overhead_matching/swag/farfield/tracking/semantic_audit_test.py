@@ -94,11 +94,11 @@ class CollectEvidenceTest(unittest.TestCase):
         self.assertEqual([e["support"]["obs_id"] for e in supports], ["a"])
         self.assertEqual([e["support"]["obs_id"] for e in context], ["b"])
 
-    def test_unknown_obs_ids_are_skipped(self):
+    def test_unknown_obs_ids_are_a_hard_error(self):
         cfg = make_cfg()
         track = make_track(1, [record(0, supports=[support("gone", **CLEAN)])])
-        supports, context = sa.collect_evidence(track, {}, cfg)
-        self.assertEqual((supports, context), ([], []))
+        with self.assertRaisesRegex(ValueError, "unknown observation 'gone'"):
+            sa.collect_evidence(track, {}, cfg)
 
     def test_time_indices_are_relative_to_birth(self):
         cfg = make_cfg()
@@ -115,6 +115,8 @@ class CollectEvidenceTest(unittest.TestCase):
 class DossierTest(unittest.TestCase):
     def _track_and_obs(self):
         obs = {
+            "b0": make_obs("b0", confidence="high",
+                           description="the founding tower", frame_idx=10),
             "o1": make_obs("o1", name="Graves Light", confidence="high",
                            frame_idx=11),
             "o2": make_obs("o2", name="Graves Light", confidence="high",
@@ -138,12 +140,12 @@ class DossierTest(unittest.TestCase):
         track, obs = self._track_and_obs()
         d = sa.build_dossier(track, obs, make_cfg())
         self.assertEqual(d["n_supports"], 4)
+        self.assertEqual(d["n_evidence_detections"], 5)
         self.assertEqual(d["lifetime"], 5)
         self.assertEqual(d["n_reanchors"], 1)
-        # t0 (the birth record) is the only lifetime keyframe with no support.
-        self.assertEqual(d["n_gap_keyframes"], 1)
+        self.assertEqual(d["n_gap_keyframes"], 0)
         self.assertEqual(d["primary_tag_rle"],
-                         [("man_made=tower", 3), ("man_made=lighthouse", 1)])
+                         [("man_made=tower", 4), ("man_made=lighthouse", 1)])
         self.assertEqual(d["name_votes"], [("Graves Light", 3)])
         self.assertEqual(d["name_confidence"]["Graves Light"],
                          {"high": 2, "medium": 1, "low": 0})
@@ -152,7 +154,7 @@ class DossierTest(unittest.TestCase):
                          {"man_made=tower", "man_made=lighthouse"})
         tower = next(r for r in d["tag_table"] if r["tag"] == "man_made=tower")
         self.assertEqual((tower["total"], tower["as_primary"], tower["high"],
-                          tower["medium"]), (3, 3, 2, 1))
+                          tower["medium"]), (4, 4, 3, 1))
 
     def test_dossier_text_renders_every_section(self):
         track, obs = self._track_and_obs()
@@ -160,8 +162,10 @@ class DossierTest(unittest.TestCase):
         text = sa.render_dossier_text(d)
         self.assertIn("TRACK EVIDENCE", text)
         self.assertIn("'Graves Light' x3 (2 high, 1 medium)", text)
-        self.assertIn("man_made=tower x3", text)
-        self.assertIn("unreported x4", text)  # distance_estimate RLE
+        self.assertIn("man_made=tower x4", text)
+        self.assertIn("1 founding detection at t0 + 4 post-birth", text)
+        self.assertIn("unreported x5", text)  # distance_estimate RLE
+        self.assertIn("the founding tower", text)
         self.assertIn(sa.QUESTIONS_TEXT, text)
 
     def test_evidence_math(self):
@@ -173,25 +177,43 @@ class DossierTest(unittest.TestCase):
         self.assertEqual(ev["lifetime_keyframes"], 5)
         self.assertAlmostEqual(ev["support_density"], 4 / 5)
         self.assertEqual(ev["n_reanchors"], 1)
-        self.assertAlmostEqual(ev["tag_top_share"], 3 / 4)
+        self.assertAlmostEqual(ev["tag_top_share"], 4 / 5)
         self.assertEqual(ev["name_votes"], {"Graves Light": 3})
         self.assertEqual(ev["n_named_supports"], 3)
         self.assertAlmostEqual(ev["name_top_share"], 1.0)
         self.assertEqual(ev["name_margin"], 3.0)
         self.assertFalse(ev["name_contested"])
         self.assertEqual(ev["confidence_counts"],
-                         {"high": 3, "medium": 1, "low": 0})
+                         {"high": 4, "medium": 1, "low": 0})
         # All mask boxes identical -> no azimuth sweep.
         self.assertEqual(ev["camera_azimuth_span_deg"], 0.0)
 
+    def test_founder_is_always_a_t0_chip(self):
+        track, obs = self._track_and_obs()
+        dossier = sa.build_dossier(track, obs, make_cfg())
+        founders = [
+            entry for entry in dossier["chip_entries"]
+            if entry.get("is_founding")]
+        self.assertEqual(len(founders), 1)
+        self.assertEqual(founders[0]["obs"].obs_id, "b0")
+        self.assertIn("FOUNDING", sa.chip_caption(founders[0], 1))
+
+    def test_missing_founder_is_a_hard_error(self):
+        track, obs = self._track_and_obs()
+        del obs["b0"]
+        with self.assertRaisesRegex(ValueError, "birth references unknown"):
+            sa.build_dossier(track, obs, make_cfg())
+
     def test_contested_names_and_azimuth_span(self):
         obs = {
+            "b0": make_obs("b0", frame_idx=0),
             "o1": make_obs("o1", name="Fort Warren", frame_idx=1),
             "o2": make_obs("o2", name="Fort Warren", frame_idx=2),
             "o3": make_obs("o3", name="Fort Independence", frame_idx=3),
             "o4": make_obs("o4", name="Fort Independence", frame_idx=4),
         }
         track = make_track(3, [
+            record(0, action="birth"),
             record(1, supports=[support("o1", **CLEAN)],
                    mask_bbox=(100, 10, 110, 20)),
             record(2, supports=[support("o2", **CLEAN)],
@@ -200,13 +222,13 @@ class DossierTest(unittest.TestCase):
                    mask_bbox=(200, 10, 210, 20)),
             record(4, supports=[support("o4", **CLEAN)],
                    mask_bbox=(200, 10, 210, 20)),
-        ])
+        ], birth_keyframe=0)
         ev = sa.build_evidence(track, sa.build_dossier(track, obs, make_cfg()),
                                PANO_W)
         self.assertTrue(ev["name_contested"])  # 2 vs 2 split
         self.assertEqual(ev["name_margin"], 1.0)
         self.assertAlmostEqual(ev["camera_azimuth_span_deg"],
-                               (205 - 105) / PANO_W * 360.0)
+                               (205 - 60) / PANO_W * 360.0)
 
 
 class SelectionTest(unittest.TestCase):
@@ -341,15 +363,14 @@ class ParseResultLineTest(unittest.TestCase):
         self.assertIsNone(audit)
         self.assertIn("JSONDecodeError", err)
 
-    def test_legacy_single_name_is_lifted_into_a_candidate(self):
+    def test_legacy_single_name_is_rejected(self):
         payload = valid_audit_payload()
         payload["primary_object"].pop("name_candidates")
         payload["primary_object"]["name"] = "Old Name"
-        _, audit, err = sa.parse_result_line(result_line("T1", payload))
-        self.assertIsNone(err)
-        self.assertEqual(audit["primary_object"]["name_candidates"],
-                         [{"name": "Old Name", "weight": 1.0,
-                           "basis": "reported_by_detections"}])
+        key, audit, err = sa.parse_result_line(result_line("T1", payload))
+        self.assertEqual(key, "T1")
+        self.assertIsNone(audit)
+        self.assertIn("ValidationError", err)
 
 
 if __name__ == "__main__":

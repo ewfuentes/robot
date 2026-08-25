@@ -25,6 +25,26 @@ py_library(
     ],
 )
 
+py_library(
+    name = "source_publication",
+    srcs = ["source_publication.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        FARFIELD + ":artifact",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_test(
+    name = "feather_utils_test",
+    srcs = ["feather_utils_test.py"],
+    deps = [
+        requirement("shapely"),
+        ":feather_utils",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Dataset ingest, trimming, triage
 # ---------------------------------------------------------------------------
@@ -63,6 +83,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":checksums",
+        ":make_dataset_timelapse_lib",
         FARFIELD + ":geometry",
         FARFIELD + ":provenance",
     ],
@@ -79,7 +100,10 @@ py_test(
     name = "trim_dataset_test",
     srcs = ["trim_dataset_test.py"],
     deps = [
+        requirement("pillow"),
+        ":make_dataset_timelapse_lib",
         ":trim_dataset_lib",
+        FARFIELD + ":artifact",
         FARFIELD + ":geometry",
     ],
 )
@@ -101,8 +125,8 @@ py_binary(
     deps = [":annotate_recording_seams_lib"],
 )
 
-py_binary(
-    name = "detect_vehicle_anchor",
+py_library(
+    name = "detect_vehicle_anchor_lib",
     srcs = ["detect_vehicle_anchor.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
@@ -113,22 +137,68 @@ py_binary(
 )
 
 py_binary(
-    name = "make_dataset_timelapse",
+    name = "detect_vehicle_anchor",
+    srcs = ["detect_vehicle_anchor.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":detect_vehicle_anchor_lib"],
+)
+
+py_test(
+    name = "detect_vehicle_anchor_test",
+    srcs = ["detect_vehicle_anchor_test.py"],
+    deps = [":detect_vehicle_anchor_lib"],
+)
+
+py_library(
+    name = "make_dataset_timelapse_lib",
     srcs = ["make_dataset_timelapse.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("matplotlib"),
         requirement("numpy"),
         requirement("pillow"),
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
         FARFIELD + ":provenance",
+        FARFIELD + ":publication",
     ],
+)
+
+py_test(
+    name = "make_dataset_timelapse_test",
+    srcs = ["make_dataset_timelapse_test.py"],
+    deps = [
+        requirement("pillow"),
+        ":make_dataset_timelapse_lib",
+        FARFIELD + ":artifact",
+    ],
+)
+
+py_binary(
+    name = "make_dataset_timelapse",
+    srcs = ["make_dataset_timelapse.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":make_dataset_timelapse_lib"],
+)
+
+py_library(
+    name = "dataset_status_table_lib",
+    srcs = ["dataset_status_table.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [FARFIELD + ":provenance"],
 )
 
 py_binary(
     name = "dataset_status_table",
     srcs = ["dataset_status_table.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [FARFIELD + ":provenance"],
+    deps = [":dataset_status_table_lib"],
+)
+
+py_test(
+    name = "dataset_status_table_test",
+    srcs = ["dataset_status_table_test.py"],
+    deps = [":dataset_status_table_lib"],
 )
 
 # ---------------------------------------------------------------------------
@@ -144,6 +214,8 @@ py_library(
         requirement("geopandas"),
         requirement("pyarrow"),
         requirement("shapely"),
+        ":source_publication",
+        FARFIELD + ":artifact",
         FARFIELD + ":provenance",
         FARFIELD + "/catalog:schema",
     ],
@@ -163,6 +235,8 @@ py_test(
     deps = [
         requirement("shapely"),
         ":extract_landmarks_from_osm_lib",
+        ":source_publication",
+        FARFIELD + ":artifact",
         FARFIELD + "/catalog:schema",
     ],
 )
@@ -212,6 +286,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("requests"),
+        FARFIELD + ":artifact",
         FARFIELD + ":provenance",
     ],
 )
@@ -240,7 +315,10 @@ py_library(
         requirement("geopandas"),
         requirement("pandas"),
         requirement("pyogrio"),
+        ":download_enc_cells_lib",
         ":feather_utils",
+        ":source_publication",
+        FARFIELD + ":artifact",
         FARFIELD + ":provenance",
         FARFIELD + "/catalog:schema",
     ],
@@ -258,9 +336,26 @@ py_test(
     srcs = ["extract_landmarks_from_enc_test.py"],
     deps = [
         requirement("geopandas"),
+        ":download_enc_cells_lib",
         ":extract_landmarks_from_enc_lib",
         ":feather_utils",
+        ":source_publication",
+        FARFIELD + ":artifact",
         FARFIELD + "/catalog:catalog",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_library(
+    name = "merge_landmark_feathers_lib",
+    srcs = ["merge_landmark_feathers.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        ":feather_utils",
+        ":source_publication",
+        FARFIELD + ":artifact",
+        FARFIELD + ":provenance",
         FARFIELD + "/catalog:schema",
     ],
 )
@@ -269,10 +364,17 @@ py_binary(
     name = "merge_landmark_feathers",
     srcs = ["merge_landmark_feathers.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":merge_landmark_feathers_lib"],
+)
+
+py_test(
+    name = "merge_landmark_feathers_test",
+    srcs = ["merge_landmark_feathers_test.py"],
     deps = [
-        requirement("geopandas"),
-        ":feather_utils",
-        FARFIELD + ":provenance",
+        requirement("shapely"),
+        ":merge_landmark_feathers_lib",
+        ":source_publication",
+        FARFIELD + ":artifact",
         FARFIELD + "/catalog:schema",
     ],
 )

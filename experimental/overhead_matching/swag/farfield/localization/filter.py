@@ -46,8 +46,8 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # clipped so semantics cannot steamroll geometry; kappa is the same hazard on
 # the geometric side — 1e6 is ~0.06 deg, far below any real bearing accuracy.
 MAX_KAPPA = 1.0e6
-# Candidate-axis block size for the measurement update. Bounds the (N, M)
-# temporaries; see the memory table in the Milestone 0 audit (A-8).
+# Candidate-axis block size for the measurement update, bounding the (N, M)
+# temporary arrays.
 CANDIDATE_BLOCK = 256
 # Per-particle association state (§5.3 persistence): a particle's belief
 # about WHICH physical object a tracklet is. Catalog index when committed.
@@ -62,9 +62,8 @@ class ParticleBelief:
     heading_rad: np.ndarray  # clockwise from north
     log_weight: np.ndarray
     # Provenance (§5.5 [CONTRACT]): which proposal event and which of its
-    # hypotheses produced each particle; -1 for motion-model descent. Two
-    # ints per particle, and the single most valuable thing to have when
-    # asking where a wrong mode came from.
+    # hypotheses produced each particle; -1 for motion-model descent. These
+    # fields support mode attribution.
     proposal_event_id: np.ndarray = None
     proposal_hypothesis: np.ndarray = None
     # Mode membership carried from the previous keyframe. Mode identity is
@@ -396,11 +395,10 @@ def measurement_update(
     1/(2 pi); the association renews (sampled from the mixture components,
     Gumbel-max) exactly when the renewal branch wins, and uncommitted
     particles reduce to the pure mixture (beta_effective = 1). Marginalizing
-    independently per epoch re-pays the 1/|catalog| candidate prior on
-    EVERY epoch of a tracklet, coupling bearing evidence to catalog size —
-    the A-5 dilution that kept the whole-map harbor run pinned to the null.
-    Persistence pays the identity prior once per tracklet; subsequent
-    epochs are pure geometry. `assoc` (int32: catalog index, ASSOC_NULL, or
+    independently per epoch re-pays the 1/|catalog| candidate prior on every
+    epoch of a tracklet and couples evidence to catalog size. Persistence pays
+    the identity prior once per tracklet; subsequent epochs are pure geometry.
+    `assoc` (int32: catalog index, ASSOC_NULL, or
     ASSOC_UNCOMMITTED) is updated IN PLACE; `rng` is required.
 
     The candidate axis is processed in blocks so the (n_particles, n_cand)
@@ -489,8 +487,8 @@ def measurement_draw_seed(seed: int, meas) -> int:
     """Deterministic per-(tracklet, epoch) seed for persistence draws.
 
     Association renewal SAMPLES. If those draws came from the shared run
-    rng, the outcome would depend on measurement order within a keyframe
-    (T-F7) and on how many draws unrelated machinery consumed. Deriving
+    rng, the outcome would depend on measurement order within a keyframe and
+    on how many draws unrelated machinery consumed. Deriving
     each epoch's stream from (seed, tracklet, anchor) restores exact order
     invariance. (The post-injection re-apply is made single-count by
     restoring the kept mass's association state, not by draw identity —
@@ -515,17 +513,10 @@ def _identity_log_weights(table: structs.CompatibilityTable,
     uniformly. A table with no endorsed entries is uniform over the catalog
     (the matcher said nothing).
 
-    Why not w_j * LR_j directly: it leaves the mixture IMPROPER — the
-    landmark branch integrates to (1-pi0) * sum_j w_j LR_j, a
-    table-dependent constant (~0.02 on the whole-map harbor tables), so the
-    effective clutter share was ~92% instead of the configured pi0. And
-    the tables' default_log_lr, summed over 13,208 unlisted rows, claims
-    87% odds the true landmark is one the matcher REJECTED, where the
-    measured miss rate is ~40%. Under that arithmetic a PERFECT
-    top-endorsed explanation scores below "call it clutter" (0.07 vs
-    1/2pi = 0.159 per radian), so the filter null-committed good tracklets
-    whenever its pose was a few hundred metres off, muting exactly the
-    bearings that would have corrected it — the exp5 drift.
+    Directly using w_j * LR_j would leave the landmark branch's integral
+    table-dependent and therefore change the effective null probability as
+    catalog size and table contents change. Normalizing the identity posterior
+    preserves the configured mixture weights.
     `matcher_recall` is a property of the MATCHER (probability the true
     landmark appears among a table's endorsed entries), not of any map;
     the softmax preserves the table's relative evidence within entries.
@@ -603,13 +594,9 @@ def _persistence_update(belief, meas, catalog, block_log_terms, blocks,
     # {endorsed candidates} + one background bucket holding the null AND
     # every default-LLR candidate. The mixture (and so the weight) keeps
     # unendorsed candidates exactly; they just cannot be committed to.
-    # Letting a particle commit to the best-aligned of hundreds of in-cone
-    # default candidates and then ride full vM concentration is
-    # data-association overfitting — measured on the whole-map run, the
-    # dominant mode anchored itself on cherry-picked `place=square`-grade
-    # nodes (residual ~0.2 deg beats the true landmark's honest 2 deg by
-    # e^2 per epoch) and drifted 13 km while holding 80% of the posterior.
-    # A background commitment scores 1/(2 pi): uniform cannot compound.
+    # Committing to whichever unendorsed candidate aligns best would compound
+    # incidental geometric agreement across epochs. The background commitment
+    # instead scores 1/(2 pi), so it cannot sharpen through repetition.
     per_block = np.empty((n, len(blocks) + 1))
     per_block[:, 0] = log_null
     background = np.full(n, log_null)  # running logsumexp: null + defaults
@@ -724,9 +711,7 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
     Plain resampling replaces the posterior with a set of Dirac atoms drawn
     only from locations already present, so repeated resampling collapses
     diversity and the filter grows confident about a spread it no longer
-    represents. Measured on the harbor_loop scenario, final-state NEES ran 67
-    at 4k particles and 12 at 20k against an ideal of 2.0 — the signature of
-    impoverishment, not of a wrong model.
+    represents.
 
     So resample from a kernel-smoothed posterior instead (regularized
     particle filter, Musso/Oudjane/Le Gland): jitter each dimension by
@@ -743,20 +728,15 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
       mass times n (largest-remainder rounding), and the low-variance draw
       runs within the group. Resampling is a representational step, so mass
       may move between hypotheses only through EVIDENCE (weight updates),
-      never through sampling noise. Globally-drawn resampling lets exactly
-      symmetric twin modes drift to 87/13 within 32 resamples (measured,
-      T-F3 world); stratified allocation holds them balanced until actual
-      evidence separates them.
+      never through sampling noise. Stratified allocation keeps symmetric
+      modes balanced until evidence separates them.
     - Per-group bandwidth: one global bandwidth is only right for a
       unimodal belief. During global localization the belief is a set of
-      tight hypotheses inside a region-scale cloud, and a region-scale
-      bandwidth — 4.6 km median on the whole-map harbor run — re-diffused
-      every cluster at every resample; that run repeatedly found the true
-      pose and was un-finding it. Within a group the rule is unchanged, so
-      a unimodal belief behaves exactly as before. (Known approximation: an
-      arc-shaped proposal cluster gets an isotropic bandwidth from its own
-      elongated spread; acceptable because injected clusters are re-scored
-      by the very next measurement.)
+      tight hypotheses inside a region-scale cloud; using the diffuse pool's
+      bandwidth would spread each tight hypothesis. Within a group the rule
+      is unchanged, so a unimodal belief behaves identically. An arc-shaped
+      proposal cluster receives an isotropic bandwidth from its own elongated
+      spread and is re-scored by the next measurement.
     """
     n = belief.n
     weights = belief.normalized_weights()
@@ -831,7 +811,7 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
 
 
 def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig,
-                    rng: np.random.Generator) -> int:
+                    rng: np.random.Generator) -> tuple[int, np.ndarray | None]:
     """Replace a fraction of the belief with proposal-drawn particles.
 
     Mixture-MCL restart: keep (1 - phi) of the mass resampled from the
@@ -851,17 +831,24 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     retained particle, so per-tracklet association snapshots can be carried
     through the internal resample (§5.3 persistence).
     """
-    n_inject = int(round(config.proposal.inject_fraction * belief.n))
-    if not result.hypotheses or n_inject <= 0:
+    original_count = belief.n
+    requested_injection = int(round(
+        config.proposal.inject_fraction * original_count))
+    if not result.hypotheses or requested_injection <= 0:
         return 0, None
-    n_inject = min(n_inject, belief.n)
+    requested_injection = min(requested_injection, original_count)
 
     east, north, heading, hypothesis = proposal_mod.sample_particles(
-        result, n_inject, config.proposal, rng)
-    if east.size == 0:
+        result, requested_injection, config.proposal, rng)
+    actual_injection = int(east.size)
+    if actual_injection == 0:
         return 0, None
+    if actual_injection > original_count:
+        raise RuntimeError(
+            f"proposal returned {actual_injection} particles for a belief of "
+            f"{original_count}")
 
-    n_keep = belief.n - n_inject
+    n_keep = original_count - actual_injection
     if n_keep > 0:
         # Resample the retained mass so it is an unweighted sample too;
         # otherwise kept and injected particles are on different footings.
@@ -893,14 +880,20 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
         belief.associations[tid] = np.concatenate([
             belief.associations[tid],
             np.full(east.size, ASSOC_UNCOMMITTED, dtype=np.int32)])
-    # Kept mass carries (1 - phi), injected carries phi, spread evenly
-    # within each component.
-    keep_share = 1.0 - config.proposal.inject_fraction
+    # Derive component mass from what was actually injected. This keeps the
+    # particle and probability budgets consistent even if a future proposal
+    # implementation legitimately returns less than requested.
+    inject_share = actual_injection / original_count
+    keep_share = 1.0 - inject_share
     belief.log_weight = np.concatenate([
         np.full(n_keep, math.log(keep_share / n_keep) if n_keep else 0.0),
-        np.full(east.size,
-                math.log(config.proposal.inject_fraction / east.size))])
-    return int(east.size), kept_idx
+        np.full(actual_injection,
+                math.log(inject_share / actual_injection))])
+    if belief.n != original_count:
+        raise RuntimeError(
+            f"proposal injection changed belief size from {original_count} "
+            f"to {belief.n}")
+    return actual_injection, kept_idx
 
 
 def _proposal_event_record(result, n_injected: int, gate_passed: bool = True,
@@ -915,6 +908,17 @@ def _proposal_event_record(result, n_injected: int, gate_passed: bool = True,
         n_tracklets_considered=result.n_tracklets_considered,
         n_combinations_examined=result.n_combinations_examined,
         n_combinations_skipped=result.n_combinations_skipped,
+        particle_budget=result.particle_budget,
+        n_combinations_total=result.n_combinations_total,
+        n_combinations_enumerated=result.n_combinations_enumerated,
+        n_combinations_sampled=result.n_combinations_sampled,
+        n_combinations_geometry_pruned=(
+            result.n_combinations_geometry_pruned),
+        n_partially_represented_ties=(
+            result.n_partially_represented_ties),
+        n_solution_clusters_merged=result.n_solution_clusters_merged,
+        represented_compatibility_mass=(
+            result.represented_compatibility_mass),
         gate_passed=gate_passed,
         gate_best_hypothesis_nats=gate_best,
         gate_reference_nats=gate_ref,
@@ -932,12 +936,10 @@ def _belief_window_reference(belief, window_meas,
     the mixture where it is not (§5.3 persistence), maximized over the
     top-weight particles.
 
-    Scoring the incumbent through the plain mixture (its poses alone)
-    understates a committed mode by orders of magnitude in a dense catalog:
-    measured on the whole-map harbor run, the mixture-referenced gate
-    passed junk injections against a mode holding HALF the posterior within
-    1.5 km of truth, and the resulting churn destroyed that mode during a
-    junk-measurement stretch (kf 280-330)."""
+    Scoring the incumbent through the plain mixture would understate a
+    committed mode because persistence does not repay the identity prior at
+    every epoch. The gate therefore uses the same association regime as the
+    filter."""
     weights = belief.normalized_weights()
     idx = np.argsort(-weights)[:min(top_k, belief.n)]
     total = np.zeros(idx.size)
@@ -976,8 +978,8 @@ def _init_window_is_observable(measurements, kf: int, first_bearing_kf,
     See `ProposalConfig.min_tracklets_for_injection` for the counting argument.
     Returns True once the window has that many, and unconditionally once
     `init_max_wait_keyframes` have passed since the first bearing, so a sparse
-    leg still gets an initial proposal rather than being left to brute force a
-    25 km box.
+    sequence still gets an initial proposal rather than being left to sample a
+    region-sized uniform box.
     """
     window_start = kf - config.proposal.window_keyframes
     distinct = {m.tracklet_id for m in measurements
@@ -995,11 +997,8 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
 
     Injection is destructive — it hands `inject_fraction` of the posterior
     to the proposal — so it has to be justified by evidence, not by distress
-    alone. The absolute null-share trigger cannot make that call: in a dense
-    catalog the null share stays high even while tracking the true pose
-    (whole-map harbor run: 25 of 27 injections carried no truth-consistent
-    hypothesis, each displacing half the belief — the filter repeatedly
-    found the pose and was reset off it by its own recovery mechanism).
+    alone. A high null share says that the incumbent is struggling; it does not
+    establish that any generated proposal explains the evidence better.
 
     The gate scores hypotheses and the incumbent belief against the same
     window of recent bearings, treated as simultaneous — the same
@@ -1051,11 +1050,9 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
         np.concatenate([p[2] for p in parts]))
     # Each hypothesis is scored by its MARGINAL window likelihood over its
     # own sampling density (logsumexp - log S: what injecting it would
-    # actually contribute), never by its luckiest single pose. A tie-storm
-    # event scores ~10^4 poses; max-of-all-poses hands junk a
-    # multiple-comparisons bonus of several nats (measured: a 597-
-    # hypothesis event cleared the margin against a converged incumbent at
-    # kf 300 and displaced half of a 50 m-accurate belief 10 km).
+    # actually contribute), never by its luckiest single pose. Maximizing over
+    # every sampled pose would give larger hypothesis sets a multiple-comparison
+    # advantage.
     best = -np.inf
     offset = 0
     n_scored = 0
@@ -1066,10 +1063,8 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
         best = max(best, float(special.logsumexp(segment))
                    - math.log(segment.size))
 
-    # ...and, when `evidence_gate_selection_charge` is on, selection across
-    # HYPOTHESES is charged log N for the same reason. It is off by default:
-    # see ProposalConfig for the measurement that killed it and for what the
-    # real lock-in mechanism turned out to be.
+    # When enabled, selection across hypotheses is charged log N for the same
+    # multiple-comparisons reason.
     selection_penalty = (math.log(max(1, n_scored))
                          if config.proposal.evidence_gate_selection_charge
                          else 0.0)
@@ -1111,7 +1106,7 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
             raise ValueError(
                 f"odometry increment at keyframe {kf} is not finite")
 
-    # Information-epoch rule (§5.3 [CONTRACT], T-F1): a tracklet contributes
+    # Information-epoch contract (§5.3): a tracklet contributes
     # a new update only when it carries new information. Re-submitting the
     # same (tracklet, anchor) double-counts evidence and sharpens the
     # posterior without improving accuracy.
@@ -1329,27 +1324,10 @@ def run_filter(
                     and isinstance(config.init, structs.UniformBoxInit)
                     and _init_window_is_observable(
                         measurements, kf, first_bearing_kf, config)):
-                # The first keyframe whose window carries enough DISTINCT
-                # tracklets to determine a pose, not keyframe 0 and not
-                # merely the first keyframe with any bearing. Keying it to
-                # kf 0 meant the initial proposal silently never fired (real
-                # runs start observing several keyframes in — leg1's first
-                # tracklet anchors at kf 3); keying it to the first bearing
-                # meant founding the belief on a one- or two-bearing family,
-                # which is under-determined (see
-                # ProposalConfig.min_tracklets_for_injection). Waiting costs
-                # a few keyframes of dead reckoning and buys an
-                # over-determined fix.
-                #
-                # And ONLY for an uninformative prior: the init proposal
-                # exists to replace a prior that says nothing. Replacing
-                # half of an informative local prior with matcher-chosen
-                # fixes hands an uncalibrated matcher the belief (§5.5
-                # [HAZARD]) — and under body-frame propagation the kept
-                # mass no longer survives on position alone, because its
-                # unresolved heading smears it before bearings can anchor
-                # it. Measured on T-F5's adversarial case: NEES 117 with
-                # init injection into a Gaussian prior vs 4.5 without.
+                # Initialize only from a window with enough distinct tracklets
+                # to constrain a pose, subject to the bounded-wait fallback.
+                # This path applies only to an uninformative uniform prior;
+                # informative local priors retain their declared authority.
                 trigger = "init"
             elif refractory_ok and (
                     len(null_history) >= config.proposal.null_share_window
@@ -1368,10 +1346,14 @@ def run_filter(
             window_start = kf - config.proposal.window_keyframes
             window = [m for m in measurements
                       if window_start <= m.anchor_keyframe_idx <= kf]
+            particle_budget = min(
+                config.n_particles,
+                int(round(config.proposal.inject_fraction
+                          * config.n_particles)))
             result = proposal_mod.propose(
                 window, tables, catalog, config.proposal,
                 event_id=len(proposal_events), keyframe_idx=kf,
-                trigger=trigger)
+                trigger=trigger, particle_budget=particle_budget)
             gate_passed, gate_best, gate_ref = True, None, None
             # The init trigger bypasses the gate: it only fires for an
             # uninformative prior (§5.5), and the only thing standing is
