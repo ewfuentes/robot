@@ -10,10 +10,12 @@ PARAMS = tracklets.TrackletParams(
 
 
 def make_track(track_id, birth, boxes_by_kf, close_reason="end_of_range"):
+    end = max(boxes_by_kf) if boxes_by_kf else birth
     return {
         "track_id": track_id,
         "birth_keyframe": birth,
-        "end_keyframe": max(boxes_by_kf) if boxes_by_kf else birth,
+        "end_keyframe": end,
+        "last_keyframe": end,
         "close_reason": close_reason,
         "records": [
             {"keyframe": keyframe, "mask_bbox_window": list(box),
@@ -159,6 +161,59 @@ class AcceptedTrackletTest(unittest.TestCase):
                     tracklets.build_accepted_tracklets(
                         {2: self.track2},
                         {2: audit_for(self.track2, verdict, [])})
+
+    def test_unsupported_tail_is_valid_but_not_part_of_audit_lifetime(self):
+        track = make_track(4, 4, {
+            4: centred_box(1000),
+            5: centred_box(1010),
+            6: centred_box(1020),
+        })
+        track["last_keyframe"] = 8
+        track["records"].extend([
+            {
+                "keyframe": 7,
+                "mask_bbox_window": list(centred_box(1030)),
+                "window_origin": [0, 0],
+                "action": "unsupported",
+            },
+            {
+                "keyframe": 8,
+                "mask_bbox_window": None,
+                "window_origin": [0, 0],
+                "action": "mask_dead",
+            },
+        ])
+        accepted = tracklets.build_accepted_tracklets(
+            {4: track}, {4: audit_for(track)})
+        self.assertEqual(
+            [(segment.start_keyframe_idx, segment.end_keyframe_idx)
+             for segment in accepted[0].valid_segments],
+            [(4, 6)])
+
+    def test_record_after_last_propagated_keyframe_is_rejected(self):
+        track = make_track(4, 4, {4: centred_box(1000)})
+        track["records"].append({
+            "keyframe": 5,
+            "mask_bbox_window": list(centred_box(1010)),
+            "window_origin": [0, 0],
+            "action": "unsupported",
+        })
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "outside its lifecycle"):
+            tracklets.build_accepted_tracklets(
+                {4: track}, {4: audit_for(track)})
+
+    def test_last_propagated_keyframe_cannot_precede_supported_end(self):
+        track = make_track(4, 4, {
+            4: centred_box(1000),
+            5: centred_box(1010),
+        })
+        track["last_keyframe"] = 4
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError,
+                "precedes its supported end_keyframe"):
+            tracklets.build_accepted_tracklets(
+                {4: track}, {4: audit_for(track)})
 
     def test_keep_may_trim_unreliable_same_object_spans(self):
         accepted = tracklets.build_accepted_tracklets(

@@ -165,6 +165,18 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
     if end < birth:
         raise TrackletContractError(
             f"track {track_id} ends before it is born ({birth}..{end})")
+    # `end_keyframe` is the last geometrically supported keyframe and bounds
+    # the evidence lifetime exposed to semantic audit.  The tracker may keep
+    # propagating the mask through an unsupported tail before closing it;
+    # `last_keyframe` bounds those lifecycle records.  Do not conflate the two
+    # horizons or valid unsupported records make every real track malformed.
+    raw_last = track.get("last_keyframe")
+    last = end if raw_last is None else _integer(
+        raw_last, f"track {track_id} last_keyframe")
+    if last < end:
+        raise TrackletContractError(
+            f"track {track_id} last_keyframe {last} precedes its supported "
+            f"end_keyframe {end}")
     records = track.get("records")
     if not isinstance(records, list) or not records:
         raise TrackletContractError(f"track {track_id} has no records")
@@ -175,10 +187,10 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
                 f"track {track_id} record {i} is not an object")
         keyframe = _integer(record.get("keyframe"),
                             f"track {track_id} record {i} keyframe")
-        if not birth <= keyframe <= end:
+        if not birth <= keyframe <= last:
             raise TrackletContractError(
                 f"track {track_id} record keyframe {keyframe} is outside "
-                f"its lifetime {birth}..{end}")
+                f"its lifecycle {birth}..{last}")
         if keyframe in seen:
             raise TrackletContractError(
                 f"track {track_id} repeats keyframe {keyframe}")
