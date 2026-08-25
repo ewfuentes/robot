@@ -45,6 +45,12 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # Cap on any single measurement's concentration. §6 makes the matcher's LLRs
 # clipped so semantics cannot steamroll geometry; kappa is the same hazard on
 # the geometric side — 1e6 is ~0.06 deg, far below any real bearing accuracy.
+# The measurements behind this filter's design -- the whole-map campaign's
+# five fixes, each with the number that justifies it -- are recorded in
+# docs/farfield/decisions.md (2026-05 - 2026-08). Read that before
+# simplifying persistence, the identity-posterior normalisation, the
+# unendorsed-candidate rule, or the resampling scheme: every one of them is
+# the scar of a run that drifted.
 MAX_KAPPA = 1.0e6
 # Candidate-axis block size for the measurement update, bounding the (N, M)
 # temporary arrays.
