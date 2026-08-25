@@ -325,6 +325,49 @@ class TrackingPublicationTest(unittest.TestCase):
             with self.assertRaises(artifact.ArtifactExistsError):
                 rt.publish_tracking(self.fixture.args())
 
+    def test_track_without_records_cannot_publish(self):
+        payload = self.fixture.payload()
+        payload["tracks"] = [{"track_id": 7, "records": []}]
+        with mock.patch.object(
+                rt.rr, "load_context", return_value=self.fixture.context()), \
+             mock.patch.object(
+                 rt.rr, "run_range", return_value=(object(), payload)), \
+             mock.patch.object(rt.vc, "load_font", return_value=None):
+            with self.assertRaisesRegex(
+                    rt.TrackingContractError, "track 7 has no records"):
+                rt.publish_tracking(self.fixture.args())
+        self.assertFalse(self.fixture.output.exists())
+
+
+class RangeRunnerTerminalBirthTest(unittest.TestCase):
+    def test_terminal_detection_is_not_serialized_without_an_interval(self):
+        terminal = SimpleNamespace(obs_id="terminal")
+        provider = SimpleNamespace(frames_between=lambda *_: [])
+        result = SimpleNamespace(frames=[
+            SimpleNamespace(frame_idx=0, time_s=0.0),
+            SimpleNamespace(frame_idx=1, time_s=1.0),
+        ])
+        _, document = rr.run_range(
+            "full", 0, 1,
+            tb.TrackBuilderConfig(reference_pano_width=PANO_W),
+            object(), provider, None, result, {1: [terminal]},
+            {terminal.obs_id: [0.0, 0.0, 4.0, 4.0]}, PANO_W, PANO_H,
+            Path("unused"), log=lambda *_: None)
+        self.assertEqual(document["tracks"], [])
+
+    def test_single_frame_range_does_not_seed_an_empty_track(self):
+        only = SimpleNamespace(obs_id="only")
+        result = SimpleNamespace(frames=[
+            SimpleNamespace(frame_idx=0, time_s=0.0),
+        ])
+        _, document = rr.run_range(
+            "full", 0, 0,
+            tb.TrackBuilderConfig(reference_pano_width=PANO_W),
+            object(), object(), None, result, {0: [only]},
+            {only.obs_id: [0.0, 0.0, 4.0, 4.0]}, PANO_W, PANO_H,
+            Path("unused"), log=lambda *_: None)
+        self.assertEqual(document["tracks"], [])
+
 
 class RangeRunnerCourseAbstentionTest(unittest.TestCase):
     def test_no_course_model_means_zero_relative_rotation(self):
@@ -356,7 +399,7 @@ class RangeRunnerCourseAbstentionTest(unittest.TestCase):
             def alive_tracks(self):
                 return self.tracks
 
-            def step(self, _keyframe, crops_fn, *_args):
+            def step(self, _keyframe, crops_fn, *_args, **_kwargs):
                 crops, origins = crops_fn(self.tracks[0], 8)
                 self.test_crops = crops
                 self.test_origins = origins

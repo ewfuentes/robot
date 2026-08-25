@@ -135,8 +135,11 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
             return crop
         return crop_fn
 
-    dets0 = obs_by_frame.get(k_start, [])
-    builder.seed_unassigned(k_start, dets0, det_pano_boxes)
+    # A birth is evaluated on its first forward interval. A one-frame range
+    # has no such interval, so it cannot produce a meaningful track.
+    if k_start < k_end:
+        dets0 = obs_by_frame.get(k_start, [])
+        builder.seed_unassigned(k_start, dets0, det_pano_boxes)
 
     for k in range(k_start, k_end):
         t0 = frames_by_idx[k].time_s
@@ -176,7 +179,9 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
         dets_next = obs_by_frame.get(k + 1, [])
         n_alive = len(builder.alive_tracks())
         with PROFILE.phase("builder_step_total", items=max(n_alive, 1)):
-            builder.step(k, crops_fn, dets_next, det_pano_boxes)
+            builder.step(
+                k, crops_fn, dets_next, det_pano_boxes,
+                allow_new_births=(k + 1 < k_end))
 
         if renderer is not None:
           with PROFILE.phase("board_render"):

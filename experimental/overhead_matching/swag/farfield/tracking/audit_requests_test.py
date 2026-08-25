@@ -429,6 +429,36 @@ class AuditRequestsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 ar.load_source_tracks(tracks_dir, DATASET)
 
+    def test_track_without_records_cannot_reach_audit_requests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            ghost = {
+                "track_id": 99,
+                "birth_obs_id": self.tracks[0]["birth_obs_id"],
+                "birth_keyframe": 4,
+                "status": "alive",
+                "close_reason": "",
+                "end_keyframe": None,
+                "last_keyframe": None,
+                "modal_label": "man_made=tower",
+                "n_supported_keyframes": 0,
+                "records": [],
+            }
+            tracks_dir = temporary / "tracks"
+            write_tracks_artifact(
+                tracks_dir,
+                {"tracks_full.json": track_payload([
+                    self.tracks[0], ghost])})
+            source = ar.load_source_tracks(tracks_dir, DATASET)
+            args = request_args(
+                temporary / "requests", self.document, self.selected,
+                self.orchestration)
+            with self.assertRaisesRegex(
+                    ValueError, "source track 99 has no records"):
+                ar.build_request_artifact(
+                    args, self.paths, *source, self.ingest_result)
+            self.assertFalse(args.output_dir.exists())
+
     def test_incomplete_or_legacy_results_cannot_publish(self):
         only_one = (success(self.request_set, "T1", "one"),)
         with self.assertRaisesRegex(

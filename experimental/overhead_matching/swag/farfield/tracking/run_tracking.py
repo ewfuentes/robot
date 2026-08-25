@@ -755,6 +755,12 @@ def validate_tracks_document(value: dict, *, expected_range: dict,
             or len(track_ids) != len(set(track_ids))):
         raise TrackingContractError(
             "tracks_full.json tracks must have unique integer track_id values")
+    for track in value["tracks"]:
+        records = track.get("records")
+        if not isinstance(records, list) or not records:
+            raise TrackingContractError(
+                "tracks_full.json track "
+                f"{track['track_id']} has no records")
 
 
 def render_viewer(out: Path, dataset_name: str, tracks_document: dict,
