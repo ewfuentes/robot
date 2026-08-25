@@ -403,6 +403,12 @@ def _refresh_locked(data_root: Path) -> dict:
                     inner = (f'<a href="{viewer_href}">'
                              f'{pg.esc(version.name)}</a> '
                              "<span class='muted'>frames ↔ tracks</span>")
+                elif kind.name == "object_tracks":
+                    # Never fall back to presentation bytes embedded in the
+                    # scientific artifact.  A missing sidecar is visible as a
+                    # missing deliverable, not silently normalized as the UI.
+                    inner = (f'{pg.esc(version.name)} '
+                             "<span class='warn'>viewer sidecar missing</span>")
                 elif (kind.name == "frame_landmarks"
                       and frame_viewer is not None):
                     viewer_href = f"{ds.name}/{frame_viewer.name}/index.html"

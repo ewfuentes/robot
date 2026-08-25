@@ -78,6 +78,9 @@ class RefreshTest(unittest.TestCase):
         kind = (self.root / "artifacts" / "object_tracks"
                 / "index.html").read_text()
         self.assertIn("farfield.tracking.run_tracking", kind)
+        self.assertIn("viewer sidecar missing", kind)
+        self.assertNotIn(
+            'href="boston_harbor_leg1/v1/index.html"', kind)
 
     def test_track_index_links_the_exact_frame_viewer_sidecar(self):
         frame_source = (self.root / "artifacts" / "frame_landmarks"
