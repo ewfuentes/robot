@@ -1,9 +1,8 @@
-"""Review site for per-track semantic audit results.
+"""Review site for one immutable semantic-audit artifact.
 
-Joins <run_dir>/semantic_audit/{results.jsonl, requests.jsonl,
-audit_meta.json, settings.json} with the run's tracks artifacts and renders
-
-  <run_dir>/semantic_audit/review/index.html
+Joins explicit ``object_tracks`` and ``semantic_audits`` artifacts, then
+writes a disposable review site to an explicit output directory.  The review
+never mutates either scientific artifact.
 
 Contents:
 - headline stats (verdicts, kinds, extents, strikes, secondaries) and the
@@ -24,7 +23,7 @@ canonical reader every consumer shares -- so what this page shows is exactly
 what matching and the export consume. The results JSONL is re-parsed only for
 what that reader deliberately skips: the per-key errors. Support
 classification and chip rendering use the RECORDED settings (settings.json +
-each tracks artifact's own TrackBuilderConfig), never a fresh default; an
+the tracks artifact's own TrackBuilderConfig), never a fresh default; an
 audit directory without a settings record is refused.
 
 Strike / secondary chips are rendered on demand (requires the dataset for
@@ -33,12 +32,15 @@ already rendered for the requests.
 
 Run:
   bazel run //experimental/overhead_matching/swag/farfield/tracking:audit_review -- \\
-      --run_dir <runs>/r003 [required flags...]
+      --tracks_dir <object_tracks> --semantic_audits_dir <semantic_audits> \\
+      --output_dir <review-output> [required flags...]
 """
 
 import argparse
 import html
 import json
+import os
+import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -88,18 +90,8 @@ def esc(x):
 
 
 def name_candidates(primary_object):
-    """[(name, weight, basis)] highest-weight first.
-
-    audit_io hands back the model's payload verbatim (no legacy upgrade), so
-    audits written before names became a weighted list still carry a single
-    `name`; the fallback lifts it into a lone candidate the way
-    semantic_audit.upgrade_legacy_audit does.
-    """
-    cands = primary_object.get("name_candidates")
-    if cands is None:
-        name = primary_object.get("name", "")
-        cands = ([{"name": name, "weight": 1.0,
-                   "basis": "reported_by_detections"}] if name else [])
+    """[(name, weight, basis)] highest-weight first."""
+    cands = primary_object["name_candidates"]
     return sorted(((c["name"], c.get("weight", 0.0),
                     c.get("basis", "reported_by_detections"))
                    for c in cands if c.get("name")), key=lambda c: -c[1])
@@ -127,22 +119,6 @@ def load_settings(audit_dir: Path) -> dict:
             f"//experimental/overhead_matching/swag/farfield/tracking:"
             f"audit_requests (which records them).")
     return json.loads(path.read_text())
-
-
-def collect_errors(audit_dir: Path, consumed_keys: set) -> dict:
-    """{key: error} for result lines the canonical reader delivered nothing
-    for. audit_io.load_audits deliberately skips error lines and unparseable
-    payloads; this re-parse exists ONLY to surface those per key, so any key
-    whose payload WAS consumed is not an error here."""
-    errors = {}
-    with open(audit_dir / "results.jsonl") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            key, audit, err = sa.parse_result_line(json.loads(line))
-            if err is not None and key not in consumed_keys:
-                errors[key] = err
-    return errors
 
 
 def load_request_texts(audit_dir: Path):
@@ -224,10 +200,10 @@ def render_extra_chips(wants, tracks_by_id, range_by_track, cfg_by_range,
 
 
 def kf_link(birth_keyframe, t, label=None):
-    """Link a relative time index to its keyframe page (from review/)."""
+    """Render a keyframe label without assuming a colocated viewer tree."""
     kf = birth_keyframe + t
-    return (f"<a href='../../keyframes/f{kf:04d}.html'>"
-            f"{label if label is not None else f't{t}'}</a>")
+    text = label if label is not None else f"t{t}"
+    return f"<span title='keyframe f{kf:04d}'>{esc(text)}</span>"
 
 
 def timeline_bar(lifetime, segments, strike_ts, secondary_ts):
@@ -275,7 +251,7 @@ def chip_div(rel_path, caption):
 
 
 def track_section(key, audit, meta_entry, track, texts, extra_chips,
-                  range_name):
+                  range_name, preview_href):
     parts = []
     po = audit["primary_object"]
     verdict = audit["verdict"]
@@ -294,8 +270,8 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
         f"{audit['single_object']} | drop_reason: "
         f"{esc(audit['drop_reason'])} | supports: "
         f"{meta_entry['n_supports']} | "
-        f"<a href='../../track_{range_name}_T{tid}.html'>track page</a> | "
-        f"<a href='../preview/index.html#T{tid}'>request preview</a> | "
+        f"range: {esc(range_name)} | "
+        f"<a href='{esc(preview_href)}#T{tid}'>request preview</a> | "
         f"born {kf_link(meta_entry['birth_keyframe'], 0, 'keyframe page')}"
         "</p>")
 
@@ -333,7 +309,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
         parts.append("<details><summary>chips the model saw "
                      f"({len(chip_files)})</summary>")
         for fname, caption in zip(chip_files, captions):
-            parts.append(chip_div(f"../chips/{fname}", esc(caption)))
+            parts.append(chip_div(f"chips/{fname}", esc(caption)))
         parts.append("</details>")
     if dossier_text:
         parts.append("<details><summary>dossier text</summary>"
@@ -347,7 +323,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
             caption = (f"<b class='v_drop'>strike "
                        f"{kf_link(birth, s['t'])}</b> {esc(s['reason'])}")
             if chip:
-                parts.append(chip_div(f"../chips/{chip}", caption))
+                parts.append(chip_div(f"chips/{chip}", caption))
             else:
                 parts.append(f"<p>{caption} <i>(no chip)</i></p>")
 
@@ -367,7 +343,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
             for t in sorted(s["ts"])[:2]:
                 chip = extra_chips.get((key, t))
                 if chip:
-                    parts.append(chip_div(f"../chips/{chip}", head))
+                    parts.append(chip_div(f"chips/{chip}", head))
                     shown = True
                     break
             if not shown:
@@ -378,48 +354,47 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     paths_lib.add_arguments(parser)
-    parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--tracks_dir", type=Path, required=True)
+    parser.add_argument("--semantic_audits_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True,
+                        help="Disposable review site destination; must be "
+                             "outside both immutable input artifacts")
     parser.add_argument("--no_extra_chips", action="store_true",
                         help="Skip rendering chips for strikes/secondaries")
-    # TODO(run_config): the ingest values move into the run's recorded config
-    # (run_config.json, REORG.md PR 12); required on the CLI until then.
     parser.add_argument("--fov_deg", type=float, required=True,
-                        help="Pinhole-face FOV the extraction rendered with, "
-                             "degrees (previously 90.0 on all datasets)")
+                        help="Pinhole-face FOV recorded for extraction")
     parser.add_argument("--seam_gap_norm", type=float, required=True,
-                        help="Seam-merge margin in bbox units 0-1000 "
-                             "(previously 25)")
+                        help="Seam-merge margin in bbox units 0-1000")
     parser.add_argument("--seam_min_y_iou", type=float, required=True,
-                        help="Vertical IoU to accept a seam continuation "
-                             "(previously 0.3)")
+                        help="Vertical IoU to accept a seam continuation")
     args = parser.parse_args()
     paths = paths_lib.resolve(
-        parser, args, infer_from=args.run_dir,
+        parser, args, infer_from=args.tracks_dir,
         require=("dataset_base", "frame_landmarks"))
 
-    audit_dir = args.run_dir / "semantic_audit"
-    if not (audit_dir / "audit_meta.json").exists():
-        raise SystemExit(
-            f"no audit_meta.json under {audit_dir} -- build the requests "
-            f"first (farfield/tracking:audit_requests)")
-    if not (audit_dir / "results.jsonl").exists():
-        raise SystemExit(
-            f"no results.jsonl under {audit_dir} -- submit the requests "
-            f"first (audit_requests --submit, or vertex_batch_manager)")
-    settings = load_settings(audit_dir)
-    meta = json.loads((audit_dir / "audit_meta.json").read_text())
+    audit_dir = args.semantic_audits_dir
+    output_dir = args.output_dir
+    for immutable_dir in (args.tracks_dir, audit_dir):
+        try:
+            output_dir.resolve().relative_to(immutable_dir.resolve())
+        except ValueError:
+            continue
+        parser.error(
+            f"--output_dir must be outside immutable artifact {immutable_dir}")
 
-    # The canonical reader (what matching/export consume), joined back to
-    # request keys through the meta record.
-    audits_by_tid = audit_io.load_audits(args.run_dir)
+    # This validates both manifests, exact source binding, v2 metadata, and
+    # one canonical successful result per request before rendering anything.
+    audits_by_tid = audit_io.load_audits(args.tracks_dir, audit_dir)
+    settings = load_settings(audit_dir)
+    meta_document = json.loads((audit_dir / "audit_meta.json").read_text())
+    meta = meta_document["requests"]
     audits = {key: audits_by_tid[m["track_id"]] for key, m in meta.items()
               if m["track_id"] in audits_by_tid}
-    errors = collect_errors(audit_dir, set(audits))
     texts = load_request_texts(audit_dir)
 
-    # Every range's tracks, each classified under ITS recorded config plus
+    # The one source artifact is classified under its recorded config plus
     # the audit's recorded knobs -- never a freshly-defaulted AuditConfig.
-    artifacts = kv.load_track_artifacts(args.run_dir)
+    artifacts = kv.load_track_artifacts(args.tracks_dir)
     tracks_by_id, range_by_track = sa.merge_tracks(artifacts)
     cfg_by_range = {
         rn: sa.AuditConfig(**settings["audit_config"],
@@ -435,6 +410,14 @@ def main():
         m["chipped_ts"] = [int(Path(p).stem.split("_t")[1].split("_")[0])
                            for p in m.get("chips", [])]
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chips_dir = output_dir / "chips"
+    chips_dir.mkdir(exist_ok=True)
+    for request_meta in meta.values():
+        for relative in request_meta.get("chips", []):
+            source = audit_dir / relative
+            shutil.copyfile(source, chips_dir / source.name)
+
     extra_chips = {}
     if not args.no_extra_chips:
         wants = collect_extra_chip_wants(audits, meta)
@@ -443,7 +426,7 @@ def main():
               f"(strikes/secondaries) for {len(wants)} tracks")
         extra_chips = render_extra_chips(
             wants, tracks_by_id, range_by_track, cfg_by_range, meta,
-            paths.dataset_base, paths.frame_landmarks, audit_dir / "chips",
+            paths.dataset_base, paths.frame_landmarks, chips_dir,
             ingest_params, chip_height_px)
         print(f"rendered {len(extra_chips)}")
 
@@ -454,9 +437,8 @@ def main():
     n_secs = sum(len(a["secondary_objects"]) for a in audits.values())
 
     parts = [
-        f"<p>{len(audits)} tracks audited"
-        + (f", <b class='v_drop'>{len(errors)} result errors</b>" if errors
-           else "") + "</p>",
+        f"<p>{len(audits)} tracks audited with complete canonical "
+        "coverage</p>",
         # The recorded provenance, so the page states what produced what it
         # shows (model/thresholds were previously recorded nowhere at all).
         f"<p class='muted'>model {esc(settings['model'])} | thinking "
@@ -474,10 +456,6 @@ def main():
         "segment | <span class='v_drop'>|</span> strike | "
         "<span class='sec'>|</span> secondary-object detection</p>",
     ]
-
-    if errors:
-        parts.append("<h3>result errors</h3><pre>" + "\n".join(
-            f"{esc(k)}: {esc(e)}" for k, e in errors.items()) + "</pre>")
 
     collisions = name_collision_rows(audits)
     parts.append("<h3>name / alias collisions</h3>")
@@ -508,18 +486,18 @@ def main():
                 0 if has_edits else 1,
                 -meta[key]["n_supports"])
 
+    preview_href = Path(os.path.relpath(
+        audit_dir / "preview" / "index.html", output_dir)).as_posix()
     for key, audit in sorted(audits.items(), key=sort_key):
         tid = meta[key]["track_id"]
         parts.extend(track_section(
             key, audit, meta[key], tracks_by_id[tid], texts, extra_chips,
-            range_by_track[tid]))
+            range_by_track[tid], preview_href))
 
-    out = audit_dir / "review"
-    out.mkdir(exist_ok=True)
-    (out / "index.html").write_text(page_lib.page(
+    (output_dir / "index.html").write_text(page_lib.page(
         "semantic audit results", "\n".join(parts), generator=GENERATOR,
         extra_style=EXTRA_STYLE))
-    print(f"wrote {out / 'index.html'}")
+    print(f"wrote {output_dir / 'index.html'}")
     print("verdicts:", dict(verdicts))
 
 

@@ -1,24 +1,19 @@
-# Example run config for a harbor boat leg. EVERY result-shaping value is
-# explicit here — there are no defaults anywhere in the pipeline, so the
-# recorded config IS the complete description of what a run did (REORG.md
-# rule 2/3). Copy this file per environment class and edit; pipeline new-run
-# validates that no required key is missing before anything runs.
-#
-# The values below are the ones the harbor legs shipped with (previously
-# scattered across argparse defaults).
+# Fully resolved example for boston_harbor_leg2. Copy to a new build recipe
+# and change every version/path that the new build should publish or consume.
 
 experiment:
-  # runs/<name>/ is where this run's localization outputs land; the
-  # directory carries an experiment.md saying what is being explored.
   name: 260821_example_experiment
 
 artifacts:
   frame_landmarks_version: v4
   pinhole_images_version: v1
   object_tracks_version: v1
-
-catalog:
-  name: v3_trimmed          # stem under artifacts/catalogs/<dataset>/
+  semantic_audits_version: v1
+  bearing_observations_version: v1
+  landmark_matches_version: v1
+  alignment_diagnostics_version: v1
+  localization_inputs_version: v1
+  catalogs_version: v3_trimmed
 
 extraction:
   model: gemini-3.1-pro-preview
@@ -27,17 +22,51 @@ extraction:
   media_resolution: MEDIA_RESOLUTION_ULTRA_HIGH
   thinking_level: HIGH
 
+execution:
+  llm_transport: batch
+  batch_gcs_prefix: gs://REPLACE_ME/farfield/boston_harbor_leg2/b001
+  approve_cost: false
+
+cost:
+  limit_usd: 50.0
+
 ingest:
   fov_deg: 90.0
-  seam_gap_norm: 25
+  seam_gap_norm: 25.0
   seam_min_y_iou: 0.3
 
 tracking:
-  sam2_checkpoint: sam2/sam2.1_hiera_large.pt   # under <root>/models/
+  sam2_checkpoint: sam2/sam2.1_hiera_large.pt
+  range:
+    k_start: 0
+    k_end: 235
+  reference_pano_width: 7680
+  window_px: 1024
+  window_extent_factor: 2.0
+  window_quantum: 512
+  window_max_px: 3072
+  clean_iou: 0.45
+  superset_min_inter_over_box: 0.10
+  reanchor_min_inter_over_mask: 0.75
+  superset_inter_over_mask: 0.7
+  superset_max_inter_over_box: 0.4
+  child_inter_over_box: 0.7
+  child_max_inter_over_mask: 0.4
+  weak_min_iou: 0.15
+  weak_min_containment: 0.5
+  weak_min_complement: 0.10
+  birth_min_coverage: 0.15
+  birth_max_spill: 0.5
+  birth_min_dominant_cc: 0.6
+  patience_keyframes: 15
+  patience_unsupported_keyframes: 3
+  min_mask_area_px: 20
+  drift_gate_px: 150.0
+  drift_patience: 3
 
 audit:
   model: gemini-3-flash-preview
-  min_supports: 2           # audit membership is the tracklet gate
+  min_supports: 2
   thinking_level: HIGH
   max_support_chips: 6
   max_context_chips: 2
@@ -52,38 +81,101 @@ matching:
   confidence_floor: 0.05
   instance_max_rows: 5
 
-calibration:
+bearing_observations:
+  bearing_sigma_deg: 1.0
+
+gps_course:
+  min_displacement_m: 2.0
+  smooth_window_s: 5.0
+
+alignment_diagnostics:
   sun:
     n_frames: 40
     min_speed_mps: 0.8
     elevation_tolerance_deg: 3.0
     work_width: 1440
   sweep:
-    coarse_step: 5.0
-    fine_step: 1.0
-    fine_halfwidth: 6.0
+    coarse_step_deg: 5.0
+    fine_step_deg: 1.0
+    fine_halfwidth_deg: 6.0
     min_observations: 4
     min_arc_deg: 20.0
     max_condition: 500.0
     min_tracklets: 5
     min_support_frac: 0.5
 
-fusion:
-  epoch_keyframes: 5
-  bearing_sigma_deg: 1.0
-
-export:
-  default_log_lr: 0.0
-  clip: 4.0
-  min_step_m: 2.0
-  sigma_pair_m: 1.0
+localization_inputs:
+  motion_source: frames_gps.csv
+  nominal_forward_calibration: nominal_forward.json
+  use_uninformative_tables: false
+  default_log_compatibility: 0.0
+  compatibility_clip: 4.0
+  reducer_epoch_keyframes: 5
+  odometry_sigma_pair_m: 1.0
+  displacement_gate_m: 2.0
+  stationary_sigma_m: 2.0
+  slow_yaw_sigma_deg: 30.0
+  reverse_keyframe_ranges: []
+  reverse_annotation_source: human_review_no_reverse_segments
   max_visible_range_m: 15000.0
+  landmark_position_sigma_m: 25.0
 
 localization:
+  run_name: boston_harbor_leg2_v1
+  init: uniform
+  prior_sigma_m: null
   n_particles: 50000
+  seed: 0
   margin_m: 1000.0
+  pi0: 0.2
+  ess_resample_frac: 0.5
+  heading_random_walk_deg: 1.0
+  resample_regularization: 1.0
   position_roughening_m: 25.0
   heading_roughening_deg: 1.0
-
-cost:
-  limit_usd: 50.0
+  map_cell_size_m: 50.0
+  checkpoint_every: 10
+  measurement_backend: numpy
+  association_persistence: true
+  association_renewal_rate: 0.1
+  association_outlier_rate: 0.1
+  matcher_recall: 0.5
+  min_reported_responsibility: 0.000001
+  bearings_enabled: true
+  proposal:
+    enabled: true
+    on_init: true
+    null_share_threshold: 0.8
+    null_share_window: 8
+    null_share_min_fraction: 0.25
+    ess_floor_frac: 0.02
+    ess_floor_keyframes: 3
+    refractory_keyframes: 10
+    top_k_landmarks: 64
+    max_tracklets: 5
+    max_combinations_single: 512
+    max_combinations_pair: 4000
+    max_combinations_triple: 8000
+    max_hypotheses_per_kind: 256
+    residual_tolerance_sigma: 3.0
+    max_residual_tolerance_deg: 90.0
+    window_keyframes: 4
+    evidence_gate: true
+    evidence_gate_margin_nats: 1.0
+    evidence_gate_selection_charge: true
+    min_tracklets_for_injection: 3
+    init_max_wait_keyframes: 40
+    evidence_gate_samples: 16
+    share_triple: 0.5
+    share_pair: 0.35
+    share_single: 0.15
+    inject_fraction: 0.5
+    injection_sigma_m: 100.0
+    injection_heading_sigma_deg: 3.0
+    max_injection_sigma_m: 2000.0
+  modes:
+    enabled: true
+    cell_size_m: 150.0
+    heading_cell_deg: 20.0
+    min_cell_weight: 0.0001
+    min_mode_weight: 0.02

@@ -5,7 +5,9 @@ py_library(
     srcs = ["schema.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
-        "//experimental/overhead_matching/swag/data:landmark_schema",
+        requirement("geopandas"),
+        requirement("pandas"),
+        requirement("pyarrow"),
     ],
 )
 
@@ -13,7 +15,7 @@ py_test(
     name = "schema_test",
     srcs = ["schema_test.py"],
     deps = [
-        requirement("pandas"),
+        requirement("geopandas"),
         requirement("shapely"),
         ":schema",
     ],
@@ -27,6 +29,7 @@ py_library(
         requirement("numpy"),
         requirement("shapely"),
         ":schema",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )

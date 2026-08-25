@@ -1,170 +1,500 @@
-"""Tracklets: localization-ready bearings straight from tracks + audit.
+"""The canonical audited-track and camera-bearing contract.
 
-This library replaces the merge stage (m6_merge_tracks / track_merge on the
-checkpoint branch). There is no consolidation step and no materialized
-`merged/` artifact any more: each audited track IS a tracklet, and the three
-consumers (offset sweep, matching, localization export) call this one library
-on `tracks_*.json` + the semantic-audit artifact with the run's recorded
-fusion parameters.
+An accepted tracklet is one source track joined to one successful semantic
+audit. Acceptance, audit-segment validation, identity, and bearing creation
+live here so calibration, matching, and localization cannot quietly choose
+different subsets of the data.
 
-Why no merging: the old consolidator's own contract conceded that
-under-merging is cheap — two tracklets of one physical object both match the
-same map feature and the filter's data association copes — while over-merging
-welds two objects into one landmark with a bimodal bearing. Meanwhile its
-consumers had already drifted apart from it (a second bearing fusion with a
-different kappa rule in the export, a different support bar in matching,
-three copies of the epoch constant). Deleting the weld removes a stage, an
-artifact, and that entire disagreement surface. If over-splitting ever proves
-harmful, the fix belongs in the filter's association model, not in a
-pipeline-side weld.
-
-The support gate: a tracklet exists only for tracks that HAVE a semantic
-audit. Audit membership already encodes the evidence bar (only tracks with
-enough detector supports are auditable), and a track that was never audited
-has no canonical semantics, so it cannot be matched and must not reach the
-filter. This replaces three independently-defaulted `--min_supports` flags
-with one recorded decision made at audit time.
-
-Bearings are CAMERA-frame azimuths (pano_geometry convention, CW positive);
-converting to the body frame is `geometry.apply_mount_offset`, applied by the
-export, not here.
+Bearings are camera-frame azimuths, clockwise positive. They remain attached
+to their real keyframes. epoch_fused_compat_v1 is the named compatibility
+reducer for consumers that have not yet migrated to observation-level input.
 """
 
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import math
+from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 
 
-@dataclass
+class TrackletContractError(ValueError):
+    """A track/audit join cannot be represented without guessing."""
+
+
+@dataclass(frozen=True)
 class TrackletParams:
-    """Fusion parameters. No defaults on purpose (REORG.md rule 2): values
-    come from the run's recorded config, so the numbers used are the numbers
-    recorded."""
-    # Keyframes fused into one bearing measurement. Consecutive bearings on
-    # one object are strongly correlated (same mask, same tracker), so the
-    # filter consumes one fused bearing per tracklet per information epoch
-    # rather than one per keyframe.
+    """Recorded compatibility-reducer and observation-noise parameters."""
+
     epoch_keyframes: int
-    # Per-observation bearing noise floor, degrees.
     bearing_sigma_deg: float
 
+    def __post_init__(self):
+        if (isinstance(self.epoch_keyframes, bool)
+                or not isinstance(self.epoch_keyframes, int)
+                or self.epoch_keyframes <= 0):
+            raise TrackletContractError("epoch_keyframes must be a positive int")
+        if (isinstance(self.bearing_sigma_deg, bool)
+                or not isinstance(self.bearing_sigma_deg, (int, float))
+                or not math.isfinite(self.bearing_sigma_deg)
+                or self.bearing_sigma_deg <= 0.0):
+            raise TrackletContractError(
+                "bearing_sigma_deg must be finite and positive")
 
-@dataclass
+
+@dataclass(frozen=True)
+class ValidSegment:
+    """One inclusive audit segment in both relative and keyframe indices."""
+
+    index: int
+    start_t: int
+    end_t: int
+    start_keyframe_idx: int
+    end_keyframe_idx: int
+
+
+@dataclass(frozen=True)
+class AcceptedTracklet:
+    """One immutable-in-meaning source-track/audit join.
+
+    tracklet_id is globally scoped by the bound source artifact identity and
+    digest. local_id is the human-facing T<track_id> identifier retained by
+    the v1 compatibility reducer.
+    """
+
+    tracklet_id: str
+    local_id: str
+    source_track: dict
+    audit: dict
+    valid_segments: tuple[ValidSegment, ...]
+    provenance: dict
+    quality: dict
+
+
+@dataclass(frozen=True)
+class CameraBearingObservation:
+    tracklet_id: str
+    keyframe_idx: int
+    bearing_camera_cw_deg: float
+    angular_width_deg: float
+    sigma_deg: float
+    correlation_group: str
+
+    def __post_init__(self):
+        if not isinstance(self.tracklet_id, str) or not self.tracklet_id:
+            raise TrackletContractError(
+                "observation tracklet_id must be a non-empty string")
+        if (isinstance(self.keyframe_idx, bool)
+                or not isinstance(self.keyframe_idx, int)
+                or self.keyframe_idx < 0):
+            raise TrackletContractError(
+                "observation keyframe_idx must be a nonnegative integer")
+        if (isinstance(self.bearing_camera_cw_deg, bool)
+                or not isinstance(self.bearing_camera_cw_deg, (int, float))
+                or not math.isfinite(self.bearing_camera_cw_deg)
+                or not 0.0 <= self.bearing_camera_cw_deg < 360.0):
+            raise TrackletContractError(
+                "bearing_camera_cw_deg must be finite and within [0, 360)")
+        if (isinstance(self.angular_width_deg, bool)
+                or not isinstance(self.angular_width_deg, (int, float))
+                or not math.isfinite(self.angular_width_deg)
+                or not 0.0 < self.angular_width_deg <= 360.0):
+            raise TrackletContractError(
+                "angular_width_deg must be finite and within (0, 360]")
+        if (isinstance(self.sigma_deg, bool)
+                or not isinstance(self.sigma_deg, (int, float))
+                or not math.isfinite(self.sigma_deg)
+                or self.sigma_deg <= 0.0):
+            raise TrackletContractError(
+                "sigma_deg must be finite and positive")
+        if (not isinstance(self.correlation_group, str)
+                or not self.correlation_group):
+            raise TrackletContractError(
+                "correlation_group must be a non-empty string")
+
+
+@dataclass(frozen=True)
 class Measurement:
-    tracklet_id: str          # "T<track_id>" — one tracklet per audited track
+    """The legacy epoch-fused shape returned only at the v1 boundary."""
+
+    tracklet_id: str
     anchor_keyframe_idx: int
-    bearing_camera_deg: float
+    bearing_camera_cw_deg: float
     kappa: float
 
 
-def mask_boxes_by_keyframe(track: dict, valid_segments=None) -> dict:
-    """keyframe -> mask bbox in pano coords, restricted to valid segments.
+def _canonical_sha256(value) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    Segments come from the semantic audit (relative time indices); applying
-    them matters because a track's own drifted tail otherwise contaminates
-    its bearing series.
+
+def _local_id(track_id) -> str:
+    return f"T{track_id}"
+
+
+def tracklet_id(track: dict) -> str:
+    """The run-local ID retained by existing matching/export artifacts."""
+    return _local_id(track["track_id"])
+
+
+def _integer(value, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TrackletContractError(f"{field} must be an integer")
+    return value
+
+
+def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
+    if not isinstance(track, dict):
+        raise TrackletContractError(f"track {expected_id!r} is not an object")
+    track_id = track.get("track_id")
+    if track_id != expected_id:
+        raise TrackletContractError(
+            f"track mapping key {expected_id!r} disagrees with track_id "
+            f"{track_id!r}")
+    birth = _integer(track.get("birth_keyframe"),
+                     f"track {track_id} birth_keyframe")
+    end = _integer(track.get("end_keyframe"),
+                   f"track {track_id} end_keyframe")
+    if end < birth:
+        raise TrackletContractError(
+            f"track {track_id} ends before it is born ({birth}..{end})")
+    records = track.get("records")
+    if not isinstance(records, list) or not records:
+        raise TrackletContractError(f"track {track_id} has no records")
+    seen = set()
+    for i, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise TrackletContractError(
+                f"track {track_id} record {i} is not an object")
+        keyframe = _integer(record.get("keyframe"),
+                            f"track {track_id} record {i} keyframe")
+        if not birth <= keyframe <= end:
+            raise TrackletContractError(
+                f"track {track_id} record keyframe {keyframe} is outside "
+                f"its lifetime {birth}..{end}")
+        if keyframe in seen:
+            raise TrackletContractError(
+                f"track {track_id} repeats keyframe {keyframe}")
+        seen.add(keyframe)
+    return birth, end, records
+
+
+def normalize_valid_segments(track: dict, audit: dict) \
+        -> tuple[ValidSegment, ...]:
+    """Validate ordered, inclusive audit segments against track lifetime."""
+    if not isinstance(audit, dict):
+        raise TrackletContractError("audit must be an object")
+    if "valid_segments" not in audit:
+        raise TrackletContractError("audit has no valid_segments")
+    raw_segments = audit["valid_segments"]
+    if not isinstance(raw_segments, list):
+        raise TrackletContractError("audit valid_segments must be a list")
+
+    birth = _integer(track.get("birth_keyframe"), "birth_keyframe")
+    end = _integer(track.get("end_keyframe"), "end_keyframe")
+    lifetime = end - birth + 1
+    normalized = []
+    previous_end = -1
+    for i, segment in enumerate(raw_segments):
+        if not isinstance(segment, dict):
+            raise TrackletContractError(
+                f"valid_segments[{i}] must be an object")
+        start_t = _integer(segment.get("start_t"),
+                           f"valid_segments[{i}].start_t")
+        end_t = _integer(segment.get("end_t"),
+                         f"valid_segments[{i}].end_t")
+        if start_t < 0 or end_t < start_t or end_t >= lifetime:
+            raise TrackletContractError(
+                f"valid segment {i} [{start_t}, {end_t}] is outside track "
+                f"lifetime t0..t{lifetime - 1}")
+        if start_t <= previous_end:
+            raise TrackletContractError(
+                f"valid segment {i} starts at t{start_t} before or within "
+                f"the preceding segment ending at t{previous_end}")
+        normalized.append(ValidSegment(
+            index=i, start_t=start_t, end_t=end_t,
+            start_keyframe_idx=birth + start_t,
+            end_keyframe_idx=birth + end_t))
+        previous_end = end_t
+    return tuple(normalized)
+
+
+def _audit_provenance(audits: Mapping, track_id) -> dict:
+    by_track = getattr(audits, "provenance_by_track", {})
+    value = by_track.get(track_id, {}) if isinstance(by_track, Mapping) else {}
+    if dataclasses.is_dataclass(value):
+        value = dataclasses.asdict(value)
+    if not isinstance(value, Mapping):
+        raise TrackletContractError(
+            f"audit provenance for track {track_id} is not an object")
+    return dict(value)
+
+
+def _validate_audit_verdict(audit: dict, track_id):
+    verdict = audit.get("verdict")
+    single_object = audit.get("single_object")
+    drop_reason = audit.get("drop_reason")
+    if verdict == "keep":
+        if single_object is not True or drop_reason != "none":
+            raise TrackletContractError(
+                f"audit for track {track_id!r}: keep requires "
+                f"single_object=true and drop_reason=none")
+    elif verdict == "keep_partial":
+        if single_object is not False or drop_reason != "none":
+            raise TrackletContractError(
+                f"audit for track {track_id!r}: keep_partial requires "
+                f"single_object=false and drop_reason=none")
+    elif verdict == "drop":
+        if not isinstance(drop_reason, str) or drop_reason == "none":
+            raise TrackletContractError(
+                f"audit for track {track_id!r}: drop requires a concrete "
+                f"drop_reason")
+    else:
+        raise TrackletContractError(
+            f"audit for track {track_id!r} has invalid verdict {verdict!r}")
+
+
+def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
+        -> list[AcceptedTracklet]:
+    """Join tracks to audits under the one canonical acceptance policy.
+
+    Missing audits are allowed: tracks below the recorded audit support bar
+    were never requested. An audit referring to a missing track is stale and
+    is an error. drop is always excluded; only valid keep and keep_partial
+    records are returned.
+    """
+    if not isinstance(tracks, Mapping) or not isinstance(audits, Mapping):
+        raise TrackletContractError("tracks and audits must be mappings")
+
+    # A deterministic fallback is useful for pure/unit callers. Production
+    # AuditResults supplies the stronger bound artifact ID and whole-file hash.
+    tracks_fallback_digest = _canonical_sha256([
+        tracks[key] for key in sorted(tracks, key=lambda value: str(value))])
+    accepted = []
+    for track_id in sorted(audits, key=lambda value: str(value)):
+        if track_id not in tracks:
+            raise TrackletContractError(
+                f"audit for track {track_id!r} has no source track")
+        track = tracks[track_id]
+        birth, end, _ = _validate_track(track, track_id)
+        audit = audits[track_id]
+        if not isinstance(audit, dict):
+            raise TrackletContractError(
+                f"audit for track {track_id!r} is not an object")
+        _validate_audit_verdict(audit, track_id)
+        verdict = audit["verdict"]
+        segments = normalize_valid_segments(track, audit)
+        if verdict == "drop":
+            continue
+        if not segments:
+            raise TrackletContractError(
+                f"accepted audit for track {track_id!r} has no valid segment")
+        if verdict == "keep":
+            expected = (birth, end)
+            actual = ((segments[0].start_keyframe_idx,
+                       segments[0].end_keyframe_idx)
+                      if len(segments) == 1 else None)
+            if actual != expected:
+                raise TrackletContractError(
+                    f"verdict=keep for track {track_id!r} must retain its "
+                    f"whole lifetime {birth}..{end}")
+
+        local = _local_id(track_id)
+        provenance = _audit_provenance(audits, track_id)
+        actual_track_digest = _canonical_sha256(track)
+        bound_track_digest = provenance.get("source_track_sha256")
+        if (bound_track_digest is not None
+                and bound_track_digest != actual_track_digest):
+            raise TrackletContractError(
+                f"track {track_id!r} does not match the source-track digest "
+                f"bound by its audit")
+        bound_key = provenance.get("audit_key")
+        if bound_key is not None and bound_key != local:
+            raise TrackletContractError(
+                f"track {track_id!r} audit key {bound_key!r} does not match "
+                f"its local ID {local!r}")
+        source_digest = provenance.get(
+            "source_tracks_sha256", tracks_fallback_digest)
+        source_identity = provenance.get(
+            "source_tracks_artifact_id", f"sha256:{source_digest}")
+        global_id = f"{source_identity}@sha256:{source_digest}#{local}"
+        provenance.setdefault("source_track_sha256", actual_track_digest)
+        accepted.append(AcceptedTracklet(
+            tracklet_id=global_id,
+            local_id=local,
+            source_track=track,
+            audit=audit,
+            valid_segments=segments,
+            provenance=provenance,
+            quality={
+                "audit_confidence": audit.get("confidence"),
+                "n_records": len(track["records"]),
+                "n_valid_segments": len(segments),
+            }))
+    return accepted
+
+
+def mask_boxes_by_keyframe(track: dict, valid_segments=None) -> dict:
+    """Keyframe -> mask bbox in pano coordinates.
+
+    Audit segments use relative time indices. None means an unrestricted
+    raw-track query; an empty list means no usable observations.
     """
     birth = track["birth_keyframe"]
     spans = None
-    if valid_segments:
-        spans = [(birth + s["start_t"], birth + s["end_t"])
-                 for s in valid_segments]
+    if valid_segments is not None:
+        spans = [(birth + segment["start_t"], birth + segment["end_t"])
+                 for segment in valid_segments]
     out = {}
-    for rec in track["records"]:
-        mb = rec.get("mask_bbox_window")
-        if mb is None:
+    for record in track["records"]:
+        mask_box = record.get("mask_bbox_window")
+        if mask_box is None:
             continue
-        kf = rec["keyframe"]
-        if spans is not None and not any(a <= kf <= b for a, b in spans):
+        keyframe = record["keyframe"]
+        if spans is not None and not any(
+                start <= keyframe <= end for start, end in spans):
             continue
-        ox, oy = rec["window_origin"]
-        out[kf] = (ox + mb[0], oy + mb[1], ox + mb[2], oy + mb[3])
+        origin_x, origin_y = record["window_origin"]
+        out[keyframe] = (
+            origin_x + mask_box[0], origin_y + mask_box[1],
+            origin_x + mask_box[2], origin_y + mask_box[3])
     return out
 
 
 def bearing_series(track: dict, pano_w: int, valid_segments=None) -> list:
-    """[(keyframe, az_cw_deg, angular_width_deg)] from the tracked mask.
-
-    Camera-frame azimuth of the mask centroid column; angular width is the
-    mask's own extent, the basis for the measurement's concentration.
-    """
+    """(keyframe, azimuth_cw_deg, angular_width_deg) from mask boxes."""
+    if isinstance(pano_w, bool) or not isinstance(pano_w, int) or pano_w <= 0:
+        raise TrackletContractError("pano_w must be a positive integer")
     out = []
-    for kf, box in sorted(
+    for keyframe, box in sorted(
             mask_boxes_by_keyframe(track, valid_segments).items()):
-        centre = (box[0] + box[2]) / 2.0
-        az = geo.azimuth_of_pano_column(centre, pano_w)
-        width = (box[2] - box[0]) / pano_w * 360.0
-        out.append((kf, az, width))
+        width_px = box[2] - box[0]
+        if not math.isfinite(width_px) or width_px <= 0.0:
+            raise TrackletContractError(
+                f"track {track.get('track_id')} keyframe {keyframe} has "
+                f"invalid mask-box width {width_px!r}")
+        midpoint_x = (box[0] + box[2]) / 2.0
+        azimuth = geo.azimuth_of_pano_column(midpoint_x, pano_w)
+        angular_width = width_px / pano_w * 360.0
+        out.append((keyframe, azimuth, angular_width))
     return out
 
 
-def fuse_bearings(series: list, params: TrackletParams) -> list:
-    """Fuse a bearing series into sparse per-epoch measurements.
+def build_camera_bearing_observations(
+        accepted_tracklets: list[AcceptedTracklet], pano_w: int,
+        bearing_sigma_deg: float) -> list[CameraBearingObservation]:
+    """Preserve every audit-valid bearing at its actual keyframe."""
+    if (isinstance(bearing_sigma_deg, bool)
+            or not isinstance(bearing_sigma_deg, (int, float))
+            or not math.isfinite(bearing_sigma_deg)
+            or bearing_sigma_deg <= 0.0):
+        raise TrackletContractError(
+            "bearing_sigma_deg must be finite and positive")
+    observations = []
+    for tracklet in accepted_tracklets:
+        for segment in tracklet.valid_segments:
+            raw_segment = [{"start_t": segment.start_t,
+                            "end_t": segment.end_t}]
+            correlation_group = (
+                f"{tracklet.tracklet_id}/audit-segment-{segment.index}")
+            for keyframe, azimuth, width in bearing_series(
+                    tracklet.source_track, pano_w, raw_segment):
+                observations.append(CameraBearingObservation(
+                    tracklet_id=tracklet.tracklet_id,
+                    keyframe_idx=keyframe,
+                    bearing_camera_cw_deg=azimuth,
+                    angular_width_deg=width,
+                    sigma_deg=bearing_sigma_deg,
+                    correlation_group=correlation_group))
+    observations.sort(key=lambda obs: (obs.keyframe_idx, obs.tracklet_id,
+                                       obs.correlation_group))
+    return observations
 
-    Returns [(anchor_keyframe, az_cw_deg, kappa)]. kappa combines the
-    per-observation concentration with the object's own angular width — an
-    extended object's centroid is not a point bearing — and does NOT grow
-    with the number of fused keyframes, which is the conservative choice
-    while the intra-epoch correlation is unmodelled.
-    """
-    if not series:
-        return []
-    import math
 
+def _fuse_group(observations: list[CameraBearingObservation],
+                epoch_keyframes: int) -> list[Measurement]:
     fused = []
-    epoch = max(1, params.epoch_keyframes)
-    start_kf = series[0][0]
     bucket = []
+    start_keyframe = observations[0].keyframe_idx
 
-    def flush(bucket):
+    def flush():
         if not bucket:
             return
-        mean_az = geo.circular_mean_deg([a for _, a, _ in bucket])
-        mean_width = sum(w for _, _, w in bucket) / len(bucket)
-        anchor = bucket[len(bucket) // 2][0]
-        # Width contributes a centroid ambiguity of about a quarter-width.
-        sigma = math.hypot(params.bearing_sigma_deg, mean_width / 4.0)
-        kappa = 1.0 / math.radians(sigma) ** 2
-        fused.append((anchor, mean_az, kappa))
+        mean_azimuth = geo.circular_mean_deg(
+            [obs.bearing_camera_cw_deg for obs in bucket])
+        mean_width = sum(obs.angular_width_deg for obs in bucket) / len(bucket)
+        # sigma_deg is constant today, but averaging makes the reducer's
+        # behavior explicit if observation-level noise is introduced later.
+        mean_sigma = sum(obs.sigma_deg for obs in bucket) / len(bucket)
+        anchor = bucket[len(bucket) // 2].keyframe_idx
+        sigma = math.hypot(mean_sigma, mean_width / 4.0)
+        fused.append(Measurement(
+            tracklet_id=bucket[0].tracklet_id,
+            anchor_keyframe_idx=anchor,
+            bearing_camera_cw_deg=mean_azimuth,
+            kappa=1.0 / math.radians(sigma) ** 2))
 
-    for entry in series:
-        if entry[0] - start_kf >= epoch:
-            flush(bucket)
+    for observation in observations:
+        if observation.keyframe_idx - start_keyframe >= epoch_keyframes:
+            flush()
             bucket = []
-            start_kf = entry[0]
-        bucket.append(entry)
-    flush(bucket)
+            start_keyframe = observation.keyframe_idx
+        bucket.append(observation)
+    flush()
     return fused
 
 
-def tracklet_id(track: dict) -> str:
-    return f"T{track['track_id']}"
+def epoch_fused_compat_v1(
+        observations: list[CameraBearingObservation],
+        params: TrackletParams) -> list[Measurement]:
+    """Reproduce the pre-observation-contract epoch fusion.
 
-
-def build_measurements(tracks: dict, audits: dict, pano_w: int,
-                       params: TrackletParams) -> list:
-    """Fused camera-frame bearings for every AUDITED track.
-
-    tracks: {track_id: track dict} from tracks_*.json.
-    audits: {track_id: audit dict} from the semantic-audit artifact. Audit
-    membership is the support gate: tracks absent from `audits` produce no
-    measurements (they have no canonical semantics and must not reach
-    matching or the filter).
-
-    Sorted by (anchor keyframe, tracklet id), the order the export consumes.
+    Epoch buckets never cross an audit segment/correlation-group boundary.
+    The bearing is the circular mean, the middle real keyframe is the anchor,
+    angular width is averaged, and observation count does not increase kappa.
     """
-    measurements = []
-    for tid, audit in audits.items():
-        track = tracks.get(tid)
-        if track is None or not track.get("records"):
-            continue
-        series = bearing_series(track, pano_w,
-                                (audit or {}).get("valid_segments"))
-        for anchor, az, kappa in fuse_bearings(series, params):
-            measurements.append(Measurement(
-                tracklet_id=tracklet_id(track),
-                anchor_keyframe_idx=anchor,
-                bearing_camera_deg=az,
-                kappa=kappa))
-    measurements.sort(key=lambda m: (m.anchor_keyframe_idx, m.tracklet_id))
-    return measurements
+    grouped = defaultdict(list)
+    for observation in observations:
+        if not isinstance(observation, CameraBearingObservation):
+            raise TrackletContractError(
+                "epoch_fused_compat_v1 expects CameraBearingObservation")
+        grouped[(observation.tracklet_id,
+                 observation.correlation_group)].append(observation)
+    fused = []
+    for key in sorted(grouped):
+        group = sorted(grouped[key], key=lambda obs: obs.keyframe_idx)
+        if len({obs.keyframe_idx for obs in group}) != len(group):
+            raise TrackletContractError(
+                f"duplicate keyframe in correlation group {key!r}")
+        fused.extend(_fuse_group(group, params.epoch_keyframes))
+    fused.sort(key=lambda measurement: (
+        measurement.anchor_keyframe_idx, measurement.tracklet_id))
+    return fused
+
+
+def fuse_bearings(series: list, params: TrackletParams) -> list:
+    """Tuple-form adapter for tests/tools still at the old fusion boundary."""
+    observations = [CameraBearingObservation(
+        tracklet_id="compat", keyframe_idx=keyframe,
+        bearing_camera_cw_deg=azimuth, angular_width_deg=width,
+        sigma_deg=params.bearing_sigma_deg, correlation_group="compat")
+        for keyframe, azimuth, width in series]
+    return [(measurement.anchor_keyframe_idx,
+             measurement.bearing_camera_cw_deg, measurement.kappa)
+            for measurement in epoch_fused_compat_v1(observations, params)]
+
+
+def build_measurements(tracks: Mapping, audits: Mapping, pano_w: int,
+                       params: TrackletParams) -> list[Measurement]:
+    """Named fusion boundary preserving artifact-scoped tracklet IDs."""
+    accepted = build_accepted_tracklets(tracks, audits)
+    observations = build_camera_bearing_observations(
+        accepted, pano_w, params.bearing_sigma_deg)
+    return epoch_fused_compat_v1(observations, params)

@@ -1,9 +1,9 @@
 """The single owner of every farfield geometric convention.
 
-Camera frame, mount offset, angle arithmetic, local ENU, and earth constants
-are defined HERE and nowhere else. Import them; never restate them — not in
-code, not in docstrings, not in docs. Convention *strings* (CAMERA_FRAME,
-MOUNT_OFFSET_CONVENTION) exist so artifacts can embed the contract verbatim.
+Camera frame, angle arithmetic, local ENU, and earth constants are defined
+HERE and nowhere else. Import them; never restate them — not in code, not in
+docstrings, not in docs. ``CAMERA_FRAME`` exists so artifacts can embed the
+camera contract verbatim.
 
 Conventions:
 - Camera-frame azimuth is clockwise-positive from camera forward, and camera
@@ -20,9 +20,10 @@ Conventions:
 - Pano-space boxes may straddle the +-180 wrap; they are represented
   unwrapped: x_min in [0, W), x_max in (x_min, x_min + W], so x_max > W
   means the box wraps around the seam.
-- Body-frame bearing = camera bearing minus the mount offset (see
-  MOUNT_OFFSET_CONVENTION). World bearing = vehicle heading plus body
-  bearing. Compass bearings are degrees clockwise from true north,
+- Nominal-forward bearing is produced only by a human-approved calibration in
+  ``nominal_forward.py``. World bearing = nominal-forward-axis world bearing
+  plus nominal-forward bearing. Compass bearings are degrees clockwise from
+  true north,
   atan2(east, north). Serialized bearings are stored in [0, 360); compare
   angles with the wrap helpers, never by subtraction.
 - Local frame is metric ENU (x east, y north) anchored at a region point,
@@ -52,19 +53,6 @@ CAMERA_FRAME = (
     "Camera-frame azimuth is clockwise-positive from camera forward, and camera "
     "forward is the CENTRE column of the panorama: az_cw = (x/pano_w - 0.5)*360. "
     "Elevation is up-positive: el_up = (0.5 - y/pano_h)*180.")
-
-MOUNT_OFFSET_CONVENTION = (
-    "mount_offset_deg is the azimuth, IN THE CAMERA FRAME, of the vehicle's "
-    "DIRECTION OF TRAVEL - not the bow. Applied as bearing_body_deg = "
-    "(bearing_camera_deg - mount_offset_deg) mod 360. Camera-frame azimuth 0 is "
-    "the CENTRE column of the panorama, not column 0; a prior reasoned in the "
-    "column-0 convention is exactly 180 deg out.")
-
-# The machine-checkable tag for a mount-offset record that follows
-# MOUNT_OFFSET_CONVENTION. Metadata blocks carry `frame:` set to exactly this
-# string; consumers refuse anything else (dataset.mount_offset_record).
-MOUNT_OFFSET_FRAME = "camera_centre_column_direction_of_travel"
-
 
 # ---------------------------------------------------------------------------
 # Angle arithmetic
@@ -109,7 +97,7 @@ def direction_from_face_px(face_yaw_deg: float, x_norm: float, y_norm: float,
     return (-az_ccw_deg) % 360.0, -el_down_deg
 
 
-def bearing_camera_deg(face_yaw_deg: float, x_norm: float,
+def bearing_camera_cw_deg(face_yaw_deg: float, x_norm: float,
                        fov_deg: float = 90.0) -> float:
     """Camera-frame azimuth of a normalized x coordinate on a pinhole face."""
     return direction_from_face_px(face_yaw_deg, x_norm, 0.0, fov_deg)[0]
@@ -150,8 +138,8 @@ def bbox_angles(face_yaw_deg: float, xmin: float, ymin: float, xmax: float,
     """
     center_az, center_el = direction_from_face_px(
         face_yaw_deg, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0, fov_deg)
-    left = bearing_camera_deg(face_yaw_deg, xmin, fov_deg)
-    right = bearing_camera_deg(face_yaw_deg, xmax, fov_deg)
+    left = bearing_camera_cw_deg(face_yaw_deg, xmin, fov_deg)
+    right = bearing_camera_cw_deg(face_yaw_deg, xmax, fov_deg)
     width = abs(float(circular_diff_deg(right, left)))
     return center_az, center_el, width
 
@@ -247,30 +235,26 @@ def extract_window(pano: np.ndarray, x0: float, y0: float, width: int,
 
 
 # ---------------------------------------------------------------------------
-# Frame chain: camera -> body -> world
+# Frame chain: nominal forward -> world
 # ---------------------------------------------------------------------------
 
-def apply_mount_offset(bearing_camera_deg: float,
-                       mount_offset_deg: float) -> float:
-    """Camera-frame azimuth -> body-frame bearing, in [0, 360).
 
-    See MOUNT_OFFSET_CONVENTION for what mount_offset_deg means and the
-    column-0 trap.
+def forward_to_world_bearing_cw_deg(forward_world_cw_deg,
+                                    bearing_forward_cw_deg):
+    """Forward-frame bearing + forward world bearing -> compass bearing.
+
+    All inputs and the output are clockwise degrees; the output is in
+    ``[0, 360)``. Works on scalars and numpy arrays.
     """
-    return (bearing_camera_deg - mount_offset_deg) % 360.0
+    return (np.asarray(forward_world_cw_deg)
+            + np.asarray(bearing_forward_cw_deg)) % 360.0
 
 
-def body_to_world_bearing_deg(heading_deg, bearing_body_deg):
-    """Body-frame bearing + vehicle heading -> compass bearing, in [0, 360).
-
-    Works on scalars and numpy arrays.
-    """
-    return (np.asarray(heading_deg) + np.asarray(bearing_body_deg)) % 360.0
-
-
-def world_to_body_bearing_deg(heading_deg, bearing_world_deg):
-    """Compass bearing - vehicle heading -> body-frame bearing, in [0, 360)."""
-    return (np.asarray(bearing_world_deg) - np.asarray(heading_deg)) % 360.0
+def world_to_forward_bearing_cw_deg(forward_world_cw_deg,
+                                    bearing_world_cw_deg):
+    """Compass bearing minus forward world bearing -> forward-frame bearing."""
+    return (np.asarray(bearing_world_cw_deg)
+            - np.asarray(forward_world_cw_deg)) % 360.0
 
 
 # ---------------------------------------------------------------------------

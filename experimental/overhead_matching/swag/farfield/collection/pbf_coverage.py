@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify that a set of Geofabrik extracts really covers a request bbox.
 
-Why this exists: extract_landmarks_historical indexes the whole PBF in RAM before
+Why this exists: the common OSM extractor indexes the PBF before
 it can filter by bbox, so cost scales with the file rather than the area asked
 for. That pushes you toward the smallest regional sub-extract -- and a
 sub-extract that does not reach the whole request area produces a partial catalog

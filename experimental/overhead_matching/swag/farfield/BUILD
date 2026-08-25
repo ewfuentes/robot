@@ -1,6 +1,53 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+    name = "artifact",
+    srcs = ["artifact.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_test(
+    name = "artifact_test",
+    srcs = ["artifact_test.py"],
+    deps = [":artifact"],
+)
+
+py_library(
+    name = "publication",
+    srcs = ["publication.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":artifact",
+        "//experimental/overhead_matching/swag/farfield/viewers:indexes",
+    ],
+)
+
+py_test(
+    name = "publication_test",
+    srcs = ["publication_test.py"],
+    deps = [
+        ":artifact",
+        ":publication",
+    ],
+)
+
+py_library(
+    name = "llm_lifecycle",
+    srcs = ["llm_lifecycle.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":artifact"],
+)
+
+py_test(
+    name = "llm_lifecycle_test",
+    srcs = ["llm_lifecycle_test.py"],
+    deps = [
+        ":artifact",
+        ":llm_lifecycle",
+    ],
+)
+
+py_library(
     name = "geometry",
     srcs = ["geometry.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -22,6 +69,7 @@ py_library(
     name = "paths",
     srcs = ["paths.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":artifact"],
 )
 
 py_test(
@@ -43,23 +91,46 @@ py_test(
 )
 
 py_library(
-    name = "run_config",
-    srcs = ["run_config.py"],
+    name = "build_config",
+    srcs = ["build_config.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":provenance"],
+    deps = [
+        ":artifact",
+        ":provenance",
+    ],
 )
 
 py_test(
-    name = "run_config_test",
-    srcs = ["run_config_test.py"],
-    deps = [":run_config"],
+    name = "build_config_test",
+    srcs = ["build_config_test.py"],
+    deps = [":build_config"],
+)
+
+py_library(
+    name = "nominal_forward",
+    srcs = ["nominal_forward.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":geometry"],
+)
+
+py_test(
+    name = "nominal_forward_test",
+    srcs = ["nominal_forward_test.py"],
+    deps = [
+        ":geometry",
+        ":nominal_forward",
+    ],
 )
 
 py_library(
     name = "dataset",
     srcs = ["dataset.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":geometry"],
+    deps = [
+        ":artifact",
+        ":geometry",
+        ":paths",
+    ],
 )
 
 py_test(
@@ -80,7 +151,9 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("pillow"),
+        ":artifact",
         ":geometry",
+        ":paths",
     ],
 )
 
@@ -88,10 +161,7 @@ py_library(
     name = "audit_dataset_lib",
     srcs = ["audit_dataset.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        ":dataset",
-        ":geometry",
-    ],
+    deps = [":geometry"],
 )
 
 py_binary(
@@ -102,7 +172,6 @@ py_binary(
         requirement("numpy"),
         requirement("opencv-python"),
         requirement("pillow"),
-        ":dataset",
         ":geometry",
     ],
 )
@@ -124,10 +193,10 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("pyyaml"),
+        ":artifact",
+        ":build_config",
+        ":nominal_forward",
         ":paths",
-        ":run_config",
-        "//experimental/overhead_matching/swag/farfield/extraction:llm_cost",
-        "//experimental/overhead_matching/swag/farfield/viewers:indexes",
     ],
 )
 
@@ -144,8 +213,9 @@ py_test(
     data = ["configs/harbor_example.yaml"],
     deps = [
         requirement("pyyaml"),
+        ":artifact",
+        ":build_config",
         ":paths",
         ":pipeline_lib",
-        ":run_config",
     ],
 )

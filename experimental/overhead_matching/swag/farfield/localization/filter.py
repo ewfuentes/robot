@@ -7,8 +7,9 @@ resampling, and body-frame dead-reckoning propagation (§5.2).
 
 Pure numpy, CPU-only, one explicit np.random.Generator: the filter is a
 deterministic function of (config, seed, ordered event log) — the replay
-contract of §3.8. Positions are region-frame ENU metres; heading is radians
-clockwise from north; measurement bearings are body-frame (§4).
+contract of §3.8. Positions are region-frame ENU metres; heading is the
+forward-axis world bearing in radians clockwise from north; measurement
+bearings are forward-frame (§4).
 
 Odometry is the §5.2 body-frame SE(2) increment, rotated through each
 particle's own heading — position routes through heading by design, so
@@ -251,13 +252,11 @@ def init_belief(config: structs.FilterConfig,
 
 def motion_update(belief: ParticleBelief, delta: structs.OdometryDelta,
                   heading_rw_rad: float, rng: np.random.Generator) -> None:
-    """Body-frame SE(2) increment rotated through each particle's heading.
+    """Forward/left/CW-yaw increment under rotate-then-move semantics.
 
     The §5.2 order is load-bearing: heading noise is sampled BEFORE the
-    rotation, and the translation is rotated by the midpoint heading
-    h + (dyaw + eps)/2 — the exact chord direction under a constant turn
-    rate, and first-order wrong at waypoint corners if the start heading is
-    used instead. Sampling first is what makes heading spread flow into
+    rotation, the particle heading is updated, and translation is rotated by
+    that updated heading. Sampling first is what makes heading spread flow into
     cross-track position spread; there is deliberately no cross-track sigma
     to double-count it. The config-level heading random walk is the filter's
     unmodeled-drift hedge, in quadrature with the increment's own
@@ -265,16 +264,18 @@ def motion_update(belief: ParticleBelief, delta: structs.OdometryDelta,
     """
     n = belief.n
     sigma_h = math.hypot(delta.sigma_yaw_rad, heading_rw_rad)
-    dyaw = delta.dyaw_rad + rng.normal(0.0, sigma_h, size=n)
-    mid = belief.heading_rad + 0.5 * dyaw
+    delta_yaw_cw = (delta.delta_yaw_cw_rad
+                    + rng.normal(0.0, sigma_h, size=n))
+    belief.heading_rad = geo.wrap_rad(
+        belief.heading_rad + delta_yaw_cw)
     forward = delta.forward_m + rng.normal(0.0, delta.sigma_m, size=n)
     left = delta.left_m + rng.normal(0.0, delta.sigma_m, size=n)
-    sin_mid, cos_mid = np.sin(mid), np.cos(mid)
+    sin_heading = np.sin(belief.heading_rad)
+    cos_heading = np.cos(belief.heading_rad)
     # Heading is compass (CW from north): forward -> (sin h, cos h),
     # left -> (-cos h, sin h). Pinned by the T-U8 golden fixture.
-    belief.east_m += forward * sin_mid - left * cos_mid
-    belief.north_m += forward * cos_mid + left * sin_mid
-    belief.heading_rad = geo.wrap_rad(belief.heading_rad + dyaw)
+    belief.east_m += forward * sin_heading - left * cos_heading
+    belief.north_m += forward * cos_heading + left * sin_heading
 
 
 def _clipped_log_lr(table: structs.CompatibilityTable,
@@ -318,7 +319,7 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
     kappa_z = min(float(meas.kappa), MAX_KAPPA)
     if log_weight is None:
         log_weight = _identity_log_weights(table, catalog, matcher_recall)
-    observed_rad = math.radians(meas.bearing_body_deg)
+    observed_rad = math.radians(meas.bearing_forward_cw_deg)
     log_null = math.log(pi0) - math.log(2.0 * math.pi)
     log_mix = math.log1p(-pi0)
     east_m = np.asarray(east_m, dtype=np.float64)
@@ -426,7 +427,7 @@ def measurement_update(
         log_weight = _identity_log_weights(table, catalog, matcher_recall)
     if surprise is None:
         surprise = _surprise_mask(table, _clipped_log_lr(table, catalog))
-    observed_rad = math.radians(meas.bearing_body_deg)
+    observed_rad = math.radians(meas.bearing_forward_cw_deg)
     log_null = math.log(pi0) - math.log(2.0 * math.pi)
     log_mix = math.log1p(-pi0)
 
@@ -957,7 +958,7 @@ def _belief_window_reference(belief, window_meas,
                 belief.east_m[idx][committed],
                 belief.north_m[idx][committed],
                 belief.heading_rad[idx][committed], assoc[committed],
-                math.radians(meas.bearing_body_deg),
+                math.radians(meas.bearing_forward_cw_deg),
                 min(float(meas.kappa), MAX_KAPPA),
                 config.association_outlier_rate, catalog))
         keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
@@ -1105,7 +1106,7 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
         if delta.sigma_yaw_rad < 0.0:
             raise ValueError("odometry sigma_yaw_rad must be non-negative")
         if not all(math.isfinite(v) for v in (delta.forward_m, delta.left_m,
-                                              delta.dyaw_rad, delta.sigma_m,
+                                              delta.delta_yaw_cw_rad, delta.sigma_m,
                                               delta.sigma_yaw_rad)):
             raise ValueError(
                 f"odometry increment at keyframe {kf} is not finite")

@@ -306,7 +306,7 @@ class CandidateFit:
 class EpochTriage:
     """One tracklet epoch, judged against truth."""
     keyframe_idx: int
-    bearing_body_deg: float
+    bearing_forward_cw_deg: float
     sigma_deg: float
     # World bearing the truth heading implies for this body bearing.
     true_world_bearing_deg: float
@@ -378,10 +378,14 @@ def _residual_matrix(epochs, truth_by_kf, catalog):
     north = np.array([truth_by_kf[m.anchor_keyframe_idx].north_m
                       for m in epochs])
     bearings, ranges = catalog.bearings_from(east, north)
-    observed_deg = geo.body_to_world_bearing_deg(
-        np.array([truth_by_kf[m.anchor_keyframe_idx].heading_deg
-                  for m in epochs]),
-        np.array([m.bearing_body_deg for m in epochs]))
+    gps_course_world_cw_deg = np.array([
+        truth_by_kf[
+            measurement.anchor_keyframe_idx].course_world_cw_deg
+        for measurement in epochs])
+    observed_deg = geo.forward_to_world_bearing_cw_deg(
+        forward_world_cw_deg=gps_course_world_cw_deg,
+        bearing_forward_cw_deg=np.array([
+            measurement.bearing_forward_cw_deg for measurement in epochs]))
     residual = np.abs(geo.circular_diff_deg(np.degrees(bearings),
                                             observed_deg[:, None]))
     visible = ranges <= catalog.max_visible_range_m[None, :]
@@ -475,6 +479,8 @@ def _triage_tracklet(tracklet_id, epochs, truth_by_kf, catalog, table,
     best_filter_share = 0.0
     epoch_rows = []
     for row, meas in enumerate(epochs):
+        gps_course_world_cw_deg = truth_by_kf[
+            meas.anchor_keyframe_idx].course_world_cw_deg
         assoc = assoc_by_key.get((tracklet_id, meas.anchor_keyframe_idx))
         responsibilities = assoc.responsibilities if assoc else {}
         share = max((responsibilities.get(landmark_id, 0.0)
@@ -491,11 +497,12 @@ def _triage_tracklet(tracklet_id, epochs, truth_by_kf, catalog, table,
             top_residual = float(value) if math.isfinite(value) else None
         epoch_rows.append(EpochTriage(
             keyframe_idx=meas.anchor_keyframe_idx,
-            bearing_body_deg=meas.bearing_body_deg,
+            bearing_forward_cw_deg=meas.bearing_forward_cw_deg,
             sigma_deg=sigmas[row],
-            true_world_bearing_deg=float(geo.body_to_world_bearing_deg(
-                truth_by_kf[meas.anchor_keyframe_idx].heading_deg,
-                meas.bearing_body_deg)),
+            true_world_bearing_deg=float(
+                geo.forward_to_world_bearing_cw_deg(
+                    forward_world_cw_deg=gps_course_world_cw_deg,
+                    bearing_forward_cw_deg=meas.bearing_forward_cw_deg)),
             best_fit_residual_deg=(best_residual
                                    if best_residual is not None
                                    and math.isfinite(best_residual) else None),

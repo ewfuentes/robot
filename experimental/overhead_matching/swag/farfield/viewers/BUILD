@@ -13,7 +13,10 @@ py_library(
     name = "indexes",
     srcs = ["indexes.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":page"],
+    deps = [
+        ":page",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
 )
 
 py_test(

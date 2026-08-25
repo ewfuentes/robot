@@ -1,23 +1,271 @@
-"""Landmark feather schema — re-export of the shared owner.
+"""Authoritative persisted schema for far-field landmark catalogs.
 
-The dict-tags feather schema is shared with the main VIGOR pipeline (its
-writers live in `common/openstreetmap` + `swag/scripts`, its readers in
-`swag/data/vigor_dataset.py` and here), so the single owner is
-`swag/data/landmark_schema.py`. This module re-exports it verbatim to keep
-farfield's import surface (`farfield.catalog.schema`) stable — do not add
-farfield-only behavior here; it belongs in `catalog.catalog`.
+Far-field catalogs use exactly four columns: id, geometry, landmark_type, and
+tags. Tags is canonical JSON text containing one object whose keys and values
+are strings. Keeping this contract here prevents a reader from accidentally
+interpreting a structural column as a tag or quietly accepting the old
+one-column-per-tag representation.
 """
 
-from experimental.overhead_matching.swag.data.landmark_schema import (  # noqa: F401
-    META_COLUMNS,
-    TAGS_COLUMN,
-    build_frame,
-    is_dict_schema,
-    read_frame,
-    row_dicts,
-    row_dicts_with_index,
-    summarize,
-    tag_dicts,
-    tag_key_columns,
-    widen,
-)
+import json
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+
+import geopandas as gpd
+import pandas as pd
+
+SCHEMA_VERSION = 1
+FULL_ARTIFACT_SCHEMA = "farfield_full_catalog/v1"
+TAGS_COLUMN = "tags"
+META_COLUMNS = ("id", "geometry", "landmark_type", TAGS_COLUMN)
+REQUIRED_COLUMNS = frozenset(META_COLUMNS)
+ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc"})
+
+
+class CatalogSchemaError(ValueError):
+    """A landmark frame does not satisfy the far-field catalog contract."""
+
+
+def is_dict_schema(frame: pd.DataFrame) -> bool:
+    """Whether a frame declares the compact JSON-tags column."""
+    return TAGS_COLUMN in frame.columns
+
+
+def _where(context: str | Path | None) -> str:
+    return f" in {context}" if context is not None else ""
+
+
+def _decode_tags(value, row_index) -> dict[str, str]:
+    """Decode and validate one persisted JSON tags cell."""
+    if not isinstance(value, str):
+        raise CatalogSchemaError(
+            f"row {row_index!r} tags must be JSON object text, got "
+            f"{type(value).__name__}")
+    def reject_duplicate_keys(pairs):
+        decoded = {}
+        for key, tag_value in pairs:
+            if key in decoded:
+                raise CatalogSchemaError(
+                    f"row {row_index!r} tags contains duplicate key {key!r}")
+            decoded[key] = tag_value
+        return decoded
+
+    try:
+        decoded = json.loads(value, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise CatalogSchemaError(
+            f"row {row_index!r} tags is invalid JSON: {exc.msg}") from exc
+    if not isinstance(decoded, dict):
+        raise CatalogSchemaError(
+            f"row {row_index!r} tags must decode to a JSON object, got "
+            f"{type(decoded).__name__}")
+
+    for key, tag_value in decoded.items():
+        if not isinstance(key, str) or not key:
+            raise CatalogSchemaError(
+                f"row {row_index!r} tag keys must be non-empty strings")
+        if key in REQUIRED_COLUMNS:
+            raise CatalogSchemaError(
+                f"row {row_index!r} tag {key!r} collides with a structural "
+                "catalog field")
+        if not isinstance(tag_value, str):
+            raise CatalogSchemaError(
+                f"row {row_index!r} tag {key!r} must have a string value, "
+                f"got {type(tag_value).__name__}")
+    return decoded
+
+
+def _validate_frame(frame: pd.DataFrame,
+                    context: str | Path | None = None) -> list[dict[str, str]]:
+    """Validate a compact frame and return its decoded tag objects."""
+    columns = set(frame.columns)
+    missing = REQUIRED_COLUMNS - columns
+    if TAGS_COLUMN in missing:
+        raise CatalogSchemaError(
+            f"legacy wide landmark schema is not supported{_where(context)}: "
+            "the required JSON 'tags' column is missing. Regenerate or "
+            "explicitly migrate this Feather with catalog.schema.build_frame")
+    if missing:
+        raise CatalogSchemaError(
+            f"catalog is missing required columns {sorted(missing)}"
+            f"{_where(context)}")
+    unexpected = columns - REQUIRED_COLUMNS
+    if unexpected:
+        raise CatalogSchemaError(
+            f"catalog has unexpected columns {sorted(unexpected)}"
+            f"{_where(context)}; compact far-field catalogs store every tag "
+            "inside the JSON 'tags' object. Regenerate the Feather")
+
+    if not isinstance(frame, gpd.GeoDataFrame):
+        raise CatalogSchemaError(
+            f"catalog must be a GeoDataFrame with an active geometry column"
+            f"{_where(context)}")
+    if frame.crs is None:
+        raise CatalogSchemaError(
+            f"catalog CRS is missing{_where(context)}; assign the source CRS "
+            "before writing the Feather")
+    try:
+        geometry = frame.geometry
+    except (AttributeError, ValueError) as exc:
+        raise CatalogSchemaError(
+            f"catalog has no active geometry column{_where(context)}") from exc
+    if geometry.isna().any():
+        rows = frame.index[geometry.isna()].tolist()[:5]
+        raise CatalogSchemaError(
+            f"catalog geometry is null at rows {rows}{_where(context)}")
+    if geometry.is_empty.any():
+        rows = frame.index[geometry.is_empty].tolist()[:5]
+        raise CatalogSchemaError(
+            f"catalog geometry is empty at rows {rows}{_where(context)}")
+    if (~geometry.is_valid).any():
+        rows = frame.index[~geometry.is_valid].tolist()[:5]
+        raise CatalogSchemaError(
+            f"catalog geometry is invalid at rows {rows}{_where(context)}")
+
+    ids = frame["id"]
+    if ids.isna().any():
+        rows = frame.index[ids.isna()].tolist()[:5]
+        raise CatalogSchemaError(
+            f"catalog id is null at rows {rows}{_where(context)}")
+    if any(not isinstance(value, str) or not value.strip() for value in ids):
+        raise CatalogSchemaError(
+            f"catalog ids must be non-empty strings{_where(context)}")
+    duplicates = ids[ids.duplicated(keep=False)]
+    if not duplicates.empty:
+        values = list(dict.fromkeys(duplicates.astype(str).tolist()))[:5]
+        raise CatalogSchemaError(
+            f"catalog ids must be unique; duplicates include {values}"
+            f"{_where(context)}")
+
+    invalid_sources = []
+    for value in frame["landmark_type"]:
+        if (not isinstance(value, str)
+                or value not in ALLOWED_LANDMARK_TYPES):
+            invalid_sources.append(repr(value))
+    invalid_sources = sorted(set(invalid_sources))
+    if invalid_sources:
+        raise CatalogSchemaError(
+            "landmark_type must be exactly 'osm' or 'enc'; found "
+            f"{invalid_sources}{_where(context)}")
+
+    return [_decode_tags(value, row_index)
+            for row_index, value in frame[TAGS_COLUMN].items()]
+
+
+def tag_dicts(frame: pd.DataFrame) -> list[dict[str, str]]:
+    """Return validated tag objects from a compact far-field frame."""
+    return _validate_frame(frame)
+
+
+def row_dicts(frame: pd.DataFrame) -> list[dict]:
+    """Return each row with its validated tags flattened into the metadata."""
+    tags = _validate_frame(frame)
+    metadata = frame[["id", "geometry", "landmark_type"]].to_dict(
+        orient="records")
+    return [{**metadata[i], **tags[i]} for i in range(len(frame))]
+
+
+def row_dicts_with_index(frame: pd.DataFrame,
+                         index_key: str = "index") -> list[dict]:
+    """row_dicts plus the frame index under index_key."""
+    if index_key in REQUIRED_COLUMNS:
+        raise CatalogSchemaError(
+            f"index key {index_key!r} collides with a structural field")
+    out = row_dicts(frame)
+    for position, index_value in enumerate(frame.index):
+        if index_key in out[position]:
+            raise CatalogSchemaError(
+                f"index key {index_key!r} collides with a tag at row "
+                f"{index_value!r}")
+        out[position][index_key] = index_value
+    return out
+
+
+def _as_list(name: str, values: Iterable) -> list:
+    try:
+        return list(values)
+    except TypeError as exc:
+        raise CatalogSchemaError(f"{name} must be iterable") from exc
+
+
+def build_frame(ids, geometries, landmark_types, tags,
+                crs="EPSG:4326") -> gpd.GeoDataFrame:
+    """Build and validate a compact far-field catalog GeoDataFrame."""
+    ids = _as_list("ids", ids)
+    geometries = _as_list("geometries", geometries)
+    landmark_types = _as_list("landmark_types", landmark_types)
+    tags = _as_list("tags", tags)
+    lengths = {
+        "ids": len(ids),
+        "geometries": len(geometries),
+        "landmark_types": len(landmark_types),
+        "tags": len(tags),
+    }
+    if len(set(lengths.values())) != 1:
+        raise CatalogSchemaError(
+            f"catalog columns must have equal lengths, got {lengths}")
+    if crs is None:
+        raise CatalogSchemaError("catalog CRS must be known")
+
+    encoded_tags = []
+    for row_index, mapping in enumerate(tags):
+        if not isinstance(mapping, Mapping):
+            raise CatalogSchemaError(
+                f"row {row_index} tags must be a mapping, got "
+                f"{type(mapping).__name__}")
+        for key, tag_value in mapping.items():
+            if not isinstance(key, str) or not key:
+                raise CatalogSchemaError(
+                    f"row {row_index} tag keys must be non-empty strings")
+            if key in REQUIRED_COLUMNS:
+                raise CatalogSchemaError(
+                    f"row {row_index} tag {key!r} collides with a "
+                    "structural catalog field")
+            if not isinstance(tag_value, str):
+                raise CatalogSchemaError(
+                    f"row {row_index} tag {key!r} must have a string value, "
+                    f"got {type(tag_value).__name__}")
+        # Round-trip through the same strict decoder used by readers. This
+        # catches non-string values before a catalog reaches disk.
+        try:
+            encoded = json.dumps(dict(mapping), sort_keys=True,
+                                 separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise CatalogSchemaError(
+                f"row {row_index} tags cannot be encoded as JSON: {exc}"
+            ) from exc
+        _decode_tags(encoded, row_index)
+        encoded_tags.append(encoded)
+
+    try:
+        frame = gpd.GeoDataFrame(
+            {
+                "id": ids,
+                "geometry": geometries,
+                "landmark_type": landmark_types,
+                TAGS_COLUMN: encoded_tags,
+            },
+            geometry="geometry",
+            crs=crs,
+        )
+    except (TypeError, ValueError) as exc:
+        raise CatalogSchemaError(
+            f"cannot build catalog GeoDataFrame: {exc}") from exc
+    _validate_frame(frame)
+    return frame
+
+
+def summarize(frame: pd.DataFrame) -> str:
+    """Return a one-line summary after enforcing the compact schema."""
+    tags = _validate_frame(frame)
+    count = sum(len(mapping) for mapping in tags)
+    return (f"{len(frame)} landmarks, compact JSON-tags schema v"
+            f"{SCHEMA_VERSION}, {count} tag values")
+
+
+def read_frame(path: Path) -> gpd.GeoDataFrame:
+    """Read and validate a compact far-field landmark Feather."""
+    path = Path(path)
+    frame = gpd.read_feather(path)
+    _validate_frame(frame, context=path)
+    return frame

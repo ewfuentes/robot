@@ -1,234 +1,446 @@
-"""Freeze a pairing run's labelled matches into a recall guard for trimming.
+"""Freeze a completed matching artifact into a catalog-trimming recall guard.
 
-Trimming the map is only safe if you can measure what it costs. A pairing run
-(`<run>/pairing/{requests,results}.jsonl`) already contains a model's
-tracklet -> map-landmark labels, which is a far better recall guard than any
-heuristic: every labelled match is a map entry a real observation was matched
-to, so a trim that removes one has demonstrably destroyed a match we had.
+The matching stage is the authority for correspondence. This tool consumes
+only a complete, typed ``LANDMARK_MATCHES`` artifact and copies its final
+``matches.json`` decisions into a small, immutable-identity JSON document.
+It never reconstructs decisions from provider requests or retry results.
 
-**What a positive is, precisely.** `set_2_id` in the results is an index into
-that tracklet's Set 2 list, not a landmark id, and recovering the id needs the
-wedge that produced the list. What survives the round trip unambiguously is
-the Set 2 *line*: `format_signature` over the catalog's pruned far-field tags.
-So a positive is a **tag signature**, and the guard asks "does at least one
-landmark with this signature survive?". That is weaker than pinning the exact
-row - 394 unnamed piers share one signature - but it is honest, cheap, and
-catches exactly the failure that matters: a trim rule that wipes out a whole
-class the labels rely on.
+The matching manifest supplies the exact ``CATALOGS`` upstream. The final
+``signatures.json`` table is checked against every matched landmark id before
+publication, so a positive set cannot silently preserve a stale or malformed
+correspondence.
 
-The JSONL parsing tolerates both the bare-int and `{set_2_id, match_type}`
-schema versions. Unresolved signatures are reported loudly, so a prompt-format
-change shows up as a visible count rather than a silently empty guard.
+Example::
 
-Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:landmark_positive_set -- \\
-        --pairing_dir /data/farfield_matching/runs/.../pairing \\
-        --dataset boston_harbor_leg1 --catalog v1 \\
-        --output /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/positive_set_r003.json
+        --matching_dir <completed-landmark-matches-artifact> \\
+        --output <positive-set-v2.json>
 """
 
 import argparse
-import csv
 import json
-import re
-import sys
-from collections import Counter
+import math
 from pathlib import Path
+from typing import Any
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
 from experimental.overhead_matching.swag.farfield import provenance
-from experimental.overhead_matching.swag.farfield.catalog import catalog
+
+
+CATALOG_PAYLOAD = "catalog.feather"
+MATCHES_PAYLOAD = "matches.json"
+SIGNATURES_PAYLOAD = "signatures.json"
+MATCHING_OUTPUTS = tuple(sorted((
+    "canonical_results.jsonl",
+    "compatibility.json",
+    MATCHES_PAYLOAD,
+    "request_set.json",
+    "requests.jsonl",
+    "settings.json",
+    SIGNATURES_PAYLOAD,
+)))
+POSITIVE_SET_SCHEMA = "farfield.landmark_positive_set.v2"
+MATCH_KEYS = frozenset({
+    "landmark_id", "signature", "match_type", "confidence",
+})
+POSITIVE_KEYS = MATCH_KEYS | {"tracklet_id"}
+DOCUMENT_KEYS = frozenset({
+    "schema", "generator", "git_commit", "matching", "catalog",
+    "n_tracklets", "n_positives", "positives",
+})
+
+
+class PositiveSetError(ValueError):
+    """Raised when a matching artifact or positive-set document is invalid."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PositiveSetError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _load_json_object(path: Path, what: str) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise PositiveSetError(f"{what} is not a regular file: {path}")
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                PositiveSetError(
+                    f"{what} contains non-finite JSON constant {token!r}")),
+        )
+    except PositiveSetError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PositiveSetError(f"cannot decode {what} at {path}: {exc}") \
+            from exc
+    if not isinstance(value, dict):
+        raise PositiveSetError(f"{what} must be a JSON object")
+    return value
+
+
+def _count(value: Any, field: str, *, positive: bool = False) -> int:
+    minimum = 1 if positive else 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        qualifier = "positive" if positive else "non-negative"
+        raise PositiveSetError(f"{field} must be a {qualifier} integer")
+    return value
+
+
+def _exact_keys(value: dict, expected: frozenset[str], what: str) -> None:
+    actual = frozenset(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown = sorted(actual - expected)
+        raise PositiveSetError(
+            f"invalid {what} keys: missing={missing}, unknown={unknown}")
+
+
+def open_catalog_artifact(
+        catalog_dir: Path, *, expected_dataset: str | None = None,
+) -> tuple[artifact.ArtifactRef, Path]:
+    """Validate one published CATALOGS artifact and return its payload."""
+    catalog_dir = Path(catalog_dir)
+    ref = artifact.open_artifact(
+        catalog_dir,
+        expected_kind=paths_lib.CATALOGS,
+        expected_dataset=expected_dataset,
+    )
+    manifest = artifact.load_manifest(catalog_dir)
+    if manifest.declared_outputs != (CATALOG_PAYLOAD,):
+        raise artifact.ArtifactValidationError(
+            "CATALOGS must declare exactly catalog.feather; found "
+            f"{list(manifest.declared_outputs)}")
+    return ref, catalog_dir / CATALOG_PAYLOAD
 
 
 def format_signature(tags: dict) -> str:
-    """The Set 2 line for a tag bundle (format_tags over sorted items)."""
-    return "; ".join(f"{k}={v}" for k, v in sorted(tags.items()))
+    """Return the matcher's canonical tag-signature text."""
+    return "; ".join(f"{key}={value}" for key, value in sorted(tags.items()))
 
 
-def parse_sets(prompt_text: str) -> tuple[list[str], list[str]]:
-    """(set1, set2) as tag-line lists, indexed as the prompt numbered them."""
-    set1, set2, current = [], [], None
-    for line in prompt_text.splitlines():
-        if line.startswith("Set 1"):
-            current = set1
-            continue
-        if line.startswith("Set 2"):
-            current = set2
-            continue
-        match = re.match(r"^ (\d+)\. (.*)$", line)
-        if match and current is not None:
-            current.append(match.group(2))
-    return set1, set2
+def _validate_signatures(value: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    if not value:
+        raise PositiveSetError("matching signatures.json must not be empty")
+    result = {}
+    owner = {}
+    for signature, landmark_ids in value.items():
+        if not isinstance(signature, str) or not signature:
+            raise PositiveSetError("matching contains an empty signature")
+        if not isinstance(landmark_ids, list) or not landmark_ids:
+            raise PositiveSetError(
+                f"signature {signature!r} must map to a non-empty list")
+        if not all(isinstance(item, str) and item for item in landmark_ids):
+            raise PositiveSetError(
+                f"signature {signature!r} contains an invalid landmark id")
+        if len(landmark_ids) != len(set(landmark_ids)):
+            raise PositiveSetError(
+                f"signature {signature!r} repeats a landmark id")
+        for landmark_id in landmark_ids:
+            previous = owner.setdefault(landmark_id, signature)
+            if previous != signature:
+                raise PositiveSetError(
+                    f"landmark {landmark_id!r} belongs to multiple signatures")
+        result[signature] = tuple(landmark_ids)
+    return result
 
 
-def load_requests(pairing_dir: Path) -> dict:
-    out = {}
-    with open(pairing_dir / "requests.jsonl") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            text = record["request"]["contents"][0]["parts"][0]["text"]
-            out[record["key"]] = parse_sets(text)
-    return out
+def _finite_confidence(value: Any, what: str) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0):
+        raise PositiveSetError(f"{what} must be finite and in [0, 1]")
+    return float(value)
 
 
-def load_results(pairing_dir: Path) -> tuple[dict, dict]:
-    results, errors = {}, {}
-    with open(pairing_dir / "results.jsonl") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            key = record.get("key", "?")
-            if record.get("error"):
-                errors[key] = record["error"]
-                continue
-            try:
-                text = record["response"]["candidates"][0]["content"][
-                    "parts"][0]["text"]
-                payload = json.loads(text)
-                normalised = []
-                for match in payload.get("matches", []):
-                    pairs = []
-                    for item in match.get("set_2_matches", []):
-                        if isinstance(item, dict):
-                            pairs.append((int(item["set_2_id"]),
-                                          item.get("match_type", "instance")))
-                        else:
-                            pairs.append((int(item), "instance"))
-                    normalised.append({
-                        "set_1_id": int(match.get("set_1_id", 0)),
-                        "matches": pairs,
-                        "uniqueness": match.get("uniqueness_score"),
-                        "negatives": match.get("negatives", []),
-                    })
-                results[key] = normalised
-            except Exception as exc:  # noqa: BLE001
-                errors[key] = f"{type(exc).__name__}: {exc}"
-    return results, errors
+def _validate_matches(
+        value: dict[str, Any], signatures: dict[str, tuple[str, ...]],
+        *, n_tracklets: int,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    if len(value) != n_tracklets:
+        raise PositiveSetError(
+            "matches.json tracklet count does not match the completed "
+            f"manifest: expected {n_tracklets}, found {len(value)}")
+    result = {}
+    for tracklet_id, record in value.items():
+        if not isinstance(tracklet_id, str) or not tracklet_id:
+            raise PositiveSetError("matches.json contains an empty tracklet id")
+        if not isinstance(record, dict) or not isinstance(
+                record.get("matches"), list):
+            raise PositiveSetError(
+                f"tracklet {tracklet_id!r} lacks a matches list")
+        matches = []
+        seen_ids = set()
+        for index, match in enumerate(record["matches"]):
+            if not isinstance(match, dict):
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} is not an object")
+            _exact_keys(match, MATCH_KEYS,
+                        f"tracklet {tracklet_id!r} match {index}")
+            landmark_id = match["landmark_id"]
+            signature = match["signature"]
+            match_type = match["match_type"]
+            if not isinstance(landmark_id, str) or not landmark_id:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} match {index} has an invalid "
+                    "landmark id")
+            if landmark_id in seen_ids:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} repeats landmark {landmark_id!r}")
+            seen_ids.add(landmark_id)
+            if not isinstance(signature, str) or signature not in signatures:
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} references unknown signature "
+                    f"{signature!r}")
+            if landmark_id not in signatures[signature]:
+                raise PositiveSetError(
+                    f"landmark {landmark_id!r} is not bound to signature "
+                    f"{signature!r}")
+            if match_type not in ("instance", "category"):
+                raise PositiveSetError(
+                    f"tracklet {tracklet_id!r} has invalid match_type "
+                    f"{match_type!r}")
+            matches.append({
+                "tracklet_id": tracklet_id,
+                "landmark_id": landmark_id,
+                "signature": signature,
+                "match_type": match_type,
+                "confidence": _finite_confidence(
+                    match["confidence"],
+                    f"tracklet {tracklet_id!r} confidence"),
+            })
+        n_landmarks = _count(record.get("n_landmarks"),
+                             f"tracklet {tracklet_id!r} n_landmarks")
+        if n_landmarks != len(matches):
+            raise PositiveSetError(
+                f"tracklet {tracklet_id!r} n_landmarks does not match its "
+                "matches list")
+        n_signatures = _count(record.get("n_signatures"),
+                              f"tracklet {tracklet_id!r} n_signatures")
+        if n_signatures != len({item["signature"] for item in matches}):
+            raise PositiveSetError(
+                f"tracklet {tracklet_id!r} n_signatures is inconsistent")
+        result[tracklet_id] = tuple(matches)
+    return result
 
 
-def anchor_from_dataset(dataset_base: Path) -> tuple[float, float]:
-    """Mean frame lat/lon, matching how the catalog anchors its ENU frame."""
-    with open(dataset_base / "frames_gps.csv") as f:
-        rows = list(csv.DictReader(f))
-    return (sum(float(r["latitude"]) for r in rows) / len(rows),
-            sum(float(r["longitude"]) for r in rows) / len(rows))
+def open_matching_artifact(
+        matching_dir: Path,
+        *, expected_catalog_ref: artifact.ArtifactRef | None = None,
+) -> tuple[artifact.ArtifactRef, artifact.ArtifactRef,
+           dict[str, tuple[dict[str, Any], ...]], dict[str, tuple[str, ...]]]:
+    """Load a complete typed matching artifact and validate its final join."""
+    matching_dir = Path(matching_dir)
+    expected_dataset = (expected_catalog_ref.dataset
+                        if expected_catalog_ref is not None else None)
+    matching_ref = artifact.open_artifact(
+        matching_dir,
+        expected_kind=paths_lib.LANDMARK_MATCHES,
+        expected_dataset=expected_dataset,
+    )
+    manifest = artifact.load_manifest(matching_dir)
+    if manifest.declared_outputs != MATCHING_OUTPUTS:
+        raise PositiveSetError(
+            "LANDMARK_MATCHES must declare exactly the canonical final "
+            f"outputs; found {list(manifest.declared_outputs)}")
+    if manifest.config.get("phase") != "canonical_results":
+        raise PositiveSetError(
+            "matching manifest must attest phase='canonical_results'")
+    if manifest.config.get("coverage") != "complete":
+        raise PositiveSetError(
+            "matching manifest must attest coverage='complete'")
+    n_expected = _count(manifest.config.get("n_expected"),
+                        "matching n_expected", positive=True)
+    n_successful = _count(manifest.config.get("n_successful"),
+                          "matching n_successful")
+    if n_successful != n_expected:
+        raise PositiveSetError(
+            "matching does not have one successful result per expected request")
+    n_tracklets = _count(manifest.config.get("n_tracklets_expected"),
+                         "matching n_tracklets_expected", positive=True)
+    n_tracklets_successful = _count(
+        manifest.config.get("n_tracklets_successful"),
+        "matching n_tracklets_successful")
+    if n_tracklets_successful != n_tracklets:
+        raise PositiveSetError(
+            "matching does not have one final record per expected tracklet")
+    expected_upstream_kinds = (
+        paths_lib.OBJECT_TRACKS,
+        paths_lib.SEMANTIC_AUDITS,
+        paths_lib.CATALOGS,
+    )
+    if tuple(ref.kind for ref in manifest.upstreams) != expected_upstream_kinds:
+        raise PositiveSetError(
+            "LANDMARK_MATCHES upstreams must be exactly object_tracks, "
+            "semantic_audits, then catalogs")
+    if any(ref.dataset != matching_ref.dataset for ref in manifest.upstreams):
+        raise PositiveSetError(
+            "matching artifact and all upstreams must name the same dataset")
+    catalog_ref = manifest.upstreams[-1]
+    if expected_catalog_ref is not None and catalog_ref != expected_catalog_ref:
+        raise PositiveSetError(
+            "matching artifact is bound to a different catalog: expected "
+            f"{expected_catalog_ref.to_dict()}, found {catalog_ref.to_dict()}")
+    signatures = _validate_signatures(_load_json_object(
+        matching_dir / SIGNATURES_PAYLOAD, "matching signatures.json"))
+    matches = _validate_matches(
+        _load_json_object(matching_dir / MATCHES_PAYLOAD,
+                          "matching matches.json"),
+        signatures,
+        n_tracklets=n_tracklets,
+    )
+    return matching_ref, catalog_ref, matches, signatures
 
 
-def catalog_signature_index(entries) -> dict:
-    """Set 2 line -> landmark ids that produce it."""
-    index: dict[str, list[str]] = {}
-    for entry in entries:
-        index.setdefault(format_signature(entry.tags), []).append(
-            entry.landmark_id)
-    return index
-
-
-def build(pairing_dir: Path, feather: Path, dataset_base: Path) -> dict:
-    anchor_lat, anchor_lon = anchor_from_dataset(dataset_base)
-    print(f"anchor {anchor_lat:.5f},{anchor_lon:.5f}")
-    entries = catalog.load_catalog_cached(feather, anchor_lat, anchor_lon)
-    index = catalog_signature_index(entries)
-    print(f"{len(entries)} catalog entries, {len(index)} distinct signatures")
-
-    requests = load_requests(pairing_dir)
-    results, errors = load_results(pairing_dir)
-    print(f"{len(requests)} requests, {len(results)} labelled, "
-          f"{len(errors)} errors")
-
-    positives, negatives, unresolved = [], [], []
-    kinds = Counter()
-    for key, matches in sorted(results.items()):
-        _, set2 = requests.get(key, ([], []))
-        for match in matches:
-            for set2_id, kind in match["matches"]:
-                if not 0 <= set2_id < len(set2):
-                    unresolved.append({"tracklet": key,
-                                       "set_2_index": set2_id,
-                                       "reason": "index out of range"})
-                    continue
-                signature = set2[set2_id]
-                ids = index.get(signature, [])
-                kinds[kind] += 1
-                record = {"tracklet": key, "set_2_index": set2_id,
-                          "match_type": kind, "signature": signature,
-                          "landmark_ids": ids,
-                          "uniqueness": match.get("uniqueness")}
-                if ids:
-                    positives.append(record)
-                else:
-                    record["reason"] = "signature not found in catalog"
-                    unresolved.append(record)
-            for neg in match["negatives"]:
-                set2_id = int(neg.get("set_2_id", -1))
-                if 0 <= set2_id < len(set2):
-                    negatives.append({"tracklet": key,
-                                      "signature": set2[set2_id],
-                                      "difficulty": neg.get("difficulty",
-                                                            "?")})
-
-    print(f"\npositives: {len(positives)} ({dict(kinds)}), "
-          f"unresolved: {len(unresolved)}, negatives: {len(negatives)}")
-    by_signature = Counter(p["signature"] for p in positives)
-    print(f"distinct positive signatures: {len(by_signature)}")
-    for signature, count in by_signature.most_common(15):
-        n_rows = len(index.get(signature, []))
-        print(f"  x{count:2d}  [{n_rows:4d} row(s)]  {signature[:88]}")
-    if unresolved:
-        print("\nunresolved (these would silently weaken the guard):")
-        for record in unresolved[:10]:
-            print(f"  {record['tracklet']} #{record['set_2_index']}: "
-                  f"{record.get('reason')}")
-
+def build(matching_dir: Path) -> dict[str, Any]:
+    """Build a schema-v2 guard from final, completely covered matches."""
+    matching_ref, catalog_ref, matches, _ = open_matching_artifact(matching_dir)
+    positives = [
+        match
+        for tracklet_id in sorted(matches)
+        for match in sorted(
+            matches[tracklet_id],
+            key=lambda item: (item["landmark_id"], item["signature"]),
+        )
+    ]
     return {
+        "schema": POSITIVE_SET_SCHEMA,
         "generator": "farfield/dataset_tools/landmark_positive_set.py",
         "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
-        "pairing_dir": str(pairing_dir),
-        "feather": str(feather),
-        "anchor": [anchor_lat, anchor_lon],
-        "n_tracklets_labelled": len(results),
+        "matching": matching_ref.to_dict(),
+        "catalog": catalog_ref.to_dict(),
+        "n_tracklets": len(matches),
+        "n_positives": len(positives),
         "positives": positives,
-        "negatives": negatives,
-        "unresolved": unresolved,
     }
 
 
+def validate_positive_set(
+        positive_set: dict[str, Any], source: Path | str,
+) -> tuple[artifact.ArtifactRef, artifact.ArtifactRef]:
+    """Validate schema-v2 structure and return matching/catalog identities."""
+    source = Path(source)
+    if not isinstance(positive_set, dict):
+        raise PositiveSetError(f"positive set {source} must be a JSON object")
+    _exact_keys(positive_set, DOCUMENT_KEYS, f"positive set {source}")
+    if positive_set["schema"] != POSITIVE_SET_SCHEMA:
+        raise PositiveSetError(
+            f"positive set {source} must use schema {POSITIVE_SET_SCHEMA!r}")
+    if (not isinstance(positive_set["generator"], str)
+            or not positive_set["generator"]):
+        raise PositiveSetError(f"positive set {source} has invalid generator")
+    if (not isinstance(positive_set["git_commit"], str)
+            or not positive_set["git_commit"]):
+        raise PositiveSetError(f"positive set {source} has invalid git_commit")
+    try:
+        matching_ref = artifact.ArtifactRef.from_dict(positive_set["matching"])
+        catalog_ref = artifact.ArtifactRef.from_dict(positive_set["catalog"])
+    except (artifact.ArtifactError, TypeError) as exc:
+        raise PositiveSetError(
+            f"positive set {source} has an invalid exact ArtifactRef") from exc
+    if matching_ref.kind != paths_lib.LANDMARK_MATCHES:
+        raise PositiveSetError(
+            f"positive set {source} matching ref is not LANDMARK_MATCHES")
+    if catalog_ref.kind != paths_lib.CATALOGS:
+        raise PositiveSetError(
+            f"positive set {source} catalog ref is not CATALOGS")
+    if matching_ref.dataset != catalog_ref.dataset:
+        raise PositiveSetError(
+            f"positive set {source} matching/catalog datasets differ")
+    n_tracklets = _count(positive_set["n_tracklets"],
+                         f"positive set {source} n_tracklets", positive=True)
+    positives = positive_set["positives"]
+    if not isinstance(positives, list):
+        raise PositiveSetError(f"positive set {source} positives must be a list")
+    n_positives = _count(positive_set["n_positives"],
+                         f"positive set {source} n_positives")
+    if n_positives != len(positives):
+        raise PositiveSetError(
+            f"positive set {source} n_positives is inconsistent")
+    tracklet_ids = set()
+    identities = set()
+    for index, record in enumerate(positives):
+        if not isinstance(record, dict):
+            raise PositiveSetError(
+                f"positive set {source} positive {index} is not an object")
+        _exact_keys(record, POSITIVE_KEYS,
+                    f"positive set {source} positive {index}")
+        tracklet_id = record["tracklet_id"]
+        landmark_id = record["landmark_id"]
+        signature = record["signature"]
+        if not isinstance(tracklet_id, str) or not tracklet_id:
+            raise PositiveSetError(
+                f"positive set {source} positive {index} has invalid tracklet")
+        if not isinstance(landmark_id, str) or not landmark_id:
+            raise PositiveSetError(
+                f"positive set {source} positive {index} has invalid landmark")
+        if not isinstance(signature, str) or not signature:
+            raise PositiveSetError(
+                f"positive set {source} positive {index} has invalid signature")
+        if record["match_type"] not in ("instance", "category"):
+            raise PositiveSetError(
+                f"positive set {source} positive {index} has invalid "
+                "match_type")
+        _finite_confidence(
+            record["confidence"],
+            f"positive set {source} positive {index} confidence")
+        identity = (tracklet_id, landmark_id)
+        if identity in identities:
+            raise PositiveSetError(
+                f"positive set {source} repeats {tracklet_id}/{landmark_id}")
+        identities.add(identity)
+        tracklet_ids.add(tracklet_id)
+    if len(tracklet_ids) > n_tracklets:
+        raise PositiveSetError(
+            f"positive set {source} contains more tracklets than declared")
+    return matching_ref, catalog_ref
+
+
+def load_positive_set(
+        source: Path | str,
+) -> tuple[dict[str, Any], artifact.ArtifactRef, artifact.ArtifactRef]:
+    """Strictly load one schema-v2 positive-set JSON document."""
+    source = Path(source)
+    document = _load_json_object(source, "positive set")
+    matching_ref, catalog_ref = validate_positive_set(document, source)
+    return document, matching_ref, catalog_ref
+
+
 def recall(positive_set: dict,
-           surviving_signatures: set) -> tuple[float, list]:
+           surviving_signatures: set[str]) -> tuple[float, list[dict]]:
     """Fraction of distinct positive signatures with a surviving landmark."""
-    signatures = {p["signature"] for p in positive_set["positives"]}
+    signatures = {record["signature"] for record in positive_set["positives"]}
     if not signatures:
         return 1.0, []
-    lost = sorted(signatures - surviving_signatures)
-    kept = len(signatures) - len(lost)
-    detail = [p for p in positive_set["positives"]
-              if p["signature"] in set(lost)]
-    return kept / len(signatures), detail
+    lost = signatures - surviving_signatures
+    detail = [record for record in positive_set["positives"]
+              if record["signature"] in lost]
+    return (len(signatures) - len(lost)) / len(signatures), detail
 
 
-def main(pairing_dir: Path, feather: Path, dataset_base: Path,
-         output: Path) -> dict:
-    positive_set = build(pairing_dir, feather, dataset_base)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with open(output, "w") as f:
-        json.dump(positive_set, f, indent=2)
-    print(f"\nWrote {output}")
+def main(matching_dir: Path, output: Path) -> dict[str, Any]:
+    positive_set = build(matching_dir)
+    artifact.atomic_create_json(output, positive_set)
+    print(f"Wrote {output}")
     return positive_set
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    paths_lib.add_arguments(parser, feather=True)
-    parser.add_argument("--pairing_dir", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path,
-                        help="positive-set JSON to write (typically beside "
-                             "the trims in artifacts/catalogs/<dataset>/)")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--matching_dir", required=True, type=Path,
+        help="completed typed LANDMARK_MATCHES artifact")
+    parser.add_argument(
+        "--output", required=True, type=Path,
+        help="schema-v2 positive-set JSON to write atomically")
     args = parser.parse_args()
-    paths = paths_lib.resolve(parser, args,
-                              require=("dataset_base", "feather"))
-    main(args.pairing_dir, paths.feather, paths.dataset_base, args.output)
+    try:
+        main(args.matching_dir, args.output)
+    except (artifact.ArtifactError, PositiveSetError) as exc:
+        parser.error(str(exc))

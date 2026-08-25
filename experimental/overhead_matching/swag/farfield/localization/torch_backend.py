@@ -49,8 +49,8 @@ class TorchMeasurementEngine:
                                     device=self.device)
         self.north = torch.as_tensor(catalog.north_m, dtype=dtype,
                                      device=self.device)
-        # Map-accuracy classes only matter when any are nonzero (kappa_eff
-        # becomes per-pair); the scalar-kappa fast path skips the range map.
+        # The uniform map-position uncertainty matters only when nonzero
+        # (kappa_eff becomes range-dependent); otherwise skip the range map.
         if np.any(catalog.position_sigma_m > 0.0):
             self.sigma_pos = torch.as_tensor(
                 catalog.position_sigma_m, dtype=dtype, device=self.device)
@@ -80,7 +80,7 @@ class TorchMeasurementEngine:
         pure makes it reusable for hypothesis scoring.
         """
         kappa_z = min(float(meas.kappa), filter_mod.MAX_KAPPA)
-        observed = math.radians(meas.bearing_body_deg)
+        observed = math.radians(meas.bearing_forward_cw_deg)
         d_east = self.east[None, :] - east[:, None]
         d_north = self.north[None, :] - north[:, None]
         bearing = torch.atan2(d_east, d_north)  # compass: CW from north
@@ -136,7 +136,7 @@ class TorchMeasurementEngine:
         committed landmark; junk for particles not committed (masked by the
         caller)."""
         kappa_z = min(float(meas.kappa), filter_mod.MAX_KAPPA)
-        observed = math.radians(meas.bearing_body_deg)
+        observed = math.radians(meas.bearing_forward_cw_deg)
         j = assoc_t.clamp(min=0)
         d_east = self.east[j] - east
         d_north = self.north[j] - north

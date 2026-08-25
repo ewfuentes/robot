@@ -6,16 +6,15 @@ never silently drops information a panel needs, and (c) tells the truth about
 what it left out. The page and the server are then checked to render/serve that
 same payload.
 
-  T-V1  a bare run directory — no attribution, no sources, no feather, no
-        ghosts — still produces a complete payload, with notes explaining each
-        absent panel
+  T-V1  a bare run directory — no attribution, no feather, no ghosts — still
+        produces a complete payload, with notes explaining each absent panel
   T-V2  particles are drawn as a WEIGHTED sample, so a cloud that is mostly
         dead weight does not render as if it were alive
   T-V3  the referenced/backdrop split covers the catalog exactly once
   T-V4  a stale attribution cache is surfaced as a note, not silently used
   T-V5  the page renders self-contained, with no external references — the
         CSS/JS now live as viewer_assets/ files and must be INLINED
-  T-V6  the server serves the same payload and its three extra endpoints
+  T-V6  the server serves the same payload and its two extra endpoints
 """
 
 import json
@@ -32,6 +31,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     filter as pf,
     run_io,
     scenario,
+    side_outputs,
     structs,
     viewer,
     viewer_payload,
@@ -53,7 +53,11 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
     history = pf.run_filter(config, data.catalog, data.odometry,
                             data.measurements, data.tables)
     manifest = structs.RunManifest(
-        schema_version=structs.SCHEMA_VERSION, scenario_name=cfg.name,
+        schema_version=structs.SCHEMA_VERSION, dataset="synthetic",
+        scenario_name=cfg.name, run_kind="synthetic",
+        initialization_kind="test", bearings_consumed=True,
+        proposal_enabled=config.proposal.enabled,
+        localization_inputs_manifest_sha256=None,
         anchor_lat_deg=cfg.anchor_lat_deg, anchor_lon_deg=cfg.anchor_lon_deg,
         n_keyframes=data.n_keyframes, filter_config=config,
         landmarks=cfg.landmarks, matcher_version=scenario.MATCHER_VERSION,
@@ -63,7 +67,8 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
         git_commit="test", argv=["viewer_test"],
         created="2026-08-21T00:00:00+00:00")
     run_io.write_run(run_dir, manifest, data.truth, data.odometry,
-                     data.measurements, data.tables, history)
+                     data.measurements, data.tables, history,
+                     dataset="synthetic", version=run_dir.name)
     return data, config, history
 
 
@@ -87,7 +92,6 @@ class PayloadTest(unittest.TestCase):
             # Every absent panel is explained.
             notes = " ".join(payload["notes"])
             self.assertIn("attribution cache", notes)
-            self.assertIn("sources directory", notes)
 
     def test_visible_range_comes_from_the_manifest(self):
         """No override parameter, no fallback: the page shows the geometry
@@ -189,7 +193,7 @@ class PayloadTest(unittest.TestCase):
             attribution.write_cache(run_dir, cache)
 
             # Corrupt the recorded provenance.
-            meta_path = run_dir / attribution.META_NAME
+            meta_path = attribution.cache_dir(run_dir) / attribution.META_NAME
             meta = json.loads(meta_path.read_text())
             meta["particle_history_sha256"] = "0" * 64
             meta_path.write_text(json.dumps(meta))
@@ -303,6 +307,43 @@ class PageTest(unittest.TestCase):
             self.assertIn("git ", html)
             self.assertIn("localization:viewer", html)
 
+    def test_viewer_publishes_as_a_sibling_without_mutating_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            before = sorted(path.relative_to(run_dir)
+                            for path in run_dir.rglob("*"))
+            payload = viewer_payload.build(run_dir)
+            output = viewer.write_viewer(
+                run_dir,
+                payload,
+                output_dir=None,
+                body_only=False,
+                inputs={"run_dir": run_dir.resolve()},
+                config={"test": True})
+
+            self.assertEqual(output, Path(tmp) / "run.viewer/viewer.html")
+            self.assertTrue(output.is_file())
+            self.assertTrue((output.parent / "manifest.json").is_file())
+            self.assertEqual(
+                before,
+                sorted(path.relative_to(run_dir)
+                       for path in run_dir.rglob("*")))
+
+    def test_viewer_rejects_output_inside_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            with self.assertRaisesRegex(
+                    side_outputs.SideOutputError, "immutable run"):
+                viewer.write_viewer(
+                    run_dir,
+                    viewer_payload.build(run_dir),
+                    output_dir=run_dir / "viewer",
+                    body_only=False,
+                    inputs={"run_dir": run_dir.resolve()},
+                    config={"test": True})
+
     def test_a_script_tag_in_the_data_cannot_escape_the_payload(self):
         """Landmark ids and run names come from data files, so `</script>`
         in one of them is reachable input rather than a hypothetical."""
@@ -379,7 +420,7 @@ class ServerTest(unittest.TestCase):
         body = response.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(set(body["features"]),
-                         {"checkpoint", "crop", "replay"})
+                         {"checkpoint", "replay"})
         self.assertGreater(body["n_checkpoints"], 0)
 
     def test_index_serves_the_page(self):
@@ -417,11 +458,6 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertTrue(response.get_json()["available"])
 
-    def test_crop_without_sources_is_a_clean_404(self):
-        response = self.client.get("/api/crop/trk_a")
-        self.assertEqual(response.status_code, 404)
-        self.assertIn("error", response.get_json())
-
     def test_replay_rejects_empty_and_malformed_edits(self):
         self.assertEqual(
             self.client.post("/api/replay", json={"edits": {}}).status_code,
@@ -443,13 +479,15 @@ class ServerTest(unittest.TestCase):
         self.assertIsNotNone(body["ghost"])
         self.assertEqual(len(body["ghost"]["trail"]),
                          data.manifest.n_keyframes)
-        # The ghost is written as a real run directory INSIDE the run it
-        # questions (never /tmp), and joins the payload.
+        # The ghost is a real run artifact in a deterministic sibling sidecar,
+        # so writing it leaves the completed source artifact immutable.
         ghost_dir = Path(body["output_dir"])
-        self.assertEqual(ghost_dir.parent.parent, self.run_dir)
-        self.assertEqual(ghost_dir.parent.name,
-                         viewer_server.replay_mod.COUNTERFACTUAL_DIRNAME)
-        self.assertTrue((ghost_dir / "manifest.json").exists())
+        self.assertEqual(ghost_dir.parent.parent, self.run_dir.parent)
+        self.assertEqual(
+            ghost_dir.parent.name,
+            self.run_dir.name
+            + viewer_server.replay_mod.COUNTERFACTUAL_DIR_SUFFIX)
+        self.assertTrue((ghost_dir / run_io.RUN_MANIFEST_NAME).exists())
         self.assertTrue((ghost_dir / "counterfactual.json").exists())
         refreshed = self.client.get("/api/payload").get_json()
         self.assertEqual(len(refreshed["ghosts"]), 1)

@@ -5,21 +5,20 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
 PANO_W = 7680
-PARAMS = tracklets.TrackletParams(epoch_keyframes=5, bearing_sigma_deg=1.0)
+PARAMS = tracklets.TrackletParams(
+    epoch_keyframes=5, bearing_sigma_deg=1.0)
 
 
 def make_track(track_id, birth, boxes_by_kf, close_reason="end_of_range"):
-    """boxes_by_kf: {keyframe: (x0, y0, x1, y1)} in window coords with a
-    zero window origin, so pano coords == window coords."""
     return {
         "track_id": track_id,
         "birth_keyframe": birth,
         "end_keyframe": max(boxes_by_kf) if boxes_by_kf else birth,
         "close_reason": close_reason,
         "records": [
-            {"keyframe": kf, "mask_bbox_window": list(box),
+            {"keyframe": keyframe, "mask_bbox_window": list(box),
              "window_origin": [0, 0], "action": "propagate"}
-            for kf, box in sorted(boxes_by_kf.items())
+            for keyframe, box in sorted(boxes_by_kf.items())
         ],
     }
 
@@ -28,169 +27,334 @@ def centred_box(pano_x, width=80, y0=1000, y1=1400):
     return (pano_x - width / 2, y0, pano_x + width / 2, y1)
 
 
+def audit_for(track, verdict="keep", segments=None):
+    if segments is None:
+        segments = [{
+            "start_t": 0,
+            "end_t": track["end_keyframe"] - track["birth_keyframe"],
+        }]
+    return {
+        "verdict": verdict,
+        "single_object": verdict == "keep",
+        "drop_reason": ("dynamic_object" if verdict == "drop" else "none"),
+        "valid_segments": segments,
+        "confidence": "high",
+    }
+
+
+class BoundAudits(dict):
+    def __init__(self, values, tracks):
+        super().__init__(values)
+        self.provenance_by_track = {
+            track_id: {
+                "source_tracks_artifact_id": "object_tracks/demo/v2",
+                "source_tracks_sha256": "a" * 64,
+                "source_track_sha256": tracklets._canonical_sha256(
+                    tracks[track_id]),
+                "audit_key": f"T{track_id}",
+            }
+            for track_id in values
+        }
+
+
 class BearingSeriesTest(unittest.TestCase):
-    def test_series_uses_the_camera_frame_owner(self):
-        # Mask centred on the pano centre column -> azimuth 0; on the
-        # three-quarter column -> azimuth 90.
-        track = make_track(1, 0, {0: centred_box(PANO_W / 2),
-                                  1: centred_box(0.75 * PANO_W)})
+    def test_series_uses_camera_cw_frame_and_box_midpoint(self):
+        track = make_track(
+            1, 0, {
+                0: centred_box(PANO_W / 2),
+                1: centred_box(0.75 * PANO_W),
+            })
         series = tracklets.bearing_series(track, PANO_W)
-        self.assertEqual([kf for kf, _, _ in series], [0, 1])
+        self.assertEqual([keyframe for keyframe, _, _ in series], [0, 1])
         self.assertAlmostEqual(series[0][1], 0.0)
         self.assertAlmostEqual(series[1][1], 90.0)
         self.assertAlmostEqual(series[0][2], 80 / PANO_W * 360.0)
 
-    def test_valid_segments_crop_the_drifted_tail(self):
-        # Audit segments are relative to birth; a track born at kf 10 with a
-        # valid segment [0, 2] keeps keyframes 10-12 and drops 13+.
-        boxes = {kf: centred_box(PANO_W / 2) for kf in range(10, 16)}
+    def test_valid_segments_crop_drifted_tail(self):
+        boxes = {
+            keyframe: centred_box(PANO_W / 2)
+            for keyframe in range(10, 16)
+        }
         track = make_track(2, 10, boxes)
         series = tracklets.bearing_series(
-            track, PANO_W, valid_segments=[{"start_t": 0, "end_t": 2}])
-        self.assertEqual([kf for kf, _, _ in series], [10, 11, 12])
+            track, PANO_W,
+            valid_segments=[{"start_t": 0, "end_t": 2}])
+        self.assertEqual(
+            [keyframe for keyframe, _, _ in series], [10, 11, 12])
+
+    def test_empty_valid_segments_mean_no_observations(self):
+        track = make_track(3, 0, {0: centred_box(100)})
+        self.assertEqual(
+            tracklets.bearing_series(track, PANO_W, valid_segments=[]), [])
 
     def test_records_without_masks_are_skipped(self):
-        track = make_track(3, 0, {0: centred_box(100)})
-        track["records"].append({"keyframe": 1, "mask_bbox_window": None,
-                                 "window_origin": [0, 0], "action": "gap"})
+        track = make_track(4, 0, {0: centred_box(100)})
+        track["end_keyframe"] = 1
+        track["records"].append({
+            "keyframe": 1, "mask_bbox_window": None,
+            "window_origin": [0, 0], "action": "gap",
+        })
         self.assertEqual(len(tracklets.bearing_series(track, PANO_W)), 1)
 
     def test_window_origin_offsets_apply(self):
         track = {
-            "track_id": 4, "birth_keyframe": 0, "end_keyframe": 0,
-            "close_reason": "end_of_range",
-            "records": [{"keyframe": 0, "mask_bbox_window": [0, 0, 100, 100],
-                         "window_origin": [PANO_W / 2 - 50, 500],
-                         "action": "propagate"}],
+            "track_id": 5,
+            "birth_keyframe": 0,
+            "end_keyframe": 0,
+            "records": [{
+                "keyframe": 0,
+                "mask_bbox_window": [0, 0, 100, 100],
+                "window_origin": [PANO_W / 2 - 50, 500],
+            }],
         }
         series = tracklets.bearing_series(track, PANO_W)
-        self.assertAlmostEqual(series[0][1], 0.0)  # centred after offset
+        self.assertAlmostEqual(series[0][1], 0.0)
 
 
-class FuseBearingsTest(unittest.TestCase):
-    def test_epoch_bucketing(self):
-        series = [(kf, 10.0, 4.0) for kf in range(10)]
-        fused = tracklets.fuse_bearings(series, PARAMS)
-        # 10 keyframes at epoch 5 -> 2 fused measurements, anchored at the
-        # middle keyframe of each bucket.
+class AcceptedTrackletTest(unittest.TestCase):
+    def setUp(self):
+        self.track1 = make_track(
+            1, 10, {
+                keyframe: centred_box(PANO_W / 2)
+                for keyframe in range(10, 16)
+            })
+        self.track2 = make_track(
+            2, 0, {keyframe: centred_box(1000) for keyframe in range(3)})
+        self.track3 = make_track(3, 0, {0: centred_box(2000)})
+
+    def test_one_policy_accepts_keep_and_partial_but_excludes_drop(self):
+        tracks = {1: self.track1, 2: self.track2, 3: self.track3}
+        audits = BoundAudits({
+            1: audit_for(self.track1),
+            2: audit_for(
+                self.track2, "keep_partial",
+                [{"start_t": 1, "end_t": 2}]),
+            3: audit_for(self.track3, "drop", []),
+        }, tracks)
+        accepted = tracklets.build_accepted_tracklets(
+            tracks, audits)
+        self.assertEqual([item.local_id for item in accepted], ["T1", "T2"])
+        self.assertEqual(
+            accepted[0].tracklet_id,
+            f"object_tracks/demo/v2@sha256:{'a' * 64}#T1")
+        self.assertIs(accepted[0].source_track, self.track1)
+        self.assertIs(accepted[0].audit, audits[1])
+        self.assertEqual(
+            accepted[1].valid_segments[0].start_keyframe_idx, 1)
+        self.assertEqual(
+            accepted[0].provenance["source_track_sha256"],
+            tracklets._canonical_sha256(self.track1))
+
+    def test_orphaned_audit_is_an_error(self):
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "no source track"):
+            tracklets.build_accepted_tracklets(
+                {1: self.track1}, {99: audit_for(self.track1)})
+
+    def test_empty_partial_is_invalid_instead_of_restoring_full_track(self):
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "no valid segment"):
+            tracklets.build_accepted_tracklets(
+                {2: self.track2},
+                {2: audit_for(self.track2, "keep_partial", [])})
+
+    def test_keep_must_cover_whole_lifetime(self):
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "whole lifetime"):
+            tracklets.build_accepted_tracklets(
+                {1: self.track1},
+                {1: audit_for(
+                    self.track1, "keep",
+                    [{"start_t": 0, "end_t": 2}])})
+
+    def test_contradictory_verdict_fields_are_rejected(self):
+        audit = audit_for(self.track2, "keep_partial")
+        audit["single_object"] = True
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError,
+                "keep_partial requires"):
+            tracklets.build_accepted_tracklets(
+                {2: self.track2}, {2: audit})
+
+    def test_bound_source_track_digest_is_checked_again_at_join(self):
+        audits = BoundAudits(
+            {1: audit_for(self.track1)}, {1: self.track1})
+        changed = dict(self.track1)
+        changed["close_reason"] = "changed_after_audit"
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "source-track digest"):
+            tracklets.build_accepted_tracklets({1: changed}, audits)
+
+    def test_segment_bounds_order_and_non_overlap_are_validated(self):
+        invalid = [
+            [{"start_t": -1, "end_t": 1}],
+            [{"start_t": 2, "end_t": 1}],
+            [{"start_t": 0, "end_t": 6}],
+            [{"start_t": 0, "end_t": 2},
+             {"start_t": 2, "end_t": 4}],
+            [{"start_t": 3, "end_t": 4},
+             {"start_t": 0, "end_t": 1}],
+        ]
+        for segments in invalid:
+            with self.subTest(segments=segments):
+                with self.assertRaises(tracklets.TrackletContractError):
+                    tracklets.build_accepted_tracklets(
+                        {1: self.track1},
+                        {1: audit_for(
+                            self.track1, "keep_partial", segments)})
+
+
+class CameraBearingObservationTest(unittest.TestCase):
+    def test_every_valid_keyframe_is_preserved_and_segments_split_groups(self):
+        track = make_track(
+            7, 10, {
+                keyframe: centred_box(PANO_W / 2 + 10 * keyframe)
+                for keyframe in range(10, 16)
+            })
+        audits = BoundAudits({
+            7: audit_for(
+                track, "keep_partial",
+                [{"start_t": 0, "end_t": 1},
+                 {"start_t": 4, "end_t": 5}]),
+        }, {7: track})
+        accepted = tracklets.build_accepted_tracklets({7: track}, audits)
+        observations = tracklets.build_camera_bearing_observations(
+            accepted, PANO_W, bearing_sigma_deg=1.25)
+        self.assertEqual(
+            [observation.keyframe_idx for observation in observations],
+            [10, 11, 14, 15])
+        self.assertEqual(
+            len({observation.correlation_group
+                 for observation in observations}), 2)
+        self.assertEqual(
+            observations[0].correlation_group,
+            observations[1].correlation_group)
+        self.assertNotEqual(
+            observations[1].correlation_group,
+            observations[2].correlation_group)
+        self.assertTrue(
+            all(observation.sigma_deg == 1.25
+                for observation in observations))
+        self.assertTrue(
+            all(observation.tracklet_id == accepted[0].tracklet_id
+                for observation in observations))
+        self.assertAlmostEqual(
+            observations[0].angular_width_deg, 80 / PANO_W * 360.0)
+
+
+def observation(keyframe, azimuth, width=4.0, group="segment-0",
+                tracklet_id="global#T1", sigma=1.0):
+    return tracklets.CameraBearingObservation(
+        tracklet_id=tracklet_id,
+        keyframe_idx=keyframe,
+        bearing_camera_cw_deg=azimuth,
+        angular_width_deg=width,
+        sigma_deg=sigma,
+        correlation_group=group)
+
+
+class EpochFusedCompatV1Test(unittest.TestCase):
+    def test_epoch_bucketing_uses_middle_real_keyframe(self):
+        observations = [observation(keyframe, 10.0)
+                        for keyframe in range(10)]
+        fused = tracklets.epoch_fused_compat_v1(observations, PARAMS)
+        self.assertEqual(
+            [measurement.anchor_keyframe_idx for measurement in fused],
+            [2, 7])
+
+    def test_correlation_groups_are_never_fused_together(self):
+        observations = [
+            observation(0, 10.0, group="segment-0"),
+            observation(1, 10.0, group="segment-0"),
+            observation(2, 20.0, group="segment-1"),
+            observation(3, 20.0, group="segment-1"),
+        ]
+        fused = tracklets.epoch_fused_compat_v1(observations, PARAMS)
         self.assertEqual(len(fused), 2)
-        self.assertEqual(fused[0][0], 2)
-        self.assertEqual(fused[1][0], 7)
+        self.assertEqual(
+            [measurement.anchor_keyframe_idx for measurement in fused],
+            [1, 3])
 
     def test_circular_mean_across_wrap(self):
-        series = [(0, 359.0, 4.0), (1, 1.0, 4.0)]
-        fused = tracklets.fuse_bearings(series, PARAMS)
-        self.assertAlmostEqual(fused[0][1], 0.0, places=6)
+        fused = tracklets.epoch_fused_compat_v1(
+            [observation(0, 359.0), observation(1, 1.0)], PARAMS)
+        self.assertAlmostEqual(
+            fused[0].bearing_camera_cw_deg, 0.0, places=6)
 
-    def test_kappa_reflects_width_not_count(self):
-        # A wide object is a soft bearing regardless of how many keyframes
-        # were fused; kappa must not grow with the bucket size.
-        narrow = tracklets.fuse_bearings([(0, 10.0, 1.0)], PARAMS)[0][2]
-        wide = tracklets.fuse_bearings([(0, 10.0, 20.0)], PARAMS)[0][2]
-        self.assertGreater(narrow, wide)
-        one = tracklets.fuse_bearings([(0, 10.0, 4.0)], PARAMS)[0][2]
-        many = tracklets.fuse_bearings(
-            [(kf, 10.0, 4.0) for kf in range(5)], PARAMS)[0][2]
-        self.assertAlmostEqual(one, many)
-
-    def test_kappa_matches_documented_formula(self):
-        fused = tracklets.fuse_bearings([(0, 10.0, 8.0)], PARAMS)
+    def test_kappa_matches_v1_formula_and_not_observation_count(self):
+        one = tracklets.epoch_fused_compat_v1(
+            [observation(0, 10.0, width=8.0)], PARAMS)[0]
+        many = tracklets.epoch_fused_compat_v1(
+            [observation(keyframe, 10.0, width=8.0)
+             for keyframe in range(5)], PARAMS)[0]
         sigma = math.hypot(1.0, 8.0 / 4.0)
-        self.assertAlmostEqual(fused[0][2], 1.0 / math.radians(sigma) ** 2)
+        self.assertAlmostEqual(one.kappa, 1.0 / math.radians(sigma) ** 2)
+        self.assertAlmostEqual(one.kappa, many.kappa)
 
-    def test_empty_series(self):
-        self.assertEqual(tracklets.fuse_bearings([], PARAMS), [])
+    def test_duplicate_keyframe_inside_group_is_rejected(self):
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError, "duplicate keyframe"):
+            tracklets.epoch_fused_compat_v1(
+                [observation(1, 10.0), observation(1, 11.0)], PARAMS)
 
 
 class BuildMeasurementsTest(unittest.TestCase):
     def setUp(self):
         self.tracks = {
-            1: make_track(1, 0, {kf: centred_box(PANO_W / 2)
-                                 for kf in range(6)}),
-            2: make_track(2, 0, {kf: centred_box(0.75 * PANO_W)
-                                 for kf in range(3)}),
+            1: make_track(
+                1, 0, {
+                    keyframe: centred_box(PANO_W / 2)
+                    for keyframe in range(6)
+                }),
+            2: make_track(
+                2, 0, {
+                    keyframe: centred_box(0.75 * PANO_W)
+                    for keyframe in range(3)
+                }),
             3: make_track(3, 0, {0: centred_box(1000)}),
         }
 
-    def test_audit_membership_is_the_gate(self):
-        # Track 3 was never audited: no canonical semantics, no measurement.
-        audits = {1: {"valid_segments": None}, 2: {"valid_segments": None}}
+    def test_audit_membership_is_gate_and_output_ids_are_globally_scoped(self):
+        audits = {
+            1: audit_for(self.tracks[1]),
+            2: audit_for(self.tracks[2]),
+        }
         measurements = tracklets.build_measurements(
             self.tracks, audits, PANO_W, PARAMS)
-        self.assertEqual({m.tracklet_id for m in measurements}, {"T1", "T2"})
+        ids = {measurement.tracklet_id for measurement in measurements}
+        self.assertEqual(len(ids), 2)
+        self.assertTrue(any(value.endswith("#T1") for value in ids))
+        self.assertTrue(any(value.endswith("#T2") for value in ids))
+        self.assertTrue(all("@sha256:" in value for value in ids))
 
-    def test_measurements_sorted_by_anchor_then_id(self):
-        audits = {1: {}, 2: {}}
+    def test_drop_is_excluded_and_partial_segments_reach_reducer(self):
+        audits = {
+            1: audit_for(self.tracks[1], "drop", []),
+            2: audit_for(
+                self.tracks[2], "keep_partial",
+                [{"start_t": 0, "end_t": 1}]),
+        }
         measurements = tracklets.build_measurements(
             self.tracks, audits, PANO_W, PARAMS)
-        keys = [(m.anchor_keyframe_idx, m.tracklet_id) for m in measurements]
-        self.assertEqual(keys, sorted(keys))
-
-    def test_audited_track_missing_from_tracks_is_skipped(self):
-        audits = {1: {}, 99: {}}
-        measurements = tracklets.build_measurements(
-            self.tracks, audits, PANO_W, PARAMS)
-        self.assertEqual({m.tracklet_id for m in measurements}, {"T1"})
-
-    def test_segments_flow_through_to_the_series(self):
-        audits = {1: {"valid_segments": [{"start_t": 0, "end_t": 1}]}}
-        measurements = tracklets.build_measurements(
-            self.tracks, audits, PANO_W, PARAMS)
-        # Keyframes 0-1 only -> a single epoch bucket.
         self.assertEqual(len(measurements), 1)
+        self.assertTrue(measurements[0].tracklet_id.endswith("#T2"))
         self.assertEqual(measurements[0].anchor_keyframe_idx, 1)
-
-    def test_bearing_is_camera_frame(self):
-        audits = {2: {}}
-        m = tracklets.build_measurements(self.tracks, audits, PANO_W,
-                                         PARAMS)[0]
         self.assertAlmostEqual(
-            m.bearing_camera_deg,
+            measurements[0].bearing_camera_cw_deg,
             geo.azimuth_of_pano_column(0.75 * PANO_W, PANO_W))
 
-
-class ParityWithMergedPipelineTest(unittest.TestCase):
-    """The old m6 measurements, minus the weld: for a run where no tracks
-    were merged (the overwhelmingly common case), the fused bearings are
-    identical to what m6's fuse_bearings produced."""
-
-    def test_single_track_parity(self):
-        # Reference values computed with the old track_merge.fuse_bearings
-        # semantics: epoch 5, sigma 1.0, circular mean per bucket, kappa
-        # from hypot(sigma, width/4).
-        boxes = {kf: centred_box(PANO_W / 2 + 40 * kf) for kf in range(7)}
-        track = make_track(7, 0, boxes)
-        series = tracklets.bearing_series(track, PANO_W)
-        fused = tracklets.fuse_bearings(series, PARAMS)
-
-        def old_fuse(series, epoch_keyframes, bearing_sigma_deg):
-            fused, bucket = [], []
-            start_kf = series[0][0]
-            def flush(bucket):
-                if not bucket:
-                    return
-                sin_sum = sum(math.sin(math.radians(a)) for _, a, _ in bucket)
-                cos_sum = sum(math.cos(math.radians(a)) for _, a, _ in bucket)
-                mean_az = math.degrees(math.atan2(sin_sum, cos_sum)) % 360.0
-                mean_width = sum(w for _, _, w in bucket) / len(bucket)
-                anchor = bucket[len(bucket) // 2][0]
-                sigma = math.hypot(bearing_sigma_deg, mean_width / 4.0)
-                fused.append((anchor, mean_az, 1.0 / math.radians(sigma) ** 2))
-            for entry in series:
-                if entry[0] - start_kf >= epoch_keyframes:
-                    flush(bucket)
-                    bucket = []
-                    start_kf = entry[0]
-                bucket.append(entry)
-            flush(bucket)
-            return fused
-
-        reference = old_fuse(series, 5, 1.0)
-        self.assertEqual(len(fused), len(reference))
-        for (a1, az1, k1), (a2, az2, k2) in zip(fused, reference):
-            self.assertEqual(a1, a2)
-            self.assertAlmostEqual(az1, az2, places=9)
-            self.assertAlmostEqual(k1, k2, places=9)
+    def test_measurements_are_sorted(self):
+        audits = {
+            1: audit_for(self.tracks[1]),
+            2: audit_for(self.tracks[2]),
+        }
+        measurements = tracklets.build_measurements(
+            self.tracks, audits, PANO_W, PARAMS)
+        keys = [
+            (measurement.anchor_keyframe_idx, measurement.tracklet_id)
+            for measurement in measurements
+        ]
+        self.assertEqual(keys, sorted(keys))
 
 
 if __name__ == "__main__":

@@ -5,41 +5,26 @@ The harbor feather is 156 k landmarks, of which ~47 % are untagged
 waste baskets, CCTV cameras -- that nothing observed from a boat can ever
 correspond to. This drops those rows and writes a smaller catalog trim.
 
-**The full table is never modified.** Trimming writes a new file; the input
-stays as the fallback to consult whenever a landmark turns out to be missing.
+**The full table is never modified.** Trimming publishes a new artifact; the
+input stays as the fallback whenever a landmark turns out to be missing.
 
-**Output lives in the catalogs lane**, never inside a dataset:
-`artifacts/catalogs/<dataset>/<name>.feather`, resolved through
-`farfield.paths`. The catalog is a derived, versioned artifact; `datasets/` is
-frozen (REORG.md rule 7).
+**Input and output are published CATALOGS artifacts**, never loose Feather
+files. Each contains exactly `catalog.feather` plus its typed manifest. The
+output manifest binds the exact input ArtifactRef and all trim configuration;
+`datasets/` is frozen (REORG.md rule 7).
 
-**The recall guard is mandatory.** Every rule reports how many rows only it
-removes and what it costs against two references: the pairing-run positive set
-(`--positive_set`, see landmark_positive_set.py) and, stronger, the signatures
-a real matching run already chose (`--matched_from <run dir>`). A rule that
-drops either is a bug in the rule, and the tool refuses to write rather than
-report it. That guard has earned its place: it killed two proposed rules that
-looked obviously right -- dropping signatures that span many map rows
-(boston_harbor_leg1 matched `man_made=pier` across 375 of them) and dropping
-by physical extent (matched features include islands ~1 km across). Running
-with NEITHER reference requires `--no_recall_guard`, which is spelled the way
-it is because a trim written blind can silently delete the exact rows the
-matcher depends on.
+**Recall evidence is optional.** Catalog construction and trimming precede
+matching, so a new dataset must be able to publish its trimmed catalog without
+already having matching results. When `--positive_set` or `--matched_from` is
+supplied, the tool treats it as a regression guard and refuses a trim that
+drops a protected signature unless `--allow_recall_loss` is explicit. These
+guards are useful when revising an established trim, but they are not part of
+the catalog-construction contract.
 
-**A catalog is versioned, never overwritten.** Every number anyone has quoted
-was computed against the file that is already there, so writing over it
-silently changes the past; the tool refuses and asks for a new name instead
-(`--force` if you truly mean to replace it). It also refuses a trim that is
-byte-identical to an existing sibling trim -- a re-release under a new name
-destroys the meaning of versions (it happened three times on one dataset;
-same pattern as provenance.check_version_is_new, adapted to files). Each
-output gets a `<name>.provenance.json` beside it recording the input and its
-sha256, the output sha256, every argument, a fingerprint of the rule sets
-themselves (they live in code, so the arguments alone would not pin them
-down) and a `reproduce` command line. That file exists because "is this
-catalog stale?" cost an afternoon to answer: the shipped `v1_trimmed` tables
-looked stale against the current rules and were in fact an exact match -- the
-analysis had passed building thresholds by hand.
+**A catalog is immutable and versioned, never overwritten.** Every number
+anyone has quoted was computed against the published artifact already there.
+The artifact transaction refuses an existing output directory, records the
+exact input identity as an upstream, and fingerprints the rule sets in config.
 
 **`--clip_km` bounds the prior's extent**, for regional extracts that reach
 far past anything a vehicle could see. It is a prior, not a corridor:
@@ -59,16 +44,14 @@ here are exactly the ones the matcher would see.
 
 Example:
     bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:trim_catalog -- \\
-        --input /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/v1.feather \\
-        --dataset boston_harbor_leg1 --name v2_trimmed \\
-        --min_building_area_m2 2000 --min_building_levels 6 \\
-        --matched_from /data/farfield_matching/artifacts/object_tracks/.../runs/r003
+        --input_catalog_dir /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/v1 \\
+        --output_dir /data/farfield_matching/artifacts/catalogs/boston_harbor_leg1/v2_trimmed \\
+        --min_building_area_m2 2000 --min_building_levels 6
 """
 
 import argparse
 import hashlib
 import json
-import sys
 import warnings
 from collections import Counter
 from pathlib import Path
@@ -76,14 +59,21 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
+from experimental.overhead_matching.swag.farfield import publication
 from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.catalog import catalog
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.dataset_tools.landmark_positive_set import (  # noqa: E501
+    PositiveSetError,
     format_signature,
+    load_positive_set,
+    open_catalog_artifact,
+    open_matching_artifact,
     recall,
+    validate_positive_set,
 )
 
 # Structural keys that say what a thing IS, in the far-field vocabulary. A
@@ -239,31 +229,14 @@ LANDMARK_BUILDING_VALUES = frozenset({
 })
 
 
-def far_field_tag_columns(columns) -> list[str]:
-    """Columns `catalog.keeps_tag_key` would keep, by key name alone.
-
-    Pre-selecting columns keeps the row dicts ~50 wide instead of ~1470,
-    which is the difference between a 0.5 GB working set and a 5.5 GB one.
-    Only needed for the legacy wide layout; the dict schema is already
-    narrow.
-    """
-    return [column for column in columns
-            if column not in schema.META_COLUMNS
-            and catalog.keeps_tag_key(column)]
-
-
 def far_field_tag_records(gdf: gpd.GeoDataFrame) -> list[dict]:
     """Per-row pruned far-field tags, matching catalog.load_catalog.
 
-    Under the dict schema there are no tag columns to pre-select, and none is
-    needed: the row dicts are already only as wide as the tags that exist.
+    Compact catalogs have no tag columns to pre-select: the decoded row
+    objects are already only as wide as the tags that exist.
     """
-    if schema.is_dict_schema(gdf):
-        return [catalog.prune_far_field_tags(record)
-                for record in schema.tag_dicts(gdf)]
-    columns = far_field_tag_columns(gdf.columns)
     return [catalog.prune_far_field_tags(record)
-            for record in gdf[columns].to_dict(orient="records")]
+            for record in schema.tag_dicts(gdf)]
 
 
 def footprint_area_m2(gdf: gpd.GeoDataFrame) -> np.ndarray:
@@ -342,30 +315,6 @@ def evaluate_rules(tags: list, areas: np.ndarray,
             "generic_small_building": generic_building}
 
 
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def reproduce_command(arguments: dict) -> str:
-    """The exact command line that rebuilds this catalog."""
-    parts = ["bazel run //experimental/overhead_matching/swag/farfield/"
-             "dataset_tools:trim_catalog --"]
-    for key, value in arguments.items():
-        if key == "output" or value is None or value is False or value == []:
-            continue
-        if value is True:
-            parts.append(f"--{key}")
-        elif isinstance(value, list):
-            parts.extend(f"--{key} {item}" for item in value)
-        else:
-            parts.append(f"--{key} {value}")
-    return " ".join(parts)
-
-
 def clip_mask(gdf: gpd.GeoDataFrame, center_lat: float, center_lon: float,
               box_km: float) -> np.ndarray:
     """True where a row lies inside a `box_km` square centred on the point.
@@ -414,8 +363,54 @@ def rule_fingerprint(min_building_area_m2: float,
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def matched_signatures(sources: list, confidence_floor: float) -> dict:
-    """signature -> [(run, tracklet, confidence, match_type)] from matching.
+def catalog_descends_from(
+        candidate: artifact.ArtifactRef,
+        ancestor: artifact.ArtifactRef,
+) -> bool:
+    """Whether ``candidate`` is ``ancestor`` or a typed catalog descendant.
+
+    Optional recall evidence is commonly produced against an earlier trimmed
+    catalog. A later trim of the same full catalog may use that evidence, but an
+    unrelated catalog from the same dataset may not. Following only typed
+    CATALOGS upstreams proves that relationship without weakening artifact
+    identity to a dataset-name comparison.
+    """
+    if (candidate.kind != paths_lib.CATALOGS
+            or ancestor.kind != paths_lib.CATALOGS
+            or candidate.dataset != ancestor.dataset):
+        return False
+    pending = [candidate]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current == ancestor:
+            return True
+        identity = (current.kind, current.dataset, current.version,
+                    current.manifest_digest, current.content_digest)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        validated = artifact.open_artifact(
+            current.path,
+            expected_kind=paths_lib.CATALOGS,
+            expected_dataset=current.dataset,
+            expected_version=current.version,
+        )
+        if validated != current:
+            raise artifact.ArtifactValidationError(
+                "catalog lineage reference no longer identifies its artifact: "
+                f"expected {current.to_dict()}, found {validated.to_dict()}")
+        manifest = artifact.load_manifest(current.path)
+        pending.extend(reference for reference in manifest.upstreams
+                       if reference.kind == paths_lib.CATALOGS)
+    return False
+
+
+def matched_signatures(
+        sources: list, confidence_floor: float,
+        expected_catalog_ref: artifact.ArtifactRef,
+) -> tuple[dict, tuple[artifact.ArtifactRef, ...]]:
+    """Load signatures only from complete, catalog-bound matching artifacts.
 
     The positive-set guard asks whether a rule drops a *labelled* match. This
     asks the stronger question -- whether it drops something a matcher
@@ -425,22 +420,30 @@ def matched_signatures(sources: list, confidence_floor: float) -> dict:
     by physical extent (matched features include islands ~1 km across).
     """
     found = {}
+    references = []
     for source in sources:
-        path = (source if source.is_file()
-                else source / "matching" / "matches.json")
-        if not path.exists():
-            raise SystemExit(f"no matches.json at {path}; pass a run dir "
-                             f"that has been through matching, or the file "
-                             f"itself")
-        label = path.parent.parent.name
-        for tracklet, record in json.loads(path.read_text()).items():
-            for match in record.get("matches", []):
+        try:
+            matching_ref, catalog_ref, matches, _ = open_matching_artifact(
+                source)
+            if not catalog_descends_from(catalog_ref, expected_catalog_ref):
+                raise PositiveSetError(
+                    "matching catalog is neither the trim input nor its typed "
+                    f"descendant: input={expected_catalog_ref.to_dict()}, "
+                    f"matching={catalog_ref.to_dict()}")
+        except (artifact.ArtifactError, PositiveSetError) as exc:
+            raise SystemExit(
+                f"invalid --matched_from LANDMARK_MATCHES artifact "
+                f"{source}: {exc}") from exc
+        references.append(matching_ref)
+        label = matching_ref.version
+        for tracklet, records in matches.items():
+            for match in records:
                 if match.get("confidence", 0.0) < confidence_floor:
                     continue
                 found.setdefault(match["signature"], []).append(
                     (label, tracklet, match["confidence"],
                      match.get("match_type", "?")))
-    return found
+    return found, tuple(references)
 
 
 def report_matched_recall(matched: dict, tags: list, kept: np.ndarray,
@@ -478,72 +481,47 @@ def report_matched_recall(matched: dict, tags: list, kept: np.ndarray,
     return lost
 
 
-def check_not_byte_identical_sibling(new_feather_sha256: str,
-                                     output_path: Path,
-                                     input_path: Path | None = None) -> None:
-    """Refuse a trim whose bytes equal an existing sibling TRIM's.
-
-    File-level adaptation of `provenance.check_version_is_new`: siblings are
-    the other `.feather` files in the same catalogs directory, and each one's
-    recorded `output_sha256` (or, failing a sidecar, its own bytes) is
-    compared against the new file. A byte-identical re-release under a new
-    name destroys the meaning of catalog versions -- it happened three times
-    on one dataset's trims.
-
-    The trim's own SOURCE is exempt. A trim that drops nothing is a
-    legitimate outcome (a small or already-clean table), and refusing it
-    would block the very first trim of any such catalog -- the check exists
-    to catch a new version that duplicates an earlier *trim*, not one that
-    faithfully reproduces its input.
-    """
-    input_resolved = (Path(input_path).resolve() if input_path is not None
-                      else None)
-    for sibling in sorted(output_path.parent.glob("*.feather")):
-        if sibling.resolve() in (output_path.resolve(), input_resolved):
-            continue
-        sidecar = sibling.with_suffix(".provenance.json")
-        recorded = None
-        if sidecar.exists():
-            try:
-                recorded = json.loads(sidecar.read_text()).get(
-                    "output_sha256")
-            except json.JSONDecodeError:
-                recorded = None
-        if recorded is None:
-            recorded = sha256_of(sibling)
-        if recorded == new_feather_sha256:
-            raise SystemExit(
-                f"refusing to write {output_path.name}: content is "
-                f"byte-identical to existing sibling trim {sibling.name} "
-                f"(sha256 {new_feather_sha256[:12]}...). A new trim must "
-                f"contain new content -- point consumers at the existing "
-                f"file instead.")
+def positive_set_identity(positive_set: dict, source: Path,
+                          input_ref: artifact.ArtifactRef
+                          ) -> tuple[artifact.ArtifactRef,
+                                     artifact.ArtifactRef]:
+    """Validate schema-v2 matching and catalog identities."""
+    try:
+        matching_ref, catalog_ref = validate_positive_set(positive_set, source)
+    except (artifact.ArtifactError, PositiveSetError, TypeError) as exc:
+        raise SystemExit(
+            f"invalid positive set {source}: {exc}") from exc
+    try:
+        related = catalog_descends_from(catalog_ref, input_ref)
+    except artifact.ArtifactError as exc:
+        raise SystemExit(
+            f"cannot validate positive-set catalog lineage for {source}: "
+            f"{exc}") from exc
+    if not related:
+        raise SystemExit(
+            f"positive set {source} was built against a catalog that is "
+            "neither the trim input nor its typed descendant: "
+            f"input={input_ref.to_dict()}, evidence={catalog_ref.to_dict()}")
+    return matching_ref, catalog_ref
 
 
-def main(input_path: Path, output_path: Path, positive_set_path,
+def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
          min_building_area_m2: float, min_building_levels: float,
          dry_run: bool, matched_from=None, confidence_floor: float = 0.5,
-         allow_recall_loss: bool = False, force: bool = False,
-         clip_km=None, clip_center_lat=None, clip_center_lon=None,
-         no_recall_guard: bool = False,
-         dataset: str | None = None,
-         catalog_name: str | None = None) -> gpd.GeoDataFrame:
-    if positive_set_path is None and not matched_from and not no_recall_guard:
+         allow_recall_loss: bool = False,
+         clip_km=None, clip_center_lat=None,
+         clip_center_lon=None) -> gpd.GeoDataFrame:
+    try:
+        input_ref, input_path = open_catalog_artifact(input_catalog_dir)
+    except artifact.ArtifactError as exc:
+        raise SystemExit(f"invalid input catalog artifact: {exc}") from exc
+    output_dir = Path(output_dir)
+    if output_dir.exists() and not dry_run:
         raise SystemExit(
-            "refusing to trim blind: no --matched_from run and no "
-            "--positive_set were given, so nothing measures what this trim "
-            "destroys. A rule that looks obviously right has twice been "
-            "caught deleting rows real matchers chose. Pass a reference, or "
-            "pass --no_recall_guard if you accept writing a catalog whose "
-            "losses nobody has measured.")
-    output_path = output_path.with_suffix(".feather")
-    if output_path.exists() and not (dry_run or force):
-        raise SystemExit(
-            f"{output_path} already exists. A catalog is part of the problem "
+            f"{output_dir} already exists. A catalog is part of the problem "
             f"definition -- every past number was computed against it -- so "
-            f"it is versioned, not overwritten. Write a new name "
-            f"(v2_trimmed, v3_trimmed) or pass --force if you really mean to "
-            f"replace it.")
+            f"it is immutable and versioned, never overwritten. Publish a "
+            f"new artifact version.")
     gdf = schema.read_frame(input_path)
     print(f"{input_path.name}: {schema.summarize(gdf)}")
 
@@ -580,20 +558,25 @@ def main(input_path: Path, output_path: Path, positive_set_path,
 
     lost_positives = []
     if positive_set_path is not None:
-        with open(positive_set_path) as f:
-            positive_set = json.load(f)
+        positive_set_path = Path(positive_set_path)
+        try:
+            positive_set, _, _ = load_positive_set(positive_set_path)
+        except (artifact.ArtifactError, PositiveSetError) as exc:
+            raise SystemExit(
+                f"invalid positive set {positive_set_path}: {exc}") from exc
+        positive_set_identity(positive_set, positive_set_path, input_ref)
         surviving = {format_signature(tags[i]) for i in np.flatnonzero(kept)}
         score, lost_positives = recall(positive_set, surviving)
         n_signatures = len({p["signature"]
                             for p in positive_set["positives"]})
-        print(f"\nRECALL on pairing positives: {score:.4f} "
+        print(f"\nRECALL on final matching positives: {score:.4f} "
               f"({n_signatures - len({p['signature'] for p in lost_positives})}"
               f"/{n_signatures} signatures survive)")
         if lost_positives:
             print("LOST labelled matches -- fix the rule, do not accept "
                   "this:")
             for record in lost_positives[:15]:
-                print(f"  {record['tracklet']} [{record['match_type']}] "
+                print(f"  {record['tracklet_id']} [{record['match_type']}] "
                       f"{record['signature'][:88]}")
         if lost_positives and not allow_recall_loss:
             raise SystemExit(
@@ -603,12 +586,14 @@ def main(input_path: Path, output_path: Path, positive_set_path,
 
     lost_matches = []
     if matched_from:
-        matched = matched_signatures(matched_from, confidence_floor)
+        matched, _ = matched_signatures(
+            matched_from, confidence_floor, input_ref)
         lost_matches = report_matched_recall(matched, tags, kept, masks)
         if lost_matches and not allow_recall_loss:
             raise SystemExit(
                 f"\nrefusing to write: {len(lost_matches)} signature(s) that "
-                f"a real matching run chose would be dropped. Fix the rule, "
+                f"a completed matching artifact chose would be dropped. "
+                "Fix the rule, "
                 f"or pass --allow_recall_loss if the loss is intended.")
 
     if dry_run:
@@ -616,88 +601,47 @@ def main(input_path: Path, output_path: Path, positive_set_path,
         return gdf
 
     out = gdf[kept].reset_index(drop=True)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.parent / (output_path.name + ".tmp")
-    out.to_feather(tmp_path)
-    output_sha256 = sha256_of(tmp_path)
-    try:
-        check_not_byte_identical_sibling(output_sha256, output_path,
-                                         input_path)
-    except SystemExit:
-        tmp_path.unlink()
-        raise
-    tmp_path.replace(output_path)
-
-    provenance_path = output_path.with_suffix(".provenance.json")
-    arguments = {
-        "input": str(input_path),
-        "output": str(output_path),
-        "dataset": dataset,
-        "name": catalog_name,
-        "positive_set": str(positive_set_path) if positive_set_path else None,
+    config = {
         "min_building_area_m2": min_building_area_m2,
         "min_building_levels": min_building_levels,
         "clip_km": clip_km,
         "clip_center_lat": clip_center_lat,
         "clip_center_lon": clip_center_lon,
-        "matched_from": [str(p) for p in (matched_from or [])],
-        "confidence_floor": confidence_floor,
-        "allow_recall_loss": allow_recall_loss,
-        "no_recall_guard": no_recall_guard,
-    }
-    # Everything needed to rebuild this file byte for byte: the arguments,
-    # the exact input, and a fingerprint of the rules themselves (which live
-    # in code, so the arguments alone would not pin them down). This per-file
-    # sidecar is the reference provenance format for catalog trims;
-    # git_commit comes from the one shared provenance module.
-    provenance_path.write_text(json.dumps({
-        "tool": "farfield/dataset_tools/trim_catalog.py",
-        "git_commit": provenance.git_commit(),
-        "argv": list(sys.argv),
-        "arguments": arguments,
-        "reproduce": reproduce_command(arguments),
-        "input_sha256": sha256_of(input_path),
-        "output_sha256": output_sha256,
         "rows_in": int(len(gdf)),
         "rows_out": int(kept.sum()),
         "rule_fingerprint": rule_fingerprint(min_building_area_m2,
                                              min_building_levels),
         "drops_per_rule": {name: int(mask.sum())
                            for name, mask in masks.items()},
-        "recall_guard": {
-            "matched_from": [str(p) for p in (matched_from or [])],
-            "positive_set": (str(positive_set_path) if positive_set_path
-                             else None),
-            "confidence_floor": confidence_floor,
-            "no_recall_guard": no_recall_guard,
-            "lost_signatures": lost_matches,
-            "lost_positive_signatures": sorted(
-                {p["signature"] for p in lost_positives}),
-        },
-    }, indent=1))
-    print(f"\nWrote {output_path}")
-    print(f"       {provenance_path}")
-    print(f"Full table left untouched at {input_path}")
+    }
+    with publication.published_artifact(
+            output_dir,
+            kind=paths_lib.CATALOGS,
+            dataset=input_ref.dataset,
+            version=output_dir.name,
+            generator="farfield/dataset_tools/trim_catalog.py",
+            git_commit=provenance.git_commit(),
+            upstreams=(input_ref,),
+            config=config,
+            declared_outputs=("catalog.feather",)) as builder:
+        out.to_feather(builder.output_path("catalog.feather"))
+    print(f"\nWrote {output_dir}")
+    print(f"Full catalog left untouched at {input_catalog_dir}")
     return out
 
 
-if __name__ == "__main__":
+def cli(argv=None) -> int:
+    """Command-line entry point; :func:`main` remains the typed Python API."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", required=True, type=Path,
-                        help="source landmark feather (never modified)")
-    parser.add_argument("--dataset", required=True,
-                        help="dataset the trim belongs to; output goes to "
-                             "artifacts/catalogs/<dataset>/<name>.feather")
-    parser.add_argument("--name", required=True,
-                        help="catalog stem to write, e.g. v2_trimmed")
-    parser.add_argument("--farfield_root", type=Path, default=None,
-                        help=f"data root (default ${paths_lib.ROOT_ENV_VAR} "
-                             f"or {paths_lib.DEFAULT_ROOT})")
+    parser.add_argument("--input_catalog_dir", required=True, type=Path,
+                        help="published CATALOGS artifact to trim")
+    parser.add_argument("--output_dir", required=True, type=Path,
+                        help="new immutable CATALOGS artifact directory")
     parser.add_argument("--positive_set", type=Path, default=None,
-                        help="landmark_positive_set.py JSON; lost positives "
-                             "refuse the write")
+                        help="schema-v2 landmark_positive_set.py JSON; lost "
+                             "positives refuse the write")
     # Thresholds are required: they were tuned on Boston Harbor and do not
     # transfer silently to another environment (REORG.md rule 2).
     parser.add_argument("--min_building_area_m2", type=float, required=True,
@@ -709,23 +653,14 @@ if __name__ == "__main__":
                              "dropped (previously 6.0, tuned on "
                              "boston_harbor)")
     parser.add_argument("--matched_from", type=Path, action="append",
-                        default=[], metavar="RUN_DIR_OR_MATCHES_JSON",
-                        help="a matching run to guard against (repeatable): "
-                             "no signature it already matched may be dropped")
+                        default=[], metavar="LANDMARK_MATCHES_DIR",
+                        help="a completed typed matching artifact to guard "
+                             "against (repeatable): no signature it already "
+                             "matched may be dropped")
     parser.add_argument("--confidence_floor", type=float, default=0.5,
                         help="ignore matches below this confidence (0.5)")
     parser.add_argument("--allow_recall_loss", action="store_true",
                         help="write anyway when the guard finds losses")
-    parser.add_argument("--no_recall_guard", action="store_true",
-                        help="DANGEROUS: write with NO recall reference at "
-                             "all. Nothing will measure which matchable rows "
-                             "this trim destroys; twice already an "
-                             "obviously-right rule deleted rows real "
-                             "matchers chose. Only for a brand-new region "
-                             "with no runs to guard against")
-    parser.add_argument("--force", action="store_true",
-                        help="replace an existing catalog instead of "
-                             "versioning alongside it")
     parser.add_argument("--clip_km", type=float, default=None,
                         help="keep only rows inside a square box this many "
                              "km on a side (a prior extent, not a corridor); "
@@ -733,18 +668,17 @@ if __name__ == "__main__":
     parser.add_argument("--clip_center_lat", type=float, default=None)
     parser.add_argument("--clip_center_lon", type=float, default=None)
     parser.add_argument("--dry_run", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    paths = paths_lib.FarfieldPaths(
-        dataset=args.dataset,
-        root=args.farfield_root or paths_lib.default_root())
-    out_path = paths.artifact(paths_lib.CATALOGS) / f"{args.name}.feather"
-    main(args.input, out_path, args.positive_set,
+    main(args.input_catalog_dir, args.output_dir, args.positive_set,
          args.min_building_area_m2, args.min_building_levels, args.dry_run,
          matched_from=args.matched_from,
          confidence_floor=args.confidence_floor,
          allow_recall_loss=args.allow_recall_loss,
-         no_recall_guard=args.no_recall_guard, force=args.force,
          clip_km=args.clip_km, clip_center_lat=args.clip_center_lat,
-         clip_center_lon=args.clip_center_lon,
-         dataset=args.dataset, catalog_name=args.name)
+         clip_center_lon=args.clip_center_lon)
+    return 0
+
+
+if __name__ == "__main__":
+    cli()

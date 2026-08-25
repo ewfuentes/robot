@@ -4,10 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from experimental.overhead_matching.swag.farfield import (
-    dataset as ds_lib,
-    geometry as geo,
-)
+from experimental.overhead_matching.swag.farfield import dataset as ds_lib
+from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     ingest_selfcollect as ingest,
 )
@@ -15,62 +13,22 @@ from experimental.overhead_matching.swag.farfield.dataset_tools import (
 PANO_W = 512
 
 
-class HeadingTextTest(unittest.TestCase):
-    """The one heading computation. The original carried two copies — a
-    guarded one for extraction_log and an unguarded duplicate for
-    intrinsics.csv that crashed on a blank course the guarded copy had
-    already survived."""
-
-    def test_blank_course_yields_empty_not_a_crash(self):
-        for blank in ("", "   ", None):
-            self.assertEqual(ingest.heading_deg_text(blank, 214.0, PANO_W), "")
-            self.assertEqual(ingest.heading_deg_text(blank, None, PANO_W), "")
-
-    def test_without_offset_heading_is_the_raw_course(self):
-        self.assertEqual(ingest.heading_deg_text("37.5", None, PANO_W),
-                         "37.5000")
-        self.assertEqual(ingest.heading_deg_text("-10", None, PANO_W),
-                         "350.0000")
-
-    def test_with_offset_column_zero_bearing_comes_from_geometry(self):
-        # Column 0's camera azimuth is 180 deg from centre-column forward, so
-        # heading(column 0) = course + (180 - offset). The half turn falls out
-        # of the geometry helpers rather than being hand-typed.
-        course, offset = 90.0, 214.0
-        expected = float(geo.body_to_world_bearing_deg(
-            course,
-            geo.apply_mount_offset(
-                geo.azimuth_of_pano_column(0.0, PANO_W), offset)))
-        self.assertAlmostEqual(
-            float(ingest.heading_deg_text(str(course), offset, PANO_W)),
-            expected, places=4)
-        # Sanity: with a direction-of-travel offset of 180 the camera faces
-        # backwards, so column 0 points along the course.
-        self.assertAlmostEqual(
-            float(ingest.heading_deg_text("90", 180.0, PANO_W)), 90.0,
-            places=4)
-
-    def test_output_is_wrapped_into_range(self):
-        for course in ("350", "10", "180"):
-            value = float(ingest.heading_deg_text(course, 214.0, PANO_W))
-            self.assertGreaterEqual(value, 0.0)
-            self.assertLess(value, 360.0)
-
-
 class FillCourseFromTrackTest(unittest.TestCase):
     def test_course_follows_the_track(self):
         rows = [{"latitude": "42.0", "longitude": "-71.0"},
                 {"latitude": "42.0", "longitude": "-70.99"},
                 {"latitude": "42.0", "longitude": "-70.98"}]
-        ingest.fill_course_from_track(rows)
+        ingest.fill_gps_course_from_track(rows)
         for row in rows:
-            self.assertAlmostEqual(float(row["course_deg"]), 90.0, delta=1.0)
+            self.assertAlmostEqual(float(row["gps_course_deg"]), 90.0,
+                                   delta=1.0)
 
     def test_northbound_track(self):
         rows = [{"latitude": "42.00", "longitude": "-71.0"},
                 {"latitude": "42.01", "longitude": "-71.0"}]
-        ingest.fill_course_from_track(rows)
-        self.assertAlmostEqual(float(rows[0]["course_deg"]), 0.0, delta=1.0)
+        ingest.fill_gps_course_from_track(rows)
+        self.assertAlmostEqual(float(rows[0]["gps_course_deg"]), 0.0,
+                               delta=1.0)
 
 
 def write_source(root: Path, n=4, with_course=True) -> tuple:
@@ -124,49 +82,43 @@ class MetadataContractTest(unittest.TestCase):
         return out, json.loads((out / "pipeline_metadata.json").read_text())
 
     def test_metadata_satisfies_the_dataset_contract(self):
-        out, meta = self.run_ingest(
-            "--mount_offset_deg", "214.0",
-            "--mount_offset_source", "surveyed building, 72 keyframes")
+        out, meta = self.run_ingest()
         # north_aligned recorded false: the gate dataset.py enforces.
         self.assertIs(meta["north_aligned"], False)
         ds_lib.require_camera_frame_panoramas(meta, out)
-        # The azimuth convention carries the mount-offset frame tag whose
-        # absence caused the pohang incident.
-        self.assertEqual(meta["azimuth_convention"]["mount_offset_frame"],
-                         geo.MOUNT_OFFSET_FRAME)
-        self.assertEqual(
-            meta["azimuth_convention"]["heading_deg_is_bearing_of"],
-            "column_0")
-        # And the mount_offset block is consumable, truthfully flagged as
-        # already folded into heading_deg.
-        record = ds_lib.mount_offset_record(meta, out)
-        self.assertAlmostEqual(record.offset_deg, 214.0)
-        self.assertTrue(record.applied_to_heading_deg)
-        self.assertFalse(record.accuracy_validated)
-        self.assertEqual(meta["mount_offset"]["convention"],
-                         geo.MOUNT_OFFSET_CONVENTION)
-
-    def test_no_offset_means_no_block_not_a_null_one(self):
-        out, meta = self.run_ingest()
+        self.assertEqual(meta["azimuth_convention"]["camera_frame"],
+                         geo.CAMERA_FRAME)
+        self.assertEqual(meta["gps_course_diagnostic"]["use"],
+                         "diagnostic_only")
+        self.assertNotIn("heading_reliable", meta)
+        self.assertNotIn("heading_source", meta)
         self.assertNotIn("mount_offset", meta)
-        # Absent is the contract's word for uncalibrated.
-        self.assertIsNone(ds_lib.mount_offset_record(meta, out))
 
-    def test_offset_requires_a_source(self):
+    def test_mount_offset_option_is_not_accepted(self):
         with self.assertRaises(SystemExit):
             self.run_ingest("--mount_offset_deg", "214.0")
 
-    def test_blank_course_row_does_not_crash_either_table(self):
-        out, _ = self.run_ingest(
-            "--mount_offset_deg", "214.0",
-            "--mount_offset_source", "prior")
+    def test_course_is_diagnostic_and_intrinsics_heading_is_unset(self):
+        out, _ = self.run_ingest()
         with open(out / "intrinsics.csv") as f:
             intrinsics = list(csv.DictReader(f))
         with open(out / "extraction_log.csv") as f:
             extlog = list(csv.DictReader(f))
+        with open(out / "frames_gps.csv") as f:
+            gps_rows = list(csv.DictReader(f))
         self.assertEqual(len(intrinsics), len(extlog))
-        blanks = [r for r in intrinsics if not r["heading_deg"]]
-        self.assertEqual(len(blanks), 1)  # exactly the blank-course row
+        self.assertTrue(all(not row["heading_deg"] for row in intrinsics))
+        self.assertTrue(all(not row["heading_reference"]
+                            for row in intrinsics))
+        self.assertTrue(all(not row["heading_used"] for row in extlog))
+        self.assertEqual(gps_rows[0]["gps_course_deg"], "45.0000")
+        self.assertEqual(gps_rows[1]["gps_course_deg"], "")
+
+    def test_extra_metadata_cannot_restore_orientation_authority(self):
+        extras = self.root / "extras.json"
+        extras.write_text(json.dumps({"mount_offset": {"value": 1.0}}))
+        with self.assertRaises(SystemExit):
+            self.run_ingest("--extra_metadata", str(extras))
 
     def test_ingest_output_loads_through_the_dataset_reader(self):
         out, _ = self.run_ingest()

@@ -79,13 +79,17 @@ py_library(
     srcs = ["extract_landmarks.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
-        requirement("pillow"),
         ":llm_cost",
         ":panorama_to_pinhole_lib",
         ":prompts",
         ":vertex_batch_manager_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
     ],
 )
 
@@ -103,7 +107,10 @@ py_test(
         requirement("pillow"),
         ":extract_landmarks_lib",
         ":prompts",
-        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
+        "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:testing",
     ],
 )

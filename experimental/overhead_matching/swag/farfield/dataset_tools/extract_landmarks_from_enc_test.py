@@ -303,6 +303,7 @@ class FeatherFrameTest(unittest.TestCase):
                           "('enc', '0226DAA31B00')"])
         self.assertEqual(gdf["landmark_type"].tolist(), ["enc", "enc"])
         self.assertNotIn("pruned_props", gdf.columns)
+        self.assertEqual(tuple(gdf.columns), ls.META_COLUMNS)
         self.assertEqual(str(gdf.crs), "EPSG:4326")
         # Tags live in the `tags` dict column (catalog/schema.py), and a
         # landmark carries only the keys it actually has.
@@ -314,9 +315,23 @@ class FeatherFrameTest(unittest.TestCase):
         self.assertEqual(tag_dicts[1],
                          {"man_made": "pier", "object_class": "SLCONS"})
         self.assertNotIn("name", tag_dicts[1])
-        # object_class stays a real column too, since dedup treats it as
-        # metadata.
-        self.assertEqual(gdf["object_class"].tolist(), ["BOYLAT", "SLCONS"])
+        self.assertNotIn("object_class", gdf.columns)
+
+    def test_dedupe_excludes_object_class_from_decoded_tags(self):
+        features = [
+            {"lnam": "A", "object_class": "DAYMAR",
+             "geometry": Point(-70.95, 42.30),
+             "tags": {"man_made": "beacon"}},
+            {"lnam": "B", "object_class": "BCNLAT",
+             "geometry": Point(-70.95, 42.30),
+             "tags": {"man_made": "beacon"}},
+        ]
+        gdf = ele.features_to_geodataframe(features, "enc")
+        self.assertEqual(feather_utils.tag_signatures(gdf),
+                         [(('man_made', 'beacon'),)] * 2)
+        deduped = feather_utils.dedupe_exact_duplicates(
+            gdf, tolerance_m=1.0, verbose=False)
+        self.assertEqual(len(deduped), 1)
 
     def test_bbox_filter(self):
         features = [

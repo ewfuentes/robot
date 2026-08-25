@@ -114,7 +114,7 @@ class HypothesisGenerationTest(unittest.TestCase):
                     geo.compass_bearing_rad(
                         self.data.catalog.east_m[index] - east,
                         self.data.catalog.north_m[index] - north) - heading)
-                observed = math.radians(by_id[tracklet_id].bearing_body_deg)
+                observed = math.radians(by_id[tracklet_id].bearing_forward_cw_deg)
                 residual = np.abs(geo.wrap_rad(predicted - observed))
                 self.assertLess(
                     float(np.max(residual)), math.radians(6.0),
@@ -208,7 +208,7 @@ class HypothesisGenerationTest(unittest.TestCase):
         sharp = self._window()
         coarse = [structs.TrackletMeasurement(m.tracklet_id,
                                               m.anchor_keyframe_idx,
-                                              m.bearing_body_deg, 20.0)
+                                              m.bearing_forward_cw_deg, 20.0)
                   for m in sharp]
         config = structs.ProposalConfig()
 
@@ -291,7 +291,7 @@ class HypothesisGenerationTest(unittest.TestCase):
             geo.compass_bearing_rad(
                 self.data.catalog.east_m[index] - east,
                 self.data.catalog.north_m[index] - north)
-            - math.radians(window[0].bearing_body_deg))
+            - math.radians(window[0].bearing_forward_cw_deg))
         self.assertLess(
             float(np.max(np.abs(geo.wrap_rad(implied - heading)))),
             math.radians(1.0))
@@ -337,7 +337,7 @@ class HypothesisGenerationTest(unittest.TestCase):
                 bearings.append(float(geo.wrap_rad(
                     geo.compass_bearing_rad(east - pose.east_m,
                                                 north - pose.north_m)
-                    - math.radians(anchor.heading_deg))))
+                    - math.radians(anchor.course_world_cw_deg))))
             solutions = resection.resect_three(
                 positions, bearings,
                 residual_tolerance_rad=math.radians(20.0))
@@ -384,7 +384,7 @@ class InitTriggerTest(unittest.TestCase):
         data = scenario.generate(scenario.harbor_loop(
             max_visible_range_m=10000.0, keyframe_period_s=_PERIOD_S, epoch_length_keyframes=1))
         delayed = [structs.TrackletMeasurement(
-            m.tracklet_id, m.anchor_keyframe_idx, m.bearing_body_deg, m.kappa)
+            m.tracklet_id, m.anchor_keyframe_idx, m.bearing_forward_cw_deg, m.kappa)
             for m in data.measurements if m.anchor_keyframe_idx >= 7]
         config = structs.FilterConfig(
             n_particles=4000, seed=1,

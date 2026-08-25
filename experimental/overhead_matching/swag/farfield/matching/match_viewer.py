@@ -1,7 +1,7 @@
 """Side-by-side review of what we saw against what we matched it to.
 
-Renders <run_dir>/matching/review/index.html: a pannable map of the run beside
-a scrollable list of tracklets. Per tracklet the list holds the observation
+Renders a separate review output directory: a pannable map of the dataset
+beside a scrollable list of tracklets. Per tracklet the list holds the observation
 (query tags + the chips the audit looked at) and every map landmark the matcher
 proposed, with confidence, match type, and how many map rows the matched
 signature expanded to. Selecting a tracklet draws it on the map; clicking
@@ -10,12 +10,11 @@ something on the map selects it in the list.
 The map is the half that makes a wrong match *visible*. In the run's own ENU
 frame it carries:
 
-  - the vessel's true track from GPS, with heading ticks, and at each anchor
-    keyframe of the selected tracklet the true pose and heading it was observed
-    from;
-  - a bearing ray from each of those anchors, in the world frame the filter
-    uses: `bearing_world = heading + (bearing_camera - mount_offset)`, through
-    `geometry.apply_mount_offset` / `body_to_world` rather than restated here;
+  - the vessel's true track from GPS, with GPS-course ticks, and at each anchor
+    keyframe of the selected tracklet the true pose and GPS course it was
+    observed from;
+  - a bearing ray from each of those anchors, rotated through the exact
+    human-approved nominal-forward calibration consumed by localization;
   - every map row the match expanded to.
 
 A ray that misses its matched landmark is a wrong match, and nothing in the
@@ -23,19 +22,19 @@ JSON shows that as fast as one look at the geometry. The bearings come from
 `tracking/tracklets.py` -- the same per-track fused bearings the localization
 export consumes -- so what is drawn here is what the filter is fed.
 
-The catalog it draws is the one this matching run recorded in
-`matching/settings.json`; the feather is never re-resolved through path
-defaults, so the map shown is the map that was matched against. The mount
-offset comes from the run's calibration sidecars (`sun_offset_check.json`,
-absolute, outranking `mount_offset_sweep.json`, relative) or an explicit
-`--offset_deg`; dataset metadata is not consulted.
+The catalog it draws is the one bound by the typed matching artifact. The
+nominal-forward calibration is an explicit required input, validated for the
+same dataset. Sun checks and alignment sweeps are diagnostics, never silently
+promoted to calibration authority.
 
 Everything is embedded in the page: no tile host, no network, and the file
 stays a frozen record that can be copied elsewhere and still render.
 
 Run:
   bazel run //experimental/overhead_matching/swag/farfield/matching:match_viewer -- \\
-      --run_dir <runs>/r003_full_leg1 --epoch_keyframes N --bearing_sigma_deg S
+      --matches_dir ... --tracks_dir ... --audit_dir ... --catalog_dir ... \
+      --nominal_forward_calibration ... --epoch_keyframes N \
+      --bearing_sigma_deg S
 """
 
 import argparse
@@ -48,13 +47,16 @@ from pathlib import Path
 
 from PIL import Image
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield import dataset
 from experimental.overhead_matching.swag.farfield import geometry as geo
+from experimental.overhead_matching.swag.farfield import llm_lifecycle
+from experimental.overhead_matching.swag.farfield import nominal_forward
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
 from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.calibration import (
     audit_io,
-    heading as heading_mod,
+    heading as course_model,
 )
 from experimental.overhead_matching.swag.farfield.catalog import (
     catalog as catalog_lib,
@@ -73,8 +75,8 @@ MAX_TARGETS_DRAWN = 40
 # is answerable. Sorted named-first then by distance to the track, and the
 # count that was dropped is reported.
 MAX_CONTEXT_POINTS = 6000
-# Heading ticks along the whole truth track, in keyframes.
-HEADING_TICK_EVERY = 20
+# GPS-course ticks along the whole truth track, in keyframes.
+COURSE_TICK_EVERY = 20
 # Ray length as a multiple of the distance to the furthest drawn target, so a
 # ray always overshoots what it is supposed to hit and a miss is visible.
 RAY_OVERSHOOT = 1.15
@@ -90,22 +92,16 @@ def esc(x):
 
 
 def load_settings(match_dir: Path) -> dict:
-    """The matching run's recorded settings -- the reader's source of truth.
-
-    The feather path in particular is consumed from here, never re-resolved
-    through path defaults: a viewer that re-resolves can silently draw a
-    different catalog than the one that was matched against.
-    """
+    """The matching artifact's immutable reproduction summary."""
     path = match_dir / "settings.json"
     if not path.exists():
         raise SystemExit(
             f"{path} not found -- run match_landmarks first; the viewer "
-            f"reads the recorded settings (feather above all) rather than "
-            f"re-resolving them")
+            f"requires the published reproduction summary")
     return json.loads(path.read_text())
 
 
-def track_info(tracks: dict, audit_meta: dict) -> dict:
+def track_info(tracks: dict, audits: dict, audit_meta: dict) -> dict:
     """Per-tracklet display facts, straight from the primary artifacts.
 
     The merged/landmarks.json this used to come from is gone (the merge stage
@@ -113,11 +109,14 @@ def track_info(tracks: dict, audit_meta: dict) -> dict:
     from the track's own records and the support count from the audit's meta.
     """
     info = {}
-    for tid, track in tracks.items():
-        key = tracklets.tracklet_id(track)
+    for accepted in tracklets.build_accepted_tracklets(tracks, audits):
+        track = accepted.source_track
+        tid = track["track_id"]
+        key = accepted.tracklet_id
         keyframes = [r["keyframe"] for r in track.get("records", [])]
-        meta = audit_meta.get(key) or {}
+        meta = audit_meta.get(accepted.local_id) or {}
         info[key] = {
+            "local_id": accepted.local_id,
             "track_ids": [tid],
             "keyframe_span": ([min(keyframes), max(keyframes)]
                               if keyframes else []),
@@ -218,8 +217,8 @@ def stats_line(key: str, entry: dict, info: dict, uniqueness: dict,
     how many independent slices the matcher scored this tracklet in, the worst
     of those slices' no-match confidences, whether an instance claim was
     downgraded to a category, and its own `uniqueness_score` -- which the
-    matcher requires in the response schema and then stores nowhere, so it is
-    read back out of `results.jsonl`. `default_log_lr` is the filter's floor:
+    matcher requires in the response schema and preserves in the validated
+    canonical result artifact. `default_log_lr` is the filter's floor:
     it is what every landmark *not* named here scores, and a named landmark's
     weight is the gap to it.
     """
@@ -277,55 +276,94 @@ def load_log_lrs(match_dir: Path) -> tuple:
     surface small.
     """
     path = match_dir / "compatibility.json"
-    if not path.exists():
-        return {}, {}
-    tables = json.loads(path.read_text())
+    if not path.is_file():
+        raise SystemExit(f"missing matching compatibility artifact {path}")
+    try:
+        tables = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid matching compatibility artifact {path}: "
+                         f"{error}") from error
+    if not isinstance(tables, list):
+        raise SystemExit(f"{path} must contain a list of compatibility tables")
     scores, defaults = {}, {}
     for table in tables:
         tracklet_id = table["tracklet_id"]
+        if tracklet_id in scores:
+            raise SystemExit(
+                f"{path} contains duplicate table for {tracklet_id!r}")
         scores[tracklet_id] = {e["landmark_id"]: e["log_lr"]
                                for e in table.get("entries", [])}
         defaults[tracklet_id] = table.get("default_log_lr")
     return scores, defaults
 
 
-def load_uniqueness(match_dir: Path) -> tuple:
-    """Per-tracklet `uniqueness_score`s, recovered from the raw responses.
+def load_uniqueness(match_dir: Path) -> dict:
+    """Per-tracklet uniqueness scores from complete canonical LLM results.
 
-    The matcher's response schema *requires* uniqueness_score -- how
-    distinctive the observed landmark is on its own -- and we pay tokens for it
-    on every query, but the matcher keeps it in neither `matches.json` nor
-    `compatibility.json`. It survives only in `results.jsonl`, so it is read
-    back here rather than left to be a signal that was bought and thrown away.
-
-    Each response scores the slice of tracklets named by
-    `request_meta[key].batch_keys`, indexed by `set_1_id`. A tracklet appears in
-    many slices, so what is reported is the median of its scores and how many
-    slices agreed to give one.
+    The one typed ``landmark_matches`` artifact is validated first, including
+    its content digest, complete-coverage attestation, request fingerprint,
+    and exact tracks/audits/catalog upstream edge. There is no fallback to
+    mutable transport output and no partial viewer when a request unit is
+    absent.
     """
-    meta_path = match_dir / "request_meta.json"
-    results_path = match_dir / "results.jsonl"
-    if not (meta_path.exists() and results_path.exists()):
-        return {}, 0
-    meta = json.loads(meta_path.read_text())
-    out, failures = {}, 0
-    with open(results_path) as handle:
-        for line in handle:
-            try:
-                record = json.loads(line)
-                keys = meta[record["key"]]["batch_keys"]
-                text = (record["response"]["candidates"][0]["content"]
-                        ["parts"][0]["text"])
-                for row in json.loads(text)["matches"]:
-                    score = row.get("uniqueness_score")
-                    if score is None:
-                        continue
-                    index = int(row["set_1_id"])
-                    if 0 <= index < len(keys):
-                        out.setdefault(keys[index], []).append(int(score))
-            except (KeyError, IndexError, ValueError, TypeError):
-                failures += 1
-    return out, failures
+    try:
+        match_ref = artifact.open_artifact(
+            match_dir, expected_kind=paths_lib.LANDMARK_MATCHES)
+        request_set = llm_lifecycle.load_request_set(
+            match_dir / llm_lifecycle.REQUEST_SET_NAME)
+        manifest = artifact.load_manifest(match_dir)
+        expected_upstream_kinds = (
+            paths_lib.OBJECT_TRACKS,
+            paths_lib.SEMANTIC_AUDITS,
+            paths_lib.CATALOGS,
+        )
+        if tuple(ref.kind for ref in manifest.upstreams) != (
+                expected_upstream_kinds):
+            raise llm_lifecycle.LlmLifecycleError(
+                "matching artifact does not bind exact tracks, audits, and "
+                "catalog upstreams")
+        if request_set.upstreams != manifest.upstreams:
+            raise llm_lifecycle.LlmLifecycleError(
+                "matching request set is not bound to artifact upstreams")
+        if any(ref.dataset != match_ref.dataset
+               for ref in request_set.upstreams):
+            raise llm_lifecycle.LlmLifecycleError(
+                "matching request set crosses dataset identities")
+        if (manifest.config.get("request_set_fingerprint")
+                != request_set.fingerprint):
+            raise llm_lifecycle.LlmLifecycleError(
+                "matching artifact has the wrong request fingerprint")
+        n_expected = len(request_set.units)
+        if (manifest.config.get("phase") != "canonical_results"
+                or manifest.config.get("coverage") != "complete"
+                or manifest.config.get("n_expected") != n_expected
+                or manifest.config.get("n_successful") != n_expected):
+            raise llm_lifecycle.IncompleteCoverageError(
+                "matching artifact does not attest complete canonical coverage")
+        results = llm_lifecycle.load_canonical_results(
+            match_dir / llm_lifecycle.CANONICAL_RESULTS_NAME, request_set)
+    except (artifact.ArtifactError, llm_lifecycle.LlmLifecycleError,
+            OSError) as error:
+        raise SystemExit(
+            f"invalid canonical matching results under {match_dir}: {error}") \
+            from error
+
+    metadata = {unit.key: unit.metadata for unit in request_set.units}
+    out = {}
+    for record in results:
+        meta = metadata[record.key]
+        # Revalidate the stage payload at the read boundary too. A forged
+        # manifest cannot turn a malformed response into usable viewer data.
+        provider_shape = {"candidates": [{"content": {"parts": [{
+            "text": json.dumps(record.result),
+        }]}}]}
+        validated = match_landmarks.validate_matching_response(
+            record.key, provider_shape, meta)
+        keys = meta["batch_keys"]
+        for row in validated["matches"]:
+            out.setdefault(keys[row["set_1_id"]], []).append(
+                row["uniqueness_score"])
+    return out
 
 
 def bearing_residual_deg(rays, east_m: float, north_m: float):
@@ -367,16 +405,16 @@ def residual_cell(residual, n_rows: int) -> str:
     return f"<td class='{style} conf'>{residual:.0f}&deg;{mark}</td>"
 
 
-def truth_track(dataset_base: Path):
+def truth_track(dataset_base: Path, *, gps_course_min_displacement_m: float,
+                gps_course_smooth_window_s: float):
     """Poses and course per keyframe, plus the ENU anchor they are about.
 
     Positions come from `dataset.load_frames`/`fill_enu` and the course from
-    the same heading model the localization export uses
+    the same GPS-course model the localization export uses
     (`calibration/heading.py`), so the map's idea of where the vessel was and
-    which way it faced is the filter's idea. Without timestamps the model
-    cannot be fitted, and the fallback is a plain finite difference --
-    announced on the page, because a course that came from somewhere else is
-    exactly the kind of thing that should not be silent.
+    its direction of travel is the filter's idea. The viewer refuses a course
+    model that abstains; it never substitutes intrinsics heading or a second
+    finite-difference model.
     """
     frames = dataset.load_frames(Path(dataset_base))
     if not frames:
@@ -386,69 +424,29 @@ def truth_track(dataset_base: Path):
     east = [fr.x_m for fr in frames]
     north = [fr.y_m for fr in frames]
     times = [fr.time_s for fr in frames]
-    if all(t is not None for t in times):
-        model = heading_mod.heading_model_from_positions(east, north, times)
-        course = [float(model.at(t)) for t in times]
-        source = ("heading model over GPS fixes (calibration/heading.py, "
-                  "the model the localization export uses)")
-    else:
-        course = []
-        for i in range(len(east)):
-            j = min(i + 1, len(east) - 1)
-            k = max(i - 1, 0)
-            course.append(geo.compass_bearing_deg(east[j] - east[k],
-                                                  north[j] - north[k]))
-        source = ("finite-difference course: frames_gps.csv has no timestamps, "
-                  "so the heading model could not be fitted")
+    model = course_model.gps_course_model_from_positions(
+        east, north, times,
+        min_displacement_m=gps_course_min_displacement_m,
+        smooth_window_s=gps_course_smooth_window_s)
+    if model is None:
+        raise ValueError(
+            "GPS-course model abstained for inadequate displacement; the map "
+            "cannot draw world-frame bearings")
+    course = [float(model.course_world_cw_deg_at(t)) for t in times]
+    source = ("GPS-course model over positions (calibration/heading.py, "
+              "the model the localization export uses)")
     return frames, east, north, course, anchor_lat, anchor_lon, source
 
 
-def resolve_mount_offset(run_dir: Path, override) -> tuple[float, str]:
-    """The offset the overlay draws with, and where it came from.
-
-    Sidecars only -- dataset metadata is never consulted here (the viewer must
-    not depend on a metadata mutation having been published). Order, best
-    evidence first:
-
-      1. an explicit `--offset_deg`;
-      2. this run's `sun_offset_check.json`, if usable -- an **absolute**
-         check, validated against something outside the run's own bearings;
-      3. this run's `mount_offset_sweep.json`, if usable -- **relative**: it
-         finds the angle that makes rays agree with each other, so it silently
-         reproduces any error the poses and heading share, including a 180 deg
-         convention slip, which it fits perfectly.
-
-    No usable value is an error, not a guess: every ray on the page inherits
-    this number.
-    """
-    if override is not None:
-        return float(override), "--offset_deg"
-    sun_path = Path(run_dir) / "sun_offset_check.json"
-    if sun_path.exists():
-        sun = json.loads(sun_path.read_text())
-        if sun.get("usable"):
-            return float(sun["offset_deg"]), (
-                f"sun_offset_check.json ({sun.get('verdict')}, absolute)")
-        print(f"  sun check present but not usable ({sun.get('verdict')}); "
-              f"trying the sweep")
-    sweep_path = Path(run_dir) / "mount_offset_sweep.json"
-    if sweep_path.exists():
-        sweep = json.loads(sweep_path.read_text())
-        if sweep.get("usable"):
-            return float(sweep["mount_offset_deg"]), (
-                f"mount_offset_sweep.json ({sweep.get('verdict')}, "
-                f"{sweep.get('tracklets_used')} tracklets)")
-        print(f"  sweep present but not usable ({sweep.get('verdict')})")
-    raise SystemExit(
-        f"no usable mount offset for the overlay: neither "
-        f"{sun_path.name} nor {sweep_path.name} under {run_dir} carries a "
-        f"usable value. Run sun_offset_check or mount_offset_sweep first, "
-        f"or pass --offset_deg explicitly.")
-
-
-def build_map_payload(run_dir: Path, paths, feather: Path, matches: dict,
+def build_map_payload(paths, feather: Path, matches: dict,
                       signatures: dict, min_confidence: float, tracks: dict,
-                      audits: dict, fusion, offset_override) -> tuple:
+                      audits: dict, fusion,
+                      calibration: nominal_forward.NominalForward,
+                      calibration_path: Path,
+                      catalog_cache_dir: Path,
+                      landmark_position_sigma_m: float,
+                      gps_course_min_displacement_m: float,
+                      gps_course_smooth_window_s: float) -> tuple:
     """Everything the map draws, in ENU metres about the run's anchor.
 
     Returns (payload, notes, sig_resid). Notes are surfaced on the page -- an
@@ -456,19 +454,24 @@ def build_map_payload(run_dir: Path, paths, feather: Path, matches: dict,
     showing, so it is reported rather than absorbed.
     """
     notes = []
-    frames, east, north, course, anchor_lat, anchor_lon, heading_source = \
-        truth_track(paths.dataset_base)
-
-    offset_deg, offset_source = resolve_mount_offset(run_dir, offset_override)
+    frames, east, north, course, anchor_lat, anchor_lon, course_source = \
+        truth_track(
+            paths.dataset_base,
+            gps_course_min_displacement_m=gps_course_min_displacement_m,
+            gps_course_smooth_window_s=gps_course_smooth_window_s)
 
     with Image.open(
             paths.panorama_dir / f"{frames[0].pano_stem}.jpg") as probe:
         pano_w = probe.size[0]
-    measurements = tracklets.build_measurements(tracks, audits, pano_w,
-                                                fusion)
+    accepted = tracklets.build_accepted_tracklets(tracks, audits)
+    observations = tracklets.build_camera_bearing_observations(
+        accepted, pano_w, fusion.bearing_sigma_deg)
+    measurements = tracklets.epoch_fused_compat_v1(observations, fusion)
 
     catalog = catalog_lib.load_catalog_cached(
-        feather, anchor_lat, anchor_lon, keep_hulls=False)
+        feather, anchor_lat, anchor_lon,
+        cache_dir=catalog_cache_dir, keep_hulls=False,
+        position_sigma_m=landmark_position_sigma_m)
     by_id = {entry.landmark_id: entry for entry in catalog}
 
     rays = {}
@@ -478,8 +481,11 @@ def build_map_payload(run_dir: Path, paths, feather: Path, matches: dict,
             notes.append(f"measurement on keyframe {kf} beyond the "
                          f"{len(east)} frames on disk; not drawn")
             continue
-        body = geo.apply_mount_offset(meas.bearing_camera_deg, offset_deg)
-        world = float(geo.body_to_world_bearing_deg(course[kf], body))
+        forward = nominal_forward.camera_to_forward_cw_deg(
+            meas.bearing_camera_cw_deg, calibration)
+        world = float(geo.forward_to_world_bearing_cw_deg(
+            forward_world_cw_deg=course[kf],
+            bearing_forward_cw_deg=forward))
         rays.setdefault(meas.tracklet_id, []).append(
             [kf, round(east[kf], 1), round(north[kf], 1), round(world, 2),
              round(course[kf], 2), round(float(meas.kappa), 1)])
@@ -583,7 +589,7 @@ def build_map_payload(run_dir: Path, paths, feather: Path, matches: dict,
                 "dlon_per_m": per_m / math.cos(math.radians(anchor_lat))},
         "truth": [round(v, 1) for pair in zip(east, north) for v in pair],
         "ticks": [[round(east[i], 1), round(north[i], 1), round(course[i], 1)]
-                  for i in range(0, len(east), HEADING_TICK_EVERY)],
+                  for i in range(0, len(east), COURSE_TICK_EVERY)],
         "basemap": {"layers": [], "source": None},
         "context": {
             "e": [round(e.east_m, 1) for e in context],
@@ -593,8 +599,16 @@ def build_map_payload(run_dir: Path, paths, feather: Path, matches: dict,
         },
         "tracklets": tracklets_payload,
         "bounds": [round(v, 1) for v in bounds],
-        "offset": {"deg": round(offset_deg, 2), "source": offset_source},
-        "heading_source": heading_source,
+        "nominal_forward": {
+            "camera_bearing_cw_deg": round(
+                calibration.bearing_camera_cw_deg, 6),
+            "version": calibration.version,
+            "mounting_id": calibration.mounting_id,
+            "uncertainty_deg": calibration.uncertainty_deg,
+            "source": str(calibration_path),
+            "authority": "human-approved nominal-forward calibration",
+        },
+        "gps_course_source": course_source,
         "n_catalog": len(catalog),
         "n_measurements": len(measurements),
         "notes": notes,
@@ -895,7 +909,7 @@ function draw(){
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.6;
       arrow(r[1], r[2], r[4], 16);
       hits.push({x, y, r:8, kind:'pose', tracklet:sel, label:
-        'true pose at keyframe ' + r[0] + ': heading ' + r[4]
+        'true pose at keyframe ' + r[0] + ': GPS course ' + r[4]
         + ' deg, bearing ' + r[3] + ' deg world, kappa ' + r[5],
         e:r[1], n:r[2]});
     });
@@ -1054,23 +1068,22 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--matches_dir", type=Path, required=True)
+    parser.add_argument("--tracks_dir", type=Path, required=True)
+    parser.add_argument("--audit_dir", type=Path, required=True)
+    parser.add_argument("--catalog_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, required=True,
+                        help="Separate review output; published matching "
+                             "artifacts are immutable")
+    parser.add_argument("--nominal_forward_calibration", type=Path,
+                        required=True,
+                        help="Exact human-approved calibration also supplied "
+                             "to localization input export")
     parser.add_argument("--min_confidence", type=float, default=0.0,
                         help="Hide matches below this on the page (0 shows "
                              "everything; a view knob, not a result knob)")
     parser.add_argument("--no_map", action="store_true",
                         help="skip the map pane (and its feather read)")
-    parser.add_argument("--offset_deg", type=float, default=None,
-                        help="Mount offset for the overlay; otherwise this "
-                             "run's sun_offset_check.json / "
-                             "mount_offset_sweep.json sidecars are consulted "
-                             "(dataset metadata never is)")
-    parser.add_argument("--feather", type=Path, default=None,
-                        help="Override the catalog recorded in "
-                             "matching/settings.json. The recorded value is "
-                             "the default on purpose: the viewer must draw "
-                             "the map the run matched against, not a "
-                             "re-resolved one.")
     # tracklets.TrackletParams for the bearing overlay: no defaults on
     # purpose (REORG.md rule 2). Must match the values the export uses or the
     # rays drawn are not the rays the filter is fed.
@@ -1082,51 +1095,106 @@ def main():
                         help="Per-observation bearing noise floor, degrees; "
                              "required unless --no_map (previously 1.0 on "
                              "the harbor datasets)")
-    paths_lib.add_arguments(parser)
+    parser.add_argument(
+        "--landmark_position_sigma_m", type=float, default=None,
+        help="One uniform catalog position uncertainty in metres; required "
+             "when drawing the map")
+    parser.add_argument(
+        "--gps_course_min_displacement_m", type=float, default=None,
+        help="Minimum displacement for a GPS-course sample; required when "
+             "drawing the map")
+    parser.add_argument(
+        "--gps_course_smooth_window_s", type=float, default=None,
+        help="GPS-course smoothing window in seconds; required when drawing "
+             "the map")
+    paths_lib.add_arguments(parser, dataset_required=True)
     args = parser.parse_args()
 
-    match_dir = args.run_dir / "matching"
-    settings = load_settings(match_dir)
-    tracks, range_by_track = match_landmarks.load_tracks(args.run_dir)
-    matches = json.loads((match_dir / "matches.json").read_text())
-    signatures = json.loads((match_dir / "signatures.json").read_text())
+    match_dir = Path(args.matches_dir)
+    try:
+        artifact.open_artifact(
+            match_dir, expected_kind=paths_lib.LANDMARK_MATCHES,
+            expected_dataset=args.dataset)
+        audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
+        catalog_ref = artifact.open_artifact(
+            args.catalog_dir, expected_kind=paths_lib.CATALOGS,
+            expected_dataset=args.dataset)
+        match_manifest = artifact.load_manifest(match_dir)
+        expected_upstreams = (
+            audits.tracks_ref, audits.semantic_audits_ref, catalog_ref)
+        if match_manifest.upstreams != expected_upstreams:
+            raise ValueError(
+                "matching artifact was not built from the supplied tracks, "
+                "audits, and catalog artifacts")
+        calibration = nominal_forward.load(
+            args.nominal_forward_calibration,
+            expected_dataset=args.dataset)
+    except (artifact.ArtifactError, audit_io.AuditArtifactError,
+            OSError, ValueError) as error:
+        raise SystemExit(f"invalid viewer input: {error}") from error
+    load_settings(match_dir)
+    tracks = audits.source_tracks
+    matches = json.loads((match_dir / match_landmarks.MATCHES_NAME).read_text())
+    signatures = json.loads(
+        (match_dir / match_landmarks.SIGNATURES_NAME).read_text())
     log_lrs, log_lr_defaults = load_log_lrs(match_dir)
-    uniqueness, uniq_failures = load_uniqueness(match_dir)
-    # Recovered from raw responses, so a parse failure means a tracklet quietly
-    # has no uniqueness score. Counted and printed rather than absorbed.
-    if uniq_failures:
-        print(f"  uniqueness: {uniq_failures} response record(s) unparsable; "
-              f"those tracklets show no uniqueness score")
-    meta_path = args.run_dir / "semantic_audit" / "audit_meta.json"
-    audit_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-    info_by_key = track_info(tracks, audit_meta)
+    uniqueness = load_uniqueness(match_dir)
+    for label, keys in (("canonical results", set(uniqueness)),
+                        ("compatibility tables", set(log_lr_defaults))):
+        if keys != set(matches):
+            raise SystemExit(
+                f"matching output coverage mismatch: matches.json has "
+                f"{len(matches)} tracklets but {label} has {len(keys)}")
+    meta_path = Path(args.audit_dir) / "audit_meta.json"
+    meta_document = json.loads(meta_path.read_text())
+    if (meta_document.get("schema") != audit_io.META_SCHEMA
+            or not isinstance(meta_document.get("requests"), dict)):
+        raise SystemExit(
+            f"{meta_path} is not a {audit_io.META_SCHEMA} artifact")
+    audit_meta = meta_document["requests"]
+    range_by_track = {
+        request["track_id"]: request["range"]
+        for request in audit_meta.values()
+        if "range" in request
+    }
+    info_by_key = track_info(tracks, audits, audit_meta)
 
     payload, notes, sig_resid = None, [], {}
-    feather = args.feather or Path(settings["feather"])
+    feather = Path(args.catalog_dir) / "catalog.feather"
     if not args.no_map:
-        if args.epoch_keyframes is None or args.bearing_sigma_deg is None:
+        if (args.epoch_keyframes is None or args.bearing_sigma_deg is None
+                or args.landmark_position_sigma_m is None
+                or args.gps_course_min_displacement_m is None
+                or args.gps_course_smooth_window_s is None):
             parser.error(
-                "--epoch_keyframes and --bearing_sigma_deg are required to "
+                "--epoch_keyframes, --bearing_sigma_deg, and "
+                "--landmark_position_sigma_m plus both GPS-course parameters "
+                "are required to "
                 "draw the map (tracklets.TrackletParams; no defaults on "
                 "purpose -- they must match the export's values). Pass "
                 "--no_map to skip the map pane.")
         if not feather.exists():
             raise SystemExit(
-                f"catalog {feather} (from matching/settings.json"
-                f"{' override' if args.feather else ''}) does not exist; the "
-                f"map cannot be drawn against a catalog that is not there")
+                f"catalog artifact does not contain {feather.name}: {feather}")
         paths = paths_lib.resolve(
-            parser, args, infer_from=args.run_dir,
+            parser, args,
             require=("dataset_base", "panorama_dir"))
-        audits = audit_io.load_audits(args.run_dir)
         fusion = tracklets.TrackletParams(
             epoch_keyframes=args.epoch_keyframes,
             bearing_sigma_deg=args.bearing_sigma_deg)
         payload, notes, sig_resid = build_map_payload(
-            args.run_dir, paths, feather, matches, signatures,
-            args.min_confidence, tracks, audits, fusion, args.offset_deg)
+            paths, feather, matches, signatures,
+            args.min_confidence, tracks, audits, fusion,
+            calibration, Path(args.nominal_forward_calibration),
+            Path(args.output_dir) / "catalog_cache",
+            args.landmark_position_sigma_m,
+            args.gps_course_min_displacement_m,
+            args.gps_course_smooth_window_s)
 
-    out = match_dir / "review"
+    out = Path(args.output_dir)
+    if out == match_dir or match_dir in out.parents:
+        raise SystemExit(
+            "--output_dir must be outside the immutable matching artifact")
     out.mkdir(parents=True, exist_ok=True)
     kinds = Counter(x["match_type"] for v in matches.values()
                     for x in v["matches"])
@@ -1214,14 +1282,15 @@ def main():
         onmap = ("" if payload is None or key not in payload["tracklets"]
                  else f" <a href='#' data-jump='{esc(key)}' "
                       f"class='pin'>[show on map]</a>")
-        parts.append(f"<h2>{esc(key)}{onmap}</h2>")
+        local_id = info.get("local_id", key)
+        parts.append(f"<h2>{esc(local_id)}{onmap}</h2>")
         stats = stats_line(key, entry, info, uniqueness, log_lr_defaults)
         parts.append(f"<div class='q'><b>observed:</b> "
                      f"<code>{esc(entry['query'])}</code><br>"
                      f"<span class='nomatch'>{stats}</span></div>")
         parts.append(f"<div class='links'>"
                      f"{source_links(info, range_by_track)}</div>")
-        chips = chips_for(key, audit_meta)
+        chips = chips_for(local_id, audit_meta)
         if chips:
             parts.append("<div class='chips'>")
             for chip in chips:
@@ -1298,12 +1367,12 @@ def main():
             "</a><a id='ll-gm' href='#' target='_blank' rel='noopener'>"
             "Google Maps</a><span id='ll-coord' class='pin'></span></div>")
         parts.append("<canvas id='cv'></canvas>")
-        parts.append("<div class='tip' id='tip'>Click a tracklet heading, or "
+        parts.append("<div class='tip' id='tip'>Click a tracklet title, or "
                      "&ldquo;show on map&rdquo;, to draw its bearings and "
                      "matches.</div>")
         parts.append(
             "<div class='legend'>"
-            "<span><i style='background:#e6ecf2'></i>true track + heading"
+            "<span><i style='background:#e6ecf2'></i>true track + GPS course"
             "</span>"
             "<span><i style='background:#ffb347'></i>bearing ray</span>"
             "<span><i style='background:#3ecf8e'></i>instance match</span>"
@@ -1314,10 +1383,11 @@ def main():
             "</div>")
         parts.append(
             f"<div class='pin'>ENU about {payload['anchor'][0]:.5f}, "
-            f"{payload['anchor'][1]:.5f} &middot; mount offset "
-            f"{payload['offset']['deg']}&deg; from "
-            f"{esc(payload['offset']['source'])} &middot; heading: "
-            f"{esc(payload['heading_source'])} &middot; "
+            f"{payload['anchor'][1]:.5f} &middot; camera nominal forward "
+            f"{payload['nominal_forward']['camera_bearing_cw_deg']}&deg; "
+            f"from <b>{esc(payload['nominal_forward']['authority'])}</b> "
+            f"({esc(payload['nominal_forward']['source'])}) &middot; GPS course: "
+            f"{esc(payload['gps_course_source'])} &middot; "
             f"{payload['n_catalog']} catalog rows &middot; "
             f"{payload['n_measurements']} fused bearings &middot; catalog "
             f"{esc(Path(feather).name)}</div>")
@@ -1340,14 +1410,28 @@ def main():
         out,
         generator=("//experimental/overhead_matching/swag/farfield/"
                    "matching:match_viewer"),
-        inputs={"run_dir": args.run_dir, "matching": match_dir,
-                "feather": feather},
+        inputs={"matching": match_dir,
+                "tracks": args.tracks_dir,
+                "semantic_audits": args.audit_dir,
+                "catalog": args.catalog_dir,
+                "nominal_forward_calibration":
+                    args.nominal_forward_calibration},
         config={
             "min_confidence": args.min_confidence,
             "no_map": bool(args.no_map),
-            "offset_deg": None if payload is None else payload["offset"],
+            "nominal_forward": {
+                "schema": nominal_forward.SCHEMA,
+                "version": calibration.version,
+                "mounting_id": calibration.mounting_id,
+                "bearing_camera_cw_deg":
+                    calibration.bearing_camera_cw_deg,
+            },
             "epoch_keyframes": args.epoch_keyframes,
             "bearing_sigma_deg": args.bearing_sigma_deg,
+            "landmark_position_sigma_m": args.landmark_position_sigma_m,
+            "gps_course_min_displacement_m":
+                args.gps_course_min_displacement_m,
+            "gps_course_smooth_window_s": args.gps_course_smooth_window_s,
         })
     if payload is not None:
         print(f"  map: {len(payload['tracklets'])} tracklets drawable, "

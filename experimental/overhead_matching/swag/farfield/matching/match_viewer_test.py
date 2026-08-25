@@ -3,112 +3,39 @@
 with and without the map pane."""
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-import shapely
-
+from experimental.overhead_matching.swag.farfield import geometry
 from experimental.overhead_matching.swag.farfield import testing
-from experimental.overhead_matching.swag.farfield.catalog import schema
+from experimental.overhead_matching.swag.farfield import llm_lifecycle
 from experimental.overhead_matching.swag.farfield.matching import (
     match_landmarks as ml,
+    match_landmarks_test as fixtures,
     match_viewer as mv,
 )
 
-DATASET = "tiny_harbor"
+DATASET = fixtures.DATASET
 
 
-def write_feather(path: Path) -> Path:
-    frame = schema.build_frame(
-        ids=["('node', 101)", "('node', 102)", "('node', 103)"],
-        geometries=[
-            shapely.Point(testing.ANCHOR_LON + 0.001,
-                          testing.ANCHOR_LAT + 0.001),
-            shapely.Point(testing.ANCHOR_LON + 0.002,
-                          testing.ANCHOR_LAT + 0.001),
-            shapely.Point(testing.ANCHOR_LON + 0.002,
-                          testing.ANCHOR_LAT + 0.002),
-        ],
-        landmark_types=["osm", "osm", "osm"],
-        tags=[
-            {"man_made": "lighthouse", "name": "Graves Light"},
-            {"man_made": "tower"},
-            {"man_made": "tower"},
-        ],
-    )
-    frame.to_feather(path)
-    return path
-
-
-def track(track_id: int, keyframes) -> dict:
-    return {
-        "track_id": track_id,
-        "birth_keyframe": min(keyframes),
-        "close_reason": "end_of_range",
-        "records": [
-            {"keyframe": kf, "action": "propagate",
-             "window_origin": [0, 0],
-             "mask_bbox_window": [30, 10, 34, 14],
-             "supports": []}
-            for kf in keyframes
-        ],
-    }
-
-
-def audit(verdict="keep") -> dict:
-    return {
-        "verdict": verdict,
-        "landmark_kind": "fixed_structure",
-        "valid_segments": [{"start_t": 0, "end_t": 10}],
-        "unresolved": "",
-        "primary_object": {
-            "tags": [{"tag": "man_made=lighthouse", "weight": 0.9}],
-            "name_candidates": [
-                {"name": "Graves Light", "weight": 0.8, "basis": "both"}],
-            "name_aliases": [],
-            "description": "white conical tower",
-            "distinctive_features": [],
-            "extent": "point_like",
-        },
-    }
-
-
-def write_run(run_dir: Path) -> None:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "tracks_seg0.json").write_text(json.dumps(
-        {"range": {"name": "seg0"},
-         "tracks": [track(1, [0, 1, 2]), track(2, [1, 2, 3])]}))
-    audit_dir = run_dir / "semantic_audit"
-    audit_dir.mkdir(exist_ok=True)
-    meta = {}
-    with open(audit_dir / "results.jsonl", "w") as f:
-        for tid in (1, 2):
-            key = f"T{tid}"
-            meta[key] = {"track_id": tid, "birth_keyframe": 0,
-                         "n_supports": 3, "chips": []}
-            f.write(json.dumps({
-                "key": key,
-                "response": {"candidates": [{"content": {"parts": [
-                    {"text": json.dumps(audit())}]}}]},
-            }) + "\n")
-    (audit_dir / "audit_meta.json").write_text(json.dumps(meta))
-
-
-def fabricate_results(match_dir: Path, feather: Path, chunk_size: int) -> None:
-    meta = json.loads((match_dir / "request_meta.json").read_text())
-    sigs = sorted(ml.build_map_signatures(feather))
-    chunks = [sigs[i:i + chunk_size]
-              for i in range(0, len(sigs), chunk_size)]
+def fabricate_results(match_dir: Path) -> None:
+    work_dir = ml.matching_work_dir(match_dir)
+    snapshot = llm_lifecycle.load_request_set(
+        work_dir / llm_lifecycle.REQUEST_SET_NAME)
     lighthouse = "man_made=lighthouse; name=Graves Light"
-    with open(match_dir / "results.jsonl", "w") as f:
-        for key, record in meta.items():
-            chunk = chunks[record["chunk_index"]]
+    with open(work_dir / ml.TRANSPORT_RESULTS_NAME, "w") as f:
+        for unit in snapshot.units:
+            key = unit.key
+            record = unit.metadata
+            chunk = record["chunk_signatures"]
             entries = []
             for i, tid in enumerate(record["batch_keys"]):
+                local_id = tid.rsplit("#", 1)[-1]
                 set_2 = []
-                if tid == "T1" and lighthouse in chunk:
+                if local_id == "T1" and lighthouse in chunk:
                     set_2.append({"set_2_id": chunk.index(lighthouse),
                                   "match_type": "instance",
                                   "confidence": 0.9})
@@ -131,120 +58,172 @@ def run_main(module, argv):
         sys.argv = old
 
 
-class MountOffsetResolutionTest(unittest.TestCase):
-    def test_override_wins(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            offset, source = mv.resolve_mount_offset(Path(tmp), 33.0)
-            self.assertEqual((offset, source), (33.0, "--offset_deg"))
-
-    def test_sun_outranks_sweep(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp)
-            (run / "sun_offset_check.json").write_text(json.dumps(
-                {"offset_deg": 10.0, "usable": True, "verdict": "AGREEING"}))
-            (run / "mount_offset_sweep.json").write_text(json.dumps(
-                {"mount_offset_deg": 55.0, "usable": True,
-                 "verdict": "CLEAN", "tracklets_used": 9}))
-            offset, source = mv.resolve_mount_offset(run, None)
-            self.assertEqual(offset, 10.0)
-            self.assertIn("sun_offset_check.json", source)
-
-    def test_unusable_sun_falls_back_to_sweep(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp)
-            (run / "sun_offset_check.json").write_text(json.dumps(
-                {"offset_deg": 10.0, "usable": False,
-                 "verdict": "FIXED-OBJECT"}))
-            (run / "mount_offset_sweep.json").write_text(json.dumps(
-                {"mount_offset_deg": 55.0, "usable": True,
-                 "verdict": "CLEAN", "tracklets_used": 9}))
-            offset, source = mv.resolve_mount_offset(run, None)
-            self.assertEqual(offset, 55.0)
-            self.assertIn("mount_offset_sweep.json", source)
-
-    def test_nothing_usable_is_an_error_not_a_guess(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit):
-                mv.resolve_mount_offset(Path(tmp), None)
-
-
 class ViewerTest(unittest.TestCase):
     """Renders the page off a real (tiny) matching artifact."""
 
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
-        root = Path(cls._tmp.name)
-        testing.make_dataset(root / "datasets" / DATASET, n_frames=6)
-        cls.feather = write_feather(root / "cat.feather")
-        # Inside the artifact lane so the dataset is inferred from the path.
-        cls.run_dir = (root / "artifacts" / "object_tracks" / DATASET /
-                       "v1" / "runs" / "r001")
-        write_run(cls.run_dir)
-        (cls.run_dir / "sun_offset_check.json").write_text(json.dumps(
-            {"offset_deg": 10.0, "usable": True, "verdict": "AGREEING"}))
-
-        flags = [
-            "--run_dir", str(cls.run_dir),
-            "--feather", str(cls.feather),
-            "--query_batch", "2",
-            "--chunk_size", "2",
-            "--thinking_level", "HIGH",
-            "--confidence_floor", "0.05",
-            "--instance_max_rows", "1",
-            "--model", "test-model",
+        cls.root = Path(cls._tmp.name)
+        cls.dataset_base = cls.root / "datasets" / DATASET
+        testing.make_dataset(cls.dataset_base, n_frames=6)
+        (cls.tracks_dir, cls.audit_dir,
+         cls.catalog_dir) = fixtures.write_bound_inputs(cls.root)
+        cls.feather = cls.catalog_dir / "catalog.feather"
+        build_path, orchestration_digest = fixtures.write_build_config(
+            cls.root, cls.dataset_base)
+        cls.match_dir = (cls.root / "landmark_matches" /
+                         fixtures.MATCHES_VERSION)
+        cls.match_flags = [
+            "--dataset", DATASET,
+            "--dataset_base", str(cls.dataset_base),
+            "--tracks_dir", str(cls.tracks_dir),
+            "--audit_dir", str(cls.audit_dir),
+            "--catalog_dir", str(cls.catalog_dir),
+            "--output_dir", str(cls.match_dir),
+            "--build_config", str(build_path),
+            "--orchestration_config_digest", orchestration_digest,
+            "--online",
         ]
-        run_main(ml, flags + ["--build_only"])
-        fabricate_results(cls.run_dir / "matching", cls.feather, chunk_size=2)
-        run_main(ml, flags + ["--aggregate_only"])
+        run_main(ml, cls.match_flags + ["--build_only"])
+        fabricate_results(cls.match_dir)
+        run_main(ml, cls.match_flags + ["--aggregate_only"])
+
+        cls.calibration_path = cls.root / "nominal_forward.json"
+        pano_width = 360
+        pano_column = 10.0
+        cls.calibration_path.write_text(json.dumps({
+            "schema": "farfield_nominal_forward/v1",
+            "frame": "camera_centre_column_nominal_forward_axis_v1",
+            "approved": True,
+            "dataset": DATASET,
+            "version": "approved-v1",
+            "mounting_id": "test-camera",
+            "panorama_column": pano_column,
+            "panorama_width": pano_width,
+            "bearing_camera_cw_deg": float(
+                geometry.azimuth_of_pano_column(pano_column, pano_width)),
+            "uncertainty_deg": 1.0,
+            "evidence_frame_ids": ["frame-0000"],
+            "operator": "unit-test",
+            "approved_at": "2026-08-23T00:00:00Z",
+            "notes": "test calibration",
+        }))
 
     @classmethod
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def _page(self):
-        return (self.run_dir / "matching" / "review" / "index.html")
+    def _viewer_flags(self, output_name):
+        return [
+            "--dataset", DATASET,
+            "--dataset_base", str(self.dataset_base),
+            "--matches_dir", str(self.match_dir),
+            "--tracks_dir", str(self.tracks_dir),
+            "--audit_dir", str(self.audit_dir),
+            "--catalog_dir", str(self.catalog_dir),
+            "--output_dir", str(self.root / output_name),
+            "--nominal_forward_calibration", str(self.calibration_path),
+        ]
+
+    def _page(self, output_name):
+        return self.root / output_name / "index.html"
 
     def test_no_map_page_renders(self):
-        run_main(mv, ["--run_dir", str(self.run_dir), "--no_map"])
-        page = self._page().read_text()
+        run_main(
+            mv, self._viewer_flags("review-no-map") + ["--no_map"])
+        page = self._page("review-no-map").read_text()
         self.assertIn("map skipped", page)
-        self.assertIn("data-key='T1'", page)
+        self.assertIn("data-key='object_tracks:tiny_harbor:tracks-v1", page)
+        self.assertIn(">T1</h2>", page)
         # Track links use each track's own range name (all ranges loaded,
         # not next(glob)).
         self.assertIn("track_seg0_T1.html", page)
         self.assertIn("semantic_audit/review/index.html#T1", page)
 
-    def test_map_page_draws_recorded_catalog_and_sidecar_offset(self):
-        run_main(mv, ["--run_dir", str(self.run_dir),
-                      "--epoch_keyframes", "5",
-                      "--bearing_sigma_deg", "1.0"])
-        page = self._page().read_text()
+    def test_uniqueness_comes_from_complete_canonical_results(self):
+        uniqueness = mv.load_uniqueness(self.match_dir)
+        by_local = {key.rsplit("#", 1)[-1]: value
+                    for key, value in uniqueness.items()}
+        self.assertEqual(by_local, {"T1": [5, 5], "T2": [5, 5]})
+        self.assertTrue(all("@sha256:" in key for key in uniqueness))
+
+    def test_raw_result_files_cannot_replace_canonical_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copied = Path(tmp) / "matching"
+            shutil.copytree(self.match_dir, copied)
+            (copied / llm_lifecycle.CANONICAL_RESULTS_NAME).unlink()
+            # Even apparently usable legacy files are not a fallback.
+            (copied / "request_meta.json").write_text("{}")
+            (copied / "results.jsonl").write_text("{}\n")
+            with self.assertRaisesRegex(SystemExit, "canonical matching"):
+                mv.load_uniqueness(copied)
+
+    def test_tampered_canonical_payload_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copied = Path(tmp) / "matching"
+            shutil.copytree(self.match_dir, copied)
+            canonical_path = copied / llm_lifecycle.CANONICAL_RESULTS_NAME
+            canonical_path.write_text(canonical_path.read_text() + "{}\n")
+            with self.assertRaisesRegex(SystemExit, "content digest mismatch"):
+                mv.load_uniqueness(copied)
+
+    def test_missing_compatibility_is_not_silently_treated_as_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(SystemExit, "missing matching"):
+                mv.load_log_lrs(Path(tmp))
+
+    def test_map_page_draws_bound_catalog_and_approved_calibration(self):
+        flags = self._viewer_flags("review-map") + [
+            "--epoch_keyframes", "5",
+            "--bearing_sigma_deg", "1.0",
+            "--landmark_position_sigma_m", "10.0",
+            "--gps_course_min_displacement_m", "1.0",
+            "--gps_course_smooth_window_s", "5.0",
+        ]
+        run_main(mv, flags)
+        page = self._page("review-map").read_text()
         self.assertIn("MAP_DATA", page)
-        # The offset came from the run's sidecar, not dataset metadata (which
-        # testing.default_metadata records as 214 -- must NOT appear).
-        self.assertIn("sun_offset_check.json (AGREEING, absolute)", page)
+        self.assertIn("human-approved nominal-forward calibration", page)
+        self.assertNotIn("sun_offset_check", page)
+        self.assertNotIn("mount_offset_sweep", page)
         payload = json.loads(
             page.split("MAP_DATA=", 1)[1].split(";</script>", 1)[0]
             .replace("<\\/", "</"))
-        self.assertEqual(payload["offset"]["deg"], 10.0)
-        self.assertIn("T1", payload["tracklets"])
-        self.assertTrue(payload["tracklets"]["T1"]["rays"])
-        target_ids = [t[4] for t in payload["tracklets"]["T1"]["targets"]]
+        self.assertEqual(payload["nominal_forward"]["version"], "approved-v1")
+        self.assertEqual(
+            payload["nominal_forward"]["authority"],
+            "human-approved nominal-forward calibration")
+        by_local = {key.rsplit("#", 1)[-1]: value
+                    for key, value in payload["tracklets"].items()}
+        self.assertIn("T1", by_local)
+        self.assertTrue(by_local["T1"]["rays"])
+        target_ids = [t[4] for t in by_local["T1"]["targets"]]
         self.assertIn("osm:node:101", target_ids)
         # Self-contained page: provenance manifest beside it.
-        self.assertTrue((self._page().parent / "manifest.json").exists())
+        self.assertTrue(
+            (self._page("review-map").parent / "manifest.json").exists())
 
     def test_map_without_fusion_params_is_refused(self):
         with self.assertRaises(SystemExit):
-            run_main(mv, ["--run_dir", str(self.run_dir)])
+            run_main(mv, self._viewer_flags("review-no-params"))
+
+    def test_wrong_dataset_calibration_is_refused(self):
+        wrong = self.root / "wrong-calibration.json"
+        document = json.loads(self.calibration_path.read_text())
+        document["dataset"] = "another_dataset"
+        wrong.write_text(json.dumps(document))
+        flags = self._viewer_flags("review-wrong-calibration")
+        flags[flags.index("--nominal_forward_calibration") + 1] = str(wrong)
+        with self.assertRaisesRegex(SystemExit, "another_dataset"):
+            run_main(mv, flags + ["--no_map"])
 
     def test_missing_settings_is_a_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bare = Path(tmp) / "run"
-            (bare / "matching").mkdir(parents=True)
+            bare = Path(tmp) / "matching"
+            bare.mkdir()
             with self.assertRaises(SystemExit):
-                run_main(mv, ["--run_dir", str(bare), "--no_map"])
+                mv.load_settings(bare)
 
 
 if __name__ == "__main__":

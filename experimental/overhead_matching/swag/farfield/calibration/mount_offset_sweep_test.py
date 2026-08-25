@@ -1,8 +1,5 @@
-import json
 import math
-import tempfile
 import unittest
-from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.calibration import (
@@ -17,7 +14,7 @@ def synthetic_tracklets(true_offset_deg, landmarks, n_obs=6, leg_m=400.0):
     `bearing_world = course + bearing_camera - offset`, so the sweep should
     recover `true_offset_deg` exactly on noise-free input.
     """
-    course = 0.0  # heading north; ENU north is +y
+    gps_course_world_cw_deg = 0.0  # course north; ENU north is +y
     by_tracklet = {}
     for i, (east, north) in enumerate(landmarks):
         observations = []
@@ -25,13 +22,20 @@ def synthetic_tracklets(true_offset_deg, landmarks, n_obs=6, leg_m=400.0):
             boat_north = k * (leg_m / max(n_obs - 1, 1))
             bearing_world = math.degrees(
                 math.atan2(east - 0.0, north - boat_north)) % 360.0
-            camera = (bearing_world - course + true_offset_deg) % 360.0
-            observations.append((0.0, boat_north, camera, course, k))
+            camera = (bearing_world - gps_course_world_cw_deg
+                      + true_offset_deg) % 360.0
+            observations.append(
+                (0.0, boat_north, camera, gps_course_world_cw_deg, k))
         by_tracklet[f"LT{i}"] = observations
     return by_tracklet
 
 
 class ResidualTest(unittest.TestCase):
+
+    def test_candidate_transform_is_explicitly_course_relative(self):
+        self.assertEqual(
+            mos.camera_to_effective_gps_course_cw_deg(10.0, 214.0),
+            156.0)
 
     def test_true_offset_gives_near_zero_residual(self):
         tracklets = synthetic_tracklets(
@@ -214,66 +218,6 @@ class ArcGateTest(unittest.TestCase):
 
     def test_single_observation_has_no_arc(self):
         self.assertEqual(mos.arc_deg(self.observations([10.0])), 0.0)
-
-
-class LoadTracksTest(unittest.TestCase):
-
-    def write_tracks(self, run_dir, name, track_ids):
-        (Path(run_dir) / name).write_text(json.dumps({
-            "range": {"name": name},
-            "tracks": [{"track_id": tid, "birth_keyframe": 0, "records": []}
-                       for tid in track_ids],
-        }))
-
-    def test_all_range_files_are_merged(self):
-        # The old merge stage read next(glob) and silently dropped every
-        # other range's tracks.
-        with tempfile.TemporaryDirectory() as tmp:
-            self.write_tracks(tmp, "tracks_r000.json", [1, 2])
-            self.write_tracks(tmp, "tracks_r001.json", [3])
-            self.assertEqual(set(mos.load_tracks(Path(tmp))), {1, 2, 3})
-
-    def test_duplicate_track_id_across_files_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.write_tracks(tmp, "tracks_r000.json", [1, 2])
-            self.write_tracks(tmp, "tracks_r001.json", [2])
-            with self.assertRaises(SystemExit):
-                mos.load_tracks(Path(tmp))
-
-    def test_no_tracks_files_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(SystemExit):
-                mos.load_tracks(Path(tmp))
-
-
-class SidecarTest(unittest.TestCase):
-    """The sweep writes a sidecar into the run dir -- always -- and never
-    touches dataset metadata. The sidecar must state its convention so it
-    cannot be consumed in the wrong frame."""
-
-    def test_sidecar_is_written_and_stamped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            record = {"dataset": "x", "mount_offset_deg": 214.0,
-                      "usable": False}
-            out = mos.write_sidecar(Path(tmp), record)
-            self.assertEqual(out, Path(tmp) / "mount_offset_sweep.json")
-            self.assertTrue(out.exists())
-            data = json.loads(out.read_text())
-            self.assertEqual(data["convention"], geo.MOUNT_OFFSET_CONVENTION)
-            self.assertEqual(data["frame"], geo.MOUNT_OFFSET_FRAME)
-            self.assertIn("git_commit", data)
-            self.assertIn("argv", data)
-            # An unusable result is still recorded -- the alternative is the
-            # next person re-deriving it.
-            self.assertFalse(data["usable"])
-
-    def test_sidecar_does_not_trust_caller_supplied_convention(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = mos.write_sidecar(Path(tmp), {"convention": "stale",
-                                                "frame": "wrong"})
-            data = json.loads(out.read_text())
-            self.assertEqual(data["convention"], geo.MOUNT_OFFSET_CONVENTION)
-            self.assertEqual(data["frame"], geo.MOUNT_OFFSET_FRAME)
 
 
 if __name__ == "__main__":

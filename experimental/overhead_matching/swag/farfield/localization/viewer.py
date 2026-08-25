@@ -10,10 +10,10 @@
      bearing wedges from the selected mode, correspondence lines with opacity
      proportional to association posterior, and a red flag where the matcher's
      best claim disagrees with where that landmark actually lies.
-  3. **Tracklet inspector** — one tracklet's whole life: crop and payload
-     (tracker), bearing/kappa series, LLR bars per candidate (matcher),
-     per-mode association evolution and attribution series (filter), and a
-     truth-privileged culpability verdict.
+  3. **Tracklet inspector** — one tracklet's completed-run evidence:
+     bearing/kappa series, LLR bars per candidate, per-mode association
+     evolution and attribution series, and a truth-privileged culpability
+     verdict.
   4. **Mode ledger / genealogy** — modes as rows with weight trajectories,
      birth provenance, death keyframe, and a pre-computed death waterfall.
   5. **What-if console** — counterfactual runs ghost-overlaid on the map, with
@@ -21,8 +21,13 @@
 
 The page renders from `viewer_payload.build` and nothing else, so
 `viewer_server.py` shows the same thing from the same data. Where the payload is
-thin — no attribution cache, no sources directory, no ground truth — the
+thin — no attribution cache or no ground truth — the
 affected panel says why rather than rendering an empty box.
+
+The static page publishes transactionally to
+``<run_dir>.viewer/viewer.html`` by default. It is a reproducible side output;
+the completed run directory is read-only and is never extended with viewer
+files.
 
 The stylesheet and the application script live as real files in
 `viewer_assets/` (build-time data deps) and are INLINED here at render time:
@@ -44,8 +49,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from experimental.overhead_matching.swag.farfield import provenance
+from experimental.overhead_matching.swag.farfield import artifact, provenance
 from experimental.overhead_matching.swag.farfield.localization import (
+    side_outputs,
     viewer_payload,
 )
 
@@ -192,14 +198,28 @@ def _inline_json(payload: dict) -> str:
             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
+def write_viewer(run_dir: Path, payload: dict, *, output_dir: Path | None,
+                 body_only: bool, inputs: dict, config: dict) -> Path:
+    """Publish a self-contained viewer beside, never inside, its run."""
+    with side_outputs.publish_directory(
+            run_dir, output_dir=output_dir, suffix=".viewer") as output:
+        viewer_path = output.staging_dir / "viewer.html"
+        artifact.atomic_write_file(
+            viewer_path, render_html(payload, body_only).encode("utf-8"))
+        provenance.write(
+            output.staging_dir,
+            generator=GENERATOR,
+            inputs=inputs,
+            config=config)
+    return output.destination / "viewer.html"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=None,
-                        help="defaults to <run_dir>/viewer.html")
-    parser.add_argument("--sources_dir", type=Path, default=None,
-                        help="object-track run directory, for tracklet crops "
-                             "and matcher payload")
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help="defaults to the sibling <run_dir>.viewer; the "
+                             "immutable run directory is never modified")
     parser.add_argument("--feather", type=Path, default=None,
                         help="landmark feather, for the offline vector "
                              "basemap")
@@ -212,27 +232,41 @@ def main():
                         help="directory written by satellite_underlay.py: "
                              "satellite.json naming the mosaic layers "
                              "(wide.jpg/fine.jpg) and their ENU bounds, "
-                             "embedded as an imagery underlay. Typically "
-                             "<run_dir>/satellite.")
+                             "embedded as an imagery underlay. This must be "
+                             "a side output separate from the run.")
     parser.add_argument("--basemap_detail", type=float, default=1.0,
                         help="Scale the basemap's vertex budgets up and its "
                              "simplification tolerance down. The defaults suit "
                              "reading the whole extent at once; the map zooms, "
                              "so pass 3-6 for a page you will zoom into.")
-    parser.add_argument("--no_thumbnails", action="store_true")
     parser.add_argument("--body_only", action="store_true",
                         help="emit a fragment for embedding rather than a "
                              "standalone document")
     args = parser.parse_args()
 
     payload = viewer_payload.build(
-        args.run_dir, sources_dir=args.sources_dir, feather=args.feather,
+        args.run_dir, feather=args.feather,
         ghost_dirs=args.ghost, max_particles=args.max_particles,
-        embed_thumbnails=not args.no_thumbnails,
         basemap_detail=args.basemap_detail,
         satellite=args.satellite)
-    output = args.output or (args.run_dir / "viewer.html")
-    output.write_text(render_html(payload, args.body_only))
+    output = write_viewer(
+        args.run_dir,
+        payload,
+        output_dir=args.output_dir,
+        body_only=args.body_only,
+        inputs={
+            "run_dir": args.run_dir.resolve(),
+            "feather": (args.feather.resolve()
+                        if args.feather is not None else ""),
+            "ghosts": [path.resolve() for path in args.ghost],
+            "satellite": (args.satellite.resolve()
+                          if args.satellite is not None else ""),
+        },
+        config={
+            "max_particles": args.max_particles,
+            "basemap_detail": args.basemap_detail,
+            "body_only": args.body_only,
+        })
 
     size_kb = output.stat().st_size / 1024
     print(f"Wrote {output} ({size_kb:,.0f} KB)")

@@ -11,7 +11,8 @@ load time.
 
 Class mapping summary (fixed structures are the core far-field targets;
 floating buoys are included by default but carry seamark:type + object_class
-so they can be filtered downstream — the osm_tags_farfield pano prompt reports
+inside their compact tag object so they can be filtered downstream — the
+osm_tags_farfield pano prompt reports
 them too, so the two sides meet on man_made=buoy + seamark:type +
 colour/shape):
     LNDMRK          -> man_made/historic per CATLMK + seamark:type=landmark
@@ -518,25 +519,18 @@ def read_cells(enc_root: Path, cells: list) -> dict:
 
 def features_to_geodataframe(features: list,
                              landmark_type: str) -> gpd.GeoDataFrame:
-    """Build the feather frame through catalog.schema.build_frame:
-    id/geometry/landmark_type + a `tags` dict column, plus `object_class`
-    provenance.
+    """Build the exact four-column compact catalog frame.
 
-    object_class stays a real column, because feather_utils treats it as
-    metadata when deduping, and is *also* placed inside the tag dict, because
-    tag consumers have always seen it there -- under the old wide layout it
-    was simply another column and so landed in every tag record.
+    ENC ``object_class`` is source provenance carried in each row's canonical
+    tags object. It is not a fifth structural column.
     """
-    frame = schema.build_frame(
+    return schema.build_frame(
         ids=[f"('enc', '{feature['lnam']}')" for feature in features],
         geometries=[feature["geometry"] for feature in features],
         landmark_types=[landmark_type] * len(features),
         tags=[{**feature["tags"], "object_class": feature["object_class"]}
               for feature in features],
     )
-    frame["object_class"] = [feature["object_class"]
-                             for feature in features]
-    return frame
 
 
 def filter_features_to_bbox(features: list, bbox: tuple) -> list:
@@ -571,12 +565,12 @@ def main(enc_root: Path, cells: list, output_path: Path,
     gdf = features_to_geodataframe(features, landmark_type)
     if dedupe_tolerance_m > 0:
         gdf = feather_utils.dedupe_exact_duplicates(gdf, dedupe_tolerance_m)
+    tag_records = schema.tag_dicts(gdf)
     print(f"\n{len(gdf)} landmarks")
     print("object_class counts:")
-    print(gdf["object_class"].value_counts().to_string())
-    # Read names through the schema helper: under the dict layout there is no
-    # `name` column, and a column check silently reports zero.
-    print(f"named: {sum(1 for t in schema.tag_dicts(gdf) if t.get('name'))}")
+    counts = Counter(tags["object_class"] for tags in tag_records)
+    print("\n".join(f"{key}    {value}" for key, value in counts.most_common()))
+    print(f"named: {sum(1 for tags in tag_records if tags.get('name'))}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     feather_path = output_path.with_suffix(".feather")

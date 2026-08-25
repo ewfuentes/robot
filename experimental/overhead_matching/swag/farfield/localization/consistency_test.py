@@ -189,7 +189,8 @@ class HeadingConsistencyTest(unittest.TestCase):
         beliefs, truth = _run_seeds(config)
         errors = np.array([
             abs(math.degrees(float(np.asarray(
-                metrics.mean_pose(b)[2] - math.radians(truth[-1].heading_deg)))))
+                metrics.mean_pose(b)[2] - math.radians(
+                    truth[-1].course_world_cw_deg)))))
             for b in beliefs])
         errors = np.abs((errors + 180.0) % 360.0 - 180.0)
         sigmas = np.array([metrics.heading_std_deg(b) for b in beliefs])

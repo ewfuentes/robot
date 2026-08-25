@@ -38,6 +38,9 @@ py_library(
         requirement("numpy"),
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:publication",
     ],
 )
 
@@ -45,9 +48,11 @@ py_test(
     name = "run_io_test",
     srcs = ["run_io_test.py"],
     deps = [
+        requirement("msgspec"),
         requirement("numpy"),
         ":run_io",
         ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
@@ -62,7 +67,10 @@ py_library(
         ":run_io",
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
 
@@ -75,7 +83,10 @@ py_test(
         ":run_io",
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
 
@@ -84,30 +95,18 @@ py_library(
     srcs = ["gps_to_odometry.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
-        requirement("msgspec"),
         requirement("numpy"),
         ":structs",
-        "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
-)
-
-py_binary(
-    name = "gps_to_odometry",
-    srcs = ["gps_to_odometry.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":gps_to_odometry_lib"],
 )
 
 py_test(
     name = "gps_to_odometry_test",
     srcs = ["gps_to_odometry_test.py"],
     deps = [
-        requirement("msgspec"),
         requirement("numpy"),
         ":gps_to_odometry_lib",
-        ":structs",
-        "//common/python:serialization",
     ],
 )
 
@@ -326,10 +325,14 @@ py_library(
         ":run_io",
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/calibration:heading",
         "//experimental/overhead_matching/swag/farfield/catalog",
@@ -354,8 +357,13 @@ py_test(
         ":export_ingest",
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/catalog:schema",
         "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
     ],
@@ -372,6 +380,8 @@ py_library(
         ":metrics",
         ":run_io",
         ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -411,17 +421,18 @@ py_test(
     srcs = ["run_drivers_test.py"],
     deps = [
         requirement("numpy"),
+        requirement("msgspec"),
+        ":export_ingest",
+        ":filter_catalog",
         ":run_export_lib",
         ":run_io",
         ":run_localization_lib",
         ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
-)
-
-py_library(
-    name = "sources",
-    srcs = ["sources.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
 )
 
 py_library(
@@ -442,7 +453,6 @@ py_test(
         ":filter_catalog",
         ":forensics_lib",
         ":run_io",
-        ":sources",
         ":structs",
     ],
 )
@@ -459,6 +469,7 @@ py_library(
         ":run_io",
         ":structs",
         "//common/python:serialization",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )
@@ -490,6 +501,7 @@ py_test(
         ":run_io",
         ":scenario",
         ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
@@ -520,6 +532,8 @@ py_library(
         requirement("pillow"),
         requirement("requests"),
         ":run_io",
+        ":side_outputs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -541,19 +555,46 @@ py_test(
     ],
 )
 
-py_binary(
-    name = "plot_run",
+py_library(
+    name = "plots_lib",
     srcs = ["plots.py"],
-    main = "plots.py",
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("matplotlib"),
         requirement("numpy"),
         ":metrics",
         ":run_io",
+        ":side_outputs",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
+)
+
+py_binary(
+    name = "plot_run",
+    srcs = ["plots.py"],
+    main = "plots.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":plots_lib"],
+)
+
+py_test(
+    name = "plots_test",
+    srcs = ["plots_test.py"],
+    deps = [":plots_lib"],
+)
+
+py_library(
+    name = "side_outputs",
+    srcs = ["side_outputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = ["//experimental/overhead_matching/swag/farfield:artifact"],
+)
+
+py_test(
+    name = "side_outputs_test",
+    srcs = ["side_outputs_test.py"],
+    deps = [":side_outputs"],
 )
 
 py_library(
@@ -568,7 +609,6 @@ py_library(
         ":metrics",
         ":replay",
         ":run_io",
-        ":sources",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )
@@ -582,7 +622,9 @@ py_library(
     ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":side_outputs",
         ":viewer_payload",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
 )
@@ -604,7 +646,6 @@ py_library(
         requirement("numpy"),
         ":replay",
         ":run_io",
-        ":sources",
         ":viewer_lib",
         ":viewer_payload",
     ],
@@ -636,6 +677,7 @@ py_test(
         ":filter",
         ":run_io",
         ":scenario",
+        ":side_outputs",
         ":structs",
         ":viewer_lib",
         ":viewer_payload",
@@ -658,7 +700,6 @@ py_binary(
         ":metrics",
         ":replay",
         ":run_io",
-        ":sources",
         ":torch_backend",
         "//common/torch:load_torch_deps",
     ],

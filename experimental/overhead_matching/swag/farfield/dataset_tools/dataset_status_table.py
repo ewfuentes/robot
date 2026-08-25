@@ -1,11 +1,10 @@
 """Collate the triage state of a dataset collection into one markdown table.
 
-The triage tools each leave their answer in a different place -- the
-mount-offset block in `pipeline_metadata.json` (written only by
-`publish_mount_offset`), `_manifests/recording_seams.json` and
+The triage tools each leave their answer in a different place --
+`pipeline_metadata.json`, `_manifests/recording_seams.json`, and
 `_manifests/vehicle_anchor.json` (written by their annotators) -- and the
 useful judgements only appear when they are read side by side. This writes
-that joined view so nobody has to open fourteen JSON files to get it.
+that joined view so nobody has to open every JSON file to get it.
 
 Every column is read back from the datasets themselves; nothing here is
 hand-maintained. Regenerate after any change.
@@ -21,11 +20,10 @@ import json
 import sys
 from pathlib import Path
 
-from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield import provenance
 
-HEADER = ("| dataset | proj | frames | km | trims | offset | frame ok | "
-          "applied | status | validated | anchor | seams | worst m/s |")
+HEADER = ("| dataset | proj | frames | km | trims | anchor | seams | "
+          "worst m/s |")
 
 # What each column is read from -- facts about the mechanism, not judgements
 # about any particular dataset (the old preamble narrated one collection's
@@ -35,11 +33,6 @@ Columns and their sources:
 
 - **proj / frames / km / trims**: `pipeline_metadata.json` and
   `frames_gps.csv`.
-- **offset / frame ok / applied / status / validated**: the dataset's
-  `mount_offset` block. `frame ok` checks the block's `frame` tag against
-  `geometry.MOUNT_OFFSET_FRAME`; `applied` is its `applied_to_heading_deg`;
-  `validated` is `accuracy_validated`. Only `publish_mount_offset` writes
-  this block.
 - **anchor**: verdict from `_manifests/vehicle_anchor.json`
   (`detect_vehicle_anchor`).
 - **seams / worst m/s**: `_manifests/recording_seams.json`
@@ -65,7 +58,6 @@ def collect_one(ds: Path) -> dict | None:
         return None
     gps_path = ds / "frames_gps.csv"
     gps = (list(csv.DictReader(open(gps_path))) if gps_path.exists() else [])
-    mo = meta.get("mount_offset") or {}
     # The sidecar is the current home; the in-metadata block is the legacy
     # one (and what trim_dataset rebases on datasets that still carry it).
     seams = (read_json(ds / "_manifests" / "recording_seams.json")
@@ -77,18 +69,12 @@ def collect_one(ds: Path) -> dict | None:
     if gps:
         dists = [float(r["dist_m"]) for r in gps]
         km = (dists[-1] - dists[0]) / 1000.0
-    frame_ok = (mo.get("frame") == geo.MOUNT_OFFSET_FRAME) if mo else None
     return {
         "name": ds.name,
         "proj": str(meta.get("projection", "?"))[:5],
         "n": meta.get("num_images", len(gps)),
         "km": km,
         "trims": len(meta.get("trims", [])),
-        "off": mo.get("mount_offset_deg"),
-        "frame_ok": frame_ok,
-        "applied": mo.get("applied_to_heading_deg"),
-        "status": mo.get("status") if mo else None,
-        "validated": mo.get("accuracy_validated") if mo else None,
         "anchor": anchor.get("verdict", "—"),
         "seams": seams.get("n_seams") if seams else None,
         "worst": worst,
@@ -96,20 +82,11 @@ def collect_one(ds: Path) -> dict | None:
 
 
 def render(rows) -> str:
-    def num(value, spec, suffix=""):
-        return "—" if value is None else format(value, spec) + suffix
-
-    def flag(value):
-        return {None: "—", True: "yes", False: "**no**"}[value]
-
-    lines = [HEADER, "|" + "---|" * 13]
+    lines = [HEADER, "|" + "---|" * 8]
     for r in sorted(rows, key=lambda x: x["name"]):
         lines.append(
             f"| `{r['name']}` | {r['proj']} | {r['n']} | {r['km']:.1f} | "
-            f"{r['trims']} | {num(r['off'], '.1f', '°')} | "
-            f"{flag(r['frame_ok'])} | {flag(r['applied'])} | "
-            f"{r['status'] or '—'} | {flag(r['validated'])} | "
-            f"{r['anchor']} | "
+            f"{r['trims']} | {r['anchor']} | "
             f"{r['seams'] if r['seams'] is not None else '—'} | "
             f"{r['worst']:.0f} |")
     return "\n".join(lines)

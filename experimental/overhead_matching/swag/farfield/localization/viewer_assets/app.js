@@ -497,9 +497,10 @@ function drawMap() {
   const meas = D.measurements[String(t)] || [];
   const flags = [];
   if (anchor) meas.forEach(mm => {
-    // Body->world bearing: heading + body bearing, degrees clockwise from
-    // north. JS cannot import python, so this restates the convention owned
-    // by farfield.geometry.body_to_world_bearing_deg — keep them in step.
+    // Forward->world bearing: forward-world orientation + forward-frame
+    // bearing, degrees clockwise from north. JS cannot import Python, so this
+    // restates the convention owned
+    // by farfield.geometry.forward_to_world_bearing_cw_deg — keep them in step.
     const world = (anchor.h + mm.bearing) * Math.PI / 180;
     const R = 3 * MW;      // long enough to leave the frame at any zoom
     const ray = (off, op, w) => `<line x1="${px(anchor.e).toFixed(1)}"
@@ -818,43 +819,15 @@ function drawInspector() {
     $("inspector").innerHTML = `<h2>Tracklet inspector <span class="hint">
       &mdash; §7.4 view 3</span></h2>
       <div class="empty">Pick a tracklet from the list, the association table,
-      or a correspondence line on the map. This panel answers "did the tracker,
-      the matcher, or the filter get this wrong?" by showing the raw track, the
-      LLRs and the responsibilities side by side.</div>`;
+      or a correspondence line on the map. This panel shows the completed-run
+      bearing observations, compatibility table, and filter responsibilities
+      side by side.</div>`;
     return;
   }
   const trk = TRK.get(selTrk);
   if (!trk) { $("inspector").innerHTML = `<div class="empty">unknown tracklet</div>`;
     return; }
-  const src = trk.source || {};
   const tbl = trk.table;
-
-  // --- tracker column ---
-  let tracker = `<h3>Tracker — what was looked at</h3>`;
-  if (src.thumb) tracker += `<img class="crop" src="${src.thumb}"
-    alt="crop of ${esc(trk.id)}" loading="lazy">`;
-  tracker += `<dl class="kv" style="margin-top:8px">
-    <dt>name</dt><dd>${esc(src.name || "—")}${
-      src.nameContested ? ' <span class="pill warn">contested</span>' : ""}</dd>
-    <dt>supports</dt><dd>${src.nSupports || "—"}</dd>
-    <dt>span</dt><dd>${src.span && src.span.length
-      ? "kf " + src.span[0] + "–" + src.span[1] : "—"}</dd>
-    <dt>epochs</dt><dd>${trk.epochs.length}</dd>
-    <dt>tracks</dt><dd>${(src.trackIds || []).join(", ") || "—"}</dd></dl>`;
-  if (src.tags && src.tags.length)
-    tracker += `<div style="margin-top:6px">${src.tags
-      .map(tg => `<span class="chip">${esc(tg)}</span>`).join("")}</div>`;
-  if (src.description)
-    tracker += `<div class="legend">“${esc(src.description)}”</div>`;
-  if (src.unresolved)
-    tracker += `<div class="legend" style="color:var(--caution)">
-      tracker flagged: ${esc(src.unresolved)}</div>`;
-  if (src.handoffs && src.handoffs.length)
-    tracker += `<div class="legend">merge unsure about: ${src.handoffs
-      .map(x => `${esc(x.with)} (gap ${x.gap})`).join(", ")} — this
-      "tracklet" may be more than one object.</div>`;
-  if (!src.thumb && !src.name)
-    tracker += `<div class="empty">no source payload; pass --sources_dir</div>`;
 
   // --- bearing series ---
   const bearings = `<h3>Bearing &amp; κ</h3>` + seriesChart(
@@ -889,13 +862,6 @@ function drawInspector() {
     if (tbl.nEntries > tbl.entries.length)
       matcher += `<div class="legend">showing the top ${tbl.entries.length}
         of ${tbl.nEntries} entries.</div>`;
-    if (src.noMatchRate !== null && src.noMatchRate !== undefined)
-      matcher += `<div class="legend">The matcher's own verdict across
-        ${src.nChunks} chunks: mean no-match confidence
-        <b>${src.noMatchRate.toFixed(2)}</b>, median uniqueness
-        <b>${src.uniqueness}</b>. A high no-match rate means the matcher
-        declared it had nothing, which is different from being confidently
-        wrong.</div>`;
   } else {
     matcher += `<div class="empty">no compatibility table for this tracklet
       — the filter had no semantic evidence at all, only geometry.</div>`;
@@ -1016,8 +982,8 @@ function drawInspector() {
   $("inspector").innerHTML = `<h2>Tracklet <code>${esc(trk.id)}</code>
     <span class="hint">&mdash; §7.4 view 3</span>
     <button id="closetrk">close</button></h2>
-    <div class="grid2"><div>${tracker}</div><div>${bearings}</div>
-    <div>${matcher}</div><div>${filter}</div></div>${priv}`;
+    <div class="grid2"><div>${bearings}</div><div>${matcher}</div>
+    <div>${filter}</div></div>${priv}`;
   $("closetrk").onclick = () => { selTrk = null; render(); };
 }
 

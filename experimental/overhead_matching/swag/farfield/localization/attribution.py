@@ -87,6 +87,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 CACHE_NAME = "tier3_attribution.jsonl"
 META_NAME = "tier3_attribution_meta.json"
+SIDECAR_SUFFIX = ".attribution"
 # The whole-belief group. Not a mode id: mode ids are small non-negative ints
 # assigned by the tracker, and -1 already means "unclustered particle".
 ALL_GROUPS = -1000
@@ -276,15 +277,22 @@ def compute(run_dir: Path, verify: bool = True
     return cache, result
 
 
-def write_cache(run_dir: Path, cache: AttributionCache) -> Path:
-    """Write the Tier-3 cache beside the run it describes."""
+def cache_dir(run_dir: Path) -> Path:
+    """Deterministic mutable sidecar for an immutable completed run."""
     run_dir = Path(run_dir)
-    path = run_dir / CACHE_NAME
+    return run_dir.with_name(run_dir.name + SIDECAR_SUFFIX)
+
+
+def write_cache(run_dir: Path, cache: AttributionCache) -> Path:
+    """Write the Tier-3 cache in a sibling of the run it describes."""
+    directory = cache_dir(run_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / CACHE_NAME
     with open(path, "wb") as f:
         for record in cache.contributions + cache.group_weights:
             f.write(msgspec.json.encode(record, enc_hook=msgspec_enc_hook))
             f.write(b"\n")
-    (run_dir / META_NAME).write_bytes(msgspec.json.encode({
+    (directory / META_NAME).write_bytes(msgspec.json.encode({
         "particle_history_sha256": cache.particle_history_sha256,
         "scenario_name": cache.scenario_name,
         "n_keyframes": cache.n_keyframes,
@@ -303,16 +311,16 @@ def read_cache(run_dir: Path, expected_sha256: str | None = None
     attribution silently describing an older run is the failure mode the
     recorded hash exists to prevent.
     """
-    run_dir = Path(run_dir)
-    meta_path = run_dir / META_NAME
-    cache_path = run_dir / CACHE_NAME
+    directory = cache_dir(run_dir)
+    meta_path = directory / META_NAME
+    cache_path = directory / CACHE_NAME
     if not meta_path.exists() or not cache_path.exists():
         return None
     meta = msgspec.json.decode(meta_path.read_bytes())
     if (expected_sha256 and meta.get("particle_history_sha256")
             and meta["particle_history_sha256"] != expected_sha256):
         raise ValueError(
-            f"attribution cache in {run_dir} was computed against history "
+            f"attribution cache in {directory} was computed against history "
             f"{meta['particle_history_sha256'][:12]} but the run records "
             f"{expected_sha256[:12]}; recompute it")
 

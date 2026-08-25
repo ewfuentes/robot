@@ -1,11 +1,8 @@
 """Run the filter on a real localization export and write a run directory.
 
-Usage:
-  bazel run //experimental/overhead_matching/swag/farfield/localization:run_export -- \
-    --export_dir <run>/localization_export --output_dir <experiment>/<run> \
-    --init uniform --n_particles 50000 --margin_m 1000 \
-    --max_visible_range_m 15000 --position_roughening_m 25 \
-    --heading_roughening_deg 1
+The CLI accepts one completed ``localization_inputs`` artifact, one immutable
+``build_config.json``, and the final ``run_dir``.  Every filter setting comes
+from that build config; there are no per-run scientific overrides.
 
 Reads the export's Tier-1 inputs, runs the filter, writes a run directory
 that the plots and viewer consume unchanged, and reports the two things a
@@ -15,13 +12,11 @@ printed but is not the figure of merit here — when odometry is GPS and the
 candidates were selected using GPS, dead reckoning alone nearly solves the
 leg, so a small position error demonstrates very little.
 
-ONLY uniform-prior runs are evaluations. --init truth is a diagnostic
-instrument (basin-of-attraction control), never a result.
+Only uniform-prior runs that actually consume bearings are evaluations.
+Truth initialization and odometry-only executions are diagnostic controls.
 
 The run directory records what the filter actually consumed: an odometry-only
-control (--no_bearings) writes EMPTY measurement/table files, matching the
-run that happened. (The old driver wrote the full unconsumed inputs, so every
-control run on disk described a run that never happened.)
+control writes empty measurement/table files, matching the run that happened.
 """
 
 import argparse
@@ -33,6 +28,8 @@ from pathlib import Path
 import numpy as np
 
 from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    build_config,
     geometry as geo,
     provenance,
 )
@@ -70,150 +67,192 @@ def bearing_residuals(data: export_ingest.ExportData, health: list):
                 data.catalog.north_m[index] - record.mean_north_m)
             residual = abs(math.degrees(float(geo.wrap_rad(
                 predicted - math.radians(record.mean_heading_deg)
-                - math.radians(meas.bearing_body_deg)))))
+                - math.radians(meas.bearing_forward_cw_deg)))))
             residuals.append(residual)
             records.append((record.keyframe_idx, assoc.tracklet_id,
                             landmark_id, share, residual))
     return np.array(residuals), records
 
 
+def _flatten(value: dict, prefix: str = "") -> dict:
+    result = {}
+    for key, child in value.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(child, dict):
+            result.update(_flatten(child, path))
+        else:
+            result[path] = child
+    return result
+
+
+def orchestration_contract(document: dict) -> dict:
+    """Recompute the pipeline's exact localize-stage config selection."""
+    localization = document.get("config", {}).get("localization")
+    if not isinstance(localization, dict):
+        raise ValueError("build config does not record localization")
+    selected = {
+        f"localization.{key}": value
+        for key, value in _flatten(localization).items()
+    }
+    return {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "localize",
+        "config_digest": artifact.sha256_json(selected),
+    }
+
+
+def _load_config(path: Path, data: export_ingest.ExportData,
+                 expected_digest: str) -> tuple[dict, dict]:
+    path = Path(path)
+    if (path.name != build_config.BUILD_CONFIG_NAME or not path.is_file()
+            or path.is_symlink()):
+        raise ValueError(
+            f"--build_config must name a regular, non-symlink "
+            f"{build_config.BUILD_CONFIG_NAME}")
+    document = build_config.load(path.parent)
+    if document["dataset"] != data.meta.dataset:
+        raise ValueError(
+            "build config dataset disagrees with localization inputs")
+    expected_version = build_config.value(
+        document, "artifacts.localization_inputs_version")
+    if data.artifact_ref.version != expected_version:
+        raise ValueError(
+            "localization input version disagrees with build config")
+    if data.manifest is None or data.manifest.config.get(
+            "build_identity") != document["build_identity"]:
+        raise ValueError(
+            "localization inputs belong to a different immutable build")
+    orchestration = orchestration_contract(document)
+    if expected_digest != orchestration["config_digest"]:
+        raise ValueError(
+            "--orchestration_config_digest does not match the immutable "
+            "localization recipe")
+    return document, orchestration
+
+
+def _filter_config(localization: dict,
+                   data: export_ingest.ExportData) -> structs.FilterConfig:
+    init_kind = localization["init"]
+    if init_kind == "uniform":
+        init = export_ingest.region_box(data, localization["margin_m"])
+    else:
+        if not data.truth:
+            raise ValueError(
+                "truth initialization requires diagnostic GPS-course truth")
+        sigma = localization["prior_sigma_m"]
+        if sigma is None or sigma <= 0.0:
+            raise ValueError(
+                "truth initialization requires a positive prior_sigma_m")
+        start = data.truth[0]
+        init = structs.GaussianInit(
+            start.east_m, start.north_m, sigma)
+    proposal = structs.ProposalConfig(**localization["proposal"])
+    modes = structs.ModeConfig(**localization["modes"])
+    return structs.FilterConfig(
+        n_particles=localization["n_particles"],
+        seed=localization["seed"],
+        init=init,
+        pi0=localization["pi0"],
+        ess_resample_frac=localization["ess_resample_frac"],
+        heading_random_walk_deg=localization["heading_random_walk_deg"],
+        resample_regularization=localization["resample_regularization"],
+        position_roughening_m=localization["position_roughening_m"],
+        heading_roughening_deg=localization["heading_roughening_deg"],
+        map_cell_size_m=localization["map_cell_size_m"],
+        checkpoint_every=localization["checkpoint_every"],
+        measurement_backend=localization["measurement_backend"],
+        association_persistence=localization["association_persistence"],
+        association_renewal_rate=localization[
+            "association_renewal_rate"],
+        association_outlier_rate=localization["association_outlier_rate"],
+        matcher_recall=localization["matcher_recall"],
+        min_reported_responsibility=localization[
+            "min_reported_responsibility"],
+        proposal=proposal,
+        modes=modes)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--export_dir", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, required=True,
-                        help="run directory, inside a runs/<experiment>/")
-    parser.add_argument("--init", required=True,
-                        choices=["uniform", "truth"],
-                        help="uniform: flat prior over the catalog extent — "
-                             "the only init that counts as an evaluation. "
-                             "truth: tight prior at the first truth pose, a "
-                             "diagnostic control only.")
-    # Result-shaping parameters: required, echoed into the manifest
-    # (REORG.md rule 2; previous defaults quoted).
-    parser.add_argument("--n_particles", type=int, required=True,
-                        help="(previously 50000)")
-    parser.add_argument("--margin_m", type=float, required=True,
-                        help="how far past the catalog the uniform prior "
-                             "extends (previously 1000)")
-    parser.add_argument("--max_visible_range_m", type=float, required=True,
-                        help="catalog visibility radius; recorded in the "
-                             "manifest — the replay contract depends on the "
-                             "recorded value being the used value "
-                             "(previously an inconsistent 15000/10000 pair)")
-    parser.add_argument("--position_roughening_m", type=float, required=True,
-                        help="(previously hardcoded 25.0)")
-    parser.add_argument("--heading_roughening_deg", type=float,
-                        required=True, help="(previously hardcoded 1.0)")
-    parser.add_argument("--prior_sigma_m", type=float, default=None,
-                        help="with --init truth, the sigma of the Gaussian "
-                             "prior at the first truth pose. Sweeping it "
-                             "measures the basin of attraction. Required "
-                             "when --init truth.")
-    # Filter knobs that default in FilterConfig/ProposalConfig: passed only
-    # when given, so the struct defaults (which the manifest records) stay
-    # the single source (the old driver duplicated pi0 and the gate default
-    # here, and the copies drifted).
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--pi0", type=float, default=None)
-    parser.add_argument("--checkpoint_every", type=int, default=5)
-    parser.add_argument("--backend", default="numpy",
-                        choices=["numpy", "torch"],
-                        help="measurement-update engine; torch uses the GPU "
-                             "when available (float32)")
-    parser.add_argument("--association_renewal_rate", type=float,
-                        default=None,
-                        help="beta: per-epoch probability a tracklet's "
-                             "identity switched (FilterConfig default)")
-    parser.add_argument("--init_min_tracklets", type=int, default=None,
-                        help="distinct tracklets the init proposal waits "
-                             "for (ProposalConfig default)")
-    parser.add_argument("--evidence_gate_selection_charge",
-                        action=argparse.BooleanOptionalAction, default=None,
-                        help="charge log(n_hypotheses) in the evidence gate "
-                             "(ProposalConfig default: on)")
-    parser.add_argument("--no_proposal", action="store_true",
-                        help="brute-force control: uniform prior with no "
-                             "resection proposal")
-    parser.add_argument("--no_bearings", action="store_true",
-                        help="odometry-only control: how much of the answer "
-                             "is dead reckoning alone")
-    parser.add_argument("--sources_dir", type=Path, default=None,
-                        help="optional pointer to the tracklet payload "
-                             "(crops, prompts) for the viewer")
+    parser.add_argument("--input_dir", type=Path, required=True)
+    parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--build_config", type=Path, required=True)
+    parser.add_argument("--orchestration_config_digest", required=True)
     args = parser.parse_args()
-
-    data = export_ingest.load(args.export_dir,
-                              max_visible_range_m=args.max_visible_range_m)
+    try:
+        data = export_ingest.load(args.input_dir)
+        document, orchestration = _load_config(
+            args.build_config, data, args.orchestration_config_digest)
+        localization = document["config"]["localization"]
+        if args.run_dir.name != localization["run_name"]:
+            raise ValueError(
+                "--run_dir basename disagrees with localization.run_name")
+        filter_config = _filter_config(localization, data)
+    except (artifact.ArtifactError, OSError, ValueError) as error:
+        parser.error(str(error))
     print(export_ingest.describe(data))
-
-    if args.init == "uniform":
-        init = export_ingest.region_box(data, args.margin_m)
+    if localization["init"] == "uniform":
+        init = filter_config.init
         print(f"prior       : uniform over "
               f"{(init.east_max_m - init.east_min_m) / 1000:.1f} x "
               f"{(init.north_max_m - init.north_min_m) / 1000:.1f} km, "
               f"uniform heading")
     else:
-        if args.prior_sigma_m is None:
-            parser.error("--init truth requires --prior_sigma_m")
-        if not data.truth:
-            parser.error("--init truth needs truth.jsonl in the export")
-        start = data.truth[0]
-        init = structs.GaussianInit(start.east_m, start.north_m,
-                                    args.prior_sigma_m)
         print(f"prior       : Gaussian at the first truth pose, sigma "
-              f"{args.prior_sigma_m:.0f} m (DIAGNOSTIC CONTROL, not an "
+              f"{localization['prior_sigma_m']:.0f} m "
+              f"(DIAGNOSTIC CONTROL, not an "
               f"evaluation)")
-
-    optional = {}
-    if args.pi0 is not None:
-        optional["pi0"] = args.pi0
-    if args.association_renewal_rate is not None:
-        optional["association_renewal_rate"] = args.association_renewal_rate
-    proposal_optional = {}
-    if args.init_min_tracklets is not None:
-        proposal_optional["min_tracklets_for_injection"] = \
-            args.init_min_tracklets
-    if args.evidence_gate_selection_charge is not None:
-        proposal_optional["evidence_gate_selection_charge"] = \
-            args.evidence_gate_selection_charge
-
-    filter_config = structs.FilterConfig(
-        n_particles=args.n_particles, seed=args.seed, init=init,
-        position_roughening_m=args.position_roughening_m,
-        heading_roughening_deg=args.heading_roughening_deg,
-        checkpoint_every=args.checkpoint_every,
-        measurement_backend=args.backend,
-        proposal=structs.ProposalConfig(
-            enabled=not args.no_proposal, **proposal_optional),
-        **optional)
-
-    measurements = [] if args.no_bearings else data.measurements
-    tables = {} if args.no_bearings else data.tables
+    bearings_consumed = localization["bearings_enabled"]
+    measurements = data.measurements if bearings_consumed else []
+    tables = data.tables if bearings_consumed else {}
     history = pf.run_filter(filter_config, data.catalog, data.odometry,
                             measurements, tables)
 
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION,
+        dataset=data.meta.dataset,
         scenario_name=data.meta.scenario_name,
+        run_kind=("evaluation" if localization["init"] == "uniform"
+                  and bearings_consumed else "diagnostic_control"),
+        initialization_kind=localization["init"],
+        bearings_consumed=bearings_consumed,
+        proposal_enabled=filter_config.proposal.enabled,
+        localization_inputs_manifest_sha256=(
+            data.artifact_ref.manifest_digest),
         anchor_lat_deg=data.meta.anchor_lat_deg,
         anchor_lon_deg=data.meta.anchor_lon_deg,
         n_keyframes=data.n_keyframes,
         filter_config=filter_config,
         landmarks=data.landmarks,
         matcher_version=(f"{data.meta.matcher_version} (bearings withheld)"
-                         if args.no_bearings else data.meta.matcher_version),
-        max_visible_range_m=args.max_visible_range_m,
-        export_dir=str(args.export_dir),
+                         if not bearings_consumed
+                         else data.meta.matcher_version),
+        max_visible_range_m=data.meta.max_visible_range_m,
+        export_dir=str(args.input_dir),
         git_commit=provenance.git_commit(),
         argv=list(sys.argv),
         created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        particle_history_sha256=history.particle_history_sha256,
-        sources_dir=str(args.sources_dir) if args.sources_dir else None)
-    # The run records what the filter CONSUMED — empty under --no_bearings.
-    run_io.write_run(args.output_dir, manifest, data.truth, data.odometry,
-                     measurements, tables, history)
+        particle_history_sha256=history.particle_history_sha256)
+    # The artifact records exactly what the filter consumed.  In particular,
+    # an odometry control contains no measurements or compatibility tables.
+    run_io.write_run(
+        args.run_dir, manifest, data.truth, data.odometry, measurements,
+        tables, history, dataset=data.meta.dataset,
+        version=localization["run_name"], upstreams=(data.artifact_ref,),
+        artifact_config={
+            "orchestration": orchestration,
+            "build_identity": document["build_identity"],
+            "localization": localization,
+            "run_kind": manifest.run_kind,
+            "localization_inputs_manifest_sha256": (
+                data.artifact_ref.manifest_digest),
+            "build_config_sha256": artifact.sha256_file(args.build_config),
+        },
+        generator="//experimental/overhead_matching/swag/farfield/"
+                  "localization:run_export",
+        arguments=tuple(sys.argv))
 
     print("\n--- bearing residuals (filter pose vs. best-associated "
           "landmark) ---")
@@ -259,7 +298,7 @@ def main():
               f"median over last 50 kf {np.median(errors[-50:]):.0f} m")
         print("  (GPS odometry + GPS-selected candidates: read this as a "
               "sanity check, not as evidence)")
-    print(f"\nRun written to {args.output_dir}")
+    print(f"\nRun written to {args.run_dir}")
 
 
 if __name__ == "__main__":

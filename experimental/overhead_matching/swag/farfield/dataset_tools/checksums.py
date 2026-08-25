@@ -1,11 +1,10 @@
 """The one implementation of a dataset's `checksums.sha256` regeneration.
 
-Datasets are frozen (REORG.md rule 7): the only tools allowed to change one
-are the explicit, checksum-regenerating mutators in this package
-(`trim_dataset`, `publish_mount_offset`). Both call `regenerate` here, so the
-manifest format and the exclusion list cannot drift between them. The old
-mount-offset publisher printed "regenerate checksums.sha256" and never did it,
-which left every published dataset failing its own integrity check.
+Datasets are frozen (REORG.md rule 7). ``trim_dataset`` is the one explicit,
+checksum-regenerating mutator in this package and calls ``regenerate`` here so
+the manifest format and exclusion list have one owner. Calibration diagnostics
+never mutate dataset metadata; approved nominal-forward records are immutable
+build inputs.
 
 Format matches `sha256sum` output with `./`-relative paths sorted as bytes
 (C locale), covering everything except:

@@ -1,5 +1,8 @@
 import math
 import unittest
+from types import SimpleNamespace
+
+import numpy as np
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
@@ -93,6 +96,33 @@ class EnuBoundsTest(unittest.TestCase):
         e0, e1, _, _ = su.enu_bounds_of_tiles(x, y, x, y, 16, frame)
         expected = 156543.03392 * math.cos(math.radians(lat)) / (2 ** 16) * 256
         self.assertAlmostEqual((e1 - e0) / expected, 1.0, delta=0.02)
+
+
+class TrajectoryExtentTest(unittest.TestCase):
+
+    def test_prefers_truth_positions(self):
+        data = SimpleNamespace(
+            truth=[SimpleNamespace(east_m=1.0, north_m=2.0)],
+            health=[SimpleNamespace(mean_east_m=9.0, mean_north_m=10.0)])
+
+        east, north = su.trajectory_enu(data)
+
+        np.testing.assert_array_equal(east, [1.0])
+        np.testing.assert_array_equal(north, [2.0])
+
+    def test_falls_back_to_estimated_positions_without_truth(self):
+        data = SimpleNamespace(
+            truth=[],
+            health=[SimpleNamespace(mean_east_m=3.0, mean_north_m=4.0)])
+
+        east, north = su.trajectory_enu(data)
+
+        np.testing.assert_array_equal(east, [3.0])
+        np.testing.assert_array_equal(north, [4.0])
+
+    def test_rejects_a_run_without_any_trajectory_positions(self):
+        with self.assertRaisesRegex(ValueError, "truth or estimated"):
+            su.trajectory_enu(SimpleNamespace(truth=[], health=[]))
 
 
 if __name__ == "__main__":

@@ -11,8 +11,8 @@ an error in it is unfixable without going back to the originals and cannot be
 recalibrated the way a recorded angle can. Orientation is carried per frame in
 intrinsics.csv, with the column->azimuth formula in pipeline_metadata.json.
 
-The metadata's `azimuth_convention` block carries the mount-offset frame
-warning (geometry.MOUNT_OFFSET_CONVENTION) verbatim, plus a machine-readable
+The metadata's `azimuth_convention` block carries a collection-local legacy
+alignment warning, plus a machine-readable
 `frame_if_derived_from_formula` tag: `heading_deg` here is the bearing of
 COLUMN 0 (Mapillary's convention), so an offset derived from it is in the
 column-0 frame and is exactly 180 degrees out if consumed as a pano_geometry
@@ -152,13 +152,13 @@ def _circ_err(a: float, b: float) -> float:
 
 
 def score_heading_source(metadata: list[dict], field: str) -> dict:
-    """Score a heading field against the GPS-derived travel bearing.
+    """Score one Mapillary acquisition heading against GPS-derived course.
 
-    For a forward-facing rig the equirect-center bearing tracks the travel
-    bearing, so a large median disagreement means the field is unusable for
-    north alignment (e.g. Mapillary SfM returning 0.0 where reconstruction
-    failed, or a reconstruction with a global rotation error). Frames with
-    no GPS motion are skipped.
+    For an equirectangular image the heading field is the world bearing of
+    column 0, not the image center or the platform's nominal-forward axis.
+    Course agreement is only a heuristic for choosing which diagnostic
+    Mapillary field to preserve; it never north-aligns pixels or establishes
+    localization-frame authority. Frames with no GPS motion are skipped.
     """
     errs = []
     for i in range(len(metadata) - 1):
@@ -186,9 +186,14 @@ def score_heading_source(metadata: list[dict], field: str) -> dict:
 # heading_deg, whose reference is column 0 for equirect frames and the optical
 # axis for perspective ones — NEITHER is the pano_geometry camera frame
 # (azimuth 0 = CENTRE column), so consuming it as a mount offset is the
-# exact 180-degree error geometry.MOUNT_OFFSET_CONVENTION warns about.
+# exact 180-degree error the collection diagnostic warns about.
 OFFSET_FRAME_EQUIRECT = "column_0_NOT_usable_as_mount_offset"
 OFFSET_FRAME_PERSPECTIVE = "optical_axis_NOT_usable_as_mount_offset"
+LEGACY_ALIGNMENT_FRAME_WARNING = (
+    "Collection diagnostic only: heading_deg is measured from column 0 for "
+    "equirectangular images (or the optical axis for perspective images), "
+    "not from the camera centre-column frame and never supplies "
+    "nominal-forward calibration.")
 
 
 def compute_heading_travel_offset(metadata: list[dict], heading_field: str) -> dict:
@@ -536,7 +541,7 @@ def build_azimuth_convention(is_equirect: bool) -> dict:
     folkestone_dover (docs/conventions.md holds the register of every frame
     convention).
 
-    `mount_offset_frame` is geometry.MOUNT_OFFSET_CONVENTION verbatim, and
+    `mount_offset_frame` is a collection-local legacy warning, and
     `frame_if_derived_from_formula` machine-tags the trap: an offset computed
     from heading_deg / this block's formula is in the column-0 (equirect) or
     optical-axis (perspective) frame and MUST NOT be consumed as a
@@ -547,23 +552,25 @@ def build_azimuth_convention(is_equirect: bool) -> dict:
         return {
             "images_rotated": False,
             "frame": "camera (as captured)",
+            "camera_frame": geometry.CAMERA_FRAME,
             "bearing_increases": "left_to_right",
             "heading_deg_is_bearing_of": "column_0",
             "formula": "azimuth_deg = (heading_deg + (col / width) * 360) mod 360",
             "heading_per_frame": "intrinsics.csv:heading_deg",
             "verified_by": "solar azimuth + wake bearing on folkestone_dover",
-            "mount_offset_frame": geometry.MOUNT_OFFSET_CONVENTION,
+            "mount_offset_frame": LEGACY_ALIGNMENT_FRAME_WARNING,
             "frame_if_derived_from_formula": OFFSET_FRAME_EQUIRECT,
         }
     return {
         "images_rotated": False,
         "frame": "camera (as captured)",
+        "camera_frame": geometry.CAMERA_FRAME,
         "heading_deg_is_bearing_of": "optical_axis",
         "formula": ("azimuth_deg = (heading_deg + degrees(atan((2*col/width - 1) "
                     "* tan(radians(hfov_deg)/2)))) mod 360"),
         "heading_per_frame": "intrinsics.csv:heading_deg",
         "distortion": "k1,k2 recorded in intrinsics.csv, NOT applied",
-        "mount_offset_frame": geometry.MOUNT_OFFSET_CONVENTION,
+        "mount_offset_frame": LEGACY_ALIGNMENT_FRAME_WARNING,
         "frame_if_derived_from_formula": OFFSET_FRAME_PERSPECTIVE,
     }
 
@@ -643,9 +650,8 @@ def build_pipeline_metadata(*, dataset_name: str, metadata: list[dict],
         "heading_validation_overridden": bool(skip_heading_validation),
         # Diagnostic ONLY. In the heading_reference frame (column 0 / optical
         # axis), NOT the pano_geometry camera frame; its spread measures mount
-        # fixedness. There is deliberately no mount_offset block here — that is
-        # written by the explicit calibration publish tool, with its frame and
-        # applied fields (dataset.mount_offset_record refuses anything less).
+        # fixedness. There is deliberately no mount_offset block here; this
+        # collection-only diagnostic never supplies localization authority.
         "heading_vs_travel_offset_diagnostic": {
             **offset_info,
             "frame": (OFFSET_FRAME_EQUIRECT if is_equirect
@@ -809,9 +815,9 @@ def main(argv=None) -> int:
         heading_source = args.heading_source
         print(f"  Requested: {HEADING_FIELDS[heading_source]}")
     elif is_equirect:
-        # For a 360 capture the centre-of-image bearing does track the travel
-        # bearing (it absorbs even a sideways rig mount), so agreement with the
-        # GPS bearing is a valid way to pick the better field.
+        # Both candidates describe the world bearing of column 0. Agreement
+        # with GPS course is only a diagnostic heuristic for choosing which
+        # Mapillary field to record; it is not nominal-forward calibration.
         # Exclude degenerate fields first. A source that is exactly 0.0 on
         # nearly every frame carries no heading at all, but can still win on
         # median error by luck -- kurashiki's compass_angle is 0.0 on 100% of

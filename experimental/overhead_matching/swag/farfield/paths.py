@@ -14,7 +14,8 @@ The layout, encoded once, here:
     artifacts/<kind>/<dataset>/v<N>/           derived, immutable, + manifest.json
     raw_material/<collect>/...                 source material
     models/<family>/<checkpoint>               weights (+ SOURCE.md)
-    runs/<experiment>/<run>/                   localization experiments
+    builds/<dataset>/<build>/                  mutable orchestration state
+    runs/<experiment>/<run>/                   completed localization runs
 
 Resolution is keyed by **dataset name**. Anything the layout cannot supply
 comes from the dataset's own `pipeline_metadata.json` -- notably the source
@@ -23,7 +24,7 @@ derived.
 
 There are deliberately NO default artifact versions and NO default catalog:
 which `frame_landmarks` version and which catalog trim a run uses are modeling
-choices, so they come from the run's recorded config (see `run_config.py`) or
+choices, so they come from the build's recorded config (see `build_config.py`) or
 an explicit flag, and resolution fails loudly when neither supplies them. A
 default here is how a stage silently reads v1's detections against v4's
 tracks.
@@ -44,6 +45,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from experimental.overhead_matching.swag.farfield import artifact
+
 DEFAULT_ROOT = Path("/data/farfield_matching")
 ROOT_ENV_VAR = "FARFIELD_ROOT"
 
@@ -53,9 +56,37 @@ ROOT_ENV_VAR = "FARFIELD_ROOT"
 FRAME_LANDMARKS = "frame_landmarks"
 PINHOLE_IMAGES = "pinhole_images"
 OBJECT_TRACKS = "object_tracks"
+SEMANTIC_AUDITS = "semantic_audits"
+BEARING_OBSERVATIONS = "bearing_observations"
+LANDMARK_MATCHES = "landmark_matches"
+ALIGNMENT_DIAGNOSTICS = "alignment_diagnostics"
+LOCALIZATION_INPUTS = "localization_inputs"
 CATALOGS = "catalogs"
+# Review-only collection diagnostic. It is a typed artifact so publication is
+# transactional and provenance-bound, but it is deliberately not a pipeline
+# input and therefore is not part of ARTIFACT_KINDS/build configuration.
+CATALOG_COVERAGE = "catalog_coverage"
 
-ARTIFACT_KINDS = (FRAME_LANDMARKS, PINHOLE_IMAGES, OBJECT_TRACKS, CATALOGS)
+ARTIFACT_KINDS = (
+    FRAME_LANDMARKS,
+    PINHOLE_IMAGES,
+    OBJECT_TRACKS,
+    SEMANTIC_AUDITS,
+    BEARING_OBSERVATIONS,
+    LANDMARK_MATCHES,
+    ALIGNMENT_DIAGNOSTICS,
+    LOCALIZATION_INPUTS,
+    CATALOGS,
+)
+
+DATASET_PIPELINE_METADATA_SHA256 = "dataset_pipeline_metadata_sha256"
+DATASET_FRAMES_GPS_SHA256 = "dataset_frames_gps_sha256"
+DATASET_PANORAMA_SHA256 = "dataset_panorama_sha256"
+DATASET_SOURCE_DIGEST_KEYS = (
+    DATASET_PIPELINE_METADATA_SHA256,
+    DATASET_FRAMES_GPS_SHA256,
+    DATASET_PANORAMA_SHA256,
+)
 
 
 def default_root() -> Path:
@@ -71,24 +102,92 @@ class MissingInput(Exception):
     """
 
 
+class PathContractError(ValueError):
+    """A lane component could escape or ambiguously name its directory."""
+
+
+def require_identifier(value: str, what: str) -> str:
+    """Validate a directory-name component against artifact identities."""
+    try:
+        return artifact.require_identifier(value, what)
+    except artifact.ArtifactValidationError as exc:
+        raise PathContractError(str(exc)) from exc
+
+
+def dataset_source_digests(dataset_base: Path) -> dict[str, str]:
+    """Hash every dataset byte that shapes extraction or tracking.
+
+    Panorama entries may be symlink views of frozen source frames, so their
+    resolved regular-file bytes are hashed under their logical filenames.
+    Metadata and GPS tables themselves must be regular non-symlink files.
+    """
+    dataset_base = Path(dataset_base)
+    metadata = dataset_base / "pipeline_metadata.json"
+    frames_gps = dataset_base / "frames_gps.csv"
+    panorama_dir = dataset_base / "panorama"
+    if panorama_dir.is_symlink():
+        panorama_root = panorama_dir.resolve()
+    else:
+        panorama_root = panorama_dir
+    if not panorama_root.is_dir():
+        raise MissingInput(f"dataset panorama directory does not exist: "
+                           f"{panorama_dir}")
+    panoramas = sorted(panorama_dir.glob("*.jpg"))
+    if not panoramas:
+        raise MissingInput(f"dataset has no panorama JPEGs: {panorama_dir}")
+    records = []
+    for path in panoramas:
+        target = path.resolve()
+        if not target.is_file() or target.is_symlink():
+            raise MissingInput(f"panorama is not a regular file: {path}")
+        records.append({
+            "path": path.name,
+            "size": target.stat().st_size,
+            "sha256": artifact.sha256_file(target),
+        })
+    try:
+        metadata_digest = artifact.sha256_file(metadata)
+        gps_digest = artifact.sha256_file(frames_gps)
+    except artifact.ArtifactValidationError as exc:
+        raise MissingInput(f"invalid dataset source: {exc}") from exc
+    return {
+        DATASET_PIPELINE_METADATA_SHA256: metadata_digest,
+        DATASET_FRAMES_GPS_SHA256: gps_digest,
+        DATASET_PANORAMA_SHA256: artifact.sha256_json(records),
+    }
+
+
 @dataclass
 class FarfieldPaths:
     """Resolved paths for one dataset.
 
-    `versions` maps artifact kind -> version dir; there is no default version,
-    so asking for an artifact whose version nothing supplied raises
-    `MissingInput`. `overrides` maps a property name -> an explicit path that
-    wins over resolution, which is how the `--dataset_base` / `--video` /
-    `--feather` flags keep working. `catalog` is the catalog stem (e.g.
-    `v3_trimmed`); it has no default for the same reason versions don't.
+    `versions` maps every artifact kind to its immutable version directory.
+    There are no special layouts and no default versions. `overrides` is for
+    explicit diagnostic inputs; production orchestration passes artifact
+    directories directly and validates their manifests.
     """
 
     dataset: str
     root: Path = field(default_factory=default_root)
     versions: dict = field(default_factory=dict)
     overrides: dict = field(default_factory=dict)
-    catalog: str | None = None
     _metadata: dict | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.dataset = require_identifier(self.dataset, "dataset")
+        self.root = Path(self.root)
+        if not isinstance(self.versions, dict):
+            raise PathContractError("versions must be a mapping")
+        for kind, version in self.versions.items():
+            if kind not in ARTIFACT_KINDS:
+                raise PathContractError(f"unknown artifact kind {kind!r}")
+            require_identifier(version, f"{kind} version")
+        self.versions = dict(self.versions)
+        if not isinstance(self.overrides, dict):
+            raise PathContractError("overrides must be a mapping")
+        self.overrides = {
+            key: Path(value) for key, value in self.overrides.items()
+        }
 
     # --- lanes ---------------------------------------------------------------
 
@@ -112,13 +211,22 @@ class FarfieldPaths:
     def runs_root(self) -> Path:
         return self.root / "runs"
 
+    @property
+    def builds_root(self) -> Path:
+        return self.root / "builds"
+
+    def build_dir(self, build_name: str) -> Path:
+        """Mutable orchestration state, never a scientific artifact."""
+        return (self.builds_root / self.dataset /
+                require_identifier(build_name, "build name"))
+
     def experiment_dir(self, experiment: str) -> Path:
         """`runs/<experiment>/` -- the home of localization runs.
 
         Every directory under `runs/` is an experiment dir carrying an
         `experiment.md`; actual runs are its children.
         """
-        return self.runs_root / experiment
+        return self.runs_root / require_identifier(experiment, "experiment")
 
     # --- dataset lane --------------------------------------------------------
 
@@ -153,21 +261,11 @@ class FarfieldPaths:
 
     @property
     def feather(self) -> Path:
-        """Map catalog (OSM + ENC) for this dataset.
-
-        The catalog is part of the *problem definition*: changing it changes
-        everyone's numbers, the same way changing the ground-truth GPS would.
-        Which trim to use is therefore a recorded choice, never a default.
-        """
+        """Validated catalog payload inside the selected catalog artifact."""
         override = self.overrides.get("feather")
         if override:
             return override
-        if not self.catalog:
-            raise MissingInput(
-                "no catalog selected: pass --catalog / --feather, or read it "
-                "from the run's recorded config. There is no default on "
-                "purpose -- the catalog trim is a modeling choice.")
-        return self.artifact(CATALOGS) / f"{self.catalog}.feather"
+        return self.artifact(CATALOGS) / "catalog.feather"
 
     # --- artifact lane -------------------------------------------------------
 
@@ -175,26 +273,23 @@ class FarfieldPaths:
         if kind not in self.versions:
             raise MissingInput(
                 f"no {kind} version resolved for dataset {self.dataset!r}: "
-                f"pass --{kind}_version, or run from a directory whose "
-                f"recorded config names one. There is no default version on "
+                f"pass --{kind}_version, or resolve it from build_config.json. "
+                f"There is no default version on "
                 f"purpose -- a default is how a stage silently reads one "
                 f"version's data against another's.")
-        return self.versions[kind]
+        return require_identifier(self.versions[kind], f"{kind} version")
 
     def artifact(self, kind: str, version: str | None = None) -> Path:
         if kind not in ARTIFACT_KINDS:
             raise ValueError(
                 f"unknown artifact kind {kind!r}; known: {ARTIFACT_KINDS}")
-        if kind == CATALOGS:
-            # Catalogs are versioned by their stem (the trim name), not a vN
-            # directory: artifacts/catalogs/<dataset>/<stem>.feather.
-            return self.artifacts_root / kind / self.dataset
-        return (self.artifacts_root / kind / self.dataset /
-                (version or self.version(kind)))
+        selected = (require_identifier(version, f"{kind} version")
+                    if version is not None else self.version(kind))
+        return self.artifacts_root / kind / self.dataset / selected
 
     @property
     def frame_landmarks(self) -> Path:
-        """VLM detections: `sentences/results/**/predictions.jsonl` + embeddings."""
+        """Validated VLM detections: one canonical `predictions.jsonl`."""
         return self.overrides.get("frame_landmarks") or self.artifact(
             FRAME_LANDMARKS)
 
@@ -210,8 +305,33 @@ class FarfieldPaths:
             OBJECT_TRACKS)
 
     @property
-    def tracks_runs_root(self) -> Path:
-        return self.object_tracks / "runs"
+    def semantic_audits(self) -> Path:
+        return self.overrides.get("semantic_audits") or self.artifact(
+            SEMANTIC_AUDITS)
+
+    @property
+    def bearing_observations(self) -> Path:
+        return self.overrides.get("bearing_observations") or self.artifact(
+            BEARING_OBSERVATIONS)
+
+    @property
+    def landmark_matches(self) -> Path:
+        return self.overrides.get("landmark_matches") or self.artifact(
+            LANDMARK_MATCHES)
+
+    @property
+    def alignment_diagnostics(self) -> Path:
+        return self.overrides.get("alignment_diagnostics") or self.artifact(
+            ALIGNMENT_DIAGNOSTICS)
+
+    @property
+    def localization_inputs(self) -> Path:
+        return self.overrides.get("localization_inputs") or self.artifact(
+            LOCALIZATION_INPUTS)
+
+    @property
+    def catalogs(self) -> Path:
+        return self.overrides.get("catalogs") or self.artifact(CATALOGS)
 
     # --- material and models -------------------------------------------------
 
@@ -246,8 +366,23 @@ class FarfieldPaths:
                 f"explicitly. Tracking stages need the dense video to "
                 f"propagate masks between keyframes.")
         # "raw_material/.../x.mp4 (not retained; ~38 GB originals)" -> the path.
+        if not isinstance(raw, str):
+            raise MissingInput(
+                f"{self.metadata_path} video.source_video must be a string")
         path = Path(raw.split(" (")[0].strip())
-        return path if path.is_absolute() else self.root / path
+        if (not path.parts or path.is_absolute()
+                or any(part in ("", ".", "..") for part in path.parts)):
+            raise MissingInput(
+                f"{self.metadata_path} video.source_video must be a normalized "
+                "root-relative path")
+        candidate = self.root / path
+        try:
+            candidate.resolve(strict=False).relative_to(self.root.resolve())
+        except ValueError as exc:
+            raise MissingInput(
+                f"{self.metadata_path} video.source_video escapes farfield root") \
+                from exc
+        return candidate
 
     @property
     def sam2_checkpoint(self) -> Path:
@@ -257,7 +392,7 @@ class FarfieldPaths:
             return override
         raise MissingInput(
             "no SAM2 checkpoint selected: pass --checkpoint, or read it from "
-            "the run's recorded config (models live under "
+            "the build's recorded config (models live under "
             f"{self.models_root}).")
 
     # --- validation ----------------------------------------------------------
@@ -288,7 +423,9 @@ class FarfieldPaths:
                 ("dataset_base", self.dataset_base),
                 ("panorama_dir", self.panorama_dir)]
         for name in ("frame_landmarks", "pinhole_images", "object_tracks",
-                     "feather", "video"):
+                     "semantic_audits", "bearing_observations",
+                     "landmark_matches", "alignment_diagnostics",
+                     "localization_inputs", "catalogs", "video"):
             try:
                 rows.append((name, getattr(self, name)))
             except MissingInput:
@@ -320,46 +457,17 @@ def resolve(parser: argparse.ArgumentParser, args: argparse.Namespace, *,
         paths = from_args(args, infer_from=infer_from)
         if require:
             paths.require(*require)
-    except MissingInput as exc:
+    except (MissingInput, PathContractError) as exc:
         parser.error(str(exc))
     return paths
-
-
-RUN_META = "run_meta.json"
-
-
-def recorded_run_inputs(path: Path) -> dict:
-    """Inputs a tracking run recorded for itself, as `{name: Path}`.
-
-    A run states which dataset, `frame_landmarks` version, catalog and video
-    it was built from, and that record outranks re-resolution: a run built
-    against `frame_landmarks/v2` must never have its audit or matching stages
-    silently read another version's detections back -- different objects, same
-    tracklet ids, no error anywhere.
-
-    Empty when the run recorded nothing, in which case resolution proceeds
-    from explicit flags alone (and fails loudly on anything version-shaped).
-    """
-    meta_path = Path(path) / RUN_META
-    if not meta_path.exists():
-        return {}
-    try:
-        recorded = json.loads(meta_path.read_text()).get("inputs") or {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-    known = ("dataset_base", "frame_landmarks", "pinhole_images", "video",
-             "feather", "sam2_checkpoint")
-    return {name: Path(recorded[name]) for name in known
-            if recorded.get(name)}
 
 
 def infer_from_artifact_path(path: Path) -> FarfieldPaths | None:
     """Recover the dataset from a path inside an artifact version dir.
 
-    Layout is `<root>/artifacts/<kind>/<dataset>/<version>/...`, so a run
-    directory already states which dataset (and which artifact version) it
-    belongs to. Later stages take `--run_dir` only; inferring removes the
-    chance for a second dataset flag to disagree.
+    Layout is `<root>/artifacts/<kind>/<dataset>/<version>/...`; an explicit
+    artifact path therefore identifies its dataset and version without a
+    redundant, potentially conflicting flag.
 
     Returns None when `path` is not inside a recognizable artifact lane (a
     scratch directory, say), in which case the caller should fall back to an
@@ -391,7 +499,7 @@ def add_arguments(parser: argparse.ArgumentParser, *, video: bool = False,
     `--dataset` drives everything; the explicit path flags are escape hatches
     that override one input each. Per-stage switches keep a parser from
     advertising flags its stage ignores. Version and catalog flags carry no
-    defaults: a stage that needs them gets them from its run's recorded
+    defaults: a stage that needs them gets them from its build's recorded
     config or from the operator, explicitly.
     """
     group = parser.add_argument_group(
@@ -410,10 +518,13 @@ def add_arguments(parser: argparse.ArgumentParser, *, video: bool = False,
                        help="Override the resolved frame_landmarks artifact")
     group.add_argument("--frame_landmarks_version", default=None,
                        help="frame_landmarks version (no default: from the "
-                            "run's recorded config, or explicit)")
-    group.add_argument("--object_tracks_version", default=None,
-                       help="object_tracks version (no default: from the "
-                            "run's recorded config, or explicit)")
+                            "build's recorded config, or explicit)")
+    for kind in (OBJECT_TRACKS, SEMANTIC_AUDITS, BEARING_OBSERVATIONS,
+                 LANDMARK_MATCHES, ALIGNMENT_DIAGNOSTICS,
+                 LOCALIZATION_INPUTS):
+        group.add_argument(
+            f"--{kind}_version", default=None,
+            help=f"{kind} artifact version (no default)")
     if pinhole:
         group.add_argument("--pinhole_dir", type=Path, default=None,
                            help="Override the resolved pinhole_images artifact")
@@ -426,9 +537,8 @@ def add_arguments(parser: argparse.ArgumentParser, *, video: bool = False,
     if feather:
         group.add_argument("--feather", type=Path, default=None,
                            help="Override the resolved map catalog")
-        group.add_argument("--catalog", default=None,
-                           help="Catalog stem under artifacts/catalogs/ (no "
-                                "default: the trim is a modeling choice)")
+        group.add_argument("--catalogs_version", default=None,
+                           help="catalog artifact version (no default)")
     if checkpoint:
         group.add_argument("--checkpoint", type=Path, default=None,
                            help="SAM2 checkpoint (no default: a modeling "
@@ -439,8 +549,8 @@ def from_args(args: argparse.Namespace, *,
               infer_from: Path | None = None) -> FarfieldPaths:
     """Build `FarfieldPaths` from a parser built with `add_arguments`.
 
-    `infer_from` is a path inside an artifact lane -- typically the stage's
-    `--run_dir` -- used to recover the dataset when `--dataset` was not
+    `infer_from` is a path inside an artifact lane used to recover the dataset
+    when `--dataset` was not
     passed. When both are available and they disagree, that is an error rather
     than a precedence rule: one of the two is wrong, and guessing which would
     mean reading one dataset's frames against another's tracks.
@@ -472,19 +582,21 @@ def from_args(args: argparse.Namespace, *,
         # A run inside object_tracks/<ds>/v2 belongs to v2 even when the flag
         # was not passed.
         versions.update(inferred.versions)
-    for kind, attr in ((FRAME_LANDMARKS, "frame_landmarks_version"),
-                       (PINHOLE_IMAGES, "pinhole_version"),
-                       (OBJECT_TRACKS, "object_tracks_version")):
+    for kind, attr in (
+            (FRAME_LANDMARKS, "frame_landmarks_version"),
+            (PINHOLE_IMAGES, "pinhole_version"),
+            (OBJECT_TRACKS, "object_tracks_version"),
+            (SEMANTIC_AUDITS, "semantic_audits_version"),
+            (BEARING_OBSERVATIONS, "bearing_observations_version"),
+            (LANDMARK_MATCHES, "landmark_matches_version"),
+            (ALIGNMENT_DIAGNOSTICS, "alignment_diagnostics_version"),
+            (LOCALIZATION_INPUTS, "localization_inputs_version"),
+            (CATALOGS, "catalogs_version")):
         value = getattr(args, attr, None)
         if value:
             versions[kind] = value
 
     overrides = {}
-    # A run's recorded inputs come first so later stages read exactly what the
-    # run was built from; an explicit flag below still wins over the record.
-    if infer_from:
-        overrides.update(recorded_run_inputs(infer_from))
-
     for name, attr in (("dataset_base", "dataset_base"),
                        ("frame_landmarks", "landmark_base"),
                        ("pinhole_images", "pinhole_dir"),
@@ -505,5 +617,4 @@ def from_args(args: argparse.Namespace, *,
         root=root,
         versions=versions,
         overrides=overrides,
-        catalog=getattr(args, "catalog", None),
     )

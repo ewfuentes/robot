@@ -1,7 +1,7 @@
-"""Regenerate the navigation index chain across the farfield data root.
+"""Regenerate a navigation index snapshot across a farfield data root.
 
-Every stage calls indexes.refresh() itself after writing; this CLI exists
-for manual refreshes and for the data migration.
+Canonical direct producers refresh these indexes after publication.  Run
+this CLI to repair or explicitly regenerate a stale navigation snapshot.
 
   bazel run //experimental/overhead_matching/swag/farfield/viewers:refresh_indexes
   bazel run ...:refresh_indexes -- --data_root /mnt/mirror/farfield_matching

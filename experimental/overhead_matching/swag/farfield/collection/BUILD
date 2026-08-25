@@ -240,9 +240,10 @@ py_binary(
     deps = [":pbf_coverage_lib"],
 )
 
-py_binary(
-    name = "run_farfield_collection",
+py_library(
+    name = "run_farfield_collection_lib",
     srcs = ["run_farfield_collection.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":extract_stitch_lib",
         ":farfield_trajectories",
@@ -250,8 +251,29 @@ py_binary(
         ":mapillary_to_vigor_lib",
         ":pbf_coverage_lib",
         ":seed_to_trajectory_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:audit_dataset_lib",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:plot_landmarks_lib",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:trim_catalog_lib",
+    ],
+)
+
+py_binary(
+    name = "run_farfield_collection",
+    srcs = ["run_farfield_collection.py"],
+    deps = [":run_farfield_collection_lib"],
+)
+
+py_test(
+    name = "run_farfield_collection_test",
+    srcs = ["run_farfield_collection_test.py"],
+    deps = [
+        ":run_farfield_collection_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )

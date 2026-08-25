@@ -487,20 +487,6 @@ def apply_trim(ds: Path, keep, reason: str, video_fps: float | None, *,
         record["video_fps_used_for_review"] = video_fps
     meta.setdefault("trims", []).append(record)
 
-    # A mount offset measured on the untrimmed track no longer describes this
-    # one -- a range trim exists precisely because part of the track behaved
-    # differently. Keep the number for reference but make it unusable until it
-    # is re-measured, rather than silently handing a stale angle downstream.
-    #
-    # A density trim is the exception: it drops no stretch of track and
-    # changes no geometry, and the offset is an angle between the camera and
-    # the direction of travel that does not depend on how often that travel
-    # was sampled. Invalidating it here would be a false alarm, and one that
-    # costs a re-calibration.
-    if isinstance(meta.get("mount_offset"), dict) and kind != "density":
-        meta["mount_offset"]["self_consistent"] = False
-        meta["mount_offset"]["stale_after_trim"] = True
-
     # recording_seams are keyed on frame indices, which this trim just
     # renumbered — for EVERY trim kind, density included (a density trim keeps
     # the geometry but still renumbers). Both homes of the record are
@@ -659,12 +645,9 @@ def main(argv=None):
     n_sums = checksums.regenerate(ds)
     if n_sums:
         print(f"  regenerated {checksums.CHECKSUM_FILE} over {n_sums} files")
-    if kind == "density":
-        print("  NOTE: mount_offset left as-is — a density trim does not "
-              "change the geometry it was measured from.")
-    else:
-        print("  NOTE: mount_offset is now marked stale — re-run the offset "
-              "sweep (farfield/calibration) and publish_mount_offset.")
+    print("  NOTE: the dataset identity and frame set changed; regenerate "
+          "dependent artifacts and use a dataset-bound approved "
+          "nominal-forward record for the next build.")
     meta = json.load(open(ds / "pipeline_metadata.json"))
     if meta.get("projection") == "equirectangular":
         print("  NOTE: equirectangular dataset — pinhole faces reference the "

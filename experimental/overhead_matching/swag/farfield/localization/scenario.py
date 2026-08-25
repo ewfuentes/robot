@@ -1,7 +1,7 @@
 """Synthetic scenario generation for the bearing-only localization harness.
 
 Produces the filter's full input log from a made-up trajectory and a handful
-of hardcoded landmarks: sparse tracklet measurements (one fused body-frame
+of hardcoded landmarks: sparse tracklet measurements (one fused forward-frame
 bearing per tracklet per information epoch, anchors staggered across
 tracklets — design doc §5.3), identity-stub CompatibilityTables, body-frame
 odometry increments (§5.2), and ground truth.
@@ -76,8 +76,8 @@ class ScenarioConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     dyaw_sigma_deg: float = 1.5
     # --- model-mismatch knobs: the filter is NOT told about any of these ---
     # Constant COG-vs-heading offset: leeway/crab ONLY. The camera mount
-    # offset is removed upstream of the filter (geometry.apply_mount_offset
-    # in the export) and is NOT part of the synthetic heading model.
+    # camera-to-forward rotation is removed upstream of the filter and is NOT
+    # part of the synthetic forward-axis state model.
     # Increments are emitted course-aligned (forward = step, left = 0), the
     # way the gps_to_odometry derivation must (§5.2): real crab is thereby
     # misassigned, and the filter drifts ~step*sin(crab) cross-track.
@@ -202,12 +202,12 @@ def _build_truth(config: ScenarioConfig) -> list:
                     len(pieces) - 1)
         pos_e, pos_n, course_rad = _piece_pose(pieces[index],
                                                s - cum_len[index])
-        # True heading = course over ground + crab/leeway. Bearings are
-        # measured relative to heading; odometry reports course.
+        # Truth records trajectory course only. The unobserved crab/leeway
+        # bias enters the forward-frame bearing generator below; it must not
+        # masquerade as measured course in serialized truth.
         truth.append(structs.TruthPose(
             keyframe_idx=kf, east_m=pos_e, north_m=pos_n,
-            heading_deg=(math.degrees(course_rad)
-                         + config.course_bias_deg) % 360.0))
+            course_world_cw_deg=math.degrees(course_rad) % 360.0))
     return truth
 
 
@@ -224,16 +224,10 @@ def generate(config: ScenarioConfig) -> ScenarioData:
         np.array([lm.lat_deg for lm in config.landmarks]),
         np.array([lm.lon_deg for lm in config.landmarks]))
 
-    # Odometry: body-frame increments the way the gps_to_odometry producer
-    # emits them — course-aligned (real leeway is misassigned by
-    # construction, §5.2), dyaw = differenced course — resolved into the
-    # midpoint frame the filter reconstructs from (§5.2 propagation order).
-    # Off corners that is exactly forward = step, left = 0; at a polyline
-    # corner the whole turn lands in one step, violating the constant-rate
-    # assumption behind the midpoint chord, so the residual dyaw/2 goes into
-    # left_m rather than becoming a fake ~step*sin(dyaw/4) systematic that
-    # real (smoothly turning) platforms never produce. The declared sigmas
-    # match the injected noise; the mismatch knobs do not appear in what the
+    # Odometry matches gps_to_odometry's forward/left/CW-yaw contract:
+    # differenced chord course, then rotate first and move forward in the
+    # updated frame. Real leeway remains motion-model uncertainty. Declared
+    # sigmas match injected noise; mismatch knobs do not appear in what the
     # filter sees.
     odometry = []
     prev_course_rad = None
@@ -250,22 +244,18 @@ def generate(config: ScenarioConfig) -> ScenarioData:
             dyaw_true_rad = float(geo.wrap_rad(
                 course_rad - prev_course_rad))
         prev_course_rad = course_rad
-        # Displacement direction relative to the midpoint frame.
-        beta_rad = dyaw_true_rad / 2.0
         scale = 1.0 + config.odom_scale_error
         sigma_m = config.odom_sigma_m + config.odom_sigma_per_m * step_m
         odometry.append(structs.OdometryDelta(
             keyframe_idx=kf,
-            forward_m=(step_m * math.cos(beta_rad) * scale
-                       + rng.normal(0.0, sigma_m)),
-            left_m=(-step_m * math.sin(beta_rad) * scale
-                    + rng.normal(0.0, sigma_m)),
-            dyaw_rad=(dyaw_true_rad + gyro_bias_rad
+            forward_m=(step_m * scale + rng.normal(0.0, sigma_m)),
+            left_m=rng.normal(0.0, sigma_m),
+            delta_yaw_cw_rad=(dyaw_true_rad + gyro_bias_rad
                       + rng.normal(0.0, sigma_yaw_rad)),
             sigma_m=sigma_m,
             sigma_yaw_rad=sigma_yaw_rad))
 
-    # Tracklet measurements: one fused body-frame bearing per landmark per
+    # Tracklet measurements: one fused forward-frame bearing per landmark per
     # epoch, anchors staggered round-robin across tracklets.
     kappa = 1.0 / math.radians(config.bearing_sigma_deg) ** 2
     epoch = max(1, config.epoch_length_keyframes)
@@ -280,18 +270,20 @@ def generate(config: ScenarioConfig) -> ScenarioData:
             bearing_world_rad = math.atan2(
                 float(landmark_east_m[i]) - pose.east_m,
                 float(landmark_north_m[i]) - pose.north_m)
-            body_rad = float(geo.wrap_rad(
-                bearing_world_rad - math.radians(pose.heading_deg)))
+            forward_world_cw_deg = (
+                pose.course_world_cw_deg + config.course_bias_deg) % 360.0
+            forward_rad = float(geo.wrap_rad(
+                bearing_world_rad - math.radians(forward_world_cw_deg)))
             if config.clutter_only or rng.random() < config.outlier_frac:
                 observed_rad = float(rng.uniform(-math.pi, math.pi))
             else:
-                observed_rad = float(rng.vonmises(body_rad, kappa)
+                observed_rad = float(rng.vonmises(forward_rad, kappa)
                                      + math.radians(config.bearing_bias_deg))
             measurements.append(structs.TrackletMeasurement(
                 tracklet_id=tracklet_id,
                 anchor_keyframe_idx=kf,
-                bearing_body_deg=math.degrees(
-                    float(geo.wrap_rad(observed_rad))),
+                bearing_forward_cw_deg=math.degrees(
+                    float(geo.wrap_rad(observed_rad))) % 360.0,
                 kappa=kappa))
     measurements.sort(key=lambda m: (m.anchor_keyframe_idx, m.tracklet_id))
 
@@ -341,7 +333,7 @@ def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
                               else 0.0),
         north_m=pose.north_m + (north_m if pose.keyframe_idx >= at_keyframe
                                 else 0.0),
-        heading_deg=pose.heading_deg) for pose in data.truth]
+        course_world_cw_deg=pose.course_world_cw_deg) for pose in data.truth]
     truth_by_kf = {t.keyframe_idx: t for t in truth}
 
     measurements = []
@@ -350,11 +342,13 @@ def apply_kidnap(data: ScenarioData, at_keyframe: int, east_m: float,
         index = data.catalog.index_of(meas.tracklet_id.removeprefix("trk_"))
         world = math.atan2(data.true_east_m[index] - pose.east_m,
                            data.true_north_m[index] - pose.north_m)
+        forward_world_cw_deg = (
+            pose.course_world_cw_deg + data.config.course_bias_deg) % 360.0
         measurements.append(structs.TrackletMeasurement(
             tracklet_id=meas.tracklet_id,
             anchor_keyframe_idx=meas.anchor_keyframe_idx,
-            bearing_body_deg=math.degrees(float(geo.wrap_rad(
-                world - math.radians(pose.heading_deg)))),
+            bearing_forward_cw_deg=math.degrees(float(geo.wrap_rad(
+                world - math.radians(forward_world_cw_deg)))) % 360.0,
             kappa=meas.kappa))
     return dataclasses.replace(data, truth=truth, measurements=measurements)
 
@@ -367,7 +361,7 @@ def _landmarks_from_specs(specs) -> list:
         lat, lon = frame.latlon_from_enu(east_m, north_m)
         out.append(structs.LandmarkEntry(
             landmark_id=lm_id, lat_deg=float(lat), lon_deg=float(lon),
-            type_key=type_key))
+            type_key=type_key, position_sigma_m=1.0))
     return out
 
 

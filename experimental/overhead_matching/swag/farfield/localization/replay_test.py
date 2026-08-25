@@ -21,6 +21,7 @@ Replay reads `max_visible_range_m` from the manifest — required since schema
 is used and that a manifest without one is unreplayable, never guessed at.
 """
 
+import dataclasses
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +29,7 @@ from pathlib import Path
 import msgspec
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
     attribution,
     filter as pf,
@@ -47,7 +49,13 @@ def _write_run(run_dir: Path, config: structs.FilterConfig, data,
                             data.measurements, tables)
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION,
+        dataset="synthetic",
         scenario_name=data.config.name,
+        run_kind="synthetic",
+        initialization_kind="test",
+        bearings_consumed=True,
+        proposal_enabled=config.proposal.enabled,
+        localization_inputs_manifest_sha256=None,
         anchor_lat_deg=data.config.anchor_lat_deg,
         anchor_lon_deg=data.config.anchor_lon_deg,
         n_keyframes=data.n_keyframes,
@@ -60,7 +68,8 @@ def _write_run(run_dir: Path, config: structs.FilterConfig, data,
         git_commit="test", argv=["replay_test"],
         created="2026-08-21T00:00:00+00:00")
     run_io.write_run(run_dir, manifest, data.truth, data.odometry,
-                     data.measurements, tables, history)
+                     data.measurements, tables, history,
+                     dataset="synthetic", version=run_dir.name)
     return history
 
 
@@ -78,6 +87,17 @@ def _harbor_run(tmp: Path, **config_kwargs):
     run_dir = tmp / "run"
     history = _write_run(run_dir, config, data)
     return run_dir, history, data, config
+
+
+def _write_tampered_run_manifest(run_dir: Path, raw: dict) -> None:
+    """Keep a deliberately damaged RunManifest inside a valid test artifact."""
+    artifact.atomic_write_file(
+        run_dir / run_io.RUN_MANIFEST_NAME, msgspec.json.encode(raw))
+    manifest = artifact.load_manifest(run_dir)
+    manifest = dataclasses.replace(
+        manifest, content_digest=artifact.sha256_directory(run_dir))
+    artifact.atomic_write_json(
+        run_dir / artifact.MANIFEST_NAME, manifest.to_dict())
 
 
 class ObserverInertnessTest(unittest.TestCase):
@@ -158,9 +178,9 @@ class ReplayFidelityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir, _, _, _ = _harbor_run(Path(tmp))
             raw = msgspec.json.decode(
-                (run_dir / "manifest.json").read_bytes())
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
             del raw["max_visible_range_m"]
-            (run_dir / "manifest.json").write_bytes(msgspec.json.encode(raw))
+            _write_tampered_run_manifest(run_dir, raw)
 
             status = replay_mod.replayability(run_dir)
             self.assertFalse(status.has_max_visible_range)
@@ -179,26 +199,29 @@ class ReplayFidelityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir, _, _, _ = _harbor_run(Path(tmp))
             raw = msgspec.json.decode(
-                (run_dir / "manifest.json").read_bytes())
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
             del raw["filter_config"]["matcher_recall"]
             del raw["filter_config"]["proposal"]["evidence_gate"]
-            (run_dir / "manifest.json").write_bytes(msgspec.json.encode(raw))
+            _write_tampered_run_manifest(run_dir, raw)
 
             status = replay_mod.replayability(run_dir)
             self.assertFalse(status.replayable)
             self.assertIn("matcher_recall", status.missing_config_keys)
             self.assertIn("proposal.evidence_gate",
                           status.missing_config_keys)
-            with self.assertRaises(replay_mod.ReplayDivergence):
+            # Completed runs must carry the full typed filter recipe.  There
+            # is no compatibility path that silently fills fields from the
+            # current code before replay begins.
+            with self.assertRaises(ValueError):
                 replay_mod.replay(run_dir)
 
     def test_divergence_is_inspectable_without_verify(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir, _, _, _ = _harbor_run(Path(tmp))
             raw = msgspec.json.decode(
-                (run_dir / "manifest.json").read_bytes())
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
             raw["particle_history_sha256"] = "0" * 64
-            (run_dir / "manifest.json").write_bytes(msgspec.json.encode(raw))
+            _write_tampered_run_manifest(run_dir, raw)
 
             with self.assertRaises(replay_mod.ReplayDivergence):
                 replay_mod.replay(run_dir)
@@ -282,13 +305,11 @@ class EditsTest(unittest.TestCase):
         self.assertIn("without LT7", replay_mod.Edits(
             drop_tracklets=("LT7",)).describe())
 
-    def test_default_counterfactual_dir_is_inside_the_run(self):
-        """REORG rule: nothing writes outside the data root — a ghost lives
-        under the run it questions, and the relative name has one owner."""
+    def test_default_counterfactual_dir_is_a_sibling_sidecar(self):
+        """A ghost must not mutate the completed artifact it questions."""
         edits = replay_mod.Edits(drop_tracklets=("LT7",))
         out = replay_mod.default_counterfactual_dir(Path("/data/run_x"), edits)
-        self.assertEqual(out.parent,
-                         Path("/data/run_x") / replay_mod.COUNTERFACTUAL_DIRNAME)
+        self.assertEqual(out.parent, Path("/data/run_x.counterfactuals"))
         self.assertEqual(out.name, edits.slug())
 
     def test_counterfactual_writes_a_readable_run_directory(self):
@@ -304,6 +325,7 @@ class EditsTest(unittest.TestCase):
             ghost_dir = tmp / "ghost"
             replay_mod.write_counterfactual(ghost_dir, run_dir, result)
             ghost = run_io.read_run(ghost_dir)
+            self.assertEqual(ghost.manifest.run_kind, "synthetic")
             self.assertIn(victim, ghost.manifest.scenario_name)
             self.assertEqual(ghost.manifest.particle_history_sha256,
                              result.history.particle_history_sha256)

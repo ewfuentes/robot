@@ -42,24 +42,19 @@ class AuditTest(unittest.TestCase):
         self.assertTrue(any("north_aligned" in m for k, m in a.rows
                             if k == "FAIL"))
 
-    def test_unqualified_mount_offset_fails(self):
+    def test_unset_heading_preserves_shape_without_claiming_orientation(self):
         meta = testing.default_metadata()
-        meta["mount_offset"] = {"mount_offset_deg": 180.0}
         base = testing.make_dataset(self.root / "ds", metadata=meta)
-        a = run_audit(base)
-        self.assertTrue(a.failed)
-        self.assertTrue(any("mount_offset" in m for k, m in a.rows
-                            if k == "FAIL"))
-
-    def test_absent_mount_offset_only_warns(self):
-        meta = testing.default_metadata()
-        del meta["mount_offset"]
-        base = testing.make_dataset(self.root / "ds", metadata=meta)
+        path = base / "intrinsics.csv"
+        rows = path.read_text().splitlines()
+        path.write_text(rows[0] + "\n" + "\n".join(
+            row.replace(",45.0,column_0,", ",,,") for row in rows[1:])
+            + "\n")
         a = run_audit(base)
         self.assertFalse(a.failed,
                          msg="\n".join(f"{k}: {m}" for k, m in a.rows))
-        self.assertTrue(any("mount_offset" in m for k, m in a.rows
-                            if k == "warn"))
+        self.assertTrue(any("no camera/world orientation" in m
+                            for _, m in a.rows))
 
     def test_pano_gap_warns_about_index_divergence(self):
         base = testing.make_dataset(self.root / "ds", n_frames=5,

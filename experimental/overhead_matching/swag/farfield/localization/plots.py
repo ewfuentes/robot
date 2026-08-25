@@ -1,9 +1,9 @@
 """Plot a bearing-only localization run directory.
 
-Reads only the self-describing run dir written by run_io.py and produces
-<run_dir>/plots/{map.png,strip.png} plus an optional particle animation
-(anim.gif, --animate). Everything is written inside the run directory it
-describes — plots are part of the run's record, not a side output.
+Reads only the self-describing run dir written by run_io.py and publishes
+<run_dir>.plots/{map.png,strip.png} plus an optional particle animation
+(anim.gif, --animate). The completed run is immutable; plots are a
+transactionally published sibling side output.
 
 Usage:
   bazel run //experimental/overhead_matching/swag/farfield/localization:plot_run -- \
@@ -27,6 +27,7 @@ from experimental.overhead_matching.swag.farfield import (  # noqa: E402
 from experimental.overhead_matching.swag.farfield.localization import (  # noqa: E402
     metrics,
     run_io,
+    side_outputs,
 )
 
 _LANDMARK_MARKERS = {"lighthouse": "*", "storage_tank": "s"}
@@ -80,16 +81,22 @@ def _draw_landmarks(data, ax):
                     xytext=(8, 8), fontsize=8)
 
 
-def _draw_map(data, wedge_keyframe, max_particles, ax):
-    lm_east, lm_north = _landmark_positions(data)   # also sizes the bearing rays
-    _draw_landmarks(data, ax)
-
-    truth_e = [t.east_m for t in data.truth]
-    truth_n = [t.north_m for t in data.truth]
+def _draw_truth(data, ax):
+    """Draw optional truth without making real localization runs require it."""
+    if not data.truth:
+        return
+    truth_e = [point.east_m for point in data.truth]
+    truth_n = [point.north_m for point in data.truth]
     ax.plot(truth_e, truth_n, color="0.15", lw=2.0, zorder=6,
             label="truth")
     ax.scatter([truth_e[0]], [truth_n[0]], marker="o", color="0.4", s=40,
                zorder=4)
+
+
+def _draw_map(data, wedge_keyframe, max_particles, ax):
+    lm_east, lm_north = _landmark_positions(data)   # also sizes the bearing rays
+    _draw_landmarks(data, ax)
+    _draw_truth(data, ax)
 
     ax.plot([h.mean_east_m for h in data.health],
             [h.mean_north_m for h in data.health],
@@ -120,8 +127,11 @@ def _draw_map(data, wedge_keyframe, max_particles, ax):
         record = health_by_kf[wedge_keyframe]
         ray_len = 1.1 * float(np.max(np.hypot(lm_east, lm_north)))
         for meas in wedge_meas:
-            world = math.radians(float(geo.body_to_world_bearing_deg(
-                record.mean_heading_deg, meas.bearing_body_deg)))
+            forward_world_cw_deg = record.mean_heading_deg
+            world = math.radians(float(
+                geo.forward_to_world_bearing_cw_deg(
+                    forward_world_cw_deg=forward_world_cw_deg,
+                    bearing_forward_cw_deg=meas.bearing_forward_cw_deg)))
             sigma = 1.0 / math.sqrt(meas.kappa)
             for offset, style, lw in [(0.0, "-", 1.2), (2 * sigma, ":", 0.8),
                                       (-2 * sigma, ":", 0.8)]:
@@ -256,6 +266,9 @@ def _animate(data, out_path, max_particles):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help="defaults to the sibling <run_dir>.plots; the "
+                             "immutable run directory is never modified")
     parser.add_argument("--wedge_keyframe", type=int, default=None,
                         help="Keyframe for bearing wedges "
                              "(default: last keyframe with measurements)")
@@ -264,38 +277,43 @@ def main():
     args = parser.parse_args()
 
     data = run_io.read_run(args.run_dir)
-    plots_dir = args.run_dir / "plots"
-    plots_dir.mkdir(exist_ok=True)
 
     wedge_kf = args.wedge_keyframe
     if wedge_kf is None and data.measurements:
         wedge_kf = max(m.anchor_keyframe_idx for m in data.measurements)
 
-    fig, ax = plt.subplots(figsize=(9, 9))
-    _draw_map(data, wedge_kf, args.max_particles, ax)
-    fig.tight_layout()
-    fig.savefig(plots_dir / "map.png", dpi=150)
-    plt.close(fig)
+    with side_outputs.publish_directory(
+            args.run_dir, output_dir=args.output_dir,
+            suffix=".plots") as output:
+        plots_dir = output.staging_dir
+        fig, ax = plt.subplots(figsize=(9, 9))
+        _draw_map(data, wedge_kf, args.max_particles, ax)
+        fig.tight_layout()
+        fig.savefig(plots_dir / "map.png", dpi=150)
+        plt.close(fig)
 
-    fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
-    _draw_strip(data, axes)
-    fig.tight_layout()
-    fig.savefig(plots_dir / "strip.png", dpi=150)
-    plt.close(fig)
+        fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+        _draw_strip(data, axes)
+        fig.tight_layout()
+        fig.savefig(plots_dir / "strip.png", dpi=150)
+        plt.close(fig)
+
+        if args.animate:
+            _animate(data, plots_dir / "anim.gif", args.max_particles)
+
+        provenance.write(
+            plots_dir,
+            generator="//experimental/overhead_matching/swag/farfield/"
+                      "localization:plot_run",
+            inputs={"run_dir": Path(args.run_dir).resolve()},
+            config={"wedge_keyframe": wedge_kf,
+                    "max_particles": args.max_particles,
+                    "animate": args.animate})
+
+    plots_dir = output.destination
     print(f"Wrote {plots_dir}/map.png and strip.png")
-
     if args.animate:
-        _animate(data, plots_dir / "anim.gif", args.max_particles)
         print(f"Wrote {plots_dir}/anim.gif")
-
-    provenance.write(
-        plots_dir,
-        generator="//experimental/overhead_matching/swag/farfield/"
-                  "localization:plot_run",
-        inputs={"run_dir": Path(args.run_dir).resolve()},
-        config={"wedge_keyframe": wedge_kf,
-                "max_particles": args.max_particles,
-                "animate": args.animate})
 
 
 if __name__ == "__main__":
