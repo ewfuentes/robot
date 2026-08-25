@@ -386,9 +386,20 @@ def validate_matching_response(key, response, metadata):
     if not isinstance(parts, list) or len(parts) != 1:
         raise ValueError("response content must contain exactly one part")
     part = parts[0]
-    if not isinstance(part, dict) or set(part) != {"text"} or not isinstance(
-            part["text"], str):
-        raise ValueError("response part must contain exactly one text string")
+    if not isinstance(part, dict):
+        raise ValueError("response part must be an object")
+    part_keys = set(part)
+    if part_keys not in ({"text"}, {"text", "thoughtSignature"}):
+        raise ValueError(
+            "response part must contain text and only the optional provider "
+            "thoughtSignature metadata")
+    if not isinstance(part["text"], str):
+        raise ValueError("response part text must be a string")
+    if "thoughtSignature" in part and (
+            not isinstance(part["thoughtSignature"], str)
+            or not part["thoughtSignature"]):
+        raise ValueError(
+            "response part thoughtSignature must be a nonempty string")
     try:
         payload = json.loads(
             part["text"], object_pairs_hook=_reject_duplicate_json_keys,

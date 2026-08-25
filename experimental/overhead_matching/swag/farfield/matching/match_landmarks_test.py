@@ -384,6 +384,28 @@ class ResponseValidationTest(unittest.TestCase):
         self.assertEqual([item["set_1_id"] for item in result["matches"]],
                          [0, 1])
 
+    def test_provider_thought_signature_metadata_is_accepted(self):
+        response = self.response([self.entry(0), self.entry(1)])
+        response["candidates"][0]["content"]["parts"][0][
+            "thoughtSignature"] = "opaque-provider-signature"
+        result = ml.validate_matching_response("q", response, self.metadata)
+        self.assertEqual([item["set_1_id"] for item in result["matches"]],
+                         [0, 1])
+
+    def test_other_part_metadata_and_invalid_thought_signature_are_rejected(self):
+        response = self.response([self.entry(0), self.entry(1)])
+        response["candidates"][0]["content"]["parts"][0]["unexpected"] = True
+        with self.assertRaisesRegex(ValueError, "optional provider"):
+            ml.validate_matching_response("q", response, self.metadata)
+
+        for signature in ("", None, 7):
+            with self.subTest(signature=signature):
+                response = self.response([self.entry(0), self.entry(1)])
+                response["candidates"][0]["content"]["parts"][0][
+                    "thoughtSignature"] = signature
+                with self.assertRaisesRegex(ValueError, "nonempty string"):
+                    ml.validate_matching_response("q", response, self.metadata)
+
     def test_missing_set1_item_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "exactly 2"):
             ml.validate_matching_response(
