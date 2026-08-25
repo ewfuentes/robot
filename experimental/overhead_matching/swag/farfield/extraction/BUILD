@@ -111,6 +111,7 @@ py_test(
     deps = [
         requirement("pillow"),
         ":extract_landmarks_lib",
+        ":legacy_extraction_adoption_lib",
         ":prompts",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:build_config",

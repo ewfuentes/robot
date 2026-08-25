@@ -31,6 +31,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
     ],
 )
@@ -260,6 +261,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager_lib",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],

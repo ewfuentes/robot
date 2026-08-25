@@ -36,6 +36,7 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     publication,
     provenance,
+    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.calibration import (
     heading,
@@ -205,8 +206,11 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
     if manifest.declared_outputs != ("observations.jsonl",):
         raise AlignmentDiagnosticError(
             "bearing_observations must declare only observations.jsonl")
+    expected_config_keys = _OBSERVATION_CONFIG_KEYS | (
+        frozenset({"stage_reuse"})
+        if "stage_reuse" in manifest.config else frozenset())
     config = _exact_keys(
-        manifest.config, _OBSERVATION_CONFIG_KEYS,
+        manifest.config, expected_config_keys,
         "bearing_observations manifest config")
     if config["schema"] != "farfield_bearing_observations/v1":
         raise AlignmentDiagnosticError(
@@ -460,7 +464,12 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.bearing_observations_version"))
-    observations_manifest = artifact.load_manifest(args.observations_dir)
+    authorization = stage_reuse.load_proof(config_path.parent)
+    stage_reuse.require_target_checkout(
+        config_path.parent, document=document, authorization=authorization)
+    observations_manifest = stage_reuse.require_configured_artifact(
+        observations_ref, target_build_dir=config_path.parent,
+        kind=paths_lib.BEARING_OBSERVATIONS, document=document)
     if observations_manifest.config.get(
             "build_identity") != document["build_identity"]:
         raise AlignmentDiagnosticError(
@@ -481,7 +490,7 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.object_tracks_version"))
-    if tracks_ref != tracks_recorded:
+    if tracks_ref.to_dict() != tracks_recorded.to_dict():
         raise AlignmentDiagnosticError(
             "recorded object_tracks path no longer resolves to the bound "
             "artifact identity")
@@ -490,18 +499,33 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.semantic_audits_version"))
-    if audits_ref != audits_recorded:
+    if audits_ref.to_dict() != audits_recorded.to_dict():
         raise AlignmentDiagnosticError(
             "recorded semantic_audits path no longer resolves to the bound "
             "artifact identity")
-    tracks_manifest = artifact.load_manifest(tracks_recorded.path)
-    audits_manifest = artifact.load_manifest(audits_recorded.path)
-    for manifest, kind in ((tracks_manifest, paths_lib.OBJECT_TRACKS),
-                           (audits_manifest, paths_lib.SEMANTIC_AUDITS)):
-        if manifest.config.get("build_identity") != document["build_identity"]:
-            raise AlignmentDiagnosticError(
-                f"{kind} belongs to a different immutable build")
-    if audits_manifest.upstreams.count(tracks_ref) != 1:
+    tracks_manifest = stage_reuse.require_configured_artifact(
+        tracks_ref, target_build_dir=config_path.parent,
+        kind=paths_lib.OBJECT_TRACKS, document=document)
+    audits_manifest = stage_reuse.require_configured_artifact(
+        audits_ref, target_build_dir=config_path.parent,
+        kind=paths_lib.SEMANTIC_AUDITS, document=document)
+    track_bridge = stage_reuse.require_compatible_artifact(
+        tracks_ref, tracks_manifest, target_build_dir=config_path.parent,
+        owner_stage="track", authorization=authorization)
+    stage_reuse.require_recorded_bridge(
+        observations_manifest.config.get("stage_reuse"), track_bridge)
+    stage_reuse.require_recorded_bridge(
+        audits_manifest.config.get("stage_reuse"), track_bridge,
+        required_artifacts=(tracks_ref,),
+        additional_artifacts=tuple(
+            reference for reference in (authorization.refs
+                                         if authorization is not None else ())
+            if reference.kind == paths_lib.FRAME_LANDMARKS))
+    if audits_manifest.config.get("build_identity") != document["build_identity"]:
+        raise AlignmentDiagnosticError(
+            f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
+    if sum(ref.to_dict() == tracks_ref.to_dict()
+           for ref in audits_manifest.upstreams) != 1:
         raise AlignmentDiagnosticError(
             "semantic_audits must bind the exact object_tracks artifact once")
     course = _recorded_course(tracks_manifest)
@@ -565,6 +589,8 @@ def _load_inputs(args) -> dict:
         "nominal_forward": approved_nominal_forward,
         "nominal_forward_path": calibration_path,
         "nominal_forward_sha256": calibration_sha256,
+        "stage_reuse": track_bridge,
+        "reuse_authorization": authorization,
     }
 
 
@@ -1012,12 +1038,15 @@ def publish(resolved: dict, output_dir: Path, *,
             "dataset_tracking_inputs": resolved["dataset_source_sha256"],
             "nominal_forward": resolved["nominal_forward_sha256"],
         },
+        **({"stage_reuse": resolved["stage_reuse"]}
+           if resolved["stage_reuse"] is not None else {}),
     }
     with publication.published_artifact(
             output_dir, kind=paths_lib.ALIGNMENT_DIAGNOSTICS,
             dataset=resolved["observations_ref"].dataset,
             version=resolved["output_version"], generator=GENERATOR,
-            git_commit=provenance.git_commit(), arguments=arguments,
+            git_commit=resolved["document"]["git_commit"],
+            arguments=arguments,
             upstreams=(resolved["observations_ref"],),
             config=manifest_config,
             declared_outputs=(OUTPUT_NAME, SUN_REVIEW_NAME)) as builder:
@@ -1041,7 +1070,12 @@ def main() -> None:
     args = parser.parse_args()
     try:
         resolved = _load_inputs(args)
-        publish(resolved, args.output_dir, arguments=tuple(sys.argv))
+        reference = publish(
+            resolved, args.output_dir, arguments=tuple(sys.argv))
+        stage_reuse.require_output_commit(
+            reference, target_build_dir=Path(args.build_config).parent,
+            document=resolved["document"],
+            authorization=resolved["reuse_authorization"])
     except (AlignmentDiagnosticError, artifact.ArtifactError,
             build_config.InvalidConfigValue,
             build_config.MissingConfigValue, dataset.ContractViolation,

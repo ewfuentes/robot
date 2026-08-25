@@ -97,6 +97,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
     ],
 )
 
@@ -118,6 +119,7 @@ py_binary(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
     ],
 )
 

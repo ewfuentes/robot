@@ -113,6 +113,21 @@ py_library(
     deps = [":geometry"],
 )
 
+py_library(
+    name = "stage_reuse",
+    srcs = ["stage_reuse.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":artifact",
+        ":build_config",
+        ":llm_lifecycle",
+        ":paths",
+        ":provenance",
+        "//experimental/overhead_matching/swag/farfield/extraction:extract_landmarks_lib",
+        "//experimental/overhead_matching/swag/farfield/extraction:legacy_extraction_adoption_lib",
+    ],
+)
+
 py_test(
     name = "nominal_forward_test",
     srcs = ["nominal_forward_test.py"],
@@ -203,6 +218,7 @@ py_library(
         ":nominal_forward",
         ":paths",
         ":provenance",
+        ":stage_reuse",
         "//experimental/overhead_matching/swag/farfield/localization:run_identity",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
     ],
@@ -221,11 +237,24 @@ py_test(
     data = ["configs/harbor_example.yaml"],
     deps = [
         requirement("pyyaml"),
+        requirement("shapely"),
         ":artifact",
         ":build_config",
+        ":dataset",
+        ":geometry",
+        ":llm_lifecycle",
+        ":nominal_forward",
         ":paths",
         ":pipeline_lib",
+        ":testing",
+        "//experimental/overhead_matching/swag/farfield/calibration:build_alignment_diagnostics_lib",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/extraction:extract_landmarks_lib",
+        "//experimental/overhead_matching/swag/farfield/localization:build_export_lib",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
+        "//experimental/overhead_matching/swag/farfield/matching:match_landmarks_lib",
+        "//experimental/overhead_matching/swag/farfield/tracking:audit_requests_lib",
+        "//experimental/overhead_matching/swag/farfield/tracking:build_bearing_observations_lib",
     ],
 )
 

@@ -342,6 +342,36 @@ class CompleteAdoptionTest(LegacyAdoptionFixture):
         self.assertFalse(plan.report["publication_plan"]
                          ["normal_reader_compatibility_fallback"])
 
+    def test_published_report_exactly_reproduces_from_retained_raw_sources(self):
+        plan = self._verify()
+        reproduced = adoption.reverify_published_report(
+            plan.report, dataset="testset", request_set=self.request_set,
+            pinhole_dir=self.pinhole)
+        self.assertEqual(reproduced.report, plan.report)
+        self.assertEqual(reproduced.report_sha256, plan.report_sha256)
+        self.assertEqual(
+            reproduced.canonical_results_bytes,
+            plan.canonical_results_bytes)
+        self.assertEqual(reproduced.predictions_bytes, plan.predictions_bytes)
+
+    def test_published_report_nested_tamper_and_raw_replacement_are_rejected(self):
+        plan = self._verify()
+        plan.report["publication_plan"]["artifacts"][0]["action"] = (
+            "accept_unreviewed_bytes")
+        with self.assertRaisesRegex(
+                adoption.AdoptionError, "does not exactly reproduce"):
+            adoption.reverify_published_report(
+                plan.report, dataset="testset", request_set=self.request_set,
+                pinhole_dir=self.pinhole)
+
+        plan = self._verify()
+        self.primary_path.write_bytes(
+            self.primary_path.read_bytes() + b"\n")
+        with self.assertRaises(adoption.AdoptionError):
+            adoption.reverify_published_report(
+                plan.report, dataset="testset", request_set=self.request_set,
+                pinhole_dir=self.pinhole)
+
     def test_all_invalid_boxes_drop_landmark_with_explicit_ledger(self):
         self._write_jsonl(self.retry_path, [self._retry_record(
             self.KEYS[1],
@@ -481,7 +511,7 @@ class TransactionalPublicationTest(LegacyAdoptionFixture):
             self.assertFalse(path.with_name(
                 path.name + artifact.INCOMPLETE_SUFFIX).exists())
 
-    def test_published_adoption_is_accepted_by_exact_extraction_reuse(self):
+    def test_synthetic_context_is_not_accepted_as_exact_extraction_reuse(self):
         plan = self._verify()
         published, (_, _, frame_dir) = self._publish(plan=plan)
         selected = {
@@ -521,12 +551,14 @@ class TransactionalPublicationTest(LegacyAdoptionFixture):
                     "enforce_limit") as cost_gate, mock.patch.object(
                     adoption.extract_landmarks.vbm,
                     "run_requests") as provider:
-            reused = adoption.extract_landmarks.run(args)
+            with self.assertRaisesRegex(RuntimeError, "no panoramas found"):
+                adoption.extract_landmarks.run(args)
 
         cost_gate.assert_not_called()
         provider.assert_not_called()
         self.assertEqual(
-            reused, (self.pinhole_ref, published.frame_landmarks_artifact))
+            artifact.open_artifact(frame_dir),
+            published.frame_landmarks_artifact)
 
     def test_retry_validates_and_reuses_each_completed_prefix(self):
         plan = self._verify()

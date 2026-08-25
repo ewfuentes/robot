@@ -35,6 +35,7 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     provenance,
     publication,
+    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.extraction import (
     vertex_batch_manager as vbm,
@@ -152,7 +153,8 @@ def settings_record(args, paths, source_path, source_artifact,
     """Return every setting that can change a request or its eligibility."""
     settings = {
         "generator": GENERATOR,
-        "git_commit": provenance.git_commit(),
+        "git_commit": (getattr(args, "target_git_commit", None)
+                       or provenance.git_commit()),
         "argv": list(sys.argv),
         "dataset": paths.dataset,
         "model": args.model,
@@ -357,6 +359,7 @@ def build_request_artifact(args, paths, source_ref, source_path,
                 "orchestration": getattr(args, "orchestration", None),
                 "resolved_stage_config": getattr(
                     args, "resolved_stage_config", None),
+                "stage_reuse": getattr(args, "stage_reuse", None),
             },
             declared_outputs=declared) as builder:
         out_dir = builder.staging_dir
@@ -544,7 +547,8 @@ def _load_request_bundle(request_dir: Path, tracks_dir: Path,
 def publish_audit_results(destination: Path, *, request_dir: Path,
                           tracks_dir: Path, attempts_dir: Path,
                           dataset_name: str, version: str,
-                          arguments=(), manifest_config: dict | None = None
+                          arguments=(), manifest_config: dict | None = None,
+                          git_commit: str | None = None,
                           ) -> artifact.ArtifactRef:
     """Publish only a complete, unique, validated semantic-audit result."""
     (request_ref, request_set, meta, source_ref, _, _, _,
@@ -582,7 +586,8 @@ def publish_audit_results(destination: Path, *, request_dir: Path,
             dataset=dataset_name,
             version=version,
             generator=GENERATOR,
-            git_commit=provenance.git_commit(),
+            git_commit=(provenance.git_commit()
+                        if git_commit is None else git_commit),
             arguments=arguments,
             upstreams=(source_ref, frame_refs[0], request_ref),
             config={
@@ -681,6 +686,43 @@ def load_audit_config(args):
     return document, selected, orchestration
 
 
+def authorize_prefix_inputs(args, document):
+    """Authorize exact old-build TRACK/FRAME refs before either is parsed."""
+    build_dir = Path(args.build_config).parent
+    authorization = stage_reuse.load_proof(build_dir)
+    target_git_commit = stage_reuse.require_target_checkout(
+        build_dir, document=document, authorization=authorization)
+    source_ref = artifact.open_artifact(
+        args.tracks_dir, expected_kind=paths_lib.OBJECT_TRACKS,
+        expected_dataset=args.dataset,
+        expected_version=build_config.value(
+            document, "artifacts.object_tracks_version"))
+    source_manifest = stage_reuse.require_configured_artifact(
+        source_ref, target_build_dir=build_dir,
+        kind=paths_lib.OBJECT_TRACKS, document=document)
+    track_bridge = stage_reuse.require_compatible_artifact(
+        source_ref, source_manifest,
+        target_build_dir=build_dir, owner_stage="track",
+        authorization=authorization)
+    frame_ref = artifact.open_artifact(
+        args.frame_landmarks_dir,
+        expected_kind=paths_lib.FRAME_LANDMARKS,
+        expected_dataset=args.dataset,
+        expected_version=build_config.value(
+            document, "artifacts.frame_landmarks_version"))
+    frame_manifest = stage_reuse.require_configured_artifact(
+        frame_ref, target_build_dir=build_dir,
+        kind=paths_lib.FRAME_LANDMARKS, document=document)
+    frame_bridge = stage_reuse.require_compatible_artifact(
+        frame_ref, frame_manifest,
+        target_build_dir=build_dir, owner_stage="extract",
+        authorization=authorization)
+    return (source_ref, frame_ref,
+            stage_reuse.combine_bridge_provenance(
+                track_bridge, frame_bridge),
+            authorization, target_git_commit)
+
+
 def validate_execution_args(args, selected) -> None:
     if args.parallel < 1:
         raise ValueError("--parallel must be positive")
@@ -762,7 +804,8 @@ def _prepare_request_artifact(args, selected, document, orchestration,
             candidate_dir / llm.REQUEST_SET_NAME)
         candidate_config = artifact.load_manifest(candidate_dir).config
         stable_config_keys = (
-            "build_identity", "orchestration", "resolved_stage_config")
+            "build_identity", "orchestration", "resolved_stage_config",
+            "stage_reuse")
         if (candidate_request_set.fingerprint
                 != current_request_set.fingerprint
                 or any(candidate_config.get(key) != current_config.get(key)
@@ -809,21 +852,19 @@ def main():
             f"completed semantic_audits artifact already exists: "
             f"{args.output_dir}")
     try:
+        (source_ref, frame_ref, args.stage_reuse, reuse_authorization,
+         args.target_git_commit) = authorize_prefix_inputs(args, document)
         source = load_source_tracks(args.tracks_dir, args.dataset)
-        source_ref = source[0]
-        if source_ref.version != build_config.value(
-                document, "artifacts.object_tracks_version"):
-            raise ValueError("object_tracks version disagrees with build_config")
+        if source[0].to_dict() != source_ref.to_dict():
+            raise ValueError(
+                "track loader did not retain the exact authorized ref")
         ingest_params = dataset.IngestParams(
             fov_deg=selected["ingest.fov_deg"],
             seam_gap_norm=selected["ingest.seam_gap_norm"],
             seam_min_y_iou=selected["ingest.seam_min_y_iou"])
         ingest_result = dataset.run_ingest(
             args.dataset_base, args.frame_landmarks_dir, ingest_params)
-        if (ingest_result.frame_landmarks_ref.dataset != args.dataset
-                or ingest_result.frame_landmarks_ref.version
-                != build_config.value(
-                    document, "artifacts.frame_landmarks_version")):
+        if ingest_result.frame_landmarks_ref.to_dict() != frame_ref.to_dict():
             raise ValueError(
                 "frame_landmarks identity disagrees with build_config")
         work_dir = audit_work_dir(args.output_dir)
@@ -836,8 +877,10 @@ def main():
         request_dir = _prepare_request_artifact(
             args, selected, document, orchestration, source, ingest_result,
             work_dir, request_version)
-        _, request_set, _, _, _, _, _, _ = _load_request_bundle(
+        request_ref, request_set, _, _, _, _, _, _ = _load_request_bundle(
             request_dir, args.tracks_dir, args.dataset)
+        stage_reuse.require_manifest_commit(
+            request_ref, args.target_git_commit)
     except (artifact.ArtifactError, llm.LlmLifecycleError,
             OSError, ValueError) as error:
         raise SystemExit(f"invalid semantic-audit work state: {error}") \
@@ -889,7 +932,12 @@ def main():
             "build_identity": document["build_identity"],
             "orchestration": orchestration,
             "resolved_stage_config": selected,
-        })
+            "stage_reuse": args.stage_reuse,
+        },
+        git_commit=args.target_git_commit)
+    stage_reuse.require_output_commit(
+        ref, target_build_dir=Path(args.build_config).parent,
+        document=document, authorization=reuse_authorization)
     print(f"published complete semantic audit: {ref.path}")
 
 

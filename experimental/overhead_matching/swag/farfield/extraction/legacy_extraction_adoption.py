@@ -1370,6 +1370,39 @@ def verify_adoption(
     )
 
 
+def reverify_published_report(
+        report: dict[str, Any], *, dataset: str,
+        request_set: llm_lifecycle.RequestSet,
+        pinhole_dir: Path | str) -> AdoptionPlan:
+    """Rehash every retained raw source and exactly reproduce its report."""
+    try:
+        request_sources = tuple(LegacyRequestSource(
+            source_id=item["id"], path=Path(item["path"]),
+            role=item["role"])
+                                for item in report["request_sources"])
+        result_sources = tuple(LegacyResultSource(
+            source_id=item["id"], path=Path(item["path"]),
+            result_format=item["format"])
+                               for item in report["result_sources"])
+        sidecars = tuple(EmptyErrorSidecar(
+            source_id=item["id"], path=Path(item["path"]))
+                         for item in report["empty_error_sidecars"])
+        spec_sha256 = report["spec_sha256"]
+    except (KeyError, TypeError) as error:
+        raise AdoptionError(
+            "published adoption report cannot reconstruct raw sources") \
+            from error
+    reproduced = verify_adoption(
+        dataset=dataset, request_set=request_set, pinhole_dir=pinhole_dir,
+        request_sources=request_sources, result_sources=result_sources,
+        empty_error_sidecars=sidecars, spec_sha256=spec_sha256)
+    if reproduced.report != report:
+        raise AdoptionError(
+            "published adoption report does not exactly reproduce from raw "
+            "sources")
+    return reproduced
+
+
 def verify_spec(spec: AdoptionSpec) -> AdoptionPlan:
     request_set = llm_lifecycle.load_request_set(spec.request_set_path)
     return verify_adoption(
