@@ -251,41 +251,35 @@ def _require_all(schema):
 
 def get_provider_audit_schema() -> dict:
     """Gemini responseSchema for the unambiguous provider representation."""
-    schema = _require_all(
+    base = _require_all(
         _resolve_refs(ProviderTrackAudit.model_json_schema()))
-    properties = schema["properties"]
+    properties = base["properties"]
     properties["decision"]["description"] = PROVIDER_DECISION_CONTRACT
     properties["valid_segments"]["description"] = PROVIDER_DECISION_CONTRACT
 
     # Gemini responseSchema supports anyOf, string enums, and minItems. The
-    # single enum discriminator therefore makes every accepted combination
-    # structural; no unsupported boolean const or non-string enum is needed.
+    # Vertex endpoint requires anyOf to be the only root field, so each branch
+    # repeats the complete object schema.  The single enum discriminator makes
+    # every accepted combination structural without unsupported boolean const
+    # or non-string enum values.
     def variant(decisions, *, min_segments, description):
-        segments = copy.deepcopy(properties["valid_segments"])
+        result = copy.deepcopy(base)
+        result["description"] = description
+        decision = result["properties"]["decision"]
+        decision["enum"] = list(decisions)
+        decision["description"] = description
+        segments = result["properties"]["valid_segments"]
         if min_segments:
             segments["minItems"] = min_segments
         segments["description"] = description
-        return {
-            "type": "object",
-            "description": description,
-            "properties": {
-                "decision": {
-                    "type": "string",
-                    "enum": list(decisions),
-                    "description": description,
-                },
-                "valid_segments": segments,
-            },
-            "required": ["decision", "valid_segments"],
-        }
+        return result
 
     accepted = (
         "keep_single", "keep_partial_identity_switch")
     dropped = tuple(
         decision for decision in PROVIDER_DECISION_TO_CANONICAL
         if decision.startswith("drop_"))
-    schema["description"] = PROVIDER_DECISION_CONTRACT
-    schema["anyOf"] = [
+    return {"anyOf": [
         variant(
             accepted, min_segments=1,
             description=(
@@ -298,8 +292,7 @@ def get_provider_audit_schema() -> dict:
                 "Drop decision: the enum names the concrete reason and the "
                 "single- versus multiple-identity diagnostic; valid_segments "
                 "may be empty or nonempty and are excluded downstream.")),
-    ]
-    return schema
+    ]}
 
 
 def canonicalize_provider_audit(provider: ProviderTrackAudit) -> dict:

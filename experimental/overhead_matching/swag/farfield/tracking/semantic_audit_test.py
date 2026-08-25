@@ -322,21 +322,22 @@ class SchemaTest(unittest.TestCase):
     def test_schema_is_inlined_and_required_everywhere(self):
         schema = sa.get_provider_audit_schema()
         self.assertNotIn("$ref", json.dumps(schema))
-        self.assertEqual(set(schema["required"]),
-                         set(schema["properties"].keys()))
-        primary = schema["properties"]["primary_object"]
-        self.assertEqual(set(primary["required"]),
-                         set(primary["properties"].keys()))
+        self.assertEqual(set(schema), {"anyOf"})
+        for variant in schema["anyOf"]:
+            self.assertEqual(set(variant["required"]),
+                             set(variant["properties"].keys()))
+            primary = variant["properties"]["primary_object"]
+            self.assertEqual(set(primary["required"]),
+                             set(primary["properties"].keys()))
 
     def test_prompt_and_schema_carry_the_same_decision_contract(self):
         schema = sa.get_provider_audit_schema()
         self.assertIn(sa.PROVIDER_DECISION_CONTRACT, sa.SYSTEM_PROMPT)
-        self.assertEqual(
-            schema["description"], sa.PROVIDER_DECISION_CONTRACT)
-        for field in ("decision", "valid_segments"):
-            self.assertEqual(
-                schema["properties"][field]["description"],
-                sa.PROVIDER_DECISION_CONTRACT)
+        for variant in schema["anyOf"]:
+            for field in ("decision", "valid_segments"):
+                self.assertEqual(
+                    variant["properties"][field]["description"],
+                    variant["description"])
         for language in (
                 "keep_single means one physical identity",
                 "keep_partial_identity_switch only means a true switch",
@@ -350,10 +351,12 @@ class SchemaTest(unittest.TestCase):
         encoded = json.dumps(schema)
         self.assertNotIn('"oneOf"', encoded)
         self.assertNotIn('"const"', encoded)
-        self.assertNotIn("verdict", schema["properties"])
-        self.assertNotIn("single_object", schema["properties"])
-        self.assertNotIn("drop_reason", schema["properties"])
+        self.assertEqual(set(schema), {"anyOf"})
         accepted, dropped = schema["anyOf"]
+        for variant in (accepted, dropped):
+            self.assertNotIn("verdict", variant["properties"])
+            self.assertNotIn("single_object", variant["properties"])
+            self.assertNotIn("drop_reason", variant["properties"])
         self.assertEqual(
             accepted["properties"]["valid_segments"]["minItems"], 1)
         self.assertEqual(
@@ -366,7 +369,8 @@ class SchemaTest(unittest.TestCase):
             {decision for decision in sa.PROVIDER_DECISION_TO_CANONICAL
              if decision.startswith("drop_")})
         self.assertEqual(
-            set(schema["properties"]["decision"]["enum"]),
+            (set(accepted["properties"]["decision"]["enum"])
+             | set(dropped["properties"]["decision"]["enum"])),
             set(sa.PROVIDER_DECISION_TO_CANONICAL))
 
         # Exercise the repository's pinned Gemini SDK dialect rather than
