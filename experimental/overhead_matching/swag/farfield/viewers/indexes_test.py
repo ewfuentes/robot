@@ -113,9 +113,15 @@ class RefreshTest(unittest.TestCase):
         self.assertIn(
             '../frame_landmarks/boston_harbor_leg1/viewer-v1/'
             'tracks/index.html', page)
+        self.assertNotIn(
+            'href="boston_harbor_leg1/v1/index.html"', page)
         frames_page = (self.root / "artifacts" / "frame_landmarks"
                        / "index.html").read_text()
         self.assertIn("keyframes", frames_page)
+        self.assertIn(
+            'href="boston_harbor_leg1/viewer-v1/index.html">frames-v1',
+            frames_page)
+        self.assertNotIn(">viewer-v1</a>", frames_page)
 
     def test_loose_legacy_artifact_files_are_not_indexed(self):
         dataset_dir = (

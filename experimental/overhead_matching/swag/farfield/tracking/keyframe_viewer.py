@@ -398,9 +398,7 @@ def _linked_track_pages(out: Path, final_out: Path, tracks_dir: Path) -> int:
     linked.mkdir()
     source_href = html.escape(os.path.relpath(
         tracks_dir, (final_out / "tracks").resolve(strict=False)), quote=True)
-    source_link = (
-        f"<p><a href='../index.html'>&larr; keyframes</a> | "
-        f"<a href='{source_href}/index.html'>immutable track artifact</a></p>")
+    source_link = "<p><a href='../index.html'>&larr; keyframes</a></p>"
 
     original_index = tracks_dir / "index.html"
     if not original_index.is_file() or original_index.is_symlink():

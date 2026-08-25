@@ -304,7 +304,8 @@ class SidecarPublicationTest(unittest.TestCase):
         self.assertIn("tracks/index.html", frame_page)
         track_page = (output / "tracks" / "track_full_T0.html").read_text()
         self.assertIn("href='../f0000.html'", track_page)
-        self.assertIn("immutable track artifact", track_page)
+        self.assertNotIn("immutable track artifact", track_page)
+        self.assertIn("/videos/full_T0.mp4", track_page)
         self.assertEqual(artifact_lib.open_artifact(self.frames_dir),
                          frame_before)
         self.assertEqual(artifact_lib.open_artifact(self.tracks_dir),

@@ -152,6 +152,16 @@ def _manifest_summary(version_dir: Path) -> tuple:
             pg.esc(doc.get("created", "")))
 
 
+def _manifest_kind(version_dir: Path) -> str | None:
+    manifest = version_dir / artifact_lib.MANIFEST_NAME
+    try:
+        document = json.loads(manifest.read_text())
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    kind = document.get("kind")
+    return kind if isinstance(kind, str) else None
+
+
 def _frame_viewer_links(data_root: Path) -> dict[str, dict[tuple[str, str], Path]]:
     """Map exact frame/track dataset+versions to their newest sidecar.
 
@@ -371,28 +381,42 @@ def _refresh_locked(data_root: Path) -> dict:
         krows = []
         for ds in _dirs(kind):
             versions = _dirs(ds)
+            # Viewer sidecars are attached to the exact scientific frame and
+            # track versions they visualize; they are not competing versions
+            # of frame-landmark science and should never be presented as such.
+            if kind.name == "frame_landmarks":
+                versions = [
+                    version for version in versions
+                    if _manifest_kind(version) != FRAME_VIEWER_KIND
+                ]
             cells = []
             for version in versions:
                 generator, created = _manifest_summary(version)
-                inner = (f'<a href="{ds.name}/{version.name}/">'
-                         f'{pg.esc(version.name)}</a>')
-                # Link a version's own index page when a stage produced one.
-                if (version / "index.html").exists():
-                    inner = (f'<a href="{ds.name}/{version.name}/'
-                             f'index.html">{pg.esc(version.name)}</a>')
-                viewer = frame_viewers["object_tracks"].get(
+                track_viewer = frame_viewers["object_tracks"].get(
                     (ds.name, version.name))
-                if kind.name == "object_tracks" and viewer is not None:
+                frame_viewer = frame_viewers["frame_landmarks"].get(
+                    (ds.name, version.name))
+                if kind.name == "object_tracks" and track_viewer is not None:
                     viewer_href = (
-                        f"../frame_landmarks/{ds.name}/{viewer.name}/"
+                        f"../frame_landmarks/{ds.name}/{track_viewer.name}/"
                         "tracks/index.html")
-                    inner += (f' · <a href="{viewer_href}">'
-                              "frames ↔ tracks</a>")
-                viewer = frame_viewers["frame_landmarks"].get(
-                    (ds.name, version.name))
-                if kind.name == "frame_landmarks" and viewer is not None:
-                    viewer_href = f"{ds.name}/{viewer.name}/index.html"
-                    inner += (f' · <a href="{viewer_href}">keyframes</a>')
+                    inner = (f'<a href="{viewer_href}">'
+                             f'{pg.esc(version.name)}</a> '
+                             "<span class='muted'>frames ↔ tracks</span>")
+                elif (kind.name == "frame_landmarks"
+                      and frame_viewer is not None):
+                    viewer_href = f"{ds.name}/{frame_viewer.name}/index.html"
+                    inner = (f'<a href="{viewer_href}">'
+                             f'{pg.esc(version.name)}</a> '
+                             "<span class='muted'>keyframes</span>")
+                else:
+                    inner = (f'<a href="{ds.name}/{version.name}/">'
+                             f'{pg.esc(version.name)}</a>')
+                    # Link a version's own index when no viewer sidecar owns
+                    # presentation for it.
+                    if (version / "index.html").exists():
+                        inner = (f'<a href="{ds.name}/{version.name}/'
+                                 f'index.html">{pg.esc(version.name)}</a>')
                 cells.append(f"{inner} <span class='muted'>{generator} "
                              f"{created}</span>")
             krows.append([f"{pg.esc(ds.name)}", "<br>".join(cells)])
