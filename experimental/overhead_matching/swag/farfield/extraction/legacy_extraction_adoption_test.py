@@ -63,7 +63,7 @@ def _response(prediction, *, fenced=False):
     }
 
 
-def _primary_legacy_request(request):
+def _vertex_batch_provider_echo(request):
     value = json.loads(artifact.canonical_json_bytes(request))
     parts = value["contents"][0]["parts"]
     for part in parts[:4]:
@@ -132,7 +132,7 @@ class LegacyAdoptionFixture(unittest.TestCase):
         assert builder.artifact_ref is not None
         self.pinhole_ref = builder.artifact_ref
         self.primary_requests = {
-            key: _primary_legacy_request(request)
+            key: json.loads(artifact.canonical_json_bytes(request))
             for key, request in self.requests.items()
         }
         self.request_set = self._build_request_set(self.pinhole_ref)
@@ -204,7 +204,7 @@ class LegacyAdoptionFixture(unittest.TestCase):
         return {
             "key": key,
             "processed_time": "2026-08-01T12:00:00Z",
-            "request": self.primary_requests[key]
+            "request": _vertex_batch_provider_echo(self.requests[key])
             if request is None else request,
             "response": response,
             "status": status,
@@ -306,7 +306,9 @@ class CompleteAdoptionTest(LegacyAdoptionFixture):
             for attempt in plan.attempts))
         actions = [event["action"] for event in
                    plan.report["normalization_ledger"]]
-        self.assertEqual(actions.count("remove_exact_primary_null"), 12)
+        self.assertEqual(
+            actions.count("remove_exact_vertex_batch_null"), 12)
+        self.assertNotIn("remove_exact_primary_null", actions)
         self.assertEqual(
             actions.count("remove_exact_retry_property_ordering"), 4)
         self.assertEqual(
@@ -728,7 +730,7 @@ class FailClosedCoverageTest(LegacyAdoptionFixture):
                                     "provider echo.*does not bind"):
             self._verify()
 
-    def test_batch_echo_cannot_bind_retry_snapshot(self):
+    def test_vertex_batch_echo_requires_all_observed_null_decorations(self):
         records = [json.loads(line) for line in
                    self.batch_path.read_text().splitlines()]
         records[1]["request"] = self.requests[self.KEYS[1]]
@@ -736,7 +738,29 @@ class FailClosedCoverageTest(LegacyAdoptionFixture):
 
         with self.assertRaisesRegex(
                 adoption.AdoptionError,
-                "provider echo.*preserved primary raw request"):
+                "vertex batch provider echo lacks the exact observed null decoration"):
+            self._verify()
+
+    def test_vertex_batch_echo_rejects_partial_null_decorations(self):
+        records = [json.loads(line) for line in
+                   self.batch_path.read_text().splitlines()]
+        del records[0]["request"]["contents"][0]["parts"][0]["text"]
+        self._write_jsonl(self.batch_path, records)
+
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "vertex batch provider echo lacks the exact observed null decoration"):
+            self._verify()
+
+    def test_vertex_batch_echo_rejects_wrong_null_decoration(self):
+        records = [json.loads(line) for line in
+                   self.batch_path.read_text().splitlines()]
+        records[0]["request"]["contents"][0]["parts"][0]["text"] = ""
+        self._write_jsonl(self.batch_path, records)
+
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "vertex batch provider echo lacks the exact observed null decoration"):
             self._verify()
 
     def test_retry_echo_requires_preserved_retry_snapshot(self):
@@ -761,15 +785,37 @@ class FailClosedCoverageTest(LegacyAdoptionFixture):
                 "exact observed property_ordering decoration"):
             self._verify()
 
-    def test_primary_request_requires_every_observed_null_decoration(self):
+    def test_preserved_primary_request_must_match_current_exactly(self):
         records = [json.loads(line) for line in
                    self.primary_path.read_text().splitlines()]
-        del records[0]["request"]["contents"][0]["parts"][0]["text"]
+        records[0]["request"]["contents"][0]["parts"][0]["text"] = None
         self._write_jsonl(self.primary_path, records)
 
         with self.assertRaisesRegex(
                 adoption.AdoptionError,
-                "exact observed null decoration"):
+                "conflicts with the exact current request set"):
+            self._verify()
+
+    def test_preserved_retry_request_must_match_current_exactly(self):
+        records = [json.loads(line) for line in
+                   self.retry_request_path.read_text().splitlines()]
+        records[0]["request"] = _retry_provider_echo(records[0]["request"])
+        self._write_jsonl(self.retry_request_path, records)
+
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "conflicts with the exact current request set"):
+            self._verify()
+
+    def test_retry_echo_requires_all_observed_ordering_decorations(self):
+        records = [json.loads(line) for line in
+                   self.retry_path.read_text().splitlines()]
+        records[0]["request"] = self.requests[self.KEYS[0]]
+        self._write_jsonl(self.retry_path, records)
+
+        with self.assertRaisesRegex(
+                adoption.AdoptionError,
+                "online retry provider echo lacks the exact observed property_ordering decoration"):
             self._verify()
 
     def test_retry_echo_requires_every_observed_ordering_decoration(self):
@@ -860,7 +906,7 @@ class FailClosedCoverageTest(LegacyAdoptionFixture):
         self._write_jsonl(self.retry_request_path, [record])
 
         with self.assertRaisesRegex(adoption.AdoptionError,
-                                    "conflicts with the current request set"):
+                                    "conflicts with the exact current request set"):
             self._verify()
 
 

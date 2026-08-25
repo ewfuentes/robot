@@ -82,7 +82,7 @@ _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 # Exact provider decorations observed in the retained sources. These are not
 # general compatibility aliases: removal requires this path and exact value.
-_PRIMARY_NULL_PATHS = (
+_VERTEX_BATCH_NULL_PATHS = (
     ("contents", 0, "parts", 0, "text"),
     ("contents", 0, "parts", 1, "text"),
     ("contents", 0, "parts", 2, "text"),
@@ -290,18 +290,10 @@ def _remove_exact_path(value: Any, path: Sequence[str | int], expected: Any,
 def _normalize_preserved_request(
         request: Mapping[str, Any], role: str,
         ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    normalized = _json_clone(request)
-    events = []
-    if role == REQUEST_ROLE_PRIMARY:
-        for path in _PRIMARY_NULL_PATHS:
-            event = _remove_exact_path(
-                normalized, path, None, "remove_exact_primary_null")
-            if event is None:
-                raise AdoptionError(
-                    "preserved primary request lacks the exact observed null "
-                    f"decoration at {_json_pointer(path)}")
-            events.append(event)
-    return normalized, events
+    if role not in REQUEST_ROLES:
+        raise AdoptionError(f"unknown preserved request role {role!r}")
+    # Both retained request snapshots are exact current request objects.
+    return _json_clone(request), []
 
 
 def _normalize_provider_echo(
@@ -309,7 +301,17 @@ def _normalize_provider_echo(
         ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     normalized = _json_clone(request)
     events = []
-    if result_format == RESULT_FORMAT_ONLINE_RETRY:
+    if result_format == RESULT_FORMAT_VERTEX_BATCH:
+        for path in _VERTEX_BATCH_NULL_PATHS:
+            event = _remove_exact_path(
+                normalized, path, None,
+                "remove_exact_vertex_batch_null")
+            if event is None:
+                raise AdoptionError(
+                    "vertex batch provider echo lacks the exact observed "
+                    f"null decoration at {_json_pointer(path)}")
+            events.append(event)
+    elif result_format == RESULT_FORMAT_ONLINE_RETRY:
         for path, expected in _RETRY_PROPERTY_ORDERING:
             event = _remove_exact_path(
                 normalized, path, expected,
@@ -690,8 +692,7 @@ def _request_sources(
                 if normalized_digest != expected[key]["request_sha256"]:
                     raise AdoptionError(
                         f"{path}:{line_number}: request {key!r} conflicts "
-                        "with the current request set after exact allowlisted "
-                        "normalization")
+                        "with the exact current request set")
                 raw_line_digest = hashlib.sha256(raw_line).hexdigest()
                 contextual_events = [{
                     "scope": "preserved_request",
@@ -742,7 +743,7 @@ def _request_sources(
             "keys_sha256": artifact.sha256_json(keys),
             "records": pending,
             "requests_match_current_set": True,
-            "matching_rule": "exact_after_allowlisted_role_normalization",
+            "matching_rule": "exact_current_request_object",
         })
     if primary_keys != expected_keys or len(primary_keys) != len(set(primary_keys)):
         raise AdoptionError(
