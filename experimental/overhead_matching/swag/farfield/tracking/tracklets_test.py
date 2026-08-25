@@ -184,11 +184,45 @@ class AcceptedTrackletTest(unittest.TestCase):
             },
         ])
         accepted = tracklets.build_accepted_tracklets(
-            {4: track}, {4: audit_for(track)})
+            {4: track}, {4: audit_for(
+                track, segments=[{"start_t": 0, "end_t": 4}])})
         self.assertEqual(
             [(segment.start_keyframe_idx, segment.end_keyframe_idx)
              for segment in accepted[0].valid_segments],
             [(4, 6)])
+        self.assertEqual(accepted[0].quality["valid_segment_clips"], [{
+            "index": 0,
+            "submitted_end_t": 4,
+            "accepted_end_t": 2,
+            "reason": "unsupported_lifecycle_tail",
+        }])
+        observations = tracklets.build_camera_bearing_observations(
+            accepted, PANO_W, bearing_sigma_deg=1.25)
+        self.assertEqual(
+            [observation.keyframe_idx for observation in observations],
+            [4, 5, 6])
+
+    def test_segment_entirely_in_unsupported_tail_is_rejected(self):
+        track = make_track(4, 4, {
+            4: centred_box(1000),
+            5: centred_box(1010),
+        })
+        track["last_keyframe"] = 7
+        track["records"].extend([
+            {
+                "keyframe": keyframe,
+                "mask_bbox_window": list(centred_box(1020)),
+                "window_origin": [0, 0],
+                "action": "unsupported",
+            }
+            for keyframe in (6, 7)
+        ])
+        with self.assertRaisesRegex(
+                tracklets.TrackletContractError,
+                "contains no supported evidence"):
+            tracklets.build_accepted_tracklets(
+                {4: track}, {4: audit_for(
+                    track, segments=[{"start_t": 2, "end_t": 3}])})
 
     def test_record_after_last_propagated_keyframe_is_rejected(self):
         track = make_track(4, 4, {4: centred_box(1000)})

@@ -200,7 +200,15 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
 
 def normalize_valid_segments(track: dict, audit: dict) \
         -> tuple[ValidSegment, ...]:
-    """Validate ordered, inclusive audit segments against track lifetime."""
+    """Validate and conservatively intersect audit segments with support.
+
+    The audit dossier can include context frames from the unsupported
+    propagation tail through ``last_keyframe``.  A model may therefore return
+    a segment ending in that context tail.  Bearings are evidence and must
+    never be created from unsupported propagation, so intersect such a segment
+    with ``end_keyframe`` (the last supported frame).  Segments outside the
+    actual lifecycle or containing no supported frame remain hard errors.
+    """
     if not isinstance(audit, dict):
         raise TrackletContractError("audit must be an object")
     if "valid_segments" not in audit:
@@ -211,7 +219,11 @@ def normalize_valid_segments(track: dict, audit: dict) \
 
     birth = _integer(track.get("birth_keyframe"), "birth_keyframe")
     end = _integer(track.get("end_keyframe"), "end_keyframe")
-    lifetime = end - birth + 1
+    raw_last = track.get("last_keyframe")
+    last = end if raw_last is None else _integer(
+        raw_last, "last_keyframe")
+    supported_end_t = end - birth
+    lifecycle_end_t = last - birth
     normalized = []
     previous_end = -1
     for i, segment in enumerate(raw_segments):
@@ -222,19 +234,25 @@ def normalize_valid_segments(track: dict, audit: dict) \
                            f"valid_segments[{i}].start_t")
         end_t = _integer(segment.get("end_t"),
                          f"valid_segments[{i}].end_t")
-        if start_t < 0 or end_t < start_t or end_t >= lifetime:
+        if (start_t < 0 or end_t < start_t
+                or end_t > lifecycle_end_t):
             raise TrackletContractError(
                 f"valid segment {i} [{start_t}, {end_t}] is outside track "
-                f"lifetime t0..t{lifetime - 1}")
+                f"lifecycle t0..t{lifecycle_end_t}")
+        if start_t > supported_end_t:
+            raise TrackletContractError(
+                f"valid segment {i} [{start_t}, {end_t}] contains no "
+                f"supported evidence in t0..t{supported_end_t}")
+        normalized_end_t = min(end_t, supported_end_t)
         if start_t <= previous_end:
             raise TrackletContractError(
                 f"valid segment {i} starts at t{start_t} before or within "
                 f"the preceding segment ending at t{previous_end}")
         normalized.append(ValidSegment(
-            index=i, start_t=start_t, end_t=end_t,
+            index=i, start_t=start_t, end_t=normalized_end_t,
             start_keyframe_idx=birth + start_t,
-            end_keyframe_idx=birth + end_t))
-        previous_end = end_t
+            end_keyframe_idx=birth + normalized_end_t))
+        previous_end = normalized_end_t
     return tuple(normalized)
 
 
@@ -330,6 +348,18 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
             "source_tracks_artifact_id", f"sha256:{source_digest}")
         global_id = f"{source_identity}@sha256:{source_digest}#{local}"
         provenance.setdefault("source_track_sha256", actual_track_digest)
+        segment_clips = [
+            {
+                "index": segment.index,
+                "submitted_end_t": audit["valid_segments"][segment.index][
+                    "end_t"],
+                "accepted_end_t": segment.end_t,
+                "reason": "unsupported_lifecycle_tail",
+            }
+            for segment in segments
+            if audit["valid_segments"][segment.index]["end_t"]
+            != segment.end_t
+        ]
         accepted.append(AcceptedTracklet(
             tracklet_id=global_id,
             local_id=local,
@@ -341,6 +371,7 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
                 "audit_confidence": audit.get("confidence"),
                 "n_records": len(track["records"]),
                 "n_valid_segments": len(segments),
+                "valid_segment_clips": segment_clips,
             }))
     return accepted
 
