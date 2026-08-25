@@ -1,3 +1,5 @@
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -178,6 +180,38 @@ class IngestTest(unittest.TestCase):
         })
         result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
         self.assertEqual(len(result.observations), 2)
+
+    def test_a_lossy_ingest_says_so_on_stderr(self):
+        """Dropped geometry must be visible without reading `.stats`.
+
+        No caller of `run_ingest` reads the counters, so without this line a
+        run that ingested 90% of its detections and one that ingested all of
+        them are indistinguishable, all the way to a localization result.
+        """
+        self.make_predictions({
+            self.stems[0]: [testing.landmark(
+                "Bad Yaw", [(45, 100, 100, 200, 200)])],
+        })
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        reported = stderr.getvalue()
+        self.assertIn("WARNING", reported)
+        self.assertIn("DISCARDED 1 malformed bounding box", reported)
+        self.assertTrue(result.stats.lossy)
+
+    def test_a_clean_ingest_reports_without_warning(self):
+        self.make_predictions({
+            self.stems[0]: [testing.landmark(
+                "Fine", [(0, 100, 100, 200, 200)])],
+        })
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = ds_lib.run_ingest(self.base, self.fl_dir, PARAMS)
+        reported = stderr.getvalue()
+        self.assertNotIn("WARNING", reported)
+        self.assertIn("no predicted geometry discarded", reported)
+        self.assertFalse(result.stats.lossy)
 
     def test_invalid_yaw_is_dropped_and_counted(self):
         self.make_predictions({
