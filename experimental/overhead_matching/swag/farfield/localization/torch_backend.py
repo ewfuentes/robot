@@ -27,6 +27,11 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 
 _TWO_PI = 2.0 * math.pi
+# Bounds the dense particle x landmark working set.  At 50k particles a
+# 4096-landmark float32 block is about 0.8 GiB; the full likelihood expression
+# needs several such tensors concurrently, but remains comfortably inside a
+# 32 GiB accelerator even for catalogs with tens of thousands of landmarks.
+_CANDIDATE_CHUNK_SIZE = 4096
 
 
 class TorchMeasurementEngine:
@@ -73,7 +78,13 @@ class TorchMeasurementEngine:
             tid: torch.as_tensor(mask, dtype=torch.bool, device=self.device)
             for tid, mask in self.surprise_np.items()}
 
-    def _log_terms(self, east, north, heading, meas):
+    def _candidate_slices(self):
+        for start in range(0, len(self.landmark_ids),
+                           _CANDIDATE_CHUNK_SIZE):
+            yield start, min(start + _CANDIDATE_CHUNK_SIZE,
+                             len(self.landmark_ids))
+
+    def _log_terms(self, east, north, heading, meas, start=0, end=None):
         """log[(1-pi0)-less mixture terms]: identity posterior + log vM.
 
         The (1-pi0) and null constants are added by `update`; keeping this
@@ -81,8 +92,9 @@ class TorchMeasurementEngine:
         """
         kappa_z = min(float(meas.kappa), filter_mod.MAX_KAPPA)
         observed = math.radians(meas.bearing_forward_cw_deg)
-        d_east = self.east[None, :] - east[:, None]
-        d_north = self.north[None, :] - north[:, None]
+        end = len(self.landmark_ids) if end is None else end
+        d_east = self.east[None, start:end] - east[:, None]
+        d_north = self.north[None, start:end] - north[:, None]
         bearing = torch.atan2(d_east, d_north)  # compass: CW from north
         delta = bearing - heading[:, None] - observed
         delta = torch.remainder(delta + math.pi, _TWO_PI) - math.pi
@@ -93,12 +105,23 @@ class TorchMeasurementEngine:
             rng = torch.sqrt(d_east * d_east + d_north * d_north)
             safe_range = torch.clamp(rng, min=1.0)
             kappa = 1.0 / (1.0 / kappa_z
-                           + torch.square(self.sigma_pos[None, :]
+                           + torch.square(self.sigma_pos[None, start:end]
                                           / safe_range))
         log_norm = math.log(_TWO_PI) + torch.log(
             torch.special.i0e(kappa)) + kappa
         log_vm = kappa * torch.cos(delta) - log_norm
-        return self.log_weight[meas.tracklet_id][None, :] + log_vm
+        return (self.log_weight[meas.tracklet_id][None, start:end]
+                + log_vm)
+
+    def _landmark_log_likelihood(self, east, north, heading, meas,
+                                 log_scale: float):
+        result = torch.full(east.shape, float("-inf"), dtype=self.dtype,
+                            device=self.device)
+        for start, end in self._candidate_slices():
+            terms = log_scale + self._log_terms(
+                east, north, heading, meas, start, end)
+            result = torch.logaddexp(result, torch.logsumexp(terms, dim=1))
+        return result
 
     @torch.no_grad()
     def pose_log_likelihood(self, east_m, north_m, heading_rad, meas,
@@ -111,8 +134,8 @@ class TorchMeasurementEngine:
         heading = torch.as_tensor(np.asarray(heading_rad, dtype=np.float64),
                                   dtype=self.dtype, device=self.device)
         log_null = math.log(pi0) - math.log(_TWO_PI)
-        terms = math.log1p(-pi0) + self._log_terms(east, north, heading, meas)
-        log_landmark = torch.logsumexp(terms, dim=1)
+        log_landmark = self._landmark_log_likelihood(
+            east, north, heading, meas, math.log1p(-pi0))
         return torch.logaddexp(
             log_landmark,
             torch.full_like(log_landmark, log_null)).double().cpu().numpy()
@@ -181,8 +204,43 @@ class TorchMeasurementEngine:
         heading = torch.as_tensor(belief.heading_rad, dtype=self.dtype,
                                   device=self.device)
         log_null = math.log(pi0) - math.log(_TWO_PI)
-        terms = math.log1p(-pi0) + self._log_terms(east, north, heading, meas)
-        log_landmark = torch.logsumexp(terms, dim=1)
+        log_scale = math.log1p(-pi0)
+        log_landmark = torch.full(
+            east.shape, float("-inf"), dtype=self.dtype, device=self.device)
+        best_value = best_arg = background_landmark = None
+        unendorsed = None
+        if assoc is not None:
+            unendorsed = self.surprise_bool.get(meas.tracklet_id)
+            if unendorsed is None:
+                unendorsed = torch.zeros(
+                    len(self.landmark_ids), dtype=torch.bool,
+                    device=self.device)
+            best_value = torch.full_like(log_landmark, float("-inf"))
+            best_arg = torch.zeros(east.shape, dtype=torch.int64,
+                                   device=self.device)
+            background_landmark = torch.full_like(
+                log_landmark, float("-inf"))
+
+        for start, end in self._candidate_slices():
+            terms = log_scale + self._log_terms(
+                east, north, heading, meas, start, end)
+            log_landmark = torch.logaddexp(
+                log_landmark, torch.logsumexp(terms, dim=1))
+            if assoc is not None:
+                chunk_unendorsed = unendorsed[start:end]
+                gumbel_landmark = (
+                    terms.masked_fill(
+                        chunk_unendorsed[None, :], float("-inf"))
+                    + self._gumbel_like(terms))
+                chunk_value, chunk_arg = gumbel_landmark.max(dim=1)
+                better = chunk_value > best_value
+                best_value = torch.where(better, chunk_value, best_value)
+                best_arg = torch.where(better, chunk_arg + start, best_arg)
+                chunk_background = torch.logsumexp(
+                    terms.masked_fill(
+                        ~chunk_unendorsed[None, :], float("-inf")), dim=1)
+                background_landmark = torch.logaddexp(
+                    background_landmark, chunk_background)
         log_lik = torch.logaddexp(
             log_landmark, torch.full_like(log_landmark, log_null))
 
@@ -215,23 +273,13 @@ class TorchMeasurementEngine:
             # the null and every default-LLR candidate form one background
             # bucket that cannot anchor geometry (commitment requires
             # matcher endorsement — see filter._persistence_update).
-            unendorsed = self.surprise_bool.get(meas.tracklet_id)
-            if unendorsed is None:
-                unendorsed = torch.zeros(terms.shape[1], dtype=torch.bool,
-                                         device=self.device)
-            gumbel_landmark = (
-                terms.masked_fill(unendorsed[None, :], float("-inf"))
-                + self._gumbel_like(terms))
-            value, arg = gumbel_landmark.max(dim=1)
             background = torch.logaddexp(
-                torch.logsumexp(
-                    terms.masked_fill(~unendorsed[None, :], float("-inf")),
-                    dim=1),
-                torch.full_like(value, log_null))
-            gumbel_null = background + self._gumbel_like(value)
+                background_landmark,
+                torch.full_like(best_value, log_null))
+            gumbel_null = background + self._gumbel_like(best_value)
             sampled = torch.where(
-                gumbel_null > value,
-                torch.full_like(arg, filter_mod.ASSOC_NULL), arg)
+                gumbel_null > best_value,
+                torch.full_like(best_arg, filter_mod.ASSOC_NULL), best_arg)
             renew_draw = torch.rand(likelihood.shape,
                                     generator=self.generator,
                                     dtype=self.dtype, device=self.device)
@@ -248,20 +296,25 @@ class TorchMeasurementEngine:
         group_w = torch.as_tensor(
             np.stack([w for _, w in groups]), dtype=self.dtype,
             device=self.device)  # (G, n)
-        resp = torch.exp(terms - log_lik[:, None])
-        avg = group_w @ resp  # (G, m)
         null_shares = (group_w @ torch.exp(log_null - log_lik)).cpu().numpy()
         mask = self.surprise.get(meas.tracklet_id)
-        surprise_shares = ((avg @ mask).double().cpu().numpy()
-                           if mask is not None else np.zeros(len(groups)))
-
         responsibilities = [{} for _ in groups]
-        rows, cols = torch.nonzero(avg >= resp_min, as_tuple=True)
-        values = avg[rows, cols].double().cpu().numpy()
-        rows = rows.cpu().numpy()
-        cols = cols.cpu().numpy()
-        for row, col, value in zip(rows, cols, values):
-            responsibilities[row][self.landmark_ids[col]] = float(value)
+        surprise_shares = torch.zeros(
+            len(groups), dtype=self.dtype, device=self.device)
+        for start, end in self._candidate_slices():
+            terms = log_scale + self._log_terms(
+                east, north, heading, meas, start, end)
+            avg = group_w @ torch.exp(terms - log_lik[:, None])
+            if mask is not None:
+                surprise_shares += avg @ mask[start:end]
+            rows, cols = torch.nonzero(avg >= resp_min, as_tuple=True)
+            values = avg[rows, cols].double().cpu().numpy()
+            rows = rows.cpu().numpy()
+            cols = cols.cpu().numpy()
+            for row, col, value in zip(rows, cols, values):
+                responsibilities[row][self.landmark_ids[start + col]] = (
+                    float(value))
+        surprise_shares = surprise_shares.double().cpu().numpy()
 
         return [
             structs.AssociationPosterior(

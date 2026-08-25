@@ -51,6 +51,15 @@ def _fixture(position_sigma):
 
 class TorchBackendEquivalenceTest(unittest.TestCase):
 
+    def setUp(self):
+        self._chunk_size = torch_backend._CANDIDATE_CHUNK_SIZE
+        # The 700-landmark fixture must cross several Torch blocks so the
+        # equivalence tests cover the bounded-memory production path.
+        torch_backend._CANDIDATE_CHUNK_SIZE = 113
+
+    def tearDown(self):
+        torch_backend._CANDIDATE_CHUNK_SIZE = self._chunk_size
+
     def _run_both(self, position_sigma, dtype):
         catalog, table, belief, meas = _fixture(position_sigma)
         log_weight = pf._identity_log_weights(table, catalog, 0.5)
@@ -91,6 +100,20 @@ class TorchBackendEquivalenceTest(unittest.TestCase):
 
     def test_float32(self):
         self._check(position_sigma=8.0, dtype=torch.float32, atol=2e-3)
+
+    def test_chunked_pose_likelihood_matches_numpy(self):
+        catalog, table, belief, meas = _fixture(position_sigma=8.0)
+        log_weight = pf._identity_log_weights(table, catalog, 0.5)
+        expected = pf.pose_log_likelihood(
+            belief.east_m[:31], belief.north_m[:31],
+            belief.heading_rad[:31], meas, table, catalog, 0.2,
+            log_weight=log_weight)
+        engine = torch_backend.TorchMeasurementEngine(
+            catalog, {"trk": log_weight}, device="cpu", dtype=torch.float64)
+        actual = engine.pose_log_likelihood(
+            belief.east_m[:31], belief.north_m[:31],
+            belief.heading_rad[:31], meas, 0.2)
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
 
     def test_persistence_committed_path_matches_numpy(self):
         """With committed associations and a vanishing renewal rate the
