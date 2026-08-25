@@ -187,3 +187,11 @@ localization:
     heading_cell_deg: 20.0
     min_cell_weight: 0.0001
     min_mode_weight: 0.02
+
+# Viewer page tuning. Recorded here so the orchestrator and the viewer
+# cannot hold two different sets of defaults; retuning these does not
+# invalidate the localization run the page displays.
+viewer:
+  max_particles: 900
+  basemap_detail: 1.0
+  embed_source_chips: true

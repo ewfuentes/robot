@@ -53,10 +53,15 @@ _PREFIX_VERSION_KEYS = (
     "pinhole_images_version", "frame_landmarks_version",
     "object_tracks_version",
 )
-_CONFIG_TOP_LEVEL = frozenset({
+# The sections a build config must contain. `pipeline` cannot own this list
+# (it imports this module, not the other way round), so it is declared here
+# and `pipeline_test` asserts it equals the top level of `CONFIG_SCHEMA` --
+# adding a section without updating this then fails as a plain test, not as a
+# confusing StageReuseError raised deep inside reuse-proof creation.
+CONFIG_TOP_LEVEL = frozenset({
     "experiment", "artifacts", "extraction", "execution", "cost", "ingest",
     "tracking", "audit", "matching", "bearing_observations", "gps_course",
-    "alignment_diagnostics", "localization_inputs", "localization",
+    "alignment_diagnostics", "localization_inputs", "localization", "viewer",
 })
 _ARTIFACT_CONFIG_KEYS = frozenset(
     f"{kind}_version" for kind in paths_lib.ARTIFACT_KINDS)
@@ -249,11 +254,11 @@ def _resolve_build(build_dir: Path) -> tuple[paths_lib.FarfieldPaths, dict]:
         raise StageReuseError(
             f"cannot reread build config {config_path}: {exc}") from exc
     config = document["config"]
-    if set(config) != _CONFIG_TOP_LEVEL:
+    if set(config) != CONFIG_TOP_LEVEL:
         raise StageReuseError(
             f"build config top-level schema differs: "
-            f"missing={sorted(_CONFIG_TOP_LEVEL - set(config))}, "
-            f"unknown={sorted(set(config) - _CONFIG_TOP_LEVEL)}")
+            f"missing={sorted(CONFIG_TOP_LEVEL - set(config))}, "
+            f"unknown={sorted(set(config) - CONFIG_TOP_LEVEL)}")
     if (not isinstance(config.get("artifacts"), dict)
             or set(config["artifacts"]) != _ARTIFACT_CONFIG_KEYS):
         raise StageReuseError("build artifact-version config has invalid shape")
