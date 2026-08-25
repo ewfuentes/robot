@@ -37,6 +37,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     viewer_payload,
     viewer_server,
 )
+from experimental.overhead_matching.swag.farfield.viewers import page
 
 VISIBLE_RANGE_M = 10000.0
 
@@ -295,7 +296,8 @@ class PageTest(unittest.TestCase):
             _make_run(run_dir)
             html = viewer.render_html(viewer_payload.build(run_dir))
 
-            self.assertTrue(html.startswith("<!doctype html>"))
+            self.assertTrue(html.startswith(page.GENERATED_MARK))
+            self.assertIn("<!DOCTYPE html>", html)
             self.assertIn("window.__RUN__", html)
             # No external hosts, no external subresources.
             for pattern in (r'src\s*=\s*["\']https?://',

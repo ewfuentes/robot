@@ -684,6 +684,7 @@ py_library(
         ":viewer_payload",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
 
@@ -739,6 +740,7 @@ py_test(
         ":structs",
         ":viewer_lib",
         ":viewer_payload",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
         ":viewer_server_lib",
     ],
 )

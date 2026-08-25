@@ -1,7 +1,25 @@
 """The one HTML page helper for farfield viewers.
 
-Every stage viewer builds its page through `page()` so styling is consistent
-and every page records its generator, git commit, and timestamp.
+Two entry points, because farfield has two kinds of viewer and forcing them
+into one shape is what pushed the big ones out of this module in the first
+place:
+
+- `page()` builds a stage/index page: shared stylesheet, a title heading,
+  optional breadcrumbs. Most viewers want exactly this.
+- `document()` builds only the skeleton -- generated mark, doctype, head,
+  body -- and takes the caller's own stylesheet. The localization run viewer
+  and the match viewer are full designs with their own type scale, layout and
+  header; they need the skeleton's guarantees, not this module's look.
+
+`page()` is written in terms of `document()`, so there is one definition of
+what a farfield page *is*. That matters for two properties every page must
+have and neither of the big viewers had while it rendered its own document:
+
+- `GENERATED_MARK`, which `indexes.refresh` requires before it will overwrite
+  a page -- an unmarked page is indistinguishable from something hand-written
+  that a regeneration would destroy;
+- a provenance footer naming the generator, git commit and time, so a stale
+  page identifies itself instead of looking current.
 
 Pages are self-contained static HTML with relative links and no network:
 `python -m http.server` at the data root must render everything.
@@ -42,9 +60,45 @@ def esc(text) -> str:
     return html_lib.escape(str(text))
 
 
+def provenance_footer(generator: str, *,
+                      css_class: str = "provenance",
+                      style: str = "") -> str:
+    """The footer every farfield page carries.
+
+    Without it a page that was regenerated last month and one regenerated
+    this morning look identical, which is how a viewer gets read as current
+    evidence for a run it no longer describes.
+    """
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    attribute = f' style="{esc(style)}"' if style else ""
+    return (f'<footer class="{esc(css_class)}"{attribute}>{esc(generator)} · '
+            f"git {esc(provenance.git_commit()[:12])} · {esc(stamp)}"
+            f"</footer>")
+
+
+def document(title: str, body: str, *, style: str,
+             viewport: bool = True) -> str:
+    """The skeleton shared by every farfield page.
+
+    Deliberately opinionated about exactly three things -- the generated
+    mark, a well-formed head, and that the caller's stylesheet is the only
+    one applied -- and about nothing else. A viewer with its own design
+    passes its own `style` and builds its own header; it still cannot end up
+    without the mark or with a head missing a charset.
+    """
+    meta_viewport = ('<meta name="viewport" '
+                     'content="width=device-width,initial-scale=1">'
+                     if viewport else "")
+    return (
+        f"{GENERATED_MARK}\n<!DOCTYPE html>\n<html lang=\"en\"><head>"
+        f"<meta charset=\"utf-8\">{meta_viewport}"
+        f"<title>{esc(title)}</title>"
+        f"<style>{style}</style></head><body>{body}</body></html>\n")
+
+
 def page(title: str, body: str, *, generator: str,
          crumbs: list | None = None, extra_style: str = "") -> str:
-    """A complete HTML document.
+    """A stage or index page in the shared farfield style.
 
     generator: the producing module/target — stamped in the footer with the
     git commit and time, so a stale page identifies itself.
@@ -58,15 +112,11 @@ def page(title: str, body: str, *, generator: str,
             parts.append(f'<a href="{esc(href)}">{esc(label)}</a>'
                          if href else esc(label))
         crumb_html = f'<div class="crumbs">{" / ".join(parts)}</div>'
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return (
-        f"{GENERATED_MARK}\n<!DOCTYPE html>\n<html><head>"
-        f"<meta charset=\"utf-8\"><title>{esc(title)}</title>"
-        f"<style>{STYLE}{extra_style}</style></head><body>"
+    return document(
+        title,
         f"{crumb_html}<h1>{esc(title)}</h1>\n{body}\n"
-        f"<footer class=\"provenance\">{esc(generator)} · "
-        f"git {esc(provenance.git_commit()[:12])} · {esc(stamp)}"
-        f"</footer></body></html>\n")
+        + provenance_footer(generator),
+        style=STYLE + extra_style)
 
 
 def table(headers: list, rows: list) -> str:
