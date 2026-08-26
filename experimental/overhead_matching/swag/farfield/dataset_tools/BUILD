@@ -208,6 +208,7 @@ py_library(
     deps = [
         FARFIELD + ":artifact",
         FARFIELD + ":artifact_identity",
+        FARFIELD + ":code_provenance",
         FARFIELD + ":paths",
         FARFIELD + ":provenance",
     ],

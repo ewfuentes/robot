@@ -41,6 +41,19 @@ py_test(
 )
 
 py_library(
+    name = "code_provenance",
+    srcs = ["code_provenance.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = ["//toolchain:git_info"],
+)
+
+py_test(
+    name = "code_provenance_test",
+    srcs = ["code_provenance_test.py"],
+    deps = [":code_provenance"],
+)
+
+py_library(
     name = "identity_inputs",
     srcs = ["identity_inputs.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -52,7 +65,6 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":artifact",
-        ":code_fingerprint",
         ":identity_inputs",
     ],
 )

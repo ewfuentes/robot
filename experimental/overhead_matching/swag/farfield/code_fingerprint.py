@@ -1,8 +1,20 @@
-"""What code computed an artifact, as a digest of the sources that can.
+"""Which sources a stage can reach, as a digest -- for EXPLAINING, not gating.
 
-An artifact's identity has to include the code that produced it, or a change
-to a stage silently yields a stale product. The pipeline used the repository's
-git commit for that, which is both too coarse and too weak:
+This began as an identity input and is no longer one: `artifact_identity` is
+data lineage only, and `code_provenance` records the commit and diff instead.
+The measurement that settled it is in `artifact_identity`'s opening note --
+three viewer-only commits moved all eight stage fingerprints, because
+`publication` refreshes the index on publish and so puts the viewer modules in
+every producing closure.
+
+What it is still good for is the question a stale-looking result actually
+raises: *which* modules could have affected this artifact, and have any of
+them changed since it was made? That is a report, and a report may be
+approximate. The same over-broadness that made it a bad gate is harmless in an
+answer a human reads.
+
+The repository git commit is the alternative and is both too coarse and too
+weak for even that:
 
 - too coarse, because *any* commit anywhere -- a viewer restyle, a docstring,
   another project in the monorepo -- changes it, so every artifact in the tree

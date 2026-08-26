@@ -35,6 +35,7 @@ from pathlib import Path
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     artifact_identity,
+    code_provenance,
     paths as paths_lib,
     provenance,
 )
@@ -97,6 +98,7 @@ def survey_artifact(version_dir: Path) -> dict:
     if manifest is None:
         record["detail"] = reason
         return record
+    record["code"] = manifest.config.get(code_provenance.SCHEMA.split("/")[0])
     record.update({
         "kind": manifest.kind,
         "dataset": manifest.dataset,
@@ -139,9 +141,19 @@ def survey(root: Path) -> dict:
             for run in sorted(p for p in experiment.iterdir() if p.is_dir()):
                 if (run / artifact.MANIFEST_NAME).is_file():
                     records.append(survey_artifact(run))
+    blocks = [record["code"] for record in records
+              if isinstance(record.get("code"), dict)]
+    try:
+        summary = code_provenance.lineage_summary(blocks)
+    except code_provenance.CodeProvenanceError as error:
+        summary = {"n_artifacts": 0, "code_differs": True,
+                   "commits": [], "any_dirty": False, "any_unknown": True,
+                   "error": str(error)}
     return {
         "schema": SCHEMA,
         "root": str(Path(root)),
+        "code_lineage": code_provenance.describe(summary),
+        "code_summary": summary,
         "n_artifacts": len(records),
         "by_state": dict(Counter(record["state"] for record in records)),
         # Records with no kind are those whose manifest could not be read as
@@ -162,6 +174,7 @@ def _print_report(report: dict) -> None:
     print("\nby kind:")
     for kind, count in sorted(report["by_kind"].items()):
         print(f"  {kind:<24} {count:>5}")
+    print(f"\ncode lineage: {report['code_lineage']}")
     unattributed = [r for r in report["artifacts"]
                     if r["state"] == "unattributed"]
     if unattributed:

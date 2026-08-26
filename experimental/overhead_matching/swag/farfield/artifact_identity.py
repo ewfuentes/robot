@@ -8,16 +8,27 @@ a new build identity, so the paid `frame_landmarks` and the hours of
 immutable build identity" and had to be republished.
 
 `stage_reuse.py` existed entirely to undo that, and could only do so by asking
-a human to attest that the prefix-computing code had not changed -- the one
-unverified claim in an otherwise machine-checked system.
+a human to attest that the prefix-computing code had not changed. With code
+out of identity there is nothing left to attest, and that whole mechanism --
+along with its one unverified human claim -- has no reason to exist.
 
 The fix is to identify an artifact by what actually determines it:
 
     identity = H(kind, dataset,
                  the stage's own resolved config,
                  the manifest digests of its upstreams,
-                 the fingerprint of the code that computes it,
                  every recorded build input the stage reads)
+
+DATA LINEAGE ONLY. Code is deliberately absent, and `code_provenance` records
+it instead. A v2 of this schema hashed a fingerprint of the producing code;
+measured against the real tree, three commits touching only viewer HTML
+invalidated all eight producing stages, and one ordinary day's work
+invalidated two of eight even with presentation excluded. Code changes
+constantly in a research tree and data does not, so gating on it means
+near-permanent invalidation of the artifacts that cost money -- and these
+artifacts are not byte-reproducible anyway, since extraction and matching are
+provider calls with real variance. Gating and recording are separable; only
+recording was ever needed.
 
 The last term is default-include: an input is in unless `identity_inputs`
 excludes it by name, so a build that starts recording something new is covered
@@ -26,9 +37,9 @@ silently when an entry is forgotten -- the identity still matches and the
 stale artifact is still used. This way round the failure is an identity that
 moves when it need not, which is a rebuild, and loud.
 
-Nothing else. Then a downstream config change simply does not move an upstream
-artifact's identity, no attestation is needed, and "did the code change?"
-becomes a machine question (see `code_fingerprint`).
+Nothing else. A downstream config change simply does not move an upstream
+artifact's identity, and "did the code change?" is answered by reading
+`code_provenance` when someone asks -- not by refusing to reuse.
 
 The upstream term needs no recursion: an `ArtifactRef` already carries the
 `manifest_digest` of the artifact it names, and that manifest already records
@@ -41,7 +52,9 @@ match than it means:
 - provider non-determinism. Two extraction runs with identical inputs return
   different landmarks; identity says "the same recipe", never "the same
   bytes". Byte identity is what `content_digest` is for.
-- anything outside the farfield package (see `code_fingerprint`'s limits).
+- the code that produced the artifact. That is recorded by `code_provenance`
+  and surfaced when a lineage spans more than one code state, but it never
+  gates: see this module's opening note for the measurements behind that.
 - the mutable orchestration state in `builds/`. A build directory is where a
   run is driven from, not part of what its products are.
 """
@@ -52,11 +65,10 @@ from typing import Any, Iterable, Mapping
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
-    code_fingerprint,
     identity_inputs,
 )
 
-SCHEMA = "farfield_artifact_identity/v2"
+SCHEMA = "farfield_artifact_identity/v3"
 
 # A manifest written before per-artifact identity existed. Such an artifact is
 # not *wrong*, it is unattributed: nothing on disk says which code or which
@@ -72,7 +84,6 @@ class ArtifactIdentityError(ValueError):
 
 def compute(*, kind: str, dataset: str, stage_config_digest: str,
             upstreams: Iterable[artifact.ArtifactRef],
-            entry_module: str,
             build_inputs: Mapping[str, str],
             inputs_not_consumed: tuple[str, ...] = ()) -> str:
     """The identity of an artifact this recipe would produce.
@@ -101,7 +112,6 @@ def compute(*, kind: str, dataset: str, stage_config_digest: str,
             _digest(reference.manifest_digest,
                     f"{reference.kind} manifest_digest")
             for reference in references),
-        "code_fingerprint": code_fingerprint.fingerprint(entry_module),
         # Default-include: every recorded build input is here unless
         # `identity_inputs` excludes it by name. A new input is covered before
         # anyone remembers it exists, and the cost of a missing exclusion is
@@ -114,16 +124,10 @@ def compute(*, kind: str, dataset: str, stage_config_digest: str,
 
 
 def for_stage(*, kind: str, dataset: str, orchestration: Mapping[str, Any],
-              upstreams: Iterable[artifact.ArtifactRef], source_file: str,
+              upstreams: Iterable[artifact.ArtifactRef],
               build_inputs: Mapping[str, str],
               inputs_not_consumed: tuple[str, ...] = ()) -> str:
-    """`compute` for a producer, from the values it already holds.
-
-    `source_file` is the producer's own `__file__`. Under `bazel run` a stage
-    sees `__name__ == "__main__"` and cannot name itself, and a hand-written
-    module constant is one more thing to keep in step with the file it
-    describes -- so the file is the input, and the module name is derived.
-    """
+    """`compute` for a producer, from the values it already holds."""
     if not isinstance(orchestration, Mapping):
         raise ArtifactIdentityError("orchestration must be the stage contract")
     digest = orchestration.get("config_digest")
@@ -132,9 +136,7 @@ def for_stage(*, kind: str, dataset: str, orchestration: Mapping[str, Any],
             "stage contract records no config_digest")
     return compute(
         kind=kind, dataset=dataset, stage_config_digest=digest,
-        upstreams=upstreams,
-        entry_module=code_fingerprint.module_of(source_file),
-        build_inputs=build_inputs,
+        upstreams=upstreams, build_inputs=build_inputs,
         inputs_not_consumed=inputs_not_consumed)
 
 
@@ -170,5 +172,7 @@ def explain(*, expected: str, manifest: artifact.ArtifactManifest,
                 "was assumed, not proven).")
     return (f"{kind} artifact {manifest.version!r} was built from a different "
             f"recipe: identity {found[:12]} != {expected[:12]}. Compare its "
-            "manifest's stage_config_digest and code_fingerprint against the "
-            "current build to see which moved.")
+            "manifest's stage_config_digest, upstream refs and build inputs "
+            "against the current build to see which moved. Its code state is "
+            "recorded separately (see code_provenance) and is NOT part of "
+            "this identity.")

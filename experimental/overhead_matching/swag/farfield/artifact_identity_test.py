@@ -10,7 +10,6 @@ import unittest
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     artifact_identity as ident,
-    code_fingerprint,
 )
 
 BUILD_INPUTS = {
@@ -21,8 +20,6 @@ BUILD_INPUTS = {
     "dataset_panorama_sha256": "b" * 64,
 }
 
-TRACK_ENTRY = f"{code_fingerprint.PACKAGE}.tracking.run_tracking"
-MATCH_ENTRY = f"{code_fingerprint.PACKAGE}.matching.match_landmarks"
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 DIGEST_C = "c" * 64
@@ -39,7 +36,6 @@ def identity(**overrides):
     base = dict(kind="object_tracks", dataset="ds",
                 stage_config_digest=DIGEST_A,
                 upstreams=[ref("frame_landmarks"), ref("pinhole_images")],
-                entry_module=TRACK_ENTRY,
                 build_inputs=dict(BUILD_INPUTS))
     base.update(overrides)
     return ident.compute(**base)
@@ -80,9 +76,6 @@ class MovesTest(unittest.TestCase):
             identity(upstreams=[ref("frame_landmarks", manifest_digest=DIGEST_B),
                                 ref("pinhole_images")]))
 
-    def test_the_code_that_computes_it_moves_it(self):
-        self.assertNotEqual(identity(), identity(entry_module=MATCH_ENTRY))
-
     def test_the_dataset_bytes_move_it(self):
         self.assertNotEqual(
             identity(),
@@ -110,6 +103,18 @@ class DoesNotMoveTest(unittest.TestCase):
     Under the global build identity every one of these produced a new identity
     for every artifact in the build, including the paid ones.
     """
+
+    def test_the_code_is_not_an_input_at_all(self):
+        """Identity is data lineage. `compute` takes no code term, so there is
+        no channel by which editing a module can invalidate an artifact --
+        `code_provenance` records the code and a mixed lineage is reported,
+        never gated. Expressed as the absence of a parameter, which is the
+        only way to assert that a channel does not exist."""
+        import inspect
+        self.assertNotIn(
+            "entry_module", inspect.signature(ident.compute).parameters)
+        self.assertNotIn(
+            "code_fingerprint", inspect.signature(ident.compute).parameters)
 
     def test_a_downstream_config_change_is_not_an_input_here(self):
         """`localization.pi0` is not part of the track stage's config digest,
@@ -195,7 +200,17 @@ class RecordedTest(unittest.TestCase):
             manifest=self.manifest({"artifact_identity": DIGEST_B}),
             kind="object_tracks")
         self.assertIn("stage_config_digest", message)
-        self.assertIn("code_fingerprint", message)
+        self.assertIn("upstream refs", message)
+        self.assertIn("build inputs", message)
+
+    def test_the_mismatch_message_says_code_is_not_the_cause(self):
+        """A reader who has just changed code will otherwise assume that is
+        why, look for a code term, and not find one."""
+        message = ident.explain(
+            expected=DIGEST_A,
+            manifest=self.manifest({"artifact_identity": DIGEST_B}),
+            kind="object_tracks")
+        self.assertIn("NOT part of this identity", message)
 
 
 class RejectionTest(unittest.TestCase):
