@@ -13,6 +13,14 @@ from experimental.overhead_matching.swag.farfield import (
     code_fingerprint,
 )
 
+BUILD_INPUTS = {
+    "farfield_root": "/farfield",
+    "sam2_checkpoint": "/models/sam2/v1.pt",
+    "sam2_checkpoint_sha256": "d" * 64,
+    "nominal_forward_sha256": "e" * 64,
+    "dataset_panorama_sha256": "b" * 64,
+}
+
 TRACK_ENTRY = f"{code_fingerprint.PACKAGE}.tracking.run_tracking"
 MATCH_ENTRY = f"{code_fingerprint.PACKAGE}.matching.match_landmarks"
 DIGEST_A = "a" * 64
@@ -32,7 +40,7 @@ def identity(**overrides):
                 stage_config_digest=DIGEST_A,
                 upstreams=[ref("frame_landmarks"), ref("pinhole_images")],
                 entry_module=TRACK_ENTRY,
-                dataset_source_digests={"panorama": DIGEST_B})
+                build_inputs=dict(BUILD_INPUTS))
     base.update(overrides)
     return ident.compute(**base)
 
@@ -77,7 +85,19 @@ class MovesTest(unittest.TestCase):
 
     def test_the_dataset_bytes_move_it(self):
         self.assertNotEqual(
-            identity(), identity(dataset_source_digests={"panorama": DIGEST_C}))
+            identity(),
+            identity(build_inputs=BUILD_INPUTS | {
+                "dataset_panorama_sha256": DIGEST_C}))
+
+    def test_a_checkpoint_swapped_under_the_same_path_moves_it(self):
+        """The gap that made this term necessary. The stage config records the
+        checkpoint's PATH; replacing its bytes in place leaves every config
+        digest identical, so without the input digests the tracks would be
+        silently reused against different weights."""
+        self.assertNotEqual(
+            identity(),
+            identity(build_inputs=BUILD_INPUTS | {
+                "sam2_checkpoint_sha256": DIGEST_C}))
 
     def test_kind_and_dataset_move_it(self):
         self.assertNotEqual(identity(), identity(kind="semantic_audits"))
@@ -108,6 +128,28 @@ class DoesNotMoveTest(unittest.TestCase):
             upstreams=[ref("frame_landmarks", version="renamed"),
                        ref("pinhole_images")])
         self.assertEqual(identity(), renamed)
+
+    def test_moving_the_data_root_does_not_move_it(self):
+        """A mirror holds the same artifacts. An identity keyed on absolute
+        paths would call every mirror a full rebuild."""
+        self.assertEqual(
+            identity(),
+            identity(build_inputs=BUILD_INPUTS | {
+                "farfield_root": "/mnt/mirror/farfield"}))
+
+    def test_reaching_the_checkpoint_by_another_path_does_not_move_it(self):
+        self.assertEqual(
+            identity(),
+            identity(build_inputs=BUILD_INPUTS | {
+                "sam2_checkpoint": "/other/models/sam2/v1.pt"}))
+
+    def test_an_input_the_stage_does_not_read_does_not_move_it(self):
+        """Correcting the mount calibration must not re-bill extraction."""
+        self.assertEqual(
+            identity(inputs_not_consumed=("nominal_forward_sha256",)),
+            identity(inputs_not_consumed=("nominal_forward_sha256",),
+                     build_inputs=BUILD_INPUTS | {
+                         "nominal_forward_sha256": DIGEST_C}))
 
     def test_the_path_an_artifact_sits_at_is_not_an_input(self):
         moved = artifact.ArtifactRef(

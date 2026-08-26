@@ -201,6 +201,35 @@ py_test(
     deps = [":dataset_status_table_lib"],
 )
 
+py_library(
+    name = "survey_artifact_identity_lib",
+    srcs = ["survey_artifact_identity.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        FARFIELD + ":artifact",
+        FARFIELD + ":artifact_identity",
+        FARFIELD + ":paths",
+        FARFIELD + ":provenance",
+    ],
+)
+
+py_binary(
+    name = "survey_artifact_identity",
+    srcs = ["survey_artifact_identity.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":survey_artifact_identity_lib"],
+)
+
+py_test(
+    name = "survey_artifact_identity_test",
+    srcs = ["survey_artifact_identity_test.py"],
+    deps = [
+        ":survey_artifact_identity_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":provenance",
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Catalog building (OSM + ENC -> feather -> trim)
 # ---------------------------------------------------------------------------

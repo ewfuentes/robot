@@ -421,6 +421,12 @@ class StageSpec:
     upstreams: tuple[str, ...]
     config_prefixes: tuple[str, ...]
     target: str
+    # Recorded build inputs this stage does NOT read, and which therefore stay
+    # out of its artifacts' identity. Everything else recorded is in: see
+    # `identity_inputs` for why the list runs this way round. Forgetting an
+    # entry here costs a rebuild that was not needed, which is loud; the
+    # opposite default would cost a stale artifact used in silence.
+    inputs_not_consumed: tuple[str, ...] = ()
 
 
 STAGE_SPECS = {
@@ -428,46 +434,92 @@ STAGE_SPECS = {
         outputs=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
         upstreams=(),
         config_prefixes=("extraction", "execution", "cost"),
-        target=f"{FF}/extraction:extract_landmarks"),
+        target=f"{FF}/extraction:extract_landmarks",
+        # Extraction reads panoramas and a prompt. It never opens the tracker
+        # weights, the motion table, the mount calibration or the catalog, so
+        # correcting any of those must not invalidate paid model calls.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "track": StageSpec(
         outputs=(paths_lib.OBJECT_TRACKS,),
         upstreams=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
         config_prefixes=("ingest", "tracking", "gps_course"),
-        target=f"{FF}/tracking:run_tracking"),
+        target=f"{FF}/tracking:run_tracking",
+        # Tracking runs SAM2 over the video and the GPS course, so the
+        # checkpoint bytes, the video bytes and the motion table are all
+        # determinants. It does not consult the mount calibration or the map.
+        inputs_not_consumed=(
+            "nominal_forward_sha256", "catalog_manifest_digest",
+            "catalog_content_digest")),
     "audit": StageSpec(
         outputs=(paths_lib.SEMANTIC_AUDITS,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.FRAME_LANDMARKS),
         config_prefixes=("ingest", "audit", "execution", "cost"),
-        target=f"{FF}/tracking:audit_requests"),
+        target=f"{FF}/tracking:audit_requests",
+        # The audit shows a model chips cut from panoramas. No weights, no
+        # motion, no calibration, no map.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "bearings": StageSpec(
         outputs=(paths_lib.BEARING_OBSERVATIONS,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS),
         config_prefixes=("bearing_observations",
                          "tracking.reference_pano_width"),
-        target=f"{FF}/tracking:build_bearing_observations"),
+        target=f"{FF}/tracking:build_bearing_observations",
+        # Camera-frame bearings are geometry over audited tracks. The mount
+        # calibration turns them into world bearings LATER, in localization
+        # inputs, which is why it is not a determinant here.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "match": StageSpec(
         outputs=(paths_lib.LANDMARK_MATCHES,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
                    paths_lib.CATALOGS),
         config_prefixes=("matching", "execution", "cost"),
-        target=f"{FF}/matching:match_landmarks"),
+        target=f"{FF}/matching:match_landmarks",
+        # Matching reads the catalog (as a typed upstream AND as a recorded
+        # digest) and the audit's names. Not the weights, motion or mount.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256")),
     "diagnostics": StageSpec(
         outputs=(paths_lib.ALIGNMENT_DIAGNOSTICS,),
         upstreams=(paths_lib.BEARING_OBSERVATIONS,),
         config_prefixes=("alignment_diagnostics",
                          "localization_inputs.nominal_forward_calibration"),
-        target=f"{FF}/calibration:build_alignment_diagnostics"),
+        target=f"{FF}/calibration:build_alignment_diagnostics",
+        # Diagnostics compare bearings against the GPS course and the approved
+        # nominal-forward record, so both are determinants.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "localization_inputs": StageSpec(
         outputs=(paths_lib.LOCALIZATION_INPUTS,),
         upstreams=(paths_lib.BEARING_OBSERVATIONS,
                    paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS),
         config_prefixes=("localization_inputs", "gps_course"),
-        target=f"{FF}/localization:build_export"),
+        target=f"{FF}/localization:build_export",
+        # The export rotates camera bearings into the world through the
+        # approved calibration and places landmarks from the catalog, using
+        # the motion table for odometry. All three are determinants.
+        inputs_not_consumed=("sam2_checkpoint_sha256", "video_sha256")),
     "localize": StageSpec(
         outputs=(LOCALIZATION_RUN_KIND,),
         upstreams=(paths_lib.LOCALIZATION_INPUTS,),
         config_prefixes=("localization",),
-        target=f"{FF}/localization:run_export"),
+        target=f"{FF}/localization:run_export",
+        # The filter consumes one typed localization_inputs artifact and
+        # nothing else from the build's raw inputs.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
 }
 STAGES = tuple(STAGE_SPECS)
 PIPELINE_ARTIFACT_OWNER = {
@@ -798,6 +850,23 @@ def _source_video_inputs(paths: paths_lib.FarfieldPaths) -> dict[str, str]:
     }
 
 
+# Every key `_validate_build_inputs` can record. Declared rather than inferred
+# so `identity_inputs`' exclusion lists have something stable to be audited
+# against, and self-checked below so the declaration cannot drift from the
+# function: a recorded key missing from here fails at build creation, which is
+# the cheapest possible moment.
+RECORDED_INPUT_KEYS = frozenset({
+    "farfield_root", "dataset_base", "source_config", "source_config_sha256",
+    "sam2_checkpoint", "sam2_checkpoint_sha256",
+    "motion_source", "motion_source_sha256",
+    "nominal_forward_calibration", "nominal_forward_sha256",
+    "catalog_manifest_digest", "catalog_content_digest",
+    "video", "video_sha256",
+    "identity_review_output_dir", "identity_review_phase",
+    *paths_lib.DATASET_SOURCE_DIGEST_KEYS,
+})
+
+
 def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
                            source_config: Path) -> dict[str, str]:
     if not paths.dataset_base.is_dir():
@@ -846,6 +915,12 @@ def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
             "identity_review_output_dir": str(review_path.resolve()),
             "identity_review_phase": "post_match_gate",
         })
+    undeclared = sorted(set(result) - RECORDED_INPUT_KEYS)
+    if undeclared:
+        raise StageContractError(
+            f"build records inputs absent from RECORDED_INPUT_KEYS: "
+            f"{undeclared}. Add them there so artifact identity's exclusion "
+            "lists can be audited against the real key set.")
     return result
 
 

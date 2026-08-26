@@ -17,7 +17,14 @@ The fix is to identify an artifact by what actually determines it:
                  the stage's own resolved config,
                  the manifest digests of its upstreams,
                  the fingerprint of the code that computes it,
-                 the dataset source digests, when the stage reads them)
+                 every recorded build input the stage reads)
+
+The last term is default-include: an input is in unless `identity_inputs`
+excludes it by name, so a build that starts recording something new is covered
+before anyone remembers it exists. An enumeration of what to INCLUDE fails
+silently when an entry is forgotten -- the identity still matches and the
+stale artifact is still used. This way round the failure is an identity that
+moves when it need not, which is a rebuild, and loud.
 
 Nothing else. Then a downstream config change simply does not move an upstream
 artifact's identity, no attestation is needed, and "did the code change?"
@@ -46,6 +53,7 @@ from typing import Any, Iterable, Mapping
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     code_fingerprint,
+    identity_inputs,
 )
 
 SCHEMA = "farfield_artifact_identity/v2"
@@ -65,7 +73,8 @@ class ArtifactIdentityError(ValueError):
 def compute(*, kind: str, dataset: str, stage_config_digest: str,
             upstreams: Iterable[artifact.ArtifactRef],
             entry_module: str,
-            dataset_source_digests: Mapping[str, str] | None = None) -> str:
+            build_inputs: Mapping[str, str],
+            inputs_not_consumed: tuple[str, ...] = ()) -> str:
     """The identity of an artifact this recipe would produce.
 
     `upstreams` is order-insensitive on purpose: a stage that takes tracks and
@@ -93,16 +102,21 @@ def compute(*, kind: str, dataset: str, stage_config_digest: str,
                     f"{reference.kind} manifest_digest")
             for reference in references),
         "code_fingerprint": code_fingerprint.fingerprint(entry_module),
-        "dataset_source_digests": (
-            dict(sorted(dataset_source_digests.items()))
-            if dataset_source_digests is not None else None),
+        # Default-include: every recorded build input is here unless
+        # `identity_inputs` excludes it by name. A new input is covered before
+        # anyone remembers it exists, and the cost of a missing exclusion is
+        # an identity that moves when it need not -- loud -- rather than one
+        # that matches when it must not.
+        "build_inputs": identity_inputs.contributing(
+            build_inputs, inputs_not_consumed),
     }
     return artifact.sha256_json(payload)
 
 
 def for_stage(*, kind: str, dataset: str, orchestration: Mapping[str, Any],
               upstreams: Iterable[artifact.ArtifactRef], source_file: str,
-              dataset_source_digests: Mapping[str, str] | None = None) -> str:
+              build_inputs: Mapping[str, str],
+              inputs_not_consumed: tuple[str, ...] = ()) -> str:
     """`compute` for a producer, from the values it already holds.
 
     `source_file` is the producer's own `__file__`. Under `bazel run` a stage
@@ -120,7 +134,8 @@ def for_stage(*, kind: str, dataset: str, orchestration: Mapping[str, Any],
         kind=kind, dataset=dataset, stage_config_digest=digest,
         upstreams=upstreams,
         entry_module=code_fingerprint.module_of(source_file),
-        dataset_source_digests=dataset_source_digests)
+        build_inputs=build_inputs,
+        inputs_not_consumed=inputs_not_consumed)
 
 
 def _digest(value: Any, field: str) -> str:

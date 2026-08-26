@@ -31,6 +31,21 @@ py_test(
     ],
 )
 
+py_test(
+    name = "identity_inputs_test",
+    srcs = ["identity_inputs_test.py"],
+    deps = [
+        ":identity_inputs",
+        ":pipeline_lib",
+    ],
+)
+
+py_library(
+    name = "identity_inputs",
+    srcs = ["identity_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
 py_library(
     name = "artifact_identity",
     srcs = ["artifact_identity.py"],
@@ -38,6 +53,7 @@ py_library(
     deps = [
         ":artifact",
         ":code_fingerprint",
+        ":identity_inputs",
     ],
 )
 
@@ -47,6 +63,7 @@ py_test(
     deps = [
         ":artifact",
         ":artifact_identity",
+        ":identity_inputs",
     ],
 )
 
