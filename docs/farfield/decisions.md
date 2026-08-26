@@ -326,3 +326,63 @@ from"), so relocating a data root would have broken every one of them while
 every byte still agreed — and this project does move data roots. They now use
 dataclass equality, with `artifact.records_same_artifact` for the two that
 compare against a ref stored as JSON.
+
+## 2026-08-26 · An artifact answers for itself; the checked-in recipes did not
+
+Two questions have to be answerable about anything on disk: how do I
+reproduce it, and are the things it was made from out of date.
+
+**The frozen YAML recipes answered neither, and drifted two generations
+because nothing could tell.** `configs/active_regeneration/*.yaml` was a third
+copy of a recipe that already existed in `builds/` and, partly, in every
+manifest -- and the only copy with no feedback loop. Measured against the real
+root before deleting them: for `boston_harbor_leg1`, **all nine** artifact
+versions the recipe named differed from what the live builds use. It named
+`stage3_7b88e81_adopted_v1` / `_regen_v1` / `_trim_v1`; the live builds use
+`_adopted_v2`, `_regen_v2`, `stage3_17c8031_regen_v8_machine` and
+`stage3_a6e45b9_trim625_v1`. The `_v1` strings appear in no `build_config.json`
+and no artifact directory anywhere, and the experiment name the recipes assert
+(`260824_stage3_active_regeneration`) never ran -- what ran was
+`260824_stage3_active_regeneration_v2`.
+
+Its test could not notice, by construction: it built `expected_artifacts` from
+three constants copied out of the YAMLs and asserted equality, never touching
+the data root. A tautology.
+
+What made that a merge blocker rather than a wart is the third ingredient:
+every recipe also carried `approve_cost: true` with `limit_usd: 50.0`. Since
+`object_tracks_version` named a version that does not exist, running one would
+not have reused the existing tracks -- it would have re-run tracking and then
+the paid audit and matching stages, with spend pre-approved, and published
+under version names nothing uses.
+
+**Reproducing an artifact used to require a join to mutable state.** manifest
+-> `build_identity` -> `builds/<dataset>/<build>/build_config.json`. That join
+holds today -- 24 surviving recipes cover all 56 signed artifacts, zero
+orphans -- but `builds/` is documented as "only orchestration state ... not a
+scientific artifact lane" and nothing protects it. Lose one recipe and the
+artifact is both irreproducible and its identity uncomputable, which is the
+hole the identity backfill was written to paper over.
+
+`artifact_recipe` closes it by recording the identity terms a manifest could
+not otherwise recover: the resolved stage config, the build inputs the stage
+read, and the upstream digests that entered the identity. Three ad-hoc
+conventions were replaced -- `resolved_stage_config` (flat dotted keys, in
+`semantic_audits` and `landmark_matches`), `resolved` (nested blocks, in
+`object_tracks`) and per-domain blocks (in `localization_inputs`) --  and
+`semantic_audits` had recorded no `source_digests` at all, so for that kind
+you could not even verify you had found the right build recipe.
+
+**The check that makes the record trustworthy: an identity recomputed from the
+manifest alone must equal the identity the manifest records.** A manifest
+missing a term its identity depends on cannot satisfy that, so it is total
+rather than illustrative -- unlike a round-trip test, which would only have
+covered the config half. Writing it immediately found something: identity is
+computed over the stage's CONFIGURED upstreams, which is not
+`manifest.upstreams`. A `frame_landmarks` manifest records its pinhole
+artifact and the canonical LLM result artifact, while `extract` declares no
+artifact upstreams -- and the orchestrator could not name the result artifact
+anyway, since it does not exist until the stage has run. So the recipe records
+which upstreams entered the identity, and the verification separately requires
+that set to be a subset of the manifest's lineage, so a recipe cannot invent
+an ancestor the manifest does not show.

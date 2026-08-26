@@ -26,6 +26,7 @@ py_library(
     deps = [
         ":tracklets",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
         "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
@@ -154,6 +155,7 @@ py_library(
         ":track_builder",
         ":viz_common",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
         "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
@@ -265,6 +267,7 @@ py_library(
         ":keyframe_viewer_lib",
         ":semantic_audit",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
         "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",

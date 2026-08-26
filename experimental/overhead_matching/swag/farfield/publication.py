@@ -62,6 +62,7 @@ def published_artifact(
         upstreams: Iterable[artifact.ArtifactRef] = (),
         config: Mapping[str, Any] | None = None,
         artifact_identity: str | None = None,
+        recipe: Mapping[str, Any] | None = None,
         declared_outputs: Iterable[str | Path],
 ) -> Iterator[artifact.ArtifactDirectoryBuilder]:
     """Publish, validate, and refresh indexes for one canonical artifact.
@@ -83,6 +84,7 @@ def published_artifact(
         upstreams=upstreams,
         config=config,
         artifact_identity=artifact_identity,
+        recipe=recipe,
         declared_outputs=declared_outputs,
     )
     with builder:

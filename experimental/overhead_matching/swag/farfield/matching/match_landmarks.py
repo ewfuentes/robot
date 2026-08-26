@@ -53,6 +53,7 @@ import msgspec
 
 from common.python.serialization import msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import artifact_recipe
 from experimental.overhead_matching.swag.farfield import configured_lane
 from experimental.overhead_matching.swag.farfield import build_config
 from experimental.overhead_matching.swag.farfield import llm_lifecycle
@@ -1181,6 +1182,10 @@ def main():
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--gcs_prefix", default=None)
     parser.add_argument("--parallel", type=int, default=8)
@@ -1431,6 +1436,8 @@ def main():
             upstreams=upstreams,
             config=manifest_config,
             artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             declared_outputs=FINAL_OUTPUTS) as builder:
         artifact.atomic_write_json(
             builder.output_path(WORK_SNAPSHOT_NAME), snapshot)

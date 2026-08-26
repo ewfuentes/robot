@@ -85,6 +85,27 @@ py_library(
     ],
 )
 
+py_library(
+    name = "artifact_recipe",
+    srcs = ["artifact_recipe.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":artifact",
+        ":artifact_identity",
+        ":identity_inputs",
+    ],
+)
+
+py_test(
+    name = "artifact_recipe_test",
+    srcs = ["artifact_recipe_test.py"],
+    deps = [
+        ":artifact",
+        ":artifact_identity",
+        ":artifact_recipe",
+    ],
+)
+
 py_test(
     name = "artifact_identity_test",
     srcs = ["artifact_identity_test.py"],
@@ -300,6 +321,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":artifact_identity",
+        ":artifact_recipe",
         requirement("pyyaml"),
         ":artifact",
         ":build_config",
@@ -333,6 +355,7 @@ py_test(
         ":llm_lifecycle",
         ":nominal_forward",
         ":paths",
+        ":artifact_recipe",
         ":pipeline_lib",
         ":testing",
         "//experimental/overhead_matching/swag/farfield/calibration:build_alignment_diagnostics_lib",
@@ -358,11 +381,4 @@ py_test(
         ":artifact",
         "@rules_python//python/runfiles",
     ],
-)
-
-py_test(
-    name = "active_regeneration_config_test",
-    srcs = ["active_regeneration_config_test.py"],
-    data = glob(["configs/active_regeneration/*.yaml"]),
-    deps = [":pipeline_lib"],
 )

@@ -48,7 +48,8 @@ _MANIFEST_KEYS = frozenset({
 # refusing to read a manifest for lacking it would strand every artifact
 # published before it existed, for no gain -- nothing depends on it being
 # there. `_require_exact_keys` therefore checks the required set only.
-_OPTIONAL_MANIFEST_KEYS = frozenset({"code_provenance", "artifact_identity"})
+_OPTIONAL_MANIFEST_KEYS = frozenset(
+    {"code_provenance", "artifact_identity", "recipe"})
 _REF_KEYS = frozenset({
     "path",
     "kind",
@@ -360,6 +361,13 @@ class ArtifactManifest:
     # artifact published before it existed lacks it, and those read as
     # UNATTRIBUTED rather than as corrupt (see `artifact_identity`).
     artifact_identity: str | None = None
+    # Everything needed to recompute this artifact's identity, and to know
+    # what to run to reproduce it, WITHOUT joining to a build directory.
+    # Two terms of the identity are not otherwise recoverable from a
+    # manifest -- the stage's resolved config and the build inputs the stage
+    # read -- and `builds/` is mutable orchestration state that nothing
+    # protects. See `artifact_recipe`.
+    recipe: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA:
@@ -423,6 +431,8 @@ class ArtifactManifest:
             value["code_provenance"] = dict(self.code_provenance)
         if self.artifact_identity is not None:
             value["artifact_identity"] = self.artifact_identity
+        if self.recipe is not None:
+            value["recipe"] = dict(self.recipe)
         return value
 
     @classmethod
@@ -440,6 +450,10 @@ class ArtifactManifest:
         identity = value.get("artifact_identity")
         if identity is not None:
             _require_digest(identity, "artifact artifact_identity")
+        recipe = value.get("recipe")
+        if recipe is not None and not isinstance(recipe, dict):
+            raise ArtifactValidationError(
+                "artifact recipe must be a JSON object")
         upstreams = value["upstreams"]
         if not isinstance(upstreams, list):
             raise ArtifactValidationError("artifact upstreams must be a JSON list")
@@ -466,6 +480,7 @@ class ArtifactManifest:
             content_digest=value["content_digest"],
             code_provenance=code,
             artifact_identity=identity,
+            recipe=recipe,
             upstreams=tuple(ArtifactRef.from_dict(item) for item in upstreams),
             config=config,
             declared_outputs=tuple(outputs),
@@ -719,6 +734,7 @@ class ArtifactDirectoryBuilder:
                  upstreams: Iterable[ArtifactRef] = (),
                  config: Mapping[str, Any] | None = None,
                  artifact_identity: str | None = None,
+                 recipe: Mapping[str, Any] | None = None,
                  declared_outputs: Iterable[str | Path]) -> None:
         self.destination = Path(destination)
         if self.destination.name.endswith(INCOMPLETE_SUFFIX):
@@ -753,6 +769,9 @@ class ArtifactDirectoryBuilder:
         if artifact_identity is not None:
             _require_digest(artifact_identity, "artifact artifact_identity")
         self.artifact_identity = artifact_identity
+        if recipe is not None:
+            _validate_json_value(recipe, "artifact recipe")
+        self.recipe = dict(recipe) if recipe is not None else None
         outputs = tuple(_normalize_output(item) for item in declared_outputs)
         if len(outputs) != len(set(outputs)):
             raise ArtifactValidationError("declared outputs must be unique")
@@ -822,6 +841,7 @@ class ArtifactDirectoryBuilder:
             # recorded.
             code_provenance=code_provenance.record(),
             artifact_identity=self.artifact_identity,
+            recipe=self.recipe,
         )
         # This is intentionally the final write in the staging directory.
         atomic_write_json(self.staging_dir / MANIFEST_NAME, manifest.to_dict())

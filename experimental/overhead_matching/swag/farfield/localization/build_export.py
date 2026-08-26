@@ -27,6 +27,7 @@ import numpy as np
 from common.python.serialization import msgspec_dec_hook, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     configured_lane,
     build_config,
     dataset as dataset_lib,
@@ -923,6 +924,8 @@ def build(args) -> artifact.ArtifactRef:
             upstreams=(observations_ref, matching_ref, catalog_ref)
             + (() if review_ref is None else (review_ref,)),
             artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             config={
                 "orchestration": orchestration,
                 "build_identity": document["build_identity"],
@@ -1010,6 +1013,10 @@ def main():
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     args = parser.parse_args()
     try:
         ref = build(args)

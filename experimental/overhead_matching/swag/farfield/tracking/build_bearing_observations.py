@@ -15,6 +15,7 @@ from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     configured_lane,
     build_config,
     dataset,
@@ -49,6 +50,7 @@ def publish_observations(
         orchestration: dict, build_identity: str, source_digests: dict,
         git_commit: str | None = None,
         artifact_identity: str | None = None,
+        recipe: dict | None = None,
         arguments: tuple[str, ...] = ()) -> artifact.ArtifactRef:
     """Build, validate, and atomically publish one observation artifact."""
     observations = tracklets.build_camera_bearing_observations(
@@ -84,7 +86,7 @@ def publish_observations(
                         if git_commit is None else git_commit),
             arguments=arguments,
             upstreams=(tracks_ref, audits_ref), config=config,
-            artifact_identity=artifact_identity,
+            artifact_identity=artifact_identity, recipe=recipe,
             declared_outputs=(OUTPUT_NAME,)) as builder:
         artifact.atomic_write_file(
             builder.output_path(OUTPUT_NAME), _canonical_jsonl(records))
@@ -237,6 +239,10 @@ def main() -> None:
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     args = parser.parse_args()
 
     try:
@@ -260,6 +266,8 @@ def main() -> None:
             source_digests=resolved["source_digests"],
             git_commit=document["git_commit"],
             artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             arguments=tuple(sys.argv))
     except (artifact.ArtifactError, audit_io.AuditArtifactError,
             BearingObservationError, dataset.ContractViolation,

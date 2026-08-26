@@ -29,6 +29,7 @@ from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     build_config,
     dataset,
     llm_lifecycle as llm,
@@ -539,6 +540,7 @@ def publish_audit_results(destination: Path, *, request_dir: Path,
                           arguments=(), manifest_config: dict | None = None,
                           git_commit: str | None = None,
                           artifact_identity: str | None = None,
+                          recipe: dict | None = None,
                           ) -> artifact.ArtifactRef:
     """Publish only a complete, unique, validated semantic-audit result."""
     (request_ref, request_set, meta, source_ref, _, _, _,
@@ -581,6 +583,7 @@ def publish_audit_results(destination: Path, *, request_dir: Path,
             arguments=arguments,
             upstreams=(source_ref, frame_refs[0], request_ref),
             artifact_identity=artifact_identity,
+            recipe=recipe,
             config={
                 "phase": "canonical_results",
                 "request_set_fingerprint": request_set.fingerprint,
@@ -807,6 +810,10 @@ def main():
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--gcs_prefix")
     parser.add_argument("--parallel", type=int, default=8)
@@ -912,7 +919,8 @@ def main():
             "resolved_stage_config": selected,
         },
         git_commit=provenance.git_commit(),
-        artifact_identity=getattr(args, "artifact_identity", None))
+        artifact_identity=getattr(args, "artifact_identity", None),
+        recipe=artifact_recipe.load(getattr(args, "artifact_recipe", None)))
     print(f"published complete semantic audit: {ref.path}")
 
 

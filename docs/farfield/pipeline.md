@@ -90,6 +90,33 @@ whether a build's artifacts share one code state, but nothing is ever refused
 for it: code changes constantly in a research tree and data does not. See
 `docs/farfield/decisions.md` for the measurements behind that.
 
+## An artifact answers for itself
+
+Two questions have to be answerable about anything on disk: how do I
+reproduce it, and are the things it was made from out of date. Both are
+answered by the artifact's own manifest, with no join to a build directory.
+
+`artifact_recipe` records the terms of the identity a manifest could not
+otherwise recover -- the stage's resolved config, the build inputs that stage
+read, and which upstream digests entered the identity. `manifest.upstreams`
+is the fuller lineage record and the identity term is a subset of it: a
+`frame_landmarks` manifest records its pinhole artifact and the canonical LLM
+result artifact, while `extract` declares no artifact upstreams at all.
+
+```
+bazel run //...farfield:pipeline -- recipe --artifact_dir <artifact>
+```
+
+prints the settings, inputs and lineage, then verifies the property that
+makes the record trustworthy: **the identity recomputed from the manifest
+alone equals the identity the manifest records.** A manifest missing a term
+its identity depends on cannot satisfy that, which is why it is a check and
+not a convention.
+
+`builds/<dataset>/<build>/build_config.json` remains the recipe a run is
+driven from, and it is still where a whole multi-stage config lives. It is no
+longer load-bearing for reproducing any single artifact.
+
 ## Provider stages and recovery
 
 Extraction, audit, and matching use the shared lifecycle in

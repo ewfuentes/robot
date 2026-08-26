@@ -13,6 +13,7 @@ import shapely
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     build_config,
     dataset,
     geometry,
@@ -570,12 +571,12 @@ class ManifestCompletionTest(unittest.TestCase):
         self.temp.cleanup()
 
     def publish(self, kind, version, path, *, upstreams=(), config=None,
-                artifact_identity=None):
+                artifact_identity=None, recipe=None):
         with artifact.ArtifactDirectoryBuilder(
                 path, kind=kind, dataset="ds", version=version,
                 generator="pipeline_test", git_commit="test",
                 arguments=(), upstreams=upstreams, config=config or {},
-                artifact_identity=artifact_identity,
+                artifact_identity=artifact_identity, recipe=recipe,
                 declared_outputs=("payload.json",)) as builder:
             builder.output_path("payload.json").write_text("{}\n")
         return artifact.open_artifact(path)
@@ -604,14 +605,19 @@ class ManifestCompletionTest(unittest.TestCase):
                 output_config = self.shared_pinhole_config()
             elif stage == "extract" and kind == paths_lib.FRAME_LANDMARKS:
                 output_upstreams = (refs[0],)
-            identity = None
+            identity, recipe = None, None
             if build_inputs is not None and kind in \
                     pipeline.PIPELINE_ARTIFACT_OWNER:
                 identity = pipeline.expected_artifact_identity(
                     self.paths, self.config, kind, build_inputs=build_inputs)
+                recipe = pipeline.stage_recipe(
+                    self.paths, self.config,
+                    pipeline.PIPELINE_ARTIFACT_OWNER[kind],
+                    build_inputs=build_inputs)
             refs.append(self.publish(
                 kind, version, path, upstreams=output_upstreams,
-                config=output_config, artifact_identity=identity))
+                config=output_config, artifact_identity=identity,
+                recipe=recipe))
         return tuple(refs)
 
     def publish_catalog(self):
@@ -818,6 +824,62 @@ class ManifestCompletionTest(unittest.TestCase):
                 self.paths, self.config, "localize",
                 build_inputs={"dataset_panorama_sha256": "c" * 64}),
             [])
+
+    def test_a_published_stage_is_self_describing(self):
+        """Requirement: an artifact says how to reproduce it, without a join.
+
+        Both terms of its identity that a manifest cannot otherwise recover --
+        the resolved stage config and the build inputs the stage read -- are
+        recorded, so the identity recomputes from the manifest alone. Before
+        this, answering either question meant joining through `build_identity`
+        to `builds/`, which the docs call orchestration state and nothing
+        protects."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        manifest = artifact.load_manifest(self.paths.frame_landmarks)
+        artifact_recipe.verify_self_describing(manifest)
+        self.assertEqual(
+            artifact_recipe.identity_from_manifest(manifest),
+            pipeline.expected_artifact_identity(
+                self.paths, self.config, paths_lib.FRAME_LANDMARKS,
+                build_inputs=inputs))
+
+    def test_the_recorded_stage_config_reproduces_the_contract_digest(self):
+        """The recipe stores exactly what `config_digest` hashes -- storing
+        anything else would record a config that cannot reproduce its own
+        digest."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        manifest = artifact.load_manifest(self.paths.frame_landmarks)
+        self.assertEqual(
+            artifact_recipe.stage_config_digest(manifest.recipe),
+            pipeline.stage_contract("extract", self.config)["config_digest"])
+
+    def test_every_stage_publishes_a_self_describing_artifact(self):
+        """The end-to-end property, walked in the order a real run walks it.
+
+        Each stage's recipe is built from upstreams that exist because the
+        previous stage published them, exactly as `cmd_run` does -- so this
+        also proves `stage_recipe` can be built at the moment the pipeline
+        needs it, not just in principle."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_catalog()
+        for stage in pipeline.STAGES:
+            gated = [kind for kind in pipeline.STAGE_SPECS[stage].outputs
+                     if kind in pipeline.PIPELINE_ARTIFACT_OWNER]
+            if not gated:
+                continue
+            with self.subTest(stage=stage):
+                self.publish_stage(stage, build_inputs=inputs)
+                version = pipeline._value(
+                    self.config, pipeline.VERSION_KEYS[gated[0]])
+                manifest = artifact.load_manifest(
+                    self.paths.artifact(gated[0], version))
+                artifact_recipe.verify_self_describing(manifest)
+                self.assertEqual(
+                    artifact_recipe.stage_config_digest(manifest.recipe),
+                    pipeline.stage_contract(
+                        stage, self.config)["config_digest"])
 
     def test_a_changed_input_digest_does_invalidate(self):
         """What replaces it. The checkpoint's PATH is in the stage config but

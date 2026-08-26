@@ -67,6 +67,7 @@ experimental/overhead_matching/swag/farfield/
   artifact.py            # typed refs, validation, transactional publication
   artifact_identity.py   # what determines an artifact, hashed per stage
   code_provenance.py     # the code that made it: recorded, never gating
+  artifact_recipe.py     # settings+inputs+lineage, so an artifact answers for itself
   dataset.py             # dataset contract: frames, metadata, ingest
   audit_dataset.py       # the contract audit CLI
   testing.py             # synthetic dataset fixtures

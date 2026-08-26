@@ -38,6 +38,7 @@ from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     build_config,
     dataset as dataset_lib,
     llm_lifecycle,
@@ -1692,6 +1693,8 @@ def publish_frame_artifact(
             upstreams=(pinhole_ref, result_ref),
             config=config,
             artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             declared_outputs=(PREDICTIONS_NAME,)) as builder:
         artifact.atomic_write_file(
             builder.output_path(PREDICTIONS_NAME), content)
@@ -1763,6 +1766,10 @@ def make_parser() -> argparse.ArgumentParser:
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     parser.add_argument(
         "--prepare_adoption", action="store_true",
         help=("publish only deterministic pinhole and request artifacts; "

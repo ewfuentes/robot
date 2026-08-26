@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
     artifact as artifact_lib,
+    artifact_recipe,
     build_config,
     dataset,
     geometry as geo,
@@ -888,6 +889,8 @@ def publish_tracking(args, *, arguments: tuple[str, ...] = ()):
             upstreams=resolved["upstreams"],
             config=manifest_config,
             artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             declared_outputs=()) as publication:
         out = publication.staging_dir
         ctx = rr.load_context(
@@ -952,6 +955,10 @@ def build_parser() -> argparse.ArgumentParser:
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     parser.add_argument("--video", type=Path, default=None)
     return parser
 

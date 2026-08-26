@@ -36,6 +36,7 @@ from typing import Any, Mapping
 from experimental.overhead_matching.swag.farfield import (
     artifact,
     artifact_identity,
+    artifact_recipe,
     build_config,
     code_provenance,
     nominal_forward,
@@ -552,18 +553,29 @@ def _prefixed_keys(prefixes: tuple[str, ...]) -> list[str]:
                          for prefix in prefixes))
 
 
-def stage_contract(stage: str, config: dict) -> dict:
-    """Small manifest value proving which resolved settings shaped a stage."""
+def stage_config_selection(stage: str, config: dict) -> dict:
+    """The resolved settings that shape one stage, as flat dotted keys.
+
+    Public because this is the exact dict `config_digest` is computed over,
+    and `artifact_recipe` has to store precisely it -- storing anything else
+    would make the recorded config unable to reproduce the recorded digest.
+    """
     spec = STAGE_SPECS[stage]
     selected = {key: _value(config, key)
                 for key in _prefixed_keys(spec.config_prefixes)}
     for kind in spec.outputs:
         if kind in VERSION_KEYS:
             selected[VERSION_KEYS[kind]] = _value(config, VERSION_KEYS[kind])
+    return selected
+
+
+def stage_contract(stage: str, config: dict) -> dict:
+    """Small manifest value proving which resolved settings shaped a stage."""
     return {
         "schema": "farfield_pipeline_stage/v1",
         "stage": stage,
-        "config_digest": artifact.sha256_json(selected),
+        "config_digest": artifact.sha256_json(
+            stage_config_selection(stage, config)),
     }
 
 
@@ -963,10 +975,45 @@ def _stage_base(build_dir: Path, config: dict, stage: str) -> list[Any]:
             stage_contract(stage, config)["config_digest"]]
 
 
+def stage_recipe(paths: paths_lib.FarfieldPaths, config: dict, stage: str, *,
+                 build_inputs: Mapping[str, str]) -> dict:
+    """The self-describing block this stage's artifact records.
+
+    Built here for the same reason the identity is: the two terms it holds are
+    per-stage orchestrator knowledge (`config_prefixes` and
+    `inputs_not_consumed`) that a producer does not have.
+    """
+    return artifact_recipe.build(
+        stage=stage,
+        stage_config=stage_config_selection(stage, config),
+        build_inputs=build_inputs,
+        identity_upstreams=tuple(
+            _configured_ref(paths, config, kind, build_inputs=build_inputs)
+            for kind in STAGE_SPECS[stage].upstreams),
+        inputs_not_consumed=STAGE_SPECS[stage].inputs_not_consumed)
+
+
+def write_stage_recipe(paths: paths_lib.FarfieldPaths, build_dir: Path,
+                       config: dict, stage: str, *,
+                       build_inputs: Mapping[str, str]) -> Path:
+    """Hand the recipe over as a file, not a flag.
+
+    A resolved stage config is far too large for a command line, and the
+    producer's job is only to record what it was handed -- exactly as with
+    `--orchestration_config_digest` and `--artifact_identity`. The file lives
+    in the build directory, which is orchestration state; once the artifact is
+    published the artifact carries the content and the file is disposable.
+    """
+    recipe = stage_recipe(paths, config, stage, build_inputs=build_inputs)
+    path = Path(build_dir) / f"{stage}.recipe.json"
+    artifact.atomic_write_json(path, recipe)
+    return path
+
+
 def stage_identity_flags(paths: paths_lib.FarfieldPaths, config: dict,
                          stage: str, *,
-                         build_inputs: Mapping[str, str]
-                         ) -> list[Any]:
+                         build_inputs: Mapping[str, str],
+                         build_dir: Path | None = None) -> list[Any]:
     """The `--artifact_identity` flag for one stage, or none if it has no
     gated output.
 
@@ -985,9 +1032,12 @@ def stage_identity_flags(paths: paths_lib.FarfieldPaths, config: dict,
         raise StageContractError(
             f"stage {stage!r} has more than one gated output {gated}; one "
             "--artifact_identity flag can no longer describe it")
-    return ["--artifact_identity", expected_artifact_identity(
-        paths, config, gated[0], build_inputs=build_inputs,
-        )]
+    flags = ["--artifact_identity", expected_artifact_identity(
+        paths, config, gated[0], build_inputs=build_inputs)]
+    if build_dir is not None:
+        flags += ["--artifact_recipe", write_stage_recipe(
+            paths, build_dir, config, stage, build_inputs=build_inputs)]
+    return flags
 
 
 def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
@@ -1259,7 +1309,8 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
         run(commands[stage] + stage_identity_flags(
-                paths, config, stage, build_inputs=build_inputs),
+                paths, config, stage, build_inputs=build_inputs,
+                build_dir=Path(args.build_dir)),
             stage, dry_run=args.dry_run)
         if not args.dry_run:
             try:
@@ -1360,6 +1411,27 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
         paths, config, build_identity=document["build_identity"]))
 
 
+def cmd_recipe(args, parser: argparse.ArgumentParser) -> None:
+    """Say how one artifact was made, reading only that artifact.
+
+    No build directory, no data root, no config. If this can answer, the
+    artifact is reproducible from itself; if it cannot, that is the honest
+    finding and the reason is printed.
+    """
+    try:
+        manifest = artifact.load_manifest(args.artifact_dir)
+    except (artifact.ArtifactError, OSError, ValueError) as exc:
+        parser.error(str(exc))
+    print(artifact_recipe.describe(manifest))
+    try:
+        artifact_recipe.verify_self_describing(manifest)
+    except artifact_recipe.ArtifactRecipeError as exc:
+        print(f"\nNOT self-describing: {exc}")
+        raise SystemExit(1)
+    print("\nself-describing: the identity recomputed from this manifest "
+          "alone matches the identity it records")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1385,6 +1457,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="validate build stage manifests")
     status.add_argument("--build_dir", type=Path, required=True)
+
+    recipe = sub.add_parser(
+        "recipe", help="how one artifact was made, from its manifest alone")
+    recipe.add_argument("--artifact_dir", type=Path, required=True)
     return parser
 
 
@@ -1397,6 +1473,8 @@ def main() -> None:
         cmd_run(args, parser)
     elif args.command == "status":
         cmd_status(args, parser)
+    elif args.command == "recipe":
+        cmd_recipe(args, parser)
 
 
 if __name__ == "__main__":

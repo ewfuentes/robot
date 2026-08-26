@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
     configured_lane,
     build_config,
     dataset,
@@ -571,6 +572,8 @@ def _load_inputs(args) -> dict:
         "dataset_source_sha256": current_dataset_digest,
         "output_version": output_version,
         "artifact_identity": getattr(args, "artifact_identity", None),
+        "artifact_recipe": artifact_recipe.load(
+            getattr(args, "artifact_recipe", None)),
         "orchestration": orchestration,
         "nominal_forward": approved_nominal_forward,
         "nominal_forward_path": calibration_path,
@@ -1032,6 +1035,7 @@ def publish(resolved: dict, output_dir: Path, *,
             upstreams=(resolved["observations_ref"],),
             config=manifest_config,
             artifact_identity=resolved.get("artifact_identity"),
+            recipe=resolved.get("artifact_recipe"),
             declared_outputs=(OUTPUT_NAME, SUN_REVIEW_NAME)) as builder:
         artifact.atomic_write_json(builder.output_path(OUTPUT_NAME), report)
         _write_sun_contact_sheet(
@@ -1054,6 +1058,10 @@ def main() -> None:
     # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
     # by hand -- the artifact is then honestly unattributed.
     parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     args = parser.parse_args()
     try:
         resolved = _load_inputs(args)

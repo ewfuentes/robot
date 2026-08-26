@@ -13,6 +13,7 @@ All code lives under `experimental/overhead_matching/swag/farfield/`:
 | `geometry.py`, `nominal_forward.py` | frames, angle/ENU helpers, and the approved camera-to-platform-forward calibration |
 | `paths.py`, `build_config.py`, `artifact.py` | data-root layout, immutable build recipes, typed artifact publication and validation |
 | `artifact_identity.py`, `code_provenance.py` | what determines an artifact, hashed per stage; and the code that made it, recorded but never gating |
+| `artifact_recipe.py` | the settings, inputs and lineage an artifact records so it can be reproduced and checked without a build directory |
 | `dataset.py`, `audit_dataset.py` | the frozen dataset contract and its validation |
 | `catalog/`, `collection/`, `dataset_tools/` | catalog schema, source collection, full-catalog materialization, coverage, and trims |
 | `extraction/` | pinhole rendering, VLM requests, provider lifecycle, and retained-evidence adoption |
