@@ -22,6 +22,7 @@ artifact version; orchestration refuses to reuse a stale descendant.
 from __future__ import annotations
 
 import argparse
+import json
 import copy
 import math
 import os
@@ -30,15 +31,15 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_identity,
     build_config,
     nominal_forward,
     paths as paths_lib,
     provenance,
-    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.localization import run_identity
 from experimental.overhead_matching.swag.farfield.matching import identity_review
@@ -49,8 +50,6 @@ WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 LOCALIZATION_RUN_KIND = "localization_run"
 VIEWER_TARGET = f"{FF}/localization:viewer"
 VIEWER_GENERATOR = VIEWER_TARGET
-STAGE_REUSE_NAME = stage_reuse.PROOF_NAME
-STAGE_REUSE_SCHEMA = stage_reuse.PROOF_SCHEMA
 
 
 def _text(*, choices: tuple[str, ...] | None = None
@@ -538,18 +537,6 @@ class StageDependencyError(ValueError):
     """A stage cannot start because a configured upstream is incomplete."""
 
 
-StageReuseAuthorization = stage_reuse.StageReuseAuthorization
-
-
-def _reuse_accepts(
-        authorization: StageReuseAuthorization | None,
-        reference: artifact.ArtifactRef, *, owner_stage: str,
-        build_identity: str) -> bool:
-    return authorization is not None and authorization.accepts(
-        reference, owner_stage=owner_stage,
-        target_build_identity=build_identity)
-
-
 def _binds_exact_pinhole_once(
         manifest, expected: artifact.ArtifactRef) -> bool:
     """Whether a build-scoped artifact binds only the configured pinhole ref."""
@@ -606,10 +593,57 @@ def _output_descriptors(paths: paths_lib.FarfieldPaths, config: dict,
     return output
 
 
+def backfill_index(root: Path) -> dict[str, str]:
+    """Identities computed for artifacts published before identity existed.
+
+    Read from the derived index beside the data rather than from manifests,
+    which cannot carry it: `manifest_digest` is the sha256 of `manifest.json`
+    and every downstream ref records it, so editing one to add a field would
+    invalidate every reference. No index -> empty map, and those artifacts
+    read as unattributed, which is the loud outcome.
+    """
+    try:
+        document = json.loads(
+            (Path(root) / "artifact_identity_backfill.json").read_text(
+                encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    entries = document.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    return {path: value["identity"] for path, value in entries.items()
+            if isinstance(value, dict)
+            and isinstance(value.get("identity"), str)}
+
+
+def build_inputs_of(document: dict) -> dict[str, str]:
+    """The inputs a build recorded, as the identity term."""
+    inputs = document.get("inputs")
+    return dict(inputs) if isinstance(inputs, dict) else {}
+
+
+def expected_artifact_identity(paths: paths_lib.FarfieldPaths, config: dict,
+                               kind: str, *,
+                               build_inputs: Mapping[str, str],
+                               backfill: Mapping[str, str] | None = None
+                               ) -> str:
+    """The identity an artifact of `kind` would have under this recipe."""
+    owner = PIPELINE_ARTIFACT_OWNER[kind]
+    upstreams = tuple(
+        _configured_ref(paths, config, upstream_kind,
+                        build_inputs=build_inputs, backfill=backfill)
+        for upstream_kind in STAGE_SPECS[owner].upstreams)
+    return artifact_identity.compute(
+        kind=kind, dataset=paths.dataset,
+        stage_config_digest=stage_contract(owner, config)["config_digest"],
+        upstreams=upstreams, build_inputs=build_inputs,
+        inputs_not_consumed=STAGE_SPECS[owner].inputs_not_consumed)
+
+
 def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
                     kind: str, *,
-                    build_identity: str | None = None,
-                    reuse_authorization: StageReuseAuthorization | None = None,
+                    build_inputs: Mapping[str, str] | None = None,
+                    backfill: Mapping[str, str] | None = None,
                     ) -> artifact.ArtifactRef:
     version = _value(config, VERSION_KEYS[kind])
     path = paths.artifact(kind, version)
@@ -625,33 +659,34 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
             f"required {kind} artifact is invalid: {exc}") from exc
     owner = PIPELINE_ARTIFACT_OWNER.get(kind)
     manifest = None
-    if build_identity is not None and owner is not None:
+    if build_inputs is not None and owner is not None:
         manifest = artifact.load_manifest(path)
         if manifest.config.get("orchestration") != stage_contract(owner, config):
             raise StageDependencyError(
                 f"required {kind} artifact has a different resolved "
                 "configuration; publish the configured upstream stage first")
-        # After tracking, the configured artifact version, stage-scoped
-        # recipe digest, and exact upstream refs are the cache identity.  A
-        # later run-only code/config change must not invalidate those bytes.
-        # Extract/track retain the stronger reviewed-prefix proof because they
-        # bind the large raw/model inputs that begin the chain.
-        if (manifest.config.get("build_identity") != build_identity
-                and owner in {"extract", "track"}
-                and not _reuse_accepts(
-                    reuse_authorization, ref, owner_stage=owner,
-                    build_identity=build_identity)):
-            raise StageDependencyError(
-                f"required {kind} artifact belongs to a different immutable "
-                "build identity and has no exact stage-reuse proof; publish "
-                "a new upstream version")
+        # One rule for every stage. Extract and track used to be special:
+        # they carried a whole-build check "because they bind the large
+        # raw/model inputs that begin the chain", and `stage_reuse` existed
+        # solely to grant human-attested exceptions to it. Those inputs are
+        # now IN the artifact identity (see `identity_inputs`), so the
+        # ordinary check covers what the special case reached for, and the
+        # exception mechanism has nothing left to except.
+        if build_inputs is not None:
+            expected = expected_artifact_identity(
+                paths, config, kind, build_inputs=build_inputs,
+                backfill=backfill)
+            found = artifact_identity.resolve(
+                manifest, path=str(path.resolve()), backfill=backfill)
+            if found != expected:
+                raise StageDependencyError(artifact_identity.explain(
+                    expected=expected, manifest=manifest, kind=kind))
     if kind == paths_lib.FRAME_LANDMARKS:
         if manifest is None:
             manifest = artifact.load_manifest(path)
         pinhole_ref = _configured_ref(
             paths, config, paths_lib.PINHOLE_IMAGES,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs, backfill=backfill)
         if not _binds_exact_pinhole_once(manifest, pinhole_ref):
             raise StageDependencyError(
                 "required frame_landmarks artifact does not bind the exact "
@@ -661,12 +696,12 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
 
 def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
                            stage: str, *,
-                           build_identity: str,
-                           reuse_authorization: StageReuseAuthorization | None = None,
+                           build_inputs: Mapping[str, str] | None = None,
+                           backfill: Mapping[str, str] | None = None,
                            ) -> tuple[artifact.ArtifactRef, ...]:
     refs = tuple(_configured_ref(
-        paths, config, kind, build_identity=build_identity,
-        reuse_authorization=reuse_authorization)
+        paths, config, kind,
+        build_inputs=build_inputs, backfill=backfill)
                  for kind in STAGE_SPECS[stage].upstreams)
     if stage != "localization_inputs":
         return refs
@@ -691,9 +726,15 @@ def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
 def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                          stage: str, *,
                          build_identity: str,
-                         reuse_authorization: StageReuseAuthorization | None = None,
+                         build_inputs: Mapping[str, str] | None = None,
+                         backfill: Mapping[str, str] | None = None,
                          ) -> tuple[artifact.ArtifactRef, ...]:
-    """Return validated outputs, ``()`` when absent, or reject stale output."""
+    """Return validated outputs, ``()`` when absent, or reject stale output.
+
+    `build_identity` still names the localization RUN DIRECTORY -- it is a
+    label there, not a gate. What decides whether an artifact may be reused is
+    `build_inputs`/`backfill`, through `artifact_identity`.
+    """
     descriptors = _output_descriptors(
         paths, config, stage, build_identity=build_identity)
     present = [path.exists() or path.is_symlink()
@@ -701,8 +742,8 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
     if not any(present):
         return ()
     upstreams = expected_upstream_refs(
-        paths, config, stage, build_identity=build_identity,
-        reuse_authorization=reuse_authorization)
+        paths, config, stage,
+        build_inputs=build_inputs, backfill=backfill)
     contract = stage_contract(stage, config)
     refs = []
     for (kind, version, path), exists in zip(descriptors, present):
@@ -728,21 +769,21 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                 raise StageContractError(
                     f"stage {stage!r} output {path} has a different resolved "
                     "configuration; choose a new output version")
-            if (manifest.config.get("build_identity") != build_identity
-                    and stage in {"extract", "track"}
-                    and not _reuse_accepts(
-                        reuse_authorization, ref, owner_stage=stage,
-                        build_identity=build_identity)):
-                raise StageContractError(
-                    f"stage {stage!r} output {path} belongs to a different "
-                    "immutable build identity and has no exact stage-reuse "
-                    "proof; choose a new output version")
+            if build_inputs is not None:
+                expected = expected_artifact_identity(
+                    paths, config, kind, build_inputs=build_inputs,
+                    backfill=backfill)
+                found = artifact_identity.resolve(
+                    manifest, path=str(path.resolve()), backfill=backfill)
+                if found != expected:
+                    raise StageContractError(
+                        f"stage {stage!r} output: " + artifact_identity.explain(
+                            expected=expected, manifest=manifest, kind=kind))
         if kind == paths_lib.FRAME_LANDMARKS:
             try:
                 pinhole_ref = _configured_ref(
                     paths, config, paths_lib.PINHOLE_IMAGES,
-                    build_identity=build_identity,
-                    reuse_authorization=reuse_authorization)
+                    build_inputs=build_inputs, backfill=backfill)
             except StageDependencyError as exc:
                 raise StageContractError(
                     f"stage {stage!r} frame_landmarks dependency is invalid: "
@@ -763,52 +804,12 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
 
 def stage_done(stage: str, paths: paths_lib.FarfieldPaths,
                config: dict, *, build_identity: str,
-               reuse_authorization: StageReuseAuthorization | None = None,
-               ) -> bool:
+               build_inputs: Mapping[str, str] | None = None,
+               backfill: Mapping[str, str] | None = None) -> bool:
     """Completion is a validated typed manifest, never an existence marker."""
     return bool(completed_stage_refs(
         paths, config, stage, build_identity=build_identity,
-        reuse_authorization=reuse_authorization))
-
-
-# The shared module owns proof policy and direct-consumer authorization.
-_REUSABLE_THROUGH = (stage_reuse.THROUGH_STAGE,)
-
-
-def stage_reuse_proof_document(source_build_dir: Path,
-                               target_build_dir: Path, *,
-                               through_stage: str,
-                               prefix_code_compatibility: dict) -> dict:
-    """Recompute one fail-closed, exact-ref prefix-reuse proof."""
-    try:
-        return stage_reuse.proof_document(
-            source_build_dir, target_build_dir,
-            through_stage=through_stage,
-            prefix_code_compatibility=prefix_code_compatibility)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
-
-
-def create_stage_reuse_proof(source_build_dir: Path,
-                             target_build_dir: Path, *,
-                             through_stage: str,
-                             prefix_code_compatibility: dict) -> Path:
-    try:
-        return stage_reuse.create_proof(
-            source_build_dir, target_build_dir,
-            through_stage=through_stage,
-            prefix_code_compatibility=prefix_code_compatibility)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
-
-
-def load_stage_reuse_proof(
-        target_build_dir: Path) -> StageReuseAuthorization | None:
-    """Recompute and return one prefix-bounded authorization, if present."""
-    try:
-        return stage_reuse.load_proof(target_build_dir)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
+        build_inputs=build_inputs, backfill=backfill))
 
 
 def _resolved_path(value: str, base: Path) -> str:
@@ -1145,8 +1146,8 @@ def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
 
 def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
                      build_identity: str,
-                     reuse_authorization: StageReuseAuthorization | None = None,
-                     ) -> bool:
+                     build_inputs: Mapping[str, str] | None = None,
+                     backfill: Mapping[str, str] | None = None) -> bool:
     """Validate the deterministic viewer and every recorded input identity."""
     output_dir = localization_viewer_dir(
         paths, config, build_identity=build_identity)
@@ -1169,12 +1170,10 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             expected_dataset=paths.dataset, expected_version=run_dir.name)
         tracks_ref = _configured_ref(
             paths, config, paths_lib.OBJECT_TRACKS,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs, backfill=backfill)
         audits_ref = _configured_ref(
             paths, config, paths_lib.SEMANTIC_AUDITS,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs, backfill=backfill)
         catalog_ref = _configured_ref(paths, config, paths_lib.CATALOGS)
         feather = Path(catalog_ref.path) / "catalog.feather"
         manifest = provenance.read(output_dir)
@@ -1241,10 +1240,8 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    try:
-        reuse_authorization = load_stage_reuse_proof(args.build_dir)
-    except StageContractError as exc:
-        raise SystemExit(str(exc)) from exc
+    backfill = backfill_index(paths.root)
+    build_inputs = build_inputs_of(document)
     commands = build_commands(
         paths, Path(args.build_dir), config,
         build_identity=document["build_identity"])
@@ -1259,13 +1256,12 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
             if stage_done(
                     stage, paths, config,
                     build_identity=document["build_identity"],
-                    reuse_authorization=reuse_authorization):
+                    build_inputs=build_inputs, backfill=backfill):
                 print(f"\n-- {stage}: validated complete")
                 continue
             expected_upstream_refs(
                 paths, config, stage,
-                build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization)
+                build_inputs=build_inputs, backfill=backfill)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
         run(commands[stage], stage, dry_run=args.dry_run)
@@ -1274,7 +1270,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
                 if not stage_done(
                         stage, paths, config,
                         build_identity=document["build_identity"],
-                        reuse_authorization=reuse_authorization):
+                        build_inputs=build_inputs, backfill=backfill):
                     raise StageContractError(
                         f"{stage} exited successfully without publishing its "
                         "complete artifact manifest")
@@ -1285,7 +1281,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
         try:
             complete = viewer_completed(
                 paths, config, build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization)
+                build_inputs=build_inputs, backfill=backfill)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
         if complete:
@@ -1298,7 +1294,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
                 if not viewer_completed(
                     paths, config,
                     build_identity=document["build_identity"],
-                    reuse_authorization=reuse_authorization):
+                    build_inputs=build_inputs, backfill=backfill):
                     raise SystemExit(
                         "viewer exited successfully without publishing its "
                         "complete side output")
@@ -1310,10 +1306,8 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    try:
-        reuse_authorization = load_stage_reuse_proof(args.build_dir)
-    except StageContractError as exc:
-        raise SystemExit(str(exc)) from exc
+    backfill = backfill_index(paths.root)
+    build_inputs = build_inputs_of(document)
     print(f"build {args.build_dir}")
     print("localization run: " + str(localization_run_dir(
         paths, config, build_identity=document["build_identity"])))
@@ -1322,7 +1316,7 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
             state = ("done" if stage_done(
                 stage, paths, config,
                 build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization) else "pending")
+                build_inputs=build_inputs, backfill=backfill) else "pending")
             detail = ""
         except (StageContractError, StageDependencyError) as exc:
             state, detail = "INVALID", f" ({exc})"
@@ -1331,7 +1325,7 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     try:
         state = ("done" if viewer_completed(
             paths, config, build_identity=document["build_identity"],
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs, backfill=backfill)
                  else "pending")
         detail = ""
     except (StageContractError, StageDependencyError) as exc:
@@ -1364,16 +1358,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="validate build stage manifests")
     status.add_argument("--build_dir", type=Path, required=True)
-    reuse = sub.add_parser(
-        "prove-stage-reuse",
-        help="bind exact compatible prefix artifacts into a successor build")
-    reuse.add_argument("--source_build_dir", type=Path, required=True)
-    reuse.add_argument("--target_build_dir", type=Path, required=True)
-    reuse.add_argument("--through", dest="through_stage",
-                       choices=_REUSABLE_THROUGH, required=True)
-    reuse.add_argument("--prefix_code_reviewed_by", required=True)
-    reuse.add_argument("--prefix_code_reviewed_at", required=True)
-    reuse.add_argument("--prefix_code_review_note", required=True)
     return parser
 
 
@@ -1386,23 +1370,6 @@ def main() -> None:
         cmd_run(args, parser)
     elif args.command == "status":
         cmd_status(args, parser)
-    else:
-        try:
-            source = build_config.load(args.source_build_dir)
-            target = build_config.load(args.target_build_dir)
-            attestation = stage_reuse.reviewed_prefix_code_compatibility(
-                source_git_commit=source["git_commit"],
-                target_git_commit=target["git_commit"],
-                reviewed_by=args.prefix_code_reviewed_by,
-                reviewed_at=args.prefix_code_reviewed_at,
-                note=args.prefix_code_review_note)
-            path = create_stage_reuse_proof(
-                args.source_build_dir, args.target_build_dir,
-                through_stage=args.through_stage,
-                prefix_code_compatibility=attestation)
-        except (OSError, ValueError) as exc:
-            parser.error(str(exc))
-        print(f"stage-reuse proof created: {path}")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,13 @@ py_test(
 )
 
 py_library(
+    name = "configured_lane",
+    srcs = ["configured_lane.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":artifact"],
+)
+
+py_library(
     name = "code_provenance",
     srcs = ["code_provenance.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -199,21 +206,6 @@ py_library(
     deps = [":geometry"],
 )
 
-py_library(
-    name = "stage_reuse",
-    srcs = ["stage_reuse.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        ":artifact",
-        ":build_config",
-        ":llm_lifecycle",
-        ":paths",
-        ":provenance",
-        "//experimental/overhead_matching/swag/farfield/extraction:extract_landmarks_lib",
-        "//experimental/overhead_matching/swag/farfield/extraction:legacy_extraction_adoption_lib",
-    ],
-)
-
 py_test(
     name = "nominal_forward_test",
     srcs = ["nominal_forward_test.py"],
@@ -298,13 +290,13 @@ py_library(
     data = ["configs/harbor_example.yaml"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":artifact_identity",
         requirement("pyyaml"),
         ":artifact",
         ":build_config",
         ":nominal_forward",
         ":paths",
         ":provenance",
-        ":stage_reuse",
         "//experimental/overhead_matching/swag/farfield/localization:run_identity",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
     ],

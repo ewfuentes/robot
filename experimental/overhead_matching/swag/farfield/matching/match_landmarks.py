@@ -53,12 +53,12 @@ import msgspec
 
 from common.python.serialization import msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import configured_lane
 from experimental.overhead_matching.swag.farfield import build_config
 from experimental.overhead_matching.swag.farfield import llm_lifecycle
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
 from experimental.overhead_matching.swag.farfield import publication
 from experimental.overhead_matching.swag.farfield import provenance
-from experimental.overhead_matching.swag.farfield import stage_reuse
 from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.catalog import (
     catalog as catalog_lib,
@@ -151,8 +151,7 @@ ATTEMPTS_DIR_NAME = llm_lifecycle.ATTEMPTS_DIR_NAME
 TRANSPORT_RESULTS_NAME = "transport_results.jsonl"
 SIGNATURES_NAME = "signatures.json"
 WORK_SNAPSHOT_NAME = "matching_snapshot.json"
-WORK_SNAPSHOT_SCHEMA = "farfield.matching_work_snapshot/v2"
-STAGE_REUSE_BINDING_SCHEMA = "farfield_matching_stage_reuse_binding/v1"
+WORK_SNAPSHOT_SCHEMA = "farfield.matching_work_snapshot/v3"
 SETTINGS_NAME = "settings.json"
 MATCHES_NAME = "matches.json"
 COMPATIBILITY_NAME = "compatibility.json"
@@ -601,34 +600,13 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
     )
 
 
-def stage_reuse_binding_digest(value):
-    """Bind authorized reuse and the explicit absence of reuse distinctly."""
-    if value is None:
-        binding = {
-            "schema": STAGE_REUSE_BINDING_SCHEMA,
-            "mode": "no_reuse",
-        }
-    elif isinstance(value, dict):
-        binding = {
-            "schema": STAGE_REUSE_BINDING_SCHEMA,
-            "mode": "authorized_reuse",
-            "bridge": value,
-        }
-    else:
-        raise ValueError(
-            "matching stage_reuse binding must be null or an object")
-    return artifact.sha256_json(binding)
-
 
 def make_request_set(records, *, model, thinking_level, build_identity,
-                     orchestration_config_digest, upstreams,
-                     stage_reuse_provenance):
+                     orchestration_config_digest, upstreams):
     """Bind the complete matching workload, including ordered unit context."""
     input_digests = {
         "build_identity": build_identity,
         "orchestration_config": orchestration_config_digest,
-        "stage_reuse_bridge": stage_reuse_binding_digest(
-            stage_reuse_provenance),
     }
     input_digests.update({ref.kind: ref.content_digest for ref in upstreams})
     units = tuple(llm_lifecycle.RequestUnit(
@@ -686,8 +664,7 @@ def _write_once_or_verify(path: Path, data: bytes, label: str) -> None:
 
 def make_work_snapshot(*, dataset, output_version, request_set, queries,
                        signatures, selected, build_identity, orchestration,
-                       catalog_source, target_git_commit, target_build_path,
-                       stage_reuse_provenance=None):
+                       catalog_source, target_git_commit, target_build_path):
     """Freeze every semantic input needed by aggregate-only publication."""
     return {
         "schema": WORK_SNAPSHOT_SCHEMA,
@@ -703,7 +680,6 @@ def make_work_snapshot(*, dataset, output_version, request_set, queries,
         "orchestration": orchestration,
         "catalog_source": str(catalog_source),
         "score_contract": SCORE_CONTRACT,
-        "stage_reuse": stage_reuse_provenance,
     }
 
 
@@ -724,7 +700,7 @@ def validate_work_snapshot(value):
         "schema", "dataset", "output_version", "request_set", "queries",
         "signatures", "resolved_stage_config", "build_identity",
         "orchestration", "catalog_source", "score_contract",
-        "stage_reuse", "target_git_commit", "target_build_path",
+        "target_git_commit", "target_build_path",
     }
     _exact_keys(value, expected, "matching work snapshot")
     if value["schema"] != WORK_SNAPSHOT_SCHEMA:
@@ -746,9 +722,6 @@ def validate_work_snapshot(value):
         raise ValueError("matching snapshot output version disagrees with config")
     if value["score_contract"] != SCORE_CONTRACT:
         raise ValueError("unsupported matching score contract")
-    if (value["stage_reuse"] is not None
-            and not isinstance(value["stage_reuse"], dict)):
-        raise ValueError("matching snapshot stage_reuse must be an object")
     orchestration = value["orchestration"]
     _exact_keys(orchestration, {"schema", "stage", "config_digest"},
                 "matching orchestration")
@@ -779,17 +752,11 @@ def validate_work_snapshot(value):
             "config_digest"]:
         raise ValueError(
             "matching snapshot orchestration digest is inconsistent")
-    if request_set.input_digests.get(
-            "stage_reuse_bridge") != stage_reuse_binding_digest(
-                value["stage_reuse"]):
-        raise ValueError(
-            "matching snapshot stage_reuse bridge disagrees with its "
-            "immutable request-set binding")
     expected_kinds = (
         paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
         paths_lib.CATALOGS)
     expected_digest_keys = {
-        "build_identity", "orchestration_config", "stage_reuse_bridge",
+        "build_identity", "orchestration_config",
         *expected_kinds,
     }
     if set(request_set.input_digests) != expected_digest_keys:
@@ -873,8 +840,7 @@ def validate_work_snapshot(value):
         thinking_level=selected["matching.thinking_level"],
         build_identity=value["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
-        upstreams=request_set.upstreams,
-        stage_reuse_provenance=value["stage_reuse"])
+        upstreams=request_set.upstreams)
     if expected_request_set.fingerprint != request_set.fingerprint:
         raise ValueError(
             "matching request units do not exactly encode the frozen queries, "
@@ -1092,32 +1058,18 @@ def _build_snapshot(args, parser):
         raise SystemExit(f"invalid matching input artifact: {error}") from error
     build_dir = Path(args.build_config).parent
     try:
-        authorization = stage_reuse.load_proof(build_dir)
-        stage_reuse.require_target_checkout(
-            build_dir, document=document, authorization=authorization)
-        tracks_manifest = stage_reuse.require_configured_artifact(
-            tracks_ref, target_build_dir=build_dir,
-            kind=paths_lib.OBJECT_TRACKS, document=document)
-        track_bridge = stage_reuse.require_compatible_artifact(
-            tracks_ref, tracks_manifest,
-            target_build_dir=build_dir, owner_stage="track",
-            authorization=authorization)
-        audit_manifest = stage_reuse.require_configured_artifact(
-            audits_ref, target_build_dir=build_dir,
-            kind=paths_lib.SEMANTIC_AUDITS, document=document)
-        stage_reuse.require_recorded_bridge(
-            audit_manifest.config.get("stage_reuse"), track_bridge,
-            required_artifacts=(tracks_ref,),
-            additional_artifacts=tuple(
-                reference for reference in (authorization.refs
-                                             if authorization is not None else ())
-                if reference.kind == paths_lib.FRAME_LANDMARKS))
-        stage_reuse.require_configured_artifact(
-            catalog_ref, target_build_dir=build_dir,
-            kind=paths_lib.CATALOGS, document=document)
+        # The opens above prove each input is the artifact it claims to be at
+        # the version this recipe names. Which GENERATION it belongs to is the
+        # orchestrator's question, answered by `artifact_identity`.
+        configured_lane.require(
+            tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
+        configured_lane.require(
+            catalog_ref, document=document, kind=paths_lib.CATALOGS)
+        audit_manifest = configured_lane.require(
+            audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)
         if audit_manifest.config.get("build_identity") != document[
                 "build_identity"]:
-            raise stage_reuse.StageReuseError(
+            raise ValueError(
                 "semantic_audits belongs to a different immutable build")
         catalog_digest_keys = {
             "catalog_manifest_digest", "catalog_content_digest"}
@@ -1128,10 +1080,11 @@ def _build_snapshot(args, parser):
                     != document["inputs"]["catalog_manifest_digest"]
                 or catalog_ref.content_digest
                     != document["inputs"]["catalog_content_digest"]):
-            raise stage_reuse.StageReuseError(
+            raise ValueError(
                 "matching catalog differs from target build digests")
-    except (artifact.ArtifactError, stage_reuse.StageReuseError) as error:
-        raise SystemExit(f"invalid matching stage reuse: {error}") from error
+    except (artifact.ArtifactError, configured_lane.ConfiguredLaneError,
+            ValueError) as error:
+        raise SystemExit(f"invalid matching input binding: {error}") from error
     try:
         audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
     except (artifact.ArtifactError, audit_io.AuditArtifactError) as error:
@@ -1168,7 +1121,7 @@ def _build_snapshot(args, parser):
         thinking_level=selected["matching.thinking_level"],
         build_identity=document["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
-        upstreams=upstreams, stage_reuse_provenance=track_bridge)
+        upstreams=upstreams)
     snapshot = make_work_snapshot(
         dataset=args.dataset,
         output_version=selected["artifacts.landmark_matches_version"],
@@ -1176,8 +1129,7 @@ def _build_snapshot(args, parser):
         selected=selected, build_identity=document["build_identity"],
         orchestration=orchestration, catalog_source=catalog_path,
         target_git_commit=document["git_commit"],
-        target_build_path=build_dir,
-        stage_reuse_provenance=track_bridge)
+        target_build_path=build_dir)
     print(f"map: {sum(len(v['landmark_ids']) for v in signatures.values())} "
           f"landmarks -> {len(signatures)} signatures in "
           f"{len(signature_chunks)} chunks")
@@ -1188,72 +1140,30 @@ def _build_snapshot(args, parser):
 
 
 def revalidate_work_snapshot_inputs(snapshot, request_set):
-    """Reopen the proof and exact lanes before either aggregate or publish."""
-    if snapshot["stage_reuse"] is None:
-        try:
-            return stage_reuse.require_checkout_commit(
-                snapshot["target_git_commit"])
-        except stage_reuse.StageReuseError as error:
+    """Re-prove what the frozen workload says about itself.
+
+    Deliberately reopens NOTHING. Aggregation runs long after the requests
+    were built, and the upstream artifacts may legitimately be gone by then --
+    `test_aggregate_does_not_reopen_mutable_semantic_inputs` deletes them and
+    requires this to succeed. Everything aggregation needs was frozen into the
+    snapshot and the request set, and re-reading a mutable directory here
+    would let an edit change what a frozen workload means.
+
+    Whether those upstreams were the right generation was decided when the
+    requests were built, and is recorded; it is not re-litigated here.
+    """
+    tracks_ref, audits_ref, catalog_ref = request_set.upstreams
+    for reference, kind in ((tracks_ref, paths_lib.OBJECT_TRACKS),
+                            (audits_ref, paths_lib.SEMANTIC_AUDITS),
+                            (catalog_ref, paths_lib.CATALOGS)):
+        if reference.kind != kind:
             raise SystemExit(
-                f"invalid matching snapshot checkout: {error}") from error
-    target_build_dir = Path(snapshot["target_build_path"])
-    try:
-        document = build_config.load(target_build_dir)
-        if (document["dataset"] != snapshot["dataset"]
-                or document["build_identity"] != snapshot["build_identity"]
-                or document["git_commit"] != snapshot["target_git_commit"]):
-            raise stage_reuse.StageReuseError(
-                "matching work snapshot targets a different immutable build")
-        authorization = stage_reuse.load_proof(target_build_dir)
-        target_git_commit = stage_reuse.require_target_checkout(
-            target_build_dir, document=document,
-            authorization=authorization)
-        tracks_ref, audits_ref, catalog_ref = request_set.upstreams
-        tracks_manifest = stage_reuse.require_configured_artifact(
-            tracks_ref, target_build_dir=target_build_dir,
-            kind=paths_lib.OBJECT_TRACKS, document=document)
-        track_bridge = stage_reuse.require_compatible_artifact(
-            tracks_ref, tracks_manifest,
-            target_build_dir=target_build_dir, owner_stage="track",
-            authorization=authorization)
-        audits_manifest = stage_reuse.require_configured_artifact(
-            audits_ref, target_build_dir=target_build_dir,
-            kind=paths_lib.SEMANTIC_AUDITS, document=document)
-        stage_reuse.require_recorded_bridge(
-            audits_manifest.config.get("stage_reuse"), track_bridge,
-            required_artifacts=(tracks_ref,),
-            additional_artifacts=tuple(
-                reference for reference in (authorization.refs
-                                             if authorization is not None else ())
-                if reference.kind == paths_lib.FRAME_LANDMARKS))
-        stage_reuse.require_recorded_bridge(
-            snapshot.get("stage_reuse"), track_bridge)
-        stage_reuse.require_configured_artifact(
-            catalog_ref, target_build_dir=target_build_dir,
-            kind=paths_lib.CATALOGS, document=document)
-        catalog_digest_keys = {
-            "catalog_manifest_digest", "catalog_content_digest"}
-        recorded_catalog_keys = catalog_digest_keys & set(document["inputs"])
-        if recorded_catalog_keys and (
-                recorded_catalog_keys != catalog_digest_keys
-                or catalog_ref.manifest_digest
-                    != document["inputs"]["catalog_manifest_digest"]
-                or catalog_ref.content_digest
-                    != document["inputs"]["catalog_content_digest"]):
-            raise stage_reuse.StageReuseError(
-                "matching catalog differs from target build digests")
-        if audits_manifest.config.get("build_identity") != document[
-                "build_identity"]:
-            raise stage_reuse.StageReuseError(
-                "semantic_audits belongs to a different immutable build")
-        if sum(item.to_dict() == tracks_ref.to_dict()
-               for item in audits_manifest.upstreams) != 1:
-            raise stage_reuse.StageReuseError(
-                "semantic_audits does not bind the exact object_tracks ref")
-    except (artifact.ArtifactError, OSError, ValueError) as error:
-        raise SystemExit(
-            f"invalid matching snapshot stage reuse: {error}") from error
-    return target_git_commit
+                f"matching snapshot upstream order is wrong: expected {kind}, "
+                f"found {reference.kind}")
+        if reference.dataset != snapshot["dataset"]:
+            raise SystemExit(
+                f"matching snapshot {kind} belongs to another dataset")
+    return snapshot["target_git_commit"]
 
 
 def main():
@@ -1505,8 +1415,6 @@ def main():
         "resolved_stage_config": selected,
         "semantic_snapshot_sha256": artifact.sha256_json(snapshot),
         "score_contract": SCORE_CONTRACT,
-        **({"stage_reuse": snapshot["stage_reuse"]}
-           if snapshot["stage_reuse"] is not None else {}),
     }
     with publication.published_artifact(
             output_dir,
@@ -1541,13 +1449,6 @@ def main():
             builder.output_path(COMPATIBILITY_NAME),
             msgspec.json.encode(tables, enc_hook=msgspec_enc_hook))
     assert builder.artifact_ref is not None
-    try:
-        stage_reuse.require_checkout_commit(target_git_commit)
-        stage_reuse.require_manifest_commit(
-            builder.artifact_ref, target_git_commit)
-    except stage_reuse.StageReuseError as error:
-        raise SystemExit(
-            f"invalid matching output provenance: {error}") from error
     n_hit = sum(1 for m in matches.values() if m["n_landmarks"])
     print(f"tracklets with a match above the floor: {n_hit}/{len(matches)}")
     print(f"published complete {paths_lib.LANDMARK_MATCHES} artifact: "

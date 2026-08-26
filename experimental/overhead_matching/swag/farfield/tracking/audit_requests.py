@@ -35,7 +35,6 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     provenance,
     publication,
-    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.extraction import (
     vertex_batch_manager as vbm,
@@ -153,8 +152,7 @@ def settings_record(args, paths, source_path, source_artifact,
     """Return every setting that can change a request or its eligibility."""
     settings = {
         "generator": GENERATOR,
-        "git_commit": (getattr(args, "target_git_commit", None)
-                       or provenance.git_commit()),
+        "git_commit": provenance.git_commit(),
         "argv": list(sys.argv),
         "dataset": paths.dataset,
         "model": args.model,
@@ -359,7 +357,6 @@ def build_request_artifact(args, paths, source_ref, source_path,
                 "orchestration": getattr(args, "orchestration", None),
                 "resolved_stage_config": getattr(
                     args, "resolved_stage_config", None),
-                "stage_reuse": getattr(args, "stage_reuse", None),
             },
             declared_outputs=declared) as builder:
         out_dir = builder.staging_dir
@@ -678,41 +675,28 @@ def load_audit_config(args):
     return document, selected, orchestration
 
 
-def authorize_prefix_inputs(args, document):
-    """Authorize exact old-build TRACK/FRAME refs before either is parsed."""
-    build_dir = Path(args.build_config).parent
-    authorization = stage_reuse.load_proof(build_dir)
-    target_git_commit = stage_reuse.require_target_checkout(
-        build_dir, document=document, authorization=authorization)
+def open_prefix_inputs(args, document):
+    """Open the exact TRACK/FRAME artifacts this build's recipe names.
+
+    A stage opens the inputs it was told to open, at the versions the recipe
+    records, and `open_artifact` proves each is the artifact it claims to be.
+    Whether they are the right GENERATION is the orchestrator's question,
+    answered by `artifact_identity`; a stage re-deciding it here is how the
+    build-identity check and its human-attested exceptions ended up threaded
+    through every producer.
+    """
     source_ref = artifact.open_artifact(
         args.tracks_dir, expected_kind=paths_lib.OBJECT_TRACKS,
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.object_tracks_version"))
-    source_manifest = stage_reuse.require_configured_artifact(
-        source_ref, target_build_dir=build_dir,
-        kind=paths_lib.OBJECT_TRACKS, document=document)
-    track_bridge = stage_reuse.require_compatible_artifact(
-        source_ref, source_manifest,
-        target_build_dir=build_dir, owner_stage="track",
-        authorization=authorization)
     frame_ref = artifact.open_artifact(
         args.frame_landmarks_dir,
         expected_kind=paths_lib.FRAME_LANDMARKS,
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.frame_landmarks_version"))
-    frame_manifest = stage_reuse.require_configured_artifact(
-        frame_ref, target_build_dir=build_dir,
-        kind=paths_lib.FRAME_LANDMARKS, document=document)
-    frame_bridge = stage_reuse.require_compatible_artifact(
-        frame_ref, frame_manifest,
-        target_build_dir=build_dir, owner_stage="extract",
-        authorization=authorization)
-    return (source_ref, frame_ref,
-            stage_reuse.combine_bridge_provenance(
-                track_bridge, frame_bridge),
-            authorization, target_git_commit)
+    return source_ref, frame_ref
 
 
 def validate_execution_args(args, selected) -> None:
@@ -796,8 +780,7 @@ def _prepare_request_artifact(args, selected, document, orchestration,
             candidate_dir / llm.REQUEST_SET_NAME)
         candidate_config = artifact.load_manifest(candidate_dir).config
         stable_config_keys = (
-            "build_identity", "orchestration", "resolved_stage_config",
-            "stage_reuse")
+            "build_identity", "orchestration", "resolved_stage_config")
         if (candidate_request_set.fingerprint
                 != current_request_set.fingerprint
                 or any(candidate_config.get(key) != current_config.get(key)
@@ -844,8 +827,7 @@ def main():
             f"completed semantic_audits artifact already exists: "
             f"{args.output_dir}")
     try:
-        (source_ref, frame_ref, args.stage_reuse, reuse_authorization,
-         args.target_git_commit) = authorize_prefix_inputs(args, document)
+        source_ref, frame_ref = open_prefix_inputs(args, document)
         source = load_source_tracks(args.tracks_dir, args.dataset)
         if source[0].to_dict() != source_ref.to_dict():
             raise ValueError(
@@ -871,8 +853,6 @@ def main():
             work_dir, request_version)
         request_ref, request_set, _, _, _, _, _, _ = _load_request_bundle(
             request_dir, args.tracks_dir, args.dataset)
-        stage_reuse.require_manifest_commit(
-            request_ref, args.target_git_commit)
     except (artifact.ArtifactError, llm.LlmLifecycleError,
             OSError, ValueError) as error:
         raise SystemExit(f"invalid semantic-audit work state: {error}") \
@@ -924,12 +904,8 @@ def main():
             "build_identity": document["build_identity"],
             "orchestration": orchestration,
             "resolved_stage_config": selected,
-            "stage_reuse": args.stage_reuse,
         },
-        git_commit=args.target_git_commit)
-    stage_reuse.require_output_commit(
-        ref, target_build_dir=Path(args.build_config).parent,
-        document=document, authorization=reuse_authorization)
+        git_commit=provenance.git_commit())
     print(f"published complete semantic audit: {ref.path}")
 
 

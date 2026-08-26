@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    configured_lane,
     build_config,
     dataset,
     geometry,
@@ -36,7 +37,6 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     publication,
     provenance,
-    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.calibration import (
     heading,
@@ -207,8 +207,7 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
         raise AlignmentDiagnosticError(
             "bearing_observations must declare only observations.jsonl")
     expected_config_keys = _OBSERVATION_CONFIG_KEYS | (
-        frozenset({"stage_reuse"})
-        if "stage_reuse" in manifest.config else frozenset())
+        frozenset())
     config = _exact_keys(
         manifest.config, expected_config_keys,
         "bearing_observations manifest config")
@@ -464,12 +463,12 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.bearing_observations_version"))
-    authorization = stage_reuse.load_proof(config_path.parent)
-    stage_reuse.require_target_checkout(
-        config_path.parent, document=document, authorization=authorization)
-    observations_manifest = stage_reuse.require_configured_artifact(
-        observations_ref, target_build_dir=config_path.parent,
-        kind=paths_lib.BEARING_OBSERVATIONS, document=document)
+    # The opens above already prove each input is the artifact it claims to
+    # be at the recorded version; which generation it belongs to is the
+    # orchestrator's question (`artifact_identity`), not a stage's.
+    observations_manifest = configured_lane.require(
+        observations_ref, document=document,
+        kind=paths_lib.BEARING_OBSERVATIONS)
     if observations_manifest.config.get(
             "build_identity") != document["build_identity"]:
         raise AlignmentDiagnosticError(
@@ -503,24 +502,10 @@ def _load_inputs(args) -> dict:
         raise AlignmentDiagnosticError(
             "recorded semantic_audits path no longer resolves to the bound "
             "artifact identity")
-    tracks_manifest = stage_reuse.require_configured_artifact(
-        tracks_ref, target_build_dir=config_path.parent,
-        kind=paths_lib.OBJECT_TRACKS, document=document)
-    audits_manifest = stage_reuse.require_configured_artifact(
-        audits_ref, target_build_dir=config_path.parent,
-        kind=paths_lib.SEMANTIC_AUDITS, document=document)
-    track_bridge = stage_reuse.require_compatible_artifact(
-        tracks_ref, tracks_manifest, target_build_dir=config_path.parent,
-        owner_stage="track", authorization=authorization)
-    stage_reuse.require_recorded_bridge(
-        observations_manifest.config.get("stage_reuse"), track_bridge)
-    stage_reuse.require_recorded_bridge(
-        audits_manifest.config.get("stage_reuse"), track_bridge,
-        required_artifacts=(tracks_ref,),
-        additional_artifacts=tuple(
-            reference for reference in (authorization.refs
-                                         if authorization is not None else ())
-            if reference.kind == paths_lib.FRAME_LANDMARKS))
+    audits_manifest = configured_lane.require(
+        audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)
+    tracks_manifest = configured_lane.require(
+        tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
     if audits_manifest.config.get("build_identity") != document["build_identity"]:
         raise AlignmentDiagnosticError(
             f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
@@ -589,8 +574,6 @@ def _load_inputs(args) -> dict:
         "nominal_forward": approved_nominal_forward,
         "nominal_forward_path": calibration_path,
         "nominal_forward_sha256": calibration_sha256,
-        "stage_reuse": track_bridge,
-        "reuse_authorization": authorization,
     }
 
 
@@ -1038,8 +1021,6 @@ def publish(resolved: dict, output_dir: Path, *,
             "dataset_tracking_inputs": resolved["dataset_source_sha256"],
             "nominal_forward": resolved["nominal_forward_sha256"],
         },
-        **({"stage_reuse": resolved["stage_reuse"]}
-           if resolved["stage_reuse"] is not None else {}),
     }
     with publication.published_artifact(
             output_dir, kind=paths_lib.ALIGNMENT_DIAGNOSTICS,
@@ -1072,10 +1053,6 @@ def main() -> None:
         resolved = _load_inputs(args)
         reference = publish(
             resolved, args.output_dir, arguments=tuple(sys.argv))
-        stage_reuse.require_output_commit(
-            reference, target_build_dir=Path(args.build_config).parent,
-            document=resolved["document"],
-            authorization=resolved["reuse_authorization"])
     except (AlignmentDiagnosticError, artifact.ArtifactError,
             build_config.InvalidConfigValue,
             build_config.MissingConfigValue, dataset.ContractViolation,

@@ -385,44 +385,6 @@ class EndToEndTest(unittest.TestCase):
                     catalog_ref=catalog_ref, expected_version="v1",
                     build_identity=manifest.config["build_identity"])
 
-    def test_publishes_valid_strict_artifact(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            args, tracklet_id = build_fixture(Path(temporary))
-            bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
-            with (mock.patch.object(
-                    build_export.stage_reuse,
-                    "require_compatible_artifact",
-                    return_value=bridge) as require_reuse,
-                  mock.patch.object(
-                      build_export.stage_reuse,
-                      "require_recorded_bridge")):
-                reference = build_export.build(args)
-            data = export_ingest.load(
-                args.output_dir, expected_dataset=DATASET)
-            self.assertEqual(reference.kind, paths_lib.LOCALIZATION_INPUTS)
-            self.assertEqual(set(data.tables), {tracklet_id})
-            self.assertEqual({item.tracklet_id for item in data.measurements},
-                             {tracklet_id})
-            self.assertTrue(all(
-                item.position_sigma_m == 25.0 for item in data.landmarks))
-            self.assertEqual(len(data.landmarks[0].hull_east_m), 5)
-            self.assertEqual(len(data.landmarks[0].hull_north_m), 5)
-            self.assertTrue(all(
-                0.0 <= item.bearing_forward_cw_deg < 360.0
-                for item in data.measurements))
-            manifest = artifact.load_manifest(args.output_dir)
-            self.assertEqual(
-                [item.kind for item in manifest.upstreams],
-                [paths_lib.BEARING_OBSERVATIONS,
-                 paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS])
-            self.assertEqual(manifest.config["matching_coverage"], "complete")
-            self.assertEqual(manifest.config["stage_reuse"], bridge)
-            self.assertEqual(
-                require_reuse.call_args.kwargs["owner_stage"], "track")
-            self.assertEqual(
-                manifest.config["orchestration"],
-                build_export.orchestration_contract(
-                    build_config.load(args.build_config.parent)))
 
     def test_stale_recipe_digest_and_wrong_output_version_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
