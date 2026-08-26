@@ -169,6 +169,9 @@ Provide your response as a JSON object conforming to the assigned schema.
 Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
 </output_format>
 """,
+    # Tuning history, including a fourth clause that was measured to TRIPLE
+    # in-region misdirection and must not be re-added: see
+    # docs/farfield/decisions.md, 2026-08 'Extraction prompt v2'.
     # v2 grounds identity in the structure's own visible features: name the
     # structure rather than its scene, require a visible differentiator for a
     # lookalike, and record a painted designator as `ref` rather than `name`.

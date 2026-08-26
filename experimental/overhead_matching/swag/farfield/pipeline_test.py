@@ -506,6 +506,45 @@ class CommandConstructionTest(unittest.TestCase):
         self.assertEqual(values[values.index("--feather") + 1],
                          str(self.paths.catalogs / "catalog.feather"))
 
+    def test_viewer_settings_come_from_the_recorded_config(self):
+        """The command and the completeness check must read one source.
+
+        A literal expectation in the orchestrator plus a default in the viewer
+        is two owners of the same value: change either and every already-built
+        viewer is declared stale by a change nobody made.
+        """
+        config = copy.deepcopy(self.config)
+        config["viewer"] = {"max_particles": 1234, "basemap_detail": 4,
+                            "embed_source_chips": False}
+        values = self.strings(pipeline.build_viewer_command(
+            self.paths, config, build_identity=self.build_identity))
+        self.assertEqual(values[values.index("--max_particles") + 1], "1234")
+        self.assertEqual(values[values.index("--basemap_detail") + 1], "4.0")
+        self.assertIn("--no_source_chips", values)
+        # What the viewer will record, and what the check will demand, are the
+        # same object -- including the int-vs-float spelling the flag parses.
+        self.assertEqual(pipeline.viewer_config(config), {
+            "max_particles": 1234, "basemap_detail": 4.0,
+            "body_only": False, "embed_source_chips": False})
+
+    def test_config_sections_match_the_stage_reuse_top_level_list(self):
+        """`stage_reuse` keeps its own copy of the config's section names.
+
+        It has to: `pipeline` imports it, so it cannot import `pipeline` back.
+        Pin the two together here, or adding a section surfaces as a
+        StageReuseError from inside reuse-proof creation instead.
+        """
+        self.assertEqual(
+            {key.split(".")[0] for key in pipeline.CONFIG_SCHEMA},
+            set(stage_reuse.CONFIG_TOP_LEVEL))
+
+    def test_viewer_omits_the_chip_flag_when_chips_are_enabled(self):
+        values = self.strings(pipeline.build_viewer_command(
+            self.paths, self.config, build_identity=self.build_identity))
+        self.assertNotIn("--no_source_chips", values)
+        self.assertTrue(
+            pipeline.viewer_config(self.config)["embed_source_chips"])
+
     def test_all_llm_stages_use_one_recorded_batch_staging_prefix(self):
         for stage in ("extract", "audit", "match"):
             values = self.strings(self.commands[stage])

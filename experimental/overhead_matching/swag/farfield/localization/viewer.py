@@ -46,7 +46,6 @@ table entries shown, basemap vertices — the page states it.
 
 import argparse
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import artifact, provenance
@@ -54,6 +53,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     side_outputs,
     viewer_payload,
 )
+from experimental.overhead_matching.swag.farfield.viewers import page
 
 _ASSET_DIR = Path(__file__).parent / "viewer_assets"
 # Read once at import: the files are bazel data deps, laid out next to this
@@ -78,7 +78,6 @@ def render_html(payload: dict, body_only: bool = False) -> str:
     replay_pill = ("ok" if run["replayable"] else "bad")
     replay_text = ("replayable" if run["replayable"]
                    else "not faithfully replayable")
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     body = f"""<div class="wrap">
 <header>
 <div class="eyebrow">Bearing-only localization &middot; run viewer</div>
@@ -161,19 +160,16 @@ table of contents; click a row to jump</span></h2>
 <div id="events"></div>
 </section>
 </main>
-<footer class="prov" style="margin:0 0 40px">{_escape(GENERATOR)} &middot;
-git {_escape(provenance.git_commit()[:12])} &middot; {_escape(stamp)}</footer>
+{page.provenance_footer(GENERATOR, css_class="prov", style="margin:0 0 40px")}
 </div>
 <script>window.__RUN__ = {_inline_json(payload)};</script>
 <script>{_SCRIPT}</script>"""
-    style = f"<style>{_STYLE}</style>"
     if body_only:
-        return style + body
-    return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width,"
-            "initial-scale=1\">"
-            f"<title>{_escape(run['scenario'])} — run viewer</title>"
-            f"{style}</head><body>{body}</body></html>")
+        # A fragment for embedding: no document, and therefore no generated
+        # mark. Whoever embeds it owns the page it lands in.
+        return f"<style>{_STYLE}</style>" + body
+    return page.document(f"{run['scenario']} — run viewer", body,
+                         style=_STYLE)
 
 
 def _escape(text) -> str:

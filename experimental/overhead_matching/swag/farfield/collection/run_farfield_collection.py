@@ -94,6 +94,11 @@ WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 # The OSM writer reads the caller-selected full PBF directly with the common
 # extractor's complete geometry index. Keep a cgroup ceiling as a final
 # host-safety guard, independent of source PBF size.
+# This ceiling is now the ONLY guard on extractor memory; the bounded node
+# index and the source-size refusal that used to sit in front of it are
+# gone. What they were protecting against, and what to restore if a
+# country-sized PBF is needed again: docs/farfield/decisions.md, 2026-08
+# 'OSM extraction memory'.
 EXTRACT_MEM_CAP_GB = 24
 
 PINHOLE_FACES = paths_lib.PINHOLE_FACES

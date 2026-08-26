@@ -28,9 +28,11 @@ nominal-forward calibration is an explicit required input, validated for the
 same dataset. Sun checks and alignment sweeps are diagnostics, never silently
 promoted to calibration authority.
 
-The maintained HTML template, stylesheet, and application script live in
+The maintained stylesheet and application script live in
 `match_viewer_assets/` and are inlined when rendering: there is no tile host
 or network dependency, and the frozen page can be copied elsewhere unchanged.
+The document around them comes from `viewers.page`, which is what gives the
+page its generated mark and provenance footer.
 
 Run:
   bazel run //experimental/overhead_matching/swag/farfield/matching:match_viewer -- \\
@@ -56,6 +58,7 @@ from experimental.overhead_matching.swag.farfield import llm_lifecycle
 from experimental.overhead_matching.swag.farfield import nominal_forward
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
 from experimental.overhead_matching.swag.farfield import provenance
+from experimental.overhead_matching.swag.farfield.viewers import page
 from experimental.overhead_matching.swag.farfield.calibration import (
     audit_io,
     heading as course_model,
@@ -683,12 +686,14 @@ def build_map_payload(paths, feather: Path, matches: dict,
     return payload, notes, sig_resid
 
 
+GENERATOR = ("//experimental/overhead_matching/swag/farfield/"
+             "matching:match_viewer")
+PAGE_TITLE = "Landmark matches — review"
+
 _ASSET_DIR = Path(__file__).parent / "match_viewer_assets"
 # Bazel lays these data deps next to this module in the runfiles tree. Keep the
 # newlines that the old inline literals contributed so rendered pages remain
 # byte-for-byte stable while the sources become independently maintainable.
-_PAGE_TEMPLATE = (_ASSET_DIR / "page.html").read_text(
-    encoding="utf-8").rstrip("\n")
 _STYLE = (_ASSET_DIR / "style.css").read_text(
     encoding="utf-8").rstrip("\n") + "\n"
 _SCRIPT = "\n" + (_ASSET_DIR / "app.js").read_text(
@@ -696,12 +701,17 @@ _SCRIPT = "\n" + (_ASSET_DIR / "app.js").read_text(
 
 
 def render_page(body_parts: list[str]) -> str:
-    """Inline the maintained template and assets into one frozen HTML page."""
-    body = "\n".join(body_parts)
-    if "@@STYLE@@" in body or "@@BODY@@" in body:
-        raise ValueError("viewer body collides with a template placeholder")
-    return (_PAGE_TEMPLATE.replace("@@STYLE@@", _STYLE)
-            .replace("@@BODY@@", body))
+    """Inline the maintained assets into one frozen HTML page.
+
+    The document skeleton comes from `viewers.page` rather than from a local
+    template. This page used to build its own, and paid for it: no doctype, no
+    viewport, the title "matches", no provenance footer, and -- the one that
+    matters -- no `GENERATED_MARK`, which is what `indexes.refresh` checks
+    before it is willing to overwrite a page. The design here is still this
+    module's; only the skeleton is shared.
+    """
+    body = "\n".join(body_parts) + "\n" + page.provenance_footer(GENERATOR)
+    return page.document(PAGE_TITLE, body, style=_STYLE)
 
 
 def main():
@@ -1058,8 +1068,7 @@ def main():
           f"{size_mb:.1f} MB)")
     provenance.write(
         out,
-        generator=("//experimental/overhead_matching/swag/farfield/"
-                   "matching:match_viewer"),
+        generator=GENERATOR,
         inputs={"matching": match_dir,
                 "tracks": args.tracks_dir,
                 "semantic_audits": args.audit_dir,

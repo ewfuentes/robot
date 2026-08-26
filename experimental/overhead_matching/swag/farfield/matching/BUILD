@@ -10,6 +10,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
@@ -84,7 +85,6 @@ py_library(
     srcs = ["match_viewer.py"],
     data = [
         "match_viewer_assets/app.js",
-        "match_viewer_assets/page.html",
         "match_viewer_assets/style.css",
     ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -103,6 +103,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield/calibration:heading",
         "//experimental/overhead_matching/swag/farfield/catalog",
         "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
 

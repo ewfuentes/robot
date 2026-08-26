@@ -10,6 +10,7 @@ import types
 import unittest
 from pathlib import Path
 
+from experimental.overhead_matching.swag.farfield import build_config
 from experimental.overhead_matching.swag.farfield import geometry
 from experimental.overhead_matching.swag.farfield import testing
 from experimental.overhead_matching.swag.farfield import llm_lifecycle
@@ -17,6 +18,9 @@ from experimental.overhead_matching.swag.farfield.matching import (
     match_landmarks as ml,
     match_landmarks_test as fixtures,
     match_viewer as mv,
+)
+from experimental.overhead_matching.swag.farfield.viewers import (
+    page as page_lib,
 )
 
 DATASET = fixtures.DATASET
@@ -73,11 +77,15 @@ class ViewerTest(unittest.TestCase):
         cls.root = Path(cls._tmp.name)
         cls.dataset_base = cls.root / "datasets" / DATASET
         testing.make_dataset(cls.dataset_base, n_frames=6)
-        (cls.tracks_dir, cls.audit_dir,
-         cls.catalog_dir) = fixtures.write_bound_inputs(cls.root)
-        cls.feather = cls.catalog_dir / "catalog.feather"
+        # The build config first: its identity is what the upstream artifacts
+        # must be bound to, so they cannot be written before it exists.
         build_path, orchestration_digest = fixtures.write_build_config(
             cls.root, cls.dataset_base)
+        document = build_config.load(build_path.parent)
+        (cls.tracks_dir, cls.audit_dir,
+         cls.catalog_dir) = fixtures.write_bound_inputs(
+             cls.root, document["build_identity"])
+        cls.feather = cls.catalog_dir / "catalog.feather"
         cls.match_dir = (cls.root / "landmark_matches" /
                          fixtures.MATCHES_VERSION)
         cls.match_flags = [
@@ -141,14 +149,27 @@ class ViewerTest(unittest.TestCase):
 
     def test_file_backed_assets_render_one_self_contained_page(self):
         rendered = mv.render_page(["<main>sentinel</main>"])
-        self.assertTrue(rendered.startswith(
-            "<html><head><title>matches</title><meta charset='utf-8'><style>"))
         self.assertIn("<main>sentinel</main>", rendered)
         self.assertIn(".mapcol{position:sticky", rendered)
-        self.assertNotIn("@@STYLE@@", rendered)
-        self.assertNotIn("@@BODY@@", rendered)
         self.assertNotIn("<link ", rendered)
         self.assertNotIn("<script src=", rendered)
+
+    def test_the_page_carries_the_shared_document_guarantees(self):
+        """This viewer built its own document and was missing all of these.
+
+        The generated mark is the load-bearing one: `indexes.refresh` refuses
+        to overwrite a page without it, so an unmarked viewer page is
+        indistinguishable from something hand-written that must be preserved.
+        """
+        rendered = mv.render_page(["<main>sentinel</main>"])
+        self.assertTrue(rendered.startswith(page_lib.GENERATED_MARK))
+        self.assertIn("<!DOCTYPE html>", rendered)
+        self.assertIn('<meta name="viewport"', rendered)
+        self.assertIn(f"<title>{mv.PAGE_TITLE}</title>", rendered)
+        self.assertIn(mv.GENERATOR, rendered)
+        # Its own stylesheet, not the index pages' -- the skeleton is shared,
+        # the design is not.
+        self.assertNotIn(page_lib.STYLE, rendered)
 
     def test_no_map_page_renders(self):
         run_main(

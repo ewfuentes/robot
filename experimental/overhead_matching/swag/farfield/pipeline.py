@@ -249,6 +249,16 @@ CONFIG_SCHEMA = {
     "localization.modes.heading_cell_deg": _positive_number(),
     "localization.modes.min_cell_weight": _number(maximum=1.0),
     "localization.modes.min_mode_weight": _number(maximum=1.0),
+    # The viewer's tuning values. They shape the published page, so they are
+    # recorded here rather than left to the viewer's own argparse defaults:
+    # with a default on each side, the orchestrator's completeness check and
+    # the tool it invokes drift apart silently, and every previously built
+    # viewer is then declared stale by a change nobody made deliberately.
+    # These are deliberately NOT part of any stage contract -- retuning the
+    # page must not invalidate the localization run it displays.
+    "viewer.max_particles": _integer(minimum=1),
+    "viewer.basemap_detail": _positive_number(),
+    "viewer.embed_source_chips": _boolean(),
 }
 
 
@@ -1008,6 +1018,26 @@ def localization_viewer_dir(paths: paths_lib.FarfieldPaths, config: dict, *,
     return run_dir.with_name(run_dir.name + ".viewer")
 
 
+def viewer_config(config: dict) -> dict:
+    """The recorded viewer settings, in the shape the viewer records them.
+
+    One owner for the values the orchestrator passes on the command line and
+    the values it later expects to find in the published manifest, so the two
+    cannot disagree.
+    """
+    return {
+        "max_particles": _value(config, "viewer.max_particles"),
+        # `float` because the viewer parses this flag with `type=float` and
+        # records what it parsed: a config written as `1` rather than `1.0`
+        # would otherwise never compare equal to the manifest it produced.
+        "basemap_detail": float(_value(config, "viewer.basemap_detail")),
+        # Fixed for the canonical page rather than configurable: `--body_only`
+        # emits an embeddable fragment, and the index chain links documents.
+        "body_only": False,
+        "embed_source_chips": _value(config, "viewer.embed_source_chips"),
+    }
+
+
 def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
                          build_identity: str) -> list[Any]:
     """Construct the canonical viewer from exact scientific artifact inputs."""
@@ -1021,7 +1051,8 @@ def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
         _value(config, VERSION_KEYS[paths_lib.SEMANTIC_AUDITS]))
     catalog_dir = paths.artifact(
         paths_lib.CATALOGS, _value(config, VERSION_KEYS[paths_lib.CATALOGS]))
-    return [
+    settings = viewer_config(config)
+    command = [
         "bazel", "run", VIEWER_TARGET, "--",
         "--run_dir", run_dir,
         "--output_dir", localization_viewer_dir(
@@ -1029,7 +1060,12 @@ def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
         "--tracks_dir", tracks_dir,
         "--audit_dir", audit_dir,
         "--feather", catalog_dir / "catalog.feather",
+        "--max_particles", settings["max_particles"],
+        "--basemap_detail", settings["basemap_detail"],
     ]
+    if not settings["embed_source_chips"]:
+        command.append("--no_source_chips")
+    return command
 
 
 def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
@@ -1076,18 +1112,16 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             "audit_manifest_digest": audits_ref.manifest_digest,
             "feather": str(feather.resolve()),
             "feather_sha256": artifact.sha256_file(feather),
-            "ghosts": "[]",
+            # `build_viewer_command` passes neither `--ghost` nor
+            # `--satellite`, so these are the viewer's stringified empties.
+            # Overlays are a hand-driven investigation, not a build product.
+            "ghosts": str([]),
             "satellite": "",
         }
     except (artifact.ArtifactError, OSError, ValueError) as error:
         raise StageContractError(
             f"cannot validate viewer output {output_dir}: {error}") from error
-    expected_config = {
-        "max_particles": 900,
-        "basemap_detail": 1.0,
-        "body_only": False,
-        "embed_source_chips": True,
-    }
+    expected_config = viewer_config(config)
     if (manifest.get("schema") != provenance.SCHEMA
             or manifest.get("generator") != VIEWER_GENERATOR
             or manifest.get("inputs") != expected_inputs

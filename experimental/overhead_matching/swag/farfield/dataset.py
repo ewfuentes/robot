@@ -27,6 +27,7 @@ import csv
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -321,6 +322,32 @@ class IngestStats:
     n_observations: int = 0
     n_boxes_invalid_geometry: int = 0
     n_landmarks_without_valid_boxes: int = 0
+
+    @property
+    def lossy(self) -> bool:
+        """Whether ingest silently discarded predicted geometry."""
+        return bool(self.n_boxes_invalid_geometry
+                    or self.n_landmarks_without_valid_boxes)
+
+    def summary(self) -> str:
+        """One line naming what was read and what was dropped.
+
+        `run_ingest` drops a malformed bounding box rather than raising, so
+        this is the only place a reader learns that detections went missing.
+        A run that quietly ingested 90% of its geometry and one that ingested
+        all of it otherwise look identical, all the way to a localization
+        result. The `WARNING` prefix is deliberate: log sweeps grep for it.
+        """
+        line = (f"ingest: {self.n_frames} frames, "
+                f"{self.n_raw_landmark_entries} predicted landmarks -> "
+                f"{self.n_observations} observations")
+        if not self.lossy:
+            return line + "; no predicted geometry discarded"
+        return (f"WARNING {line}; DISCARDED "
+                f"{self.n_boxes_invalid_geometry} malformed bounding box(es) "
+                f"and dropped {self.n_landmarks_without_valid_boxes} landmark"
+                f"(s) left with none. Detections are missing from everything "
+                f"downstream of this ingest.")
 
 
 class IngestResult:
@@ -684,6 +711,11 @@ def run_ingest(dataset_base: Path, frame_landmarks_dir: Path,
         frame.n_observations = n_frame_obs
 
     stats.n_observations = len(observations)
+    # Reported here rather than left to each caller: there are four call
+    # sites, a caller that forgets is indistinguishable from a clean ingest,
+    # and the counters exist precisely because this function drops geometry
+    # instead of raising. stderr so it cannot disturb parsed stdout.
+    print(stats.summary(), file=sys.stderr, flush=True)
     return IngestResult(
         frames, observations, anchor_lat, anchor_lon, stats,
         dataset_name, frame_landmarks_ref)

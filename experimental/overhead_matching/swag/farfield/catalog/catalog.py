@@ -37,6 +37,9 @@ from experimental.overhead_matching.swag.farfield.catalog import schema
 # ---------------------------------------------------------------------------
 # Far-field tag vocabulary
 # ---------------------------------------------------------------------------
+# Why this list is not the street-level keep-list, and the row counts behind
+# religion/denomination and the name:en / *-Latn exceptions: see
+# docs/farfield/decisions.md, 2026-08 'Far-field tag vocabulary'.
 # Keep identity and appearance tags that a distant observer can judge,
 # including maritime and ENC navigation-aid vocabulary. Operational
 # street-level metadata that is not visible at range is omitted.
