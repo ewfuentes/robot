@@ -679,6 +679,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("numpy"),
+        requirement("pillow"),
         ":attribution",
         ":basemap_lib",
         ":forensics_lib",
@@ -753,6 +754,7 @@ py_test(
         requirement("flask"),
         requirement("msgspec"),
         requirement("numpy"),
+        requirement("pillow"),
         ":attribution",
         ":filter",
         ":metrics",

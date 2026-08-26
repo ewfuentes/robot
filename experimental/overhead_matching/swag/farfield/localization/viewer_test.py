@@ -10,7 +10,7 @@ same payload.
         produces a complete payload, with notes explaining each absent panel
   T-V2  particles are drawn as a WEIGHTED sample, so a cloud that is mostly
         dead weight does not render as if it were alive
-  T-V3  the referenced/backdrop split covers the catalog exactly once
+  T-V3  only landmarks referenced by matcher tables enter the map payload
   T-V4  a stale attribution cache is surfaced as a note, not silently used
   T-V5  the page renders self-contained, with no external subresources — the
         CSS/JS now live as viewer_assets/ files and must be INLINED
@@ -19,8 +19,11 @@ same payload.
         shared with the static viewer
   T-V8  presentation helpers preserve natural ordering, bounded MAP emphasis,
         click-only OSM navigation, and ancestry-bound tracking evidence
+  T-V9  map interaction, playback keys, and wide evidence stay lightweight
 """
 
+import base64
+import io
 import json
 import re
 import tempfile
@@ -30,6 +33,7 @@ from unittest import mock
 
 import msgspec
 import numpy as np
+from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
@@ -84,9 +88,10 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
     return data, config, result.history
 
 
-def _make_satellite(directory: Path) -> None:
+def _make_satellite(directory: Path, size=(320, 160)) -> None:
     directory.mkdir()
-    (directory / "wide.jpg").write_bytes(b"test-jpeg")
+    Image.new("RGB", size, (40, 90, 130)).save(directory / "wide.jpg",
+                                                format="JPEG")
     (directory / "satellite.json").write_text(json.dumps({
         "source": "viewer test imagery",
         "layers": [{
@@ -141,6 +146,28 @@ class PayloadTest(unittest.TestCase):
             # Every absent panel is explained.
             notes = " ".join(payload["notes"])
             self.assertIn("attribution cache", notes)
+
+    def test_satellite_display_copy_is_resolution_bounded(self):
+        """T-V9. Large source mosaics must not become huge decoded textures."""
+        with tempfile.TemporaryDirectory() as tmp:
+            satellite = Path(tmp) / "satellite"
+            source_size = (2304, 768)
+            _make_satellite(satellite, size=source_size)
+            notes = []
+
+            payload = viewer_payload._satellite_payload(  # noqa: SLF001
+                satellite, notes)
+
+            encoded = payload["layers"][0]["uri"].split(",", 1)[1]
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                self.assertEqual(max(image.size),
+                                 viewer_payload.SATELLITE_MAX_EDGE_PX)
+                self.assertAlmostEqual(image.width / image.height,
+                                       source_size[0] / source_size[1], places=2)
+            with Image.open(satellite / "wide.jpg") as source:
+                self.assertEqual(source.size, source_size)
+            self.assertTrue(any("source imagery unchanged" in note
+                                for note in notes))
 
     def test_exact_landmark_geometry_and_bounds_are_not_truncated(self):
         line = structs.LandmarkEntry(
@@ -245,19 +272,21 @@ class PayloadTest(unittest.TestCase):
         index = viewer_payload._weighted_sample(spike, 50, rng)  # noqa: SLF001
         self.assertTrue((index == 7).all())
 
-    def test_referenced_and_backdrop_partition_the_catalog(self):
-        """T-V3. A landmark drawn twice is confusing; one drawn zero times is
-        a silent omission."""
+    def test_map_payload_contains_only_referenced_landmarks(self):
+        """T-V3. Unmatched catalog context does not belong in the map DOM."""
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             payload = viewer_payload.build(run_dir)
-            n_catalog = payload["run"]["nCatalog"]
-            self.assertEqual(len(payload["landmarks"])
-                             + len(payload["backdrop"]), n_catalog)
+            self.assertEqual(payload["backdrop"], [])
             self.assertTrue(payload["landmarks"],
-                            "no landmark is referenced, so the map would be "
-                            "an undifferentiated dot field")
+                            "the synthetic matcher should reference landmarks")
+            expected = viewer_payload.referenced_landmark_ids(
+                run_io.read_run(run_dir))
+            self.assertEqual({landmark["id"]
+                              for landmark in payload["landmarks"]}, expected)
+            self.assertTrue(all(geometry["referenced"]
+                                for geometry in payload["landmarkGeometry"]))
 
     def test_every_landmark_gets_a_glyph_class(self):
         for type_key, expected in (
@@ -339,7 +368,8 @@ class PayloadTest(unittest.TestCase):
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             payload = viewer_payload.build(
-                run_dir, feather=Path(tmp) / "nope.feather")
+                run_dir, feather=Path(tmp) / "nope.feather",
+                with_basemap=True)
             self.assertEqual(payload["basemap"]["layers"], [])
             self.assertTrue(any("does not exist" in note
                                 for note in payload["notes"]))
@@ -395,6 +425,33 @@ class PageTest(unittest.TestCase):
             for term in ("consistent", "geometry-unexplained", "no-evidence",
                          "matcher-fault", "filter-fault", "anti"):
                 self.assertIn(f"<b>{term}</b>", html)
+
+    def test_map_and_tracklet_interactions_stay_lightweight(self):
+        """T-V9. Guard the defaults and event path behind snappy interaction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertNotIn('id="tgBase"', html)
+            self.assertNotIn("function buildBasemap()", html)
+            self.assertIn("D.landmarkGeometry.filter(g => g.referenced)", html)
+            self.assertNotIn("const BACKDROP =", html)
+            self.assertIn("scheduleViewCommit();", html)
+            self.assertIn('$("dynamicmap").setAttribute("transform"', html)
+            self.assertIn('e.code === "Space"', html)
+            self.assertIn("togglePlayback();", html)
+            self.assertIn('target.closest("input, textarea, select, button, a")',
+                          html)
+            self.assertIn(".grid2>*{min-width:0;overflow:hidden}", html)
+            self.assertIn("img.crop{display:block;width:100%;max-width:100%",
+                          html)
+            self.assertIn("const trkLabel = id =>", html)
+            self.assertIn("const compactTracklets = text =>", html)
+            self.assertIn("esc(trkLabel(a.trk))", html)
+            self.assertIn("esc(trkLabel(trk.id))", html)
+            self.assertIn("esc(compactTracklets(e.label))", html)
+            self.assertIn("esc(compactTracklets(e.detail))", html)
 
     def test_page_feature_detects_the_live_server_contract(self):
         with tempfile.TemporaryDirectory() as tmp:

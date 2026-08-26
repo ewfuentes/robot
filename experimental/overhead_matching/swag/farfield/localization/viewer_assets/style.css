@@ -146,6 +146,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);
 .notes li{margin:3px 0}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));
   gap:13px}
+.grid2>*{min-width:0;overflow:hidden}
+img.crop{display:block;width:100%;max-width:100%;height:auto;object-fit:contain;
+  border-radius:6px}
 .bar{height:9px;border-radius:2px;background:var(--water);display:block}
 .empty{color:var(--ink-faint);font-size:12px;font-style:italic;padding:6px 0}
 .wf{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;
