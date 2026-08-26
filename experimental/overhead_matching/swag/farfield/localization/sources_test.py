@@ -61,6 +61,26 @@ class SourceAncestryTest(unittest.TestCase):
             sources._validate_run_ancestry(  # noqa: SLF001
                 run.path, tracks, other_audits)
 
+    def test_tracking_evidence_pages_come_from_declared_ancestor_outputs(self):
+        path = self.root / "tracks-with-viewer"
+        outputs = ("m3_track_T3.html", "track_full_T2.html",
+                   "track_full_T10.html", "tracks_full.json")
+        with artifact.ArtifactDirectoryBuilder(
+                path, kind=paths_lib.OBJECT_TRACKS, dataset=DATASET,
+                version="tracks-with-viewer", generator="sources_test",
+                git_commit="test", arguments=(), upstreams=(),
+                config={"range": {"name": "full"}},
+                declared_outputs=outputs) as builder:
+            for relative in outputs:
+                builder.output_path(relative).write_text(relative)
+        tracks = artifact.open_artifact(path)
+
+        pages = sources._tracking_evidence_pages(tracks)  # noqa: SLF001
+
+        self.assertEqual(pages, {
+            2: "track_full_T2.html", 10: "track_full_T10.html"})
+        self.assertNotIn(3, pages, "legacy m3-style names are not ancestry")
+
 
 if __name__ == "__main__":
     unittest.main()

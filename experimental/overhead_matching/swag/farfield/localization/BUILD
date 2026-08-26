@@ -679,6 +679,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("numpy"),
+        requirement("pillow"),
         ":attribution",
         ":basemap_lib",
         ":forensics_lib",
@@ -727,6 +728,7 @@ py_library(
         ":run_io",
         ":viewer_lib",
         ":viewer_payload",
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
@@ -752,6 +754,7 @@ py_test(
         requirement("flask"),
         requirement("msgspec"),
         requirement("numpy"),
+        requirement("pillow"),
         ":attribution",
         ":filter",
         ":metrics",
@@ -762,8 +765,10 @@ py_test(
         ":structs",
         ":viewer_lib",
         ":viewer_payload",
-        "//experimental/overhead_matching/swag/farfield/viewers:page",
         ":viewer_server_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
 

@@ -10,22 +10,35 @@ same payload.
         produces a complete payload, with notes explaining each absent panel
   T-V2  particles are drawn as a WEIGHTED sample, so a cloud that is mostly
         dead weight does not render as if it were alive
-  T-V3  the referenced/backdrop split covers the catalog exactly once
+  T-V3  only landmarks referenced by matcher tables enter the map payload
   T-V4  a stale attribution cache is surfaced as a note, not silently used
-  T-V5  the page renders self-contained, with no external references — the
+  T-V5  the page renders self-contained, with no external subresources — the
         CSS/JS now live as viewer_assets/ files and must be INLINED
   T-V6  the server serves the same payload and its two extra endpoints
+  T-V7  live-only detail is opt-in, while satellite and track-fit semantics are
+        shared with the static viewer
+  T-V8  presentation helpers preserve natural ordering, bounded MAP emphasis,
+        click-only OSM navigation, and ancestry-bound tracking evidence
+  T-V9  map interaction, playback keys, and wide evidence stay lightweight
 """
 
+import base64
+import io
 import json
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import msgspec
 import numpy as np
+from PIL import Image
 
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    paths as paths_lib,
+)
 from experimental.overhead_matching.swag.farfield.localization import (
     attribution,
     metrics,
@@ -75,7 +88,44 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
     return data, config, result.history
 
 
+def _make_satellite(directory: Path, size=(320, 160)) -> None:
+    directory.mkdir()
+    Image.new("RGB", size, (40, 90, 130)).save(directory / "wide.jpg",
+                                                format="JPEG")
+    (directory / "satellite.json").write_text(json.dumps({
+        "source": "viewer test imagery",
+        "layers": [{
+            "image": "wide.jpg", "zoom": 12,
+            "east_min": -1000.0, "east_max": 1000.0,
+            "north_min": -500.0, "north_max": 500.0,
+        }],
+    }))
+
+
+def _make_tracking_viewer_artifact(directory: Path) -> Path:
+    outputs = ("index.html", "track_full_T2.html", "videos/full_T2.mp4")
+    with artifact.ArtifactDirectoryBuilder(
+            directory, kind=paths_lib.OBJECT_TRACKS, dataset="synthetic",
+            version="viewer-test", generator="viewer_test",
+            git_commit="test", arguments=(), upstreams=(),
+            config={"range": {"name": "full"}},
+            declared_outputs=outputs) as builder:
+        builder.output_path("index.html").write_text("track index")
+        builder.output_path("track_full_T2.html").write_text(
+            "<video src='videos/full_T2.mp4'></video>")
+        video = builder.output_path("videos/full_T2.mp4")
+        video.parent.mkdir()
+        video.write_bytes(b"test-video")
+    return directory
+
+
 class PayloadTest(unittest.TestCase):
+    def test_tracklet_ids_sort_naturally(self):
+        tracklets = ["LT10", "LT2", "LT1", "LT20", "LT11"]
+        self.assertEqual(
+            sorted(tracklets, key=viewer_payload._natural_key),  # noqa: SLF001
+            ["LT1", "LT2", "LT10", "LT11", "LT20"])
+
     def test_bare_run_directory_still_builds(self):
         """T-V1. Optional context is optional."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,6 +146,28 @@ class PayloadTest(unittest.TestCase):
             # Every absent panel is explained.
             notes = " ".join(payload["notes"])
             self.assertIn("attribution cache", notes)
+
+    def test_satellite_display_copy_is_resolution_bounded(self):
+        """T-V9. Large source mosaics must not become huge decoded textures."""
+        with tempfile.TemporaryDirectory() as tmp:
+            satellite = Path(tmp) / "satellite"
+            source_size = (2304, 768)
+            _make_satellite(satellite, size=source_size)
+            notes = []
+
+            payload = viewer_payload._satellite_payload(  # noqa: SLF001
+                satellite, notes)
+
+            encoded = payload["layers"][0]["uri"].split(",", 1)[1]
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                self.assertEqual(max(image.size),
+                                 viewer_payload.SATELLITE_MAX_EDGE_PX)
+                self.assertAlmostEqual(image.width / image.height,
+                                       source_size[0] / source_size[1], places=2)
+            with Image.open(satellite / "wide.jpg") as source:
+                self.assertEqual(source.size, source_size)
+            self.assertTrue(any("source imagery unchanged" in note
+                                for note in notes))
 
     def test_exact_landmark_geometry_and_bounds_are_not_truncated(self):
         line = structs.LandmarkEntry(
@@ -200,19 +272,21 @@ class PayloadTest(unittest.TestCase):
         index = viewer_payload._weighted_sample(spike, 50, rng)  # noqa: SLF001
         self.assertTrue((index == 7).all())
 
-    def test_referenced_and_backdrop_partition_the_catalog(self):
-        """T-V3. A landmark drawn twice is confusing; one drawn zero times is
-        a silent omission."""
+    def test_map_payload_contains_only_referenced_landmarks(self):
+        """T-V3. Unmatched catalog context does not belong in the map DOM."""
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             payload = viewer_payload.build(run_dir)
-            n_catalog = payload["run"]["nCatalog"]
-            self.assertEqual(len(payload["landmarks"])
-                             + len(payload["backdrop"]), n_catalog)
+            self.assertEqual(payload["backdrop"], [])
             self.assertTrue(payload["landmarks"],
-                            "no landmark is referenced, so the map would be "
-                            "an undifferentiated dot field")
+                            "the synthetic matcher should reference landmarks")
+            expected = viewer_payload.referenced_landmark_ids(
+                run_io.read_run(run_dir))
+            self.assertEqual({landmark["id"]
+                              for landmark in payload["landmarks"]}, expected)
+            self.assertTrue(all(geometry["referenced"]
+                                for geometry in payload["landmarkGeometry"]))
 
     def test_every_landmark_gets_a_glyph_class(self):
         for type_key, expected in (
@@ -294,7 +368,8 @@ class PayloadTest(unittest.TestCase):
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             payload = viewer_payload.build(
-                run_dir, feather=Path(tmp) / "nope.feather")
+                run_dir, feather=Path(tmp) / "nope.feather",
+                with_basemap=True)
             self.assertEqual(payload["basemap"]["layers"], [])
             self.assertTrue(any("does not exist" in note
                                 for note in payload["notes"]))
@@ -319,9 +394,10 @@ class PageTest(unittest.TestCase):
             self.assertTrue(html.startswith(page.GENERATED_MARK))
             self.assertIn("<!DOCTYPE html>", html)
             self.assertIn("window.__RUN__", html)
-            # No external hosts, no external subresources.
+            # No external subresources. Ordinary <a href> navigation is okay:
+            # OSM ids are clickable, but nothing leaves the page until click.
             for pattern in (r'src\s*=\s*["\']https?://',
-                            r'href\s*=\s*["\']https?://',
+                            r'<link[^>]*href\s*=\s*["\']https?://',
                             r'@import\s+url\(', r'fetch\(["\']https?://'):
                 self.assertIsNone(re.search(pattern, html),
                                   f"page references something external: "
@@ -332,15 +408,76 @@ class PageTest(unittest.TestCase):
             self.assertIsNotNone(match)
             json.loads(match.group(1))
 
+    def test_presentation_helpers_are_inlined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertIn("const TRAIL_TAIL = 60", html)
+            self.assertIn('stroke-width=".8" opacity=".18"', html)
+            self.assertIn("latest 60 keyframes emphasized", html)
+            self.assertIn("/^osm:(node|way|relation):(\\d+)$/", html)
+            self.assertIn(
+                'href="https://www.openstreetmap.org/${m[1]}/${m[2]}"',
+                html)
+            self.assertIn('target="_blank" rel="noopener"', html)
+            for term in ("consistent", "geometry-unexplained", "no-evidence",
+                         "matcher-fault", "filter-fault", "anti"):
+                self.assertIn(f"<b>{term}</b>", html)
+
+    def test_map_and_tracklet_interactions_stay_lightweight(self):
+        """T-V9. Guard the defaults and event path behind snappy interaction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertNotIn('id="tgBase"', html)
+            self.assertNotIn("function buildBasemap()", html)
+            self.assertIn("D.landmarkGeometry.filter(g => g.referenced)", html)
+            self.assertNotIn("const BACKDROP =", html)
+            self.assertIn("scheduleViewCommit();", html)
+            self.assertIn('$("dynamicmap").setAttribute("transform"', html)
+            self.assertIn('e.code === "Space"', html)
+            self.assertIn("togglePlayback();", html)
+            self.assertIn('target.closest("input, textarea, select, button, a")',
+                          html)
+            self.assertIn(".grid2>*{min-width:0;overflow:hidden}", html)
+            self.assertIn("img.crop{display:block;width:100%;max-width:100%",
+                          html)
+            self.assertIn("const trkLabel = id =>", html)
+            self.assertIn("const compactTracklets = text =>", html)
+            self.assertIn("esc(trkLabel(a.trk))", html)
+            self.assertIn("esc(trkLabel(trk.id))", html)
+            self.assertIn("esc(compactTracklets(e.label))", html)
+            self.assertIn("esc(compactTracklets(e.detail))", html)
+
     def test_page_feature_detects_the_live_server_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             html = viewer.render_html(viewer_payload.build(run_dir))
             self.assertIn('id="liveStatus"', html)
+            self.assertIn('id="tgFull" disabled', html)
             self.assertIn('apiJson("/api/health")', html)
-            self.assertIn('apiJson("/api/checkpoint/" + keyframe)', html)
+            self.assertIn(
+                'apiJson("/api/checkpoint/" + keyframe + "?view=map")', html)
             self.assertIn('apiJson("/api/replay"', html)
+            self.assertIn(
+                "if (showFullParticles) loadFullCheckpoint(ck);", html)
+            self.assertIn("mapLayers().innerHTML = out", html)
+
+    def test_fit_track_prefers_truth_and_falls_back_to_the_estimate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertIn(
+                "const track = D.truth.length ? D.truth : H.map(", html)
+            self.assertNotIn(
+                "D.truth.forEach(p => g(px0(p[0]), py0(p[1])));", html)
 
     def test_assets_are_inlined_from_the_asset_files(self):
         """The CSS/JS live as viewer_assets/ files (data deps) and are inlined
@@ -516,6 +653,60 @@ class ServerTest(unittest.TestCase):
         self.assertGreater(n, viewer_payload.MAX_PARTICLES_PER_FRAME,
                            "the run is too small for this test to prove the "
                            "endpoint beats the inlined sample")
+
+    def test_checkpoint_map_view_omits_unused_particle_fields(self):
+        data = run_io.read_run(self.run_dir)
+        kf = sorted(data.checkpoints)[len(data.checkpoints) // 2]
+
+        response = self.client.get(f"/api/checkpoint/{kf}?view=map")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        n = data.checkpoints[kf]["east_m"].shape[0]
+        self.assertEqual(set(body), {"n", "e", "n_m", "mode"})
+        self.assertEqual(body["n"], n)
+        for key in ("e", "n_m", "mode"):
+            self.assertEqual(len(body[key]), n, f"{key} is truncated")
+
+    def test_live_server_passes_satellite_to_the_shared_payload(self):
+        satellite = Path(self._tmp.name) / "satellite"
+        _make_satellite(satellite)
+        client = viewer_server.create_app(
+            self.run_dir, satellite=satellite).test_client()
+
+        response = client.get("/api/payload")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["satellite"]["source"],
+                         "viewer test imagery")
+        self.assertEqual(len(payload["satellite"]["layers"]), 1)
+        self.assertTrue(payload["satellite"]["layers"][0]["uri"].startswith(
+            "data:image/jpeg;base64,"))
+
+    def test_tracking_evidence_serves_only_declared_ancestor_files(self):
+        tracks_dir = _make_tracking_viewer_artifact(
+            Path(self._tmp.name) / "tracks")
+        stub_payload = {"checkpoints": {}}
+        with mock.patch.object(
+                viewer_server.viewer_payload, "build",
+                return_value=stub_payload) as build:
+            client = viewer_server.create_app(
+                self.run_dir, tracks_dir=tracks_dir,
+                audit_dir=Path(self._tmp.name) / "audits").test_client()
+
+            page_response = client.get(
+                "/api/tracking/track_full_T2.html")
+            video_response = client.get(
+                "/api/tracking/videos/full_T2.mp4")
+            missing_response = client.get(
+                "/api/tracking/undeclared.txt")
+
+        self.assertEqual(page_response.status_code, 200)
+        self.assertIn(b"videos/full_T2.mp4", page_response.data)
+        self.assertEqual(video_response.data, b"test-video")
+        self.assertEqual(missing_response.status_code, 404)
+        build.assert_called_once()
 
     def test_missing_checkpoint_lists_what_exists(self):
         response = self.client.get("/api/checkpoint/999999")

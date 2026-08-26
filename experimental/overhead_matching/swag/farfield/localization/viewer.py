@@ -4,12 +4,12 @@
      ribbons whose thickness is their weight, and the §7.3 event index as a
      clickable glyph rail. The entry point: open a run, look at the strip,
      click.
-  2. **Map view** — offline vector basemap, catalog backdrop, landmarks glyphed
-     by type, the particle cloud at the selected keyframe drawn as a *weighted*
-     sample and coloured by mode, per-mode 1-sigma circles with heading ticks,
-     bearing wedges from the selected mode, correspondence lines with opacity
-     proportional to association posterior, and a red flag where the matcher's
-     best claim disagrees with where that landmark actually lies.
+  2. **Map view** — optional satellite imagery, matcher-referenced landmarks
+     glyphed by type, the particle cloud at the selected keyframe drawn as a
+     *weighted* sample and coloured by mode, per-mode 1-sigma circles with
+     heading ticks, bearing wedges from the selected mode, correspondence lines
+     with opacity proportional to association posterior, and a red flag where
+     the matcher's best claim disagrees with where that landmark actually lies.
   3. **Tracklet inspector** — one tracklet's completed-run evidence:
      bearing/kappa series, LLR bars per candidate, per-mode association
      evolution and attribution series, and a truth-privileged culpability
@@ -39,8 +39,8 @@ Two rules the page keeps:
 **Truth-privileged content is fenced.** Anything derived from GPS truth is
 visually marked and is evaluation output only; it is never a filter input.
 
-**Nothing is silently truncated.** Where a cap applies — particles per frame,
-table entries shown, basemap vertices — the page states it.
+**Nothing is silently truncated.** Where a cap applies — particles per frame
+or table entries shown — the page states it.
 """
 
 import argparse
@@ -121,8 +121,8 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <section>
 <h2>Map <span class="hint">&mdash; &sect;7.4 view 2</span></h2>
 <div class="controls" style="margin-bottom:8px">
-<button id="tgBase" class="on">basemap</button>
 <button id="tgPart" class="on">particles</button>
+<button id="tgFull" disabled>full particles</button>
 <button id="tgGhost" class="on">ghosts</button>
 <button id="tgSat" class="on">satellite</button>
 <button id="tgFitTrack">fit track</button>
@@ -132,12 +132,17 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <svg id="map"></svg>
 <div class="legend"><span id="mapnote"></span></div>
 <div class="legend"><b>Scroll to zoom, drag to pan, double-click to zoom in.</b>
-Opens fitted to the trajectory; <b>full extent</b> restores the whole catalog box
-and <b>fit track</b> returns. The zoom is in the projection, so landmark glyphs,
-labels and flag rings keep a constant size while 1&sigma; circles and the scale
-bar stay true to the ground.</div>
-<div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
-dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
+Opens fitted to the complete truth track (the estimate when truth is absent);
+<b>full extent</b> restores the matched-landmark extent and <b>fit track</b>
+returns.
+Only landmarks used by the matcher are shown; unrelated OSM context is omitted.
+The live server keeps the fast weighted particle sample unless <b>full
+particles</b> is explicitly enabled. The zoom is in the projection, so landmark
+glyphs, labels and flag rings keep a constant size while 1&sigma; circles and the
+scale bar stay true to the ground.</div>
+<div class="legend">Dashed grey is ground truth, magenta is the MAP trail
+(latest 60 keyframes emphasized, older history faint), dashed blue are
+counterfactual ghosts. Circles are per-mode 1&sigma; with a
 heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
 selected mode; dashed coloured lines are correspondence with opacity &prop;
 association posterior. A <b style="color:var(--port)">red dotted line and
@@ -233,8 +238,8 @@ def main():
     parser.add_argument("--no_source_chips", action="store_true",
                         help="validate sources without embedding audit chips")
     parser.add_argument("--feather", type=Path, default=None,
-                        help="landmark feather, for the offline vector "
-                             "basemap")
+                        help="accepted for command compatibility; unmatched "
+                             "OSM context is no longer rendered")
     parser.add_argument("--ghost", type=Path, action="append", default=[],
                         help="counterfactual run directory to overlay "
                              "(repeatable)")
@@ -247,10 +252,8 @@ def main():
                              "embedded as an imagery underlay. This must be "
                              "a side output separate from the run.")
     parser.add_argument("--basemap_detail", type=float, default=1.0,
-                        help="Scale the basemap's vertex budgets up and its "
-                             "simplification tolerance down. The defaults suit "
-                             "reading the whole extent at once; the map zooms, "
-                             "so pass 3-6 for a page you will zoom into.")
+                        help="deprecated compatibility option; unmatched OSM "
+                             "context is no longer rendered")
     parser.add_argument("--body_only", action="store_true",
                         help="emit a fragment for embedding rather than a "
                              "standalone document")
@@ -305,7 +308,6 @@ def main():
           f"{len(payload['tracklets'])} tracklets, "
           f"{len(payload['events'])} events, "
           f"{len(payload['landmarks'])} referenced landmarks, "
-          f"{len(payload['backdrop'])} backdrop rows, "
           f"{len(payload['ghosts'])} ghosts")
     print(f"  attribution: "
           + ("absent" if not payload["attribution"]

@@ -27,11 +27,14 @@ is supposed to show.
 
 import base64
 import dataclasses
+import io
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
@@ -47,6 +50,10 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # Enough particles to read a cloud's shape, few enough to inline for every
 # checkpoint of a long run.
 MAX_PARTICLES_PER_FRAME = 900
+# Bound decoded raster memory as well as payload size. The viewer is for spatial
+# context, not source-image inspection; a 6k-pixel mosaic makes browser pan/zoom
+# pay for detail that cannot be seen in the 780-pixel map.
+SATELLITE_MAX_EDGE_PX = 2048
 # Mode colours, drawn from chart symbology and kept clear of the
 # starboard-green / port-red semantic pair so "which mode" never reads as
 # "good or bad".
@@ -248,6 +255,13 @@ def _mode_trajectories(data) -> list:
     return sorted(trajectories.values(), key=lambda m: m["id"])
 
 
+def _natural_key(value: str) -> tuple:
+    """Compare numeric runs numerically, so LT2 sorts before LT10."""
+    parts = re.split(r"([0-9]+)", value)
+    return tuple((1, int(part)) if part.isdigit()
+                 else (0, part.casefold()) for part in parts)
+
+
 def _tracklet_dossiers(data, cache, triage, bundle,
                        max_table_entries: int = 40) -> list:
     """The §7.4 view-3 payload: one tracklet's whole life in one object."""
@@ -269,7 +283,7 @@ def _tracklet_dossiers(data, cache, triage, bundle,
             })
 
     out = []
-    for tracklet_id in sorted(epochs_by_tracklet):
+    for tracklet_id in sorted(epochs_by_tracklet, key=_natural_key):
         epochs = sorted(epochs_by_tracklet[tracklet_id],
                         key=lambda m: m.anchor_keyframe_idx)
         table = data.tables.get(tracklet_id)
@@ -333,6 +347,13 @@ def _tracklet_dossiers(data, cache, triage, bundle,
                 "verdict": source.verdict,
                 "confidence": source.confidence,
                 "chip": source.chip_data_uri,
+                # Resolved from the exact ancestor artifact's manifest, never
+                # by searching old tracking-run filenames.
+                "evidencePage": source.evidence_page,
+                "evidenceHref": (
+                    (Path(bundle.tracks_ref.path) / source.evidence_page)
+                    .resolve().as_uri()
+                    if source.evidence_page is not None else None),
             }
         out.append(entry)
     return out
@@ -452,6 +473,24 @@ def _ghost_payload(ghost_dirs) -> tuple:
     return ghosts, notes
 
 
+def _viewer_satellite_blob(image: Path) -> tuple[bytes, tuple[int, int], bool]:
+    """Return a browser-sized JPEG while leaving the source mosaic untouched."""
+    blob = image.read_bytes()
+    with Image.open(io.BytesIO(blob)) as raster:
+        original_size = raster.size
+        if max(original_size) <= SATELLITE_MAX_EDGE_PX:
+            return blob, original_size, False
+        raster.thumbnail(
+            (SATELLITE_MAX_EDGE_PX, SATELLITE_MAX_EDGE_PX),
+            Image.Resampling.LANCZOS)
+        if raster.mode not in ("RGB", "L"):
+            raster = raster.convert("RGB")
+        output = io.BytesIO()
+        raster.save(output, format="JPEG", quality=82, optimize=True,
+                    subsampling=2)
+        return output.getvalue(), raster.size, True
+
+
 def _satellite_payload(directory, notes) -> dict | None:
     """Optional raster underlay layers, embedded as data URIs.
 
@@ -462,9 +501,9 @@ def _satellite_payload(directory, notes) -> dict | None:
 
     Embedded rather than referenced, for the same reason the vector basemap is
     built offline: the page is a record that has to survive being copied. The
-    cost is bytes, and imagery is easily the largest thing in a payload, which is
-    why it is opt-in. The licence note travels into the notes so a page built
-    with non-redistributable imagery says so.
+    cost is bytes, and imagery is easily the largest thing in a payload, so the
+    embedded display copy is resolution-bounded. The licence note travels into
+    the notes so a page built with non-redistributable imagery says so.
     """
     if directory is None:
         return None
@@ -478,18 +517,25 @@ def _satellite_payload(directory, notes) -> dict | None:
     except Exception as exc:  # noqa: BLE001 - a bad underlay must not be fatal
         notes.append(f"satellite underlay unreadable ({exc}); skipped")
         return None
-    layers, total = [], 0
+    layers, total, downsampled = [], 0, 0
     for entry in spec.get("layers", []):
         image = directory / entry.get("image", "")
         if not image.exists():
             notes.append(f"satellite underlay: {image} missing; layer skipped")
             continue
-        blob = image.read_bytes()
+        try:
+            blob, display_size, resized = _viewer_satellite_blob(image)
+        except (OSError, ValueError) as exc:
+            notes.append(f"satellite underlay: {image} unreadable ({exc}); "
+                         "layer skipped")
+            continue
         total += len(blob)
+        downsampled += int(resized)
         layers.append({
             "e0": float(entry["east_min"]), "e1": float(entry["east_max"]),
             "n0": float(entry["north_min"]), "n1": float(entry["north_max"]),
             "zoom": entry.get("zoom"),
+            "width": display_size[0], "height": display_size[1],
             "uri": "data:image/jpeg;base64," + base64.b64encode(blob).decode(
                 "ascii"),
         })
@@ -499,6 +545,10 @@ def _satellite_payload(directory, notes) -> dict | None:
     notes.append(f"satellite underlay: {len(layers)} layer(s), "
                  f"{total / 1e6:.1f} MB, from "
                  f"{spec.get('source', 'unstated source')}")
+    if downsampled:
+        notes.append(f"satellite underlay: {downsampled} display layer(s) "
+                     f"downsampled to at most {SATELLITE_MAX_EDGE_PX}px; "
+                     "source imagery unchanged")
     if spec.get("licence"):
         notes.append(f"satellite underlay licence: {spec['licence']}")
     return {"layers": layers, "source": spec.get("source", "unstated")}
@@ -508,7 +558,7 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
           audit_dir: Path | None = None, feather: Path | None = None, ghost_dirs=(),
           max_particles: int = MAX_PARTICLES_PER_FRAME,
           embed_source_chips: bool = True,
-          with_basemap: bool = True,
+          with_basemap: bool = False,
           basemap_detail: float = 1.0,
           satellite: Path | None = None) -> dict:
     """The whole payload. See the module docstring for what is optional.
@@ -601,9 +651,11 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
 
     landmark_geometry = []
     for landmark in manifest.landmarks:
+        if landmark.landmark_id not in referenced:
+            continue
         geometry = _landmark_geometry(landmark)
         if geometry is not None:
-            geometry["referenced"] = landmark.landmark_id in referenced
+            geometry["referenced"] = True
             landmark_geometry.append(geometry)
     metric_config = manifest.position_mass_metric
     metric_summary = (
@@ -656,9 +708,9 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
                        "e": round(float(e), 1), "n": round(float(n), 1)}
                       for lm, e, n in zip(manifest.landmarks, east, north)
                       if lm.landmark_id in referenced],
-        "backdrop": [[int(round(float(e))), int(round(float(n)))]
-                     for lm, e, n in zip(manifest.landmarks, east, north)
-                     if lm.landmark_id not in referenced],
+        # Deliberately no unmatched catalog backdrop: this is a localization
+        # viewer, and unrelated OSM context made the map slower and less useful.
+        "backdrop": [],
         "landmarkGeometry": landmark_geometry,
         "basemap": basemap.to_payload(),
         "satellite": _satellite_payload(satellite, notes),

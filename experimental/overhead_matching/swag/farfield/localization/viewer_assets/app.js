@@ -2,7 +2,8 @@ const D = window.__RUN__;
 const H = D.health, KF = D.run.nKeyframes - 1, RUN = D.run;
 const $ = id => document.getElementById(id);
 let t = 0, selMode = null, selTrk = null, tab = "state";
-let showGhosts = true, showBase = true, showParticles = true;
+let showGhosts = true, showParticles = true;
+let showFullParticles = false;
 // Imagery defaults ON when supplied: if someone went to the
 // trouble of fetching a mosaic, they want to see it.
 let showSat = true;
@@ -13,17 +14,53 @@ const fmt = (v, d = 0) => (v === undefined || v === null || !isFinite(v))
   ? "—" : v.toFixed(d);
 const esc = s => String(s == null ? "" : s)
   .replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const OSM_ID = /^osm:(node|way|relation):(\d+)$/;
+// OSM ids are navigation links, never fetched resources. stopPropagation
+// keeps a click from also selecting the containing association/tracklet row.
+const lmLink = id => {
+  const m = OSM_ID.exec(String(id));
+  return m ? `<a href="https://www.openstreetmap.org/${m[1]}/${m[2]}"
+    target="_blank" rel="noopener"
+    onclick="event.stopPropagation()">${esc(id)}</a>` : esc(id);
+};
+// Proposal provenance is recorded as strings in current run logs and as arrays
+// in some older logs. Link exact OSM ids in either representation without
+// trying to interpret any other provenance text.
+const lmLinks = value => [].concat(value).map(item => String(item)
+  .split(/(osm:(?:node|way|relation):\d+)/g)
+  .map(part => OSM_ID.test(part) ? lmLink(part) : esc(part)).join(""))
+  .join(", ");
+const trackingEvidenceLink = src => {
+  const label = `${esc(src.localId)} (track ${esc(src.sourceTrackId)})`;
+  if (!src.evidencePage) return label;
+  const href = D.server
+    ? "/api/tracking/" + src.evidencePage.split("/")
+      .map(encodeURIComponent).join("/")
+    : src.evidenceHref;
+  return href ? `<a href="${esc(href)}" target="_blank"
+    rel="noopener">${label}</a>` : label;
+};
 const ckKeys = Object.keys(D.checkpoints).map(Number).sort((a, b) => a - b);
 const nearestCk = kf => ckKeys.reduce((best, k) =>
   Math.abs(k - kf) < Math.abs(best - kf) ? k : best, ckKeys[0]);
 const TRK = new Map(D.tracklets.map(x => [x.id, x]));
 const LM = new Map(D.landmarks.map(l => [l.id, l]));
+// Artifact-qualified tracklet ids remain the join key everywhere in data and
+// API calls. In prose, the ancestry digests add no discriminating information:
+// the terminal local id is what a human can scan and compare.
+const trkLabel = id => {
+  const match = /#([^#]+)$/.exec(String(id));
+  return match ? match[1] : String(id);
+};
+const compactTracklets = text => String(text).replace(
+  /[^\s,=]+@sha256:[0-9a-f]+(?:@sha256:[0-9a-f]+)*#[A-Za-z]+\d+/g,
+  trkLabel);
 const wrap180 = a => ((a % 360) + 540) % 360 - 180;
 
 // ---------- optional localhost server ----------
 const LIVE = {
-  features: new Set(), requestedCheckpoints: new Set(),
-  loadedCheckpoints: new Set(), health: null
+  features: new Set(), requestedCheckpoint: null,
+  fullCheckpoint: null, health: null
 };
 
 async function apiJson(path, options) {
@@ -42,6 +79,10 @@ async function detectLiveServer() {
     const status = $("liveStatus");
     status.textContent = "live server";
     status.className = "pill ok";
+    const full = $("tgFull");
+    full.disabled = !LIVE.features.has("checkpoint");
+    full.title = full.disabled ? "requires the localhost viewer server"
+      : "explicitly load every particle for the nearest checkpoint";
     drawTiles();
     drawMap();
     if (tab === "whatif") drawWhatIf();
@@ -52,27 +93,37 @@ async function detectLiveServer() {
 }
 
 async function loadFullCheckpoint(keyframe) {
-  if (!LIVE.features.has("checkpoint")
-      || LIVE.loadedCheckpoints.has(keyframe)
-      || LIVE.requestedCheckpoints.has(keyframe)) return;
-  LIVE.requestedCheckpoints.add(keyframe);
+  if (!showFullParticles || !LIVE.features.has("checkpoint")
+      || (LIVE.fullCheckpoint
+          && LIVE.fullCheckpoint.keyframe === keyframe)
+      || LIVE.requestedCheckpoint === keyframe) return;
+  LIVE.requestedCheckpoint = keyframe;
   try {
-    const body = await apiJson("/api/checkpoint/" + keyframe);
-    D.checkpoints[String(keyframe)] = {
-      e: body.e, n: body.n_m, h: body.h, m: body.mode,
-      w: body.w, event: body.event
+    const body = await apiJson("/api/checkpoint/" + keyframe + "?view=map");
+    // Keep one full checkpoint at a time and leave the inlined weighted samples
+    // untouched. Scrubbing with full particles off therefore remains cheap, and
+    // turning the option off immediately returns to the bounded representation.
+    if (!showFullParticles || nearestCk(t) !== keyframe) return;
+    LIVE.fullCheckpoint = {
+      keyframe: keyframe,
+      particles: {e: body.e, n: body.n_m, m: body.mode}
     };
-    LIVE.loadedCheckpoints.add(keyframe);
     const status = $("liveStatus");
     status.textContent = "live · " + body.n.toLocaleString()
       + " particles at kf " + keyframe;
     drawMap();
   } catch (error) {
-    LIVE.requestedCheckpoints.delete(keyframe);
-    const status = $("liveStatus");
-    status.textContent = "live checkpoint error";
-    status.className = "pill bad";
-    status.title = error.message;
+    // A request can finish after the user has scrubbed away or disabled full
+    // particles. In that case it is stale, not a failure of the current view.
+    if (showFullParticles && nearestCk(t) === keyframe) {
+      const status = $("liveStatus");
+      status.textContent = "live checkpoint error";
+      status.className = "pill bad";
+      status.title = error.message;
+    }
+  } finally {
+    if (LIVE.requestedCheckpoint === keyframe)
+      LIVE.requestedCheckpoint = null;
   }
 }
 
@@ -90,8 +141,8 @@ const grow = (e, n) => { if (!isFinite(e) || !isFinite(n)) return;
   X0 = Math.min(X0, e); X1 = Math.max(X1, e);
   Y0 = Math.min(Y0, n); Y1 = Math.max(Y1, n); };
 D.landmarks.forEach(l => grow(l.e, l.n));
-(D.backdrop || []).forEach(p => grow(p[0], p[1]));
-(D.landmarkGeometry || []).forEach(g => g.points.forEach(p => grow(p[0], p[1])));
+(D.landmarkGeometry || []).filter(g => g.referenced)
+  .forEach(g => g.points.forEach(p => grow(p[0], p[1])));
 D.truth.forEach(p => grow(p[0], p[1]));
 H.forEach(h => grow(h.mapE, h.mapN));
 const pad = (X1 - X0 + Y1 - Y0) * 0.05 + 150;
@@ -142,11 +193,40 @@ const staticTransform = () =>
   `translate(${(-VIEW.x / VIEW.k).toFixed(3)} ${(-VIEW.y / VIEW.k).toFixed(3)})`
   + ` scale(${(1 / VIEW.k).toFixed(6)})`;
 
-function applyView() {
+// Dynamic glyphs are normally re-projected so their labels and line widths stay
+// screen-sized. While the pointer is moving, transform the already-drawn frame
+// instead; rebuilding thousands of SVG coordinates belongs after interaction,
+// not in the input event that must keep up with the user's hand.
+const RENDERED_VIEW = {x: 0, y: 0, k: 1};
+let viewCommitTimer = null;
+function previewView() {
   const z = 1 / VIEW.k;
   const el = $("mapzoom");
   if (el) el.textContent = z < 1.02 ? "full extent" : `${z.toFixed(1)}x`;
-  drawMap();          // the projection moved, so everything is re-projected
+  if ($("staticmap"))
+    $("staticmap").setAttribute("transform", staticTransform());
+  if ($("dynamicmap")) {
+    const scale = RENDERED_VIEW.k / VIEW.k;
+    const tx = (RENDERED_VIEW.x - VIEW.x) / VIEW.k;
+    const ty = (RENDERED_VIEW.y - VIEW.y) / VIEW.k;
+    $("dynamicmap").setAttribute("transform",
+      `translate(${tx.toFixed(3)} ${ty.toFixed(3)}) scale(${scale.toFixed(6)})`);
+  }
+}
+function commitView() {
+  if (viewCommitTimer !== null) {
+    clearTimeout(viewCommitTimer);
+    viewCommitTimer = null;
+  }
+  drawMap();
+}
+function scheduleViewCommit() {
+  if (viewCommitTimer !== null) clearTimeout(viewCommitTimer);
+  viewCommitTimer = setTimeout(commitView, 80);
+}
+function applyView() {
+  previewView();
+  commitView();
 }
 
 function viewFit(x0, y0, x1, y1) {          // rect in BASE pixel space
@@ -163,27 +243,30 @@ function viewFit(x0, y0, x1, y1) {          // rect in BASE pixel space
 
 function viewFitAll() { viewFit(0, 0, MW, MH); }
 
-// The truth track plus the complete estimate trajectory. With no truth, the
-// estimate alone still defines a useful fit instead of falling back to all.
+// "Track" means the recorded trajectory, not every hypothesis the filter has
+// visited. A badly localized MAP estimate can span the entire prior and make a
+// truth+estimate fit indistinguishable from "full extent". Without truth, the
+// estimate remains the only useful fallback.
 function viewFitTrack() {
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
   const g = (x, y) => { if (!isFinite(x) || !isFinite(y)) return;
     x0 = Math.min(x0, x); x1 = Math.max(x1, x);
     y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
-  D.truth.forEach(p => g(px0(p[0]), py0(p[1])));
-  H.forEach(h => g(px0(h.mapE), py0(h.mapN)));
+  const track = D.truth.length ? D.truth : H.map(h => [h.mapE, h.mapN]);
+  track.forEach(p => g(px0(p[0]), py0(p[1])));
   if (x1 <= x0 || y1 <= y0) { viewFitAll(); return; }
   viewFit(x0, y0, x1, y1);
 }
 
 // Zoom about a screen point, keeping the metre under the cursor put.
-function viewZoomBy(factor, sx, sy) {
+function viewZoomBy(factor, sx, sy, commit = true) {
   const k = Math.min(VIEW_MAX_K, Math.max(VIEW_MIN_K, VIEW.k * factor));
   if (k === VIEW.k) return;
   VIEW.x += sx * (VIEW.k - k);
   VIEW.y += sy * (VIEW.k - k);
   VIEW.k = k;
-  applyView();
+  previewView();
+  if (commit) commitView();
 }
 
 // Client coordinates -> the fixed 0..MW x 0..MH screen space.
@@ -199,7 +282,8 @@ function wireMapZoom() {
   svg.addEventListener("wheel", ev => {
     ev.preventDefault();
     const at = eventToScreen(ev);
-    viewZoomBy(Math.exp(ev.deltaY * 0.0016), at.sx, at.sy);
+    viewZoomBy(Math.exp(ev.deltaY * 0.0016), at.sx, at.sy, false);
+    scheduleViewCommit();
   }, {passive: false});
   let drag = null;
   svg.addEventListener("pointerdown", ev => {
@@ -213,11 +297,12 @@ function wireMapZoom() {
     VIEW.x -= (now.sx - drag.sx) * VIEW.k;
     VIEW.y -= (now.sy - drag.sy) * VIEW.k;
     drag.sx = now.sx; drag.sy = now.sy;
-    applyView();
+    previewView();
   });
   const end = ev => {
     if (!drag || ev.pointerId !== drag.id) return;
     drag = null; svg.classList.remove("dragging");
+    commitView();
   };
   svg.addEventListener("pointerup", end);
   svg.addEventListener("pointercancel", end);
@@ -230,32 +315,9 @@ function wireMapZoom() {
 }
 
 // ---------- static map layers, built once ----------
-// The backdrop and basemap do not change with the scrubber, and rebuilding
-// ~12k dots and 37k basemap vertices every frame is what makes a viewer feel
-// broken. Each becomes one path string, concatenated ahead of the live layers.
-const BASE_STYLE = {
-  land:      {fill: "var(--land)",  stroke: "var(--struct)", w: 0.5, op: 1},
-  water:     {fill: "var(--sea)",   stroke: "none",          w: 0,   op: 1},
-  coastline: {fill: "none",         stroke: "var(--struct)", w: 0.9, op: .95},
-  pier:      {fill: "none",         stroke: "var(--struct)", w: 0.7, op: .8},
-  bridge:    {fill: "none",         stroke: "var(--struct)", w: 0.8, op: .8},
-  building:  {fill: "var(--struct)", stroke: "none",         w: 0,   op: .35},
-};
-function buildBasemap() {
-  const layers = (D.basemap && D.basemap.layers) || [];
-  return layers.map(layer => {
-    const st = BASE_STYLE[layer.name] || BASE_STYLE.coastline;
-    let d = "";
-    for (const path of layer.paths) {
-      for (let i = 0; i < path.length; i += 2)
-        d += (i ? "L" : "M") + px0(path[i]).toFixed(1) + " "
-          + py0(path[i + 1]).toFixed(1);
-      if (layer.kind === "polygon") d += "Z";
-    }
-    return `<path d="${d}" fill="${st.fill}" stroke="${st.stroke}"
-      stroke-width="${st.w}" opacity="${st.op}" stroke-linejoin="round"/>`;
-  }).join("");
-}
+// Static context is deliberately limited to imagery and geometry belonging to
+// landmarks referenced by matcher tables. Unmatched OSM shapes are neither
+// emitted nor parsed by the page.
 // A georeferenced raster underlay, if one was supplied. Positioned in BASE
 // pixel space and emitted inside #staticmap, so it inherits the zoom transform
 // and needs no per-frame work. Beneath the vector layers, which are drawn over
@@ -273,23 +335,35 @@ const SATELLITE = (() => {
       style="image-rendering:pixelated"/>`;
   }).join("");
 })();
-const BASEMAP = buildBasemap();
-const BACKDROP = (D.backdrop && D.backdrop.length)
-  ? `<path d="${D.backdrop.map(p => "M" + px0(p[0]).toFixed(1) + " "
-      + py0(p[1]).toFixed(1) + "h.1").join("")}" stroke="var(--ink-faint)"
-      stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".38"/>`
-  : "";
 const LANDMARK_GEOMETRY = !(D.landmarkGeometry || []).length ? ""
-  : D.landmarkGeometry.map(g => {
+  : (() => {
     let d = "";
-    g.points.forEach((p, i) => {
-      d += (i ? "L" : "M") + px0(p[0]).toFixed(2) + " "
-        + py0(p[1]).toFixed(2); });
-    if (g.kind === "polygon") d += "Z";
-    const stroke = g.referenced ? "var(--caution)" : "var(--ink-faint)";
-    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1"
-      stroke-linejoin="round" opacity="${g.referenced ? .75 : .38}"/>`;
-  }).join("");
+    D.landmarkGeometry.filter(g => g.referenced).forEach(g => {
+      g.points.forEach((p, i) => {
+        d += (i ? "L" : "M") + px0(p[0]).toFixed(2) + " "
+          + py0(p[1]).toFixed(2); });
+      if (g.kind === "polygon") d += "Z";
+    });
+    return d ? `<path d="${d}" fill="none" stroke="var(--caution)"
+      stroke-width="1" stroke-linejoin="round" opacity=".75"/>` : "";
+  })();
+
+function mapLayers() {
+  const svg = $("map");
+  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);
+  if (!$("dynamicmap")) {
+    // These strings can contain tens of thousands of vertices and embedded
+    // imagery. Parse them once; subsequent frames replace only the dynamic
+    // group instead of reconstructing the entire SVG tree.
+    svg.innerHTML = `<g id="staticmap">
+      <g id="satelliteLayer">${SATELLITE}</g>
+      <g id="contextLayer">${LANDMARK_GEOMETRY}</g>
+      </g><g id="dynamicmap"></g>`;
+  }
+  $("staticmap").setAttribute("transform", staticTransform());
+  $("satelliteLayer").style.display = showSat ? "" : "none";
+  return $("dynamicmap");
+}
 
 // Scale bar: a map with no basemap and no scale is unreadable at a glance.
 // Recomputed for the current viewport rather than built once, for two reasons:
@@ -464,7 +538,8 @@ function eventRail(y0) {
         fill="${st.col}" font-size="9.5" text-anchor="middle" class="evg"
         data-kf="${ev.keyframe_idx}" style="cursor:pointer"
         opacity="${ev.source === "derived" ? .7 : 1}">${st.glyph}<title>kf ${
-        ev.keyframe_idx} — ${esc(ev.label)}: ${esc(ev.detail)}</title></text>`;
+        ev.keyframe_idx} — ${esc(compactTracklets(ev.label))}: ${
+        esc(compactTracklets(ev.detail))}</title></text>`;
     }
     y += 13;
   }
@@ -530,14 +605,13 @@ function drawStrip() {
 
 // ---------- view 2: map ----------
 function drawMap() {
-  const h = H[t], ck = nearestCk(t), P = D.checkpoints[ck];
-  loadFullCheckpoint(ck);
-  // Static layers stay in base coordinates and are moved by one transform:
-  // re-emitting 138k basemap vertices on every wheel tick is not affordable.
-  let out = `<g id="staticmap" transform="${staticTransform()}">`
-    + (showSat ? SATELLITE : "")
-    + (showBase ? BASEMAP : "") + LANDMARK_GEOMETRY + BACKDROP
-    + `</g>`;
+  const h = H[t], ck = nearestCk(t);
+  const full = (showFullParticles && LIVE.fullCheckpoint
+                && LIVE.fullCheckpoint.keyframe === ck)
+    ? LIVE.fullCheckpoint.particles : null;
+  const P = full || D.checkpoints[ck];
+  if (showFullParticles) loadFullCheckpoint(ck);
+  let out = "";
 
   if (showParticles && P) {
     // One path per mode rather than one circle per particle: 900 DOM nodes per
@@ -565,12 +639,23 @@ function drawMap() {
     g.trail.slice(0, t + 1).forEach((p, i) => {
       d += (i ? "L" : "M") + px(p[0]).toFixed(1) + " " + py(p[1]).toFixed(1); });
     out += `<path d="${d}" fill="none" stroke="var(--water)" stroke-width="1.4"
-      stroke-dasharray="6 3" opacity=".8"><title>${esc(g.label)}</title></path>`;
+      stroke-dasharray="6 3" opacity=".8"><title>${
+      esc(compactTracklets(g.label))}</title></path>`;
   });
-  let dm = "";
-  H.slice(0, t + 1).forEach((r, i) => {
-    dm += (i ? "L" : "M") + px(r.mapE).toFixed(1) + " " + py(r.mapN).toFixed(1); });
-  out += `<path d="${dm}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`;
+  // Keep the complete MAP history visible without letting a long, basin-
+  // hopping run bury the current local behavior in an opaque scribble.
+  const TRAIL_TAIL = 60;
+  const trailSegment = (start, end) => { let d = "";
+    for (let i = start; i <= end; i++)
+      d += (i === start ? "M" : "L") + px(H[i].mapE).toFixed(1) + " "
+        + py(H[i].mapN).toFixed(1);
+    return d; };
+  const trailCut = Math.max(0, t - TRAIL_TAIL);
+  if (trailCut > 0)
+    out += `<path d="${trailSegment(0, trailCut)}" fill="none"
+      stroke="var(--accent)" stroke-width=".8" opacity=".18"/>`;
+  out += `<path d="${trailSegment(trailCut, t)}" fill="none"
+    stroke="var(--accent)" stroke-width="1.6" opacity=".9"/>`;
 
   // Per-mode 1-sigma circle + heading tick.
   h.modes.forEach(m => {
@@ -622,7 +707,7 @@ function drawMap() {
         out += `<line x1="${px(anchor.e).toFixed(1)}" y1="${py(anchor.n).toFixed(1)}"
           x2="${px(top.e).toFixed(1)}" y2="${py(top.n).toFixed(1)}"
           stroke="var(--port)" stroke-width="1.5" stroke-dasharray="1 3"
-          opacity=".85"><title>${esc(mm.trk)}: matcher's best claim ${
+          opacity=".85"><title>${esc(trkLabel(mm.trk))}: matcher's best claim ${
           esc(mm.topLm)} lies ${disagree.toFixed(0)}° off the measured
           bearing under mode ${anchor.id}</title></line>
           <circle cx="${px(top.e).toFixed(1)}" cy="${py(top.n).toFixed(1)}"
@@ -651,6 +736,9 @@ function drawMap() {
   D.landmarks.forEach(l => {
     const hot = active[l.id] !== undefined;
     const r = many ? (hot ? 4.5 : 2.2) : 5.5;
+    const x = px(l.e), y = py(l.n), margin = r + 10;
+    if (x < -margin || x > MW + margin || y < -margin || y > MH + margin)
+      return;
     out += glyph(l, r, hot);
     if ((hot || !many) && (selTrk === null || true))
       out += `<text class="axis" x="${(px(l.e) + 8).toFixed(1)}"
@@ -661,15 +749,23 @@ function drawMap() {
       r="4.5" fill="none" stroke="var(--truth)" stroke-width="2"/>`;
   out += scaleBar();
 
-  const svg = $("map");
-  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);   // fixed: the zoom is in VIEW
-  svg.innerHTML = out;
+  mapLayers().innerHTML = out;
+  $("dynamicmap").removeAttribute("transform");
+  RENDERED_VIEW.x = VIEW.x;
+  RENDERED_VIEW.y = VIEW.y;
+  RENDERED_VIEW.k = VIEW.k;
+  const particleDescription = full
+    ? `all ${P.e.length.toLocaleString()}`
+    : `weighted sample ${P ? P.e.length.toLocaleString() : "0"} of `
+      + RUN.nParticles.toLocaleString();
+  const loading = showFullParticles && !full
+    ? " · loading all particles" : "";
   $("mapnote").innerHTML =
-    `particles: weighted sample of ${RUN.nParticles.toLocaleString()} from `
-    + `checkpoint kf ${ck}${ck !== t ? ` (nearest to ${t})` : ""}`
+    `particles: ${particleDescription} from checkpoint kf ${ck}`
+    + `${ck !== t ? ` (nearest to ${t})` : ""}${loading}`
     + (flags.length ? ` · <b style="color:var(--port)">${flags.length} `
         + `LLR/geometry disagreement${flags.length > 1 ? "s" : ""}: `
-        + flags.map(f => `${esc(f.trk)} ${f.deg.toFixed(0)}°`).join(", ")
+        + flags.map(f => `${esc(trkLabel(f.trk))} ${f.deg.toFixed(0)}°`).join(", ")
         + "</b>" : "");
 }
 
@@ -733,9 +829,9 @@ function assocTable() {
   let out = "";
   for (const a of rows) {
     const parts = Object.entries(a.resp)
-      .map(([lm, p]) => `${esc(lm)} <b>${(p * 100).toFixed(0)}%</b>`).join(" · ");
+      .map(([lm, p]) => `${lmLink(lm)} <b>${(p * 100).toFixed(0)}%</b>`).join(" · ");
     out += `<tr class="click" data-trk="${esc(a.trk)}">
-      <td><code>${esc(a.trk)}</code></td>
+      <td><code>${esc(trkLabel(a.trk))}</code></td>
       <td class="num">${(a.null * 100).toFixed(0)}%</td>
       <td class="num">${(a.surprise * 100).toFixed(0)}%</td>
       <td class="prov">${parts || "—"}</td></tr>`;
@@ -757,7 +853,7 @@ function waterfallHtml(wf) {
     const col = term.kind !== "tracklet" ? "var(--ink-faint)"
       : term.nats < 0 ? "var(--port)" : "var(--starboard)";
     rows += `<div class="lab" title="${esc(term.kind)}">${
-      marker[term.kind] || ""}${esc(term.label)}</div>
+      marker[term.kind] || ""}${esc(compactTracklets(term.label))}</div>
       <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
         <span class="bar" style="width:${w.toFixed(1)}px;max-width:110px;
           background:${col}"></span>
@@ -789,7 +885,7 @@ function drawModes() {
     const p = mode.prov || {};
     const origin = p.source === "proposal"
       ? `proposal #${p.proposal_event_id} (${p.trigger || "?"})`
-        + (p.landmark_ids ? `<br><code>${esc(p.landmark_ids)}</code>` : "")
+        + (p.landmark_ids ? `<br><code>${lmLinks(p.landmark_ids)}</code>` : "")
       : "motion";
     // Sparkline of this mode's weight over its whole life: the §7.4 "weight
     // trajectory" at row scale, so the ledger answers "was it ever strong".
@@ -843,7 +939,7 @@ function drawTrackletList() {
     const nats = trk.attributionTotal;
     return `<tr class="click ${selTrk === trk.id ? "sel" : ""}"
       data-trk="${esc(trk.id)}">
-      <td><code>${esc(trk.id)}</code></td>
+      <td><code>${esc(trkLabel(trk.id))}</code></td>
       <td class="num">${trk.epochs.length}</td>
       <td class="num">${trk.table ? trk.table.nEndorsed : "—"}</td>
       <td class="num" style="color:${nats === undefined ? "inherit"
@@ -857,8 +953,18 @@ function drawTrackletList() {
     <th class="num">nats</th><th>verdict</th></tr></thead>
     <tbody>${rows}</tbody></table></div>
     <div class="legend">"nats" is this tracklet's total contribution to the
-    whole belief's log-likelihood (§7.2). "verdict" is truth-privileged.
-    </div>`;
+    whole belief's log-likelihood (§7.2). "verdict" is truth-privileged triage
+    (<code>forensics triage</code>): every catalog row is fit against the
+    tracklet's GPS-derived world bearings. <b>consistent</b> = an endorsed
+    entry explains every epoch and the filter put mass there;
+    <b>geometry-unexplained</b> = no catalog row explains every epoch;
+    <b>no-evidence</b> = the bearings are explicable but the matcher endorsed
+    nothing; <b>matcher-fault</b> = a catalog row fits but no endorsed entry
+    does; <b>filter-fault</b> = an endorsed entry fits but the belief put its
+    mass elsewhere; <b>anti</b> = the matcher's top claim is contradicted by
+    the geometry, not merely unhelpful. Open a tracklet to see the
+    "geometrically ambiguous" flag: so many catalog rows fit the bearings that
+    the verdict is a weak claim.</div>`;
   $("trklist").querySelectorAll("tr.click").forEach(r => r.onclick = () => {
     selTrk = selTrk === r.dataset.trk ? null : r.dataset.trk;
     render(); if (selTrk) $("inspector").scrollIntoView({block: "nearest"}); });
@@ -945,8 +1051,7 @@ function drawInspector() {
     if (src.chip) source += `<img class="crop" src="${src.chip}"
       alt="audited evidence chip for ${esc(src.localId)}" loading="lazy">`;
     source += `<dl class="kv" style="margin-top:8px">
-      <dt>source track</dt><dd>${esc(src.localId)} (track ${
-        src.sourceTrackId})</dd>
+      <dt>source track</dt><dd>${trackingEvidenceLink(src)}</dd>
       <dt>audit</dt><dd><span class="pill ${
         src.verdict === "drop" ? "bad" : src.verdict === "keep_partial"
           ? "warn" : "ok"}">${esc(src.verdict)}</span>
@@ -987,7 +1092,7 @@ function drawInspector() {
     let bars = "";
     for (const e of tbl.entries.slice(0, 14)) {
       const w = Math.abs(e.lr) / maxAbs * 96;
-      bars += `<div class="lab">${e.endorsed ? "" : "· "}${esc(e.lm)}</div>
+      bars += `<div class="lab">${e.endorsed ? "" : "· "}${lmLink(e.lm)}</div>
         <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
         <span class="bar" style="width:${w.toFixed(1)}px;background:${
         e.endorsed ? "var(--water)" : "var(--ink-faint)"}"></span>
@@ -1055,7 +1160,7 @@ function drawInspector() {
       <text class="axis" x="0" y="9">1</text></svg>
       <div class="legend">${list.map((lm, k) =>
         `<span style="color:${D.colors[k % D.colors.length]}">▬</span> ${
-        esc(lm)}`).join(" ")}
+        lmLink(lm)}`).join(" ")}
         <span style="color:var(--ink-faint)">╌ null</span></div>`;
   }
 
@@ -1064,7 +1169,7 @@ function drawInspector() {
   const tri = trk.triage;
   if (tri) {
     const fitLine = (label, fit) => fit
-      ? `<dt>${label}</dt><dd><code>${esc(fit.lm)}</code> — RMS ${
+      ? `<dt>${label}</dt><dd><code>${lmLink(fit.lm)}</code> — RMS ${
         fmt(fit.rms, 2)}°, worst ${fmt(fit.max, 1)}°, ${
         (fit.rangeM / 1000).toFixed(1)} km${fit.lr !== null
           ? `, LLR ${fit.lr >= 0 ? "+" : ""}${fit.lr.toFixed(2)}` : ""}${
@@ -1079,7 +1184,7 @@ function drawInspector() {
       <td class="num">${e.worldBearing.toFixed(0)}</td>
       <td class="num">${fmt(e.bestRes, 2)}</td>
       <td class="num">${fmt(e.topRes, 1)}</td>
-      <td><code>${esc(e.filterTop || "—")}</code>
+      <td><code>${e.filterTop ? lmLink(e.filterTop) : "—"}</code>
         <span class="prov">${(e.filterTopShare * 100).toFixed(0)}%</span></td>
       <td class="num">${(e.bestFitShare * 100).toFixed(0)}%</td>
       <td class="num">${(e.null * 100).toFixed(0)}%</td>
@@ -1122,7 +1227,7 @@ function drawInspector() {
       cannot be assigned automatically.</div>`;
   }
 
-  $("inspector").innerHTML = `<h2>Tracklet <code>${esc(trk.id)}</code>
+  $("inspector").innerHTML = `<h2>Tracklet <code>${esc(trkLabel(trk.id))}</code>
     <span class="hint">&mdash; §7.4 view 3</span>
     <button id="closetrk">close</button></h2>
     <div class="grid2"><div>${source}</div><div>${bearings}</div>
@@ -1134,7 +1239,7 @@ function drawInspector() {
 // ---------- view 5: what-if console ----------
 function drawWhatIf() {
   const rows = D.ghosts.map(g => `<tr>
-    <td>${esc(g.label)}</td>
+    <td>${esc(compactTracklets(g.label))}</td>
     <td class="num">${fmt(g.finalErr)}</td>
     <td class="num">${fmt(g.medianErr)}</td>
     <td class="num">${g.nModes}</td></tr>`).join("");
@@ -1147,7 +1252,8 @@ function drawWhatIf() {
   })();
   const cmd = `bazel run //experimental/overhead_matching/swag/`
     + `farfield/localization:forensics -- replay \\\n  --run_dir ${RUN.runDir} \\\n`
-    + `  --without_tracklet ${selTrk || "<TRACKLET>"}\n\n`
+    + `  --without_tracklet <FULL_TRACKLET_ID>  # selected ${
+      selTrk ? trkLabel(selTrk) : "tracklet"}\n\n`
     + `# the ghost is written under ${RUN.runDir}/counterfactuals/;\n`
     + `# then re-render with it overlaid:\n`
     + `bazel run //experimental/overhead_matching/swag/farfield/localization:viewer -- \\\n`
@@ -1218,7 +1324,8 @@ function drawEvents() {
     <td class="num">${e.keyframe_idx}</td>
     <td><span class="pill ${e.severity === "alarm" ? "bad"
       : e.severity === "warn" ? "warn" : "info"}">${e.kind}</span></td>
-    <td>${esc(e.label)}</td><td class="prov">${esc(e.detail)}</td>
+    <td>${esc(compactTracklets(e.label))}</td><td class="prov">${
+    esc(compactTracklets(e.detail))}</td>
     <td class="prov">${e.source}</td></tr>`).join("");
   $("events").innerHTML = `<div class="tabs">
     <button class="tab ${evFilter === null ? "on" : ""}" data-kind="">all (${
@@ -1306,10 +1413,18 @@ $("strip").onclick = e => {
 $("clear").onclick = () => { selMode = null; selTrk = null; render(); };
 document.querySelectorAll("#tabbar .tab").forEach(b =>
   b.onclick = () => { tab = b.dataset.tab; drawTab(); });
-$("tgBase").onclick = e => { showBase = !showBase;
-  e.target.classList.toggle("on", showBase); drawMap(); };
 $("tgPart").onclick = e => { showParticles = !showParticles;
   e.target.classList.toggle("on", showParticles); drawMap(); };
+$("tgFull").onclick = e => {
+  showFullParticles = !showFullParticles;
+  LIVE.fullCheckpoint = null;
+  e.target.classList.toggle("on", showFullParticles);
+  const status = $("liveStatus");
+  status.textContent = showFullParticles ? "live · loading full checkpoint"
+    : "live server";
+  status.className = "pill ok";
+  drawMap();
+};
 $("tgGhost").onclick = e => { showGhosts = !showGhosts;
   e.target.classList.toggle("on", showGhosts); drawMap(); };
 if ($("tgSat")) {
@@ -1322,18 +1437,26 @@ wireMapZoom();
 // you ask for, not what you want to read first.
 viewFitTrack();
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
+  const target = e.target;
+  if ((target.closest && target.closest("input, textarea, select, button, a"))
+      || target.isContentEditable) return;
+  if (e.code === "Space" && !e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    togglePlayback();
+    return;
+  }
   const step = e.shiftKey ? 10 : 1;
   if (e.key === "ArrowRight") { t = Math.min(KF, t + step); render(); }
   if (e.key === "ArrowLeft") { t = Math.max(0, t - step); render(); }
 });
 let timer = null;
-$("play").onclick = () => {
+function togglePlayback() {
   if (timer) { clearInterval(timer); timer = null; $("play").textContent = "▶ play";
     return; }
   $("play").textContent = "⏸ pause";
   timer = setInterval(() => { t = (t + 1) % (KF + 1); render(); }, 80);
-};
+}
+$("play").onclick = togglePlayback;
 drawEvents();
 render();
 detectLiveServer();

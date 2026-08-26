@@ -2,8 +2,8 @@
 
 `viewer.py` writes a self-contained page — the frozen record, shareable and
 immune to code drift. This serves the *same* payload from
-`viewer_payload.build`, with the same HTML and the same JavaScript, and adds the
-two things a static file structurally cannot have:
+`viewer_payload.build`, with the same HTML and the same JavaScript, and adds
+two live capabilities plus a bridge to the exact tracking ancestor:
 
   GET /checkpoint/<kf>       every particle at that keyframe, not a 900-point
                              sample. Reading whether a mode has a real tail or
@@ -16,6 +16,8 @@ two things a static file structurally cannot have:
                              <run>.counterfactuals/ directory
                              (replay.default_counterfactual_dir), leaving the
                              completed source artifact immutable.
+  GET /api/tracking/<path>   a declared page or media file from the exact
+                             object_tracks ancestor, when supplied.
 
 The page feature-detects this server (`GET /api/health`) and lights up the
 extra affordances when it answers, so one HTML/JS implementation covers both
@@ -27,7 +29,7 @@ would be handing out arbitrary compute.
 
 Usage:
   bazel run //experimental/overhead_matching/swag/farfield/localization:viewer_server -- \\
-    --run_dir RUN --feather F --port 8765
+    --run_dir RUN --feather F --satellite S --port 8765
 """
 
 import argparse
@@ -37,8 +39,9 @@ from pathlib import Path
 
 import msgspec
 import numpy as np
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
     replay as replay_mod,
     run_io,
@@ -49,11 +52,12 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
                audit_dir: Path | None = None, feather: Path | None = None,
-               ghost_dirs=()) -> Flask:
+               satellite: Path | None = None, ghost_dirs=()) -> Flask:
     app = Flask(__name__)
     state = {
         "payload": None,
         "checkpoints": None,
+        "tracking_outputs": None,
         # One replay at a time: each one saturates the GPU (or several CPU
         # cores), and two concurrent replays would just make both slow while
         # making the progress reporting meaningless.
@@ -65,7 +69,7 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
         if state["payload"] is None or rebuild:
             state["payload"] = viewer_payload.build(
                 run_dir, tracks_dir=tracks_dir, audit_dir=audit_dir,
-                feather=feather,
+                feather=feather, satellite=satellite,
                 ghost_dirs=state["ghosts"])
             state["payload"]["server"] = True
         return state["payload"]
@@ -85,7 +89,9 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
         return jsonify({
             "ok": True, "run_dir": str(run_dir),
             "features": ["checkpoint", "replay"],
-            "n_checkpoints": len(checkpoints()),
+            # The inlined payload already names the sampled checkpoints. Do not
+            # reload every full checkpoint merely to answer the feature probe.
+            "n_checkpoints": len(payload()["checkpoints"]),
             "busy": state["lock"].locked(),
         })
 
@@ -93,6 +99,29 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
     def api_payload():
         return Response(json.dumps(payload(), separators=(",", ":")),
                         mimetype="application/json")
+
+    @app.get("/api/tracking/<path:relative>")
+    def tracking_evidence(relative: str):
+        """Serve only files declared by the validated tracks ancestor.
+
+        Calling payload first is intentional: source loading proves that this
+        exact object_tracks artifact is an ancestor of the viewed localization
+        run. ``send_from_directory`` then confines navigation to that artifact,
+        while the manifest allow-list excludes undeclared scratch files.
+        """
+        if tracks_dir is None:
+            abort(404)
+        payload()
+        if state["tracking_outputs"] is None:
+            try:
+                manifest = artifact.load_manifest(tracks_dir)
+            except (artifact.ArtifactError, OSError, ValueError):
+                abort(404)
+            state["tracking_outputs"] = frozenset(
+                manifest.declared_outputs)
+        if relative not in state["tracking_outputs"]:
+            abort(404)
+        return send_from_directory(tracks_dir, relative)
 
     @app.get("/api/checkpoint/<int:keyframe_idx>")
     def api_checkpoint(keyframe_idx: int):
@@ -109,6 +138,15 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
             return jsonify({"error": f"no checkpoint at keyframe "
                                      f"{keyframe_idx}",
                             "available": available}), 404
+        if request.args.get("view") == "map":
+            # The map only consumes position and mode. Avoid serializing three
+            # additional 50k-element arrays for an explicitly requested view.
+            return jsonify({
+                "n": int(arrays["east_m"].shape[0]),
+                "e": [round(float(v), 1) for v in arrays["east_m"]],
+                "n_m": [round(float(v), 1) for v in arrays["north_m"]],
+                "mode": [int(v) for v in arrays["mode_id"]],
+            })
         log_weight = arrays["log_weight"]
         weights = np.exp(log_weight - log_weight.max())
         weights = weights / weights.sum()
@@ -179,6 +217,8 @@ def main():
     parser.add_argument("--tracks_dir", type=Path, default=None)
     parser.add_argument("--audit_dir", type=Path, default=None)
     parser.add_argument("--feather", type=Path, default=None)
+    parser.add_argument("--satellite", type=Path, default=None,
+                        help="directory written by satellite_underlay.py")
     parser.add_argument("--ghost", type=Path, action="append", default=[])
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1",
@@ -188,7 +228,8 @@ def main():
 
     app = create_app(
         args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
-        feather=args.feather, ghost_dirs=args.ghost)
+        feather=args.feather, satellite=args.satellite,
+        ghost_dirs=args.ghost)
     print(f"serving {args.run_dir} at http://{args.host}:{args.port}/")
     print("  /api/checkpoint/<kf>  every particle at that keyframe")
     print("  /api/replay           live counterfactual (POST {\"edits\": ...})")
