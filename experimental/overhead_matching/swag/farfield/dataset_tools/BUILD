@@ -201,58 +201,6 @@ py_test(
     deps = [":dataset_status_table_lib"],
 )
 
-py_library(
-    name = "prepare_regeneration_lib",
-    srcs = ["prepare_regeneration.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        FARFIELD + ":artifact",
-        FARFIELD + ":paths",
-        FARFIELD + ":provenance",
-    ],
-)
-
-py_binary(
-    name = "prepare_regeneration",
-    srcs = ["prepare_regeneration.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":prepare_regeneration_lib"],
-)
-
-py_test(
-    name = "prepare_regeneration_test",
-    srcs = ["prepare_regeneration_test.py"],
-    deps = [":prepare_regeneration_lib"],
-)
-
-py_library(
-    name = "migrate_active_datasets_lib",
-    srcs = ["migrate_active_datasets.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        ":checksums",
-        FARFIELD + ":geometry",
-        FARFIELD + ":paths",
-        FARFIELD + ":provenance",
-    ],
-)
-
-py_binary(
-    name = "migrate_active_datasets",
-    srcs = ["migrate_active_datasets.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":migrate_active_datasets_lib"],
-)
-
-py_test(
-    name = "migrate_active_datasets_test",
-    srcs = ["migrate_active_datasets_test.py"],
-    deps = [
-        ":migrate_active_datasets_lib",
-        FARFIELD + ":geometry",
-    ],
-)
-
 # ---------------------------------------------------------------------------
 # Catalog building (OSM + ENC -> feather -> trim)
 # ---------------------------------------------------------------------------

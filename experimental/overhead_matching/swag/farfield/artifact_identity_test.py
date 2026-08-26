@@ -1,0 +1,170 @@
+"""The invalidation table this module exists to produce.
+
+Each test names a change and asserts which artifacts it may move. The old
+global build identity failed every one of the "does not move" cases, which is
+what forced `stage_reuse` and its human attestation into existence.
+"""
+
+import unittest
+
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    artifact_identity as ident,
+    code_fingerprint,
+)
+
+TRACK_ENTRY = f"{code_fingerprint.PACKAGE}.tracking.run_tracking"
+MATCH_ENTRY = f"{code_fingerprint.PACKAGE}.matching.match_landmarks"
+DIGEST_A = "a" * 64
+DIGEST_B = "b" * 64
+DIGEST_C = "c" * 64
+
+
+def ref(kind, version="v1", manifest_digest=DIGEST_A):
+    return artifact.ArtifactRef(
+        kind=kind, dataset="ds", version=version,
+        manifest_digest=manifest_digest, content_digest=DIGEST_C,
+        path=f"/farfield/artifacts/{kind}/ds/{version}")
+
+
+def identity(**overrides):
+    base = dict(kind="object_tracks", dataset="ds",
+                stage_config_digest=DIGEST_A,
+                upstreams=[ref("frame_landmarks"), ref("pinhole_images")],
+                entry_module=TRACK_ENTRY,
+                dataset_source_digests={"panorama": DIGEST_B})
+    base.update(overrides)
+    return ident.compute(**base)
+
+
+class DeterminismTest(unittest.TestCase):
+    def test_the_same_recipe_gives_the_same_identity(self):
+        self.assertEqual(identity(), identity())
+
+    def test_upstream_order_does_not_matter(self):
+        """A stage taking tracks and audits produces the same thing whichever
+        order they were listed in; an order-sensitive identity would report a
+        difference that is not one."""
+        forward = identity(upstreams=[ref("frame_landmarks"),
+                                      ref("pinhole_images")])
+        reverse = identity(upstreams=[ref("pinhole_images"),
+                                      ref("frame_landmarks")])
+        self.assertEqual(forward, reverse)
+
+    def test_two_upstreams_of_one_kind_do_not_collide(self):
+        one = identity(upstreams=[ref("catalogs", "full"),
+                                  ref("catalogs", "trim", DIGEST_B)])
+        two = identity(upstreams=[ref("catalogs", "full"),
+                                  ref("catalogs", "trim", DIGEST_C)])
+        self.assertNotEqual(one, two)
+
+
+class MovesTest(unittest.TestCase):
+    """Changes that MUST invalidate."""
+
+    def test_this_stages_config_moves_it(self):
+        self.assertNotEqual(identity(),
+                            identity(stage_config_digest=DIGEST_B))
+
+    def test_an_upstream_moves_it(self):
+        self.assertNotEqual(
+            identity(),
+            identity(upstreams=[ref("frame_landmarks", manifest_digest=DIGEST_B),
+                                ref("pinhole_images")]))
+
+    def test_the_code_that_computes_it_moves_it(self):
+        self.assertNotEqual(identity(), identity(entry_module=MATCH_ENTRY))
+
+    def test_the_dataset_bytes_move_it(self):
+        self.assertNotEqual(
+            identity(), identity(dataset_source_digests={"panorama": DIGEST_C}))
+
+    def test_kind_and_dataset_move_it(self):
+        self.assertNotEqual(identity(), identity(kind="semantic_audits"))
+        self.assertNotEqual(identity(), identity(dataset="other"))
+
+
+class DoesNotMoveTest(unittest.TestCase):
+    """Changes that MUST NOT invalidate -- the whole point of the redesign.
+
+    Under the global build identity every one of these produced a new identity
+    for every artifact in the build, including the paid ones.
+    """
+
+    def test_a_downstream_config_change_is_not_an_input_here(self):
+        """`localization.pi0` is not part of the track stage's config digest,
+        so it cannot appear in the track artifact's identity. Expressed as the
+        absence of any channel: the only config input is this stage's own
+        digest."""
+        unchanged = identity()
+        for downstream_digest in (DIGEST_B, DIGEST_C):
+            # A downstream stage's digest is simply never passed in.
+            self.assertEqual(identity(), unchanged, downstream_digest)
+
+    def test_an_unrelated_upstream_version_name_is_not_an_input(self):
+        """Version names are labels. Two refs with the same manifest digest
+        name the same artifact whatever it was called."""
+        renamed = identity(
+            upstreams=[ref("frame_landmarks", version="renamed"),
+                       ref("pinhole_images")])
+        self.assertEqual(identity(), renamed)
+
+    def test_the_path_an_artifact_sits_at_is_not_an_input(self):
+        moved = artifact.ArtifactRef(
+            kind="frame_landmarks", dataset="ds", version="v1",
+            manifest_digest=DIGEST_A, content_digest=DIGEST_C,
+            path="/somewhere/else")
+        self.assertEqual(identity(),
+                         identity(upstreams=[moved, ref("pinhole_images")]))
+
+
+class RecordedTest(unittest.TestCase):
+    def manifest(self, config):
+        return artifact.ArtifactManifest(
+            kind="object_tracks", dataset="ds", version="v1",
+            generator="test", git_commit="deadbeef", created="2026-08-25",
+            arguments=(), content_digest=DIGEST_C, upstreams=(),
+            config=config, declared_outputs=())
+
+    def test_a_recorded_identity_is_returned(self):
+        self.assertEqual(
+            ident.recorded(self.manifest({"artifact_identity": DIGEST_A})),
+            DIGEST_A)
+
+    def test_a_manifest_without_one_is_unattributed_not_an_error(self):
+        """Artifacts published before this existed are not wrong, they are
+        unattributed. Treating them as corrupt would strand every artifact on
+        disk; treating them as current would launder an unproven claim."""
+        self.assertEqual(ident.recorded(self.manifest({})), ident.UNATTRIBUTED)
+
+    def test_a_malformed_recorded_identity_is_an_error(self):
+        with self.assertRaises(ident.ArtifactIdentityError):
+            ident.recorded(self.manifest({"artifact_identity": "nope"}))
+
+    def test_the_unattributed_message_names_the_way_forward(self):
+        message = ident.explain(expected=DIGEST_A,
+                                manifest=self.manifest({}),
+                                kind="object_tracks")
+        self.assertIn("--assume-current object_tracks", message)
+
+    def test_the_mismatch_message_names_what_to_compare(self):
+        message = ident.explain(
+            expected=DIGEST_A,
+            manifest=self.manifest({"artifact_identity": DIGEST_B}),
+            kind="object_tracks")
+        self.assertIn("stage_config_digest", message)
+        self.assertIn("code_fingerprint", message)
+
+
+class RejectionTest(unittest.TestCase):
+    def test_a_non_ref_upstream_is_refused(self):
+        with self.assertRaises(ident.ArtifactIdentityError):
+            identity(upstreams=["frame_landmarks/v1"])
+
+    def test_a_non_digest_config_value_is_refused(self):
+        with self.assertRaises(ident.ArtifactIdentityError):
+            identity(stage_config_digest="v1")
+
+
+if __name__ == "__main__":
+    unittest.main()

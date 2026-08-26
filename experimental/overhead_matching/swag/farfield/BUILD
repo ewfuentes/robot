@@ -1,6 +1,56 @@
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+    name = "digest_cache",
+    srcs = ["digest_cache.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":artifact"],
+)
+
+py_test(
+    name = "digest_cache_test",
+    srcs = ["digest_cache_test.py"],
+    deps = [
+        ":artifact",
+        ":digest_cache",
+    ],
+)
+
+py_library(
+    name = "code_fingerprint",
+    srcs = ["code_fingerprint.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_test(
+    name = "code_fingerprint_test",
+    srcs = ["code_fingerprint_test.py"],
+    deps = [
+        ":code_fingerprint",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_library(
+    name = "artifact_identity",
+    srcs = ["artifact_identity.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":artifact",
+        ":code_fingerprint",
+    ],
+)
+
+py_test(
+    name = "artifact_identity_test",
+    srcs = ["artifact_identity_test.py"],
+    deps = [
+        ":artifact",
+        ":artifact_identity",
+    ],
+)
+
+py_library(
     name = "artifact",
     srcs = ["artifact.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -69,7 +119,10 @@ py_library(
     name = "paths",
     srcs = ["paths.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":artifact"],
+    deps = [
+        ":artifact",
+        ":digest_cache",
+    ],
 )
 
 py_test(
