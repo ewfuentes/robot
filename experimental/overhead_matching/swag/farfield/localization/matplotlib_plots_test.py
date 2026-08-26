@@ -27,7 +27,7 @@ class PlotsOutputTest(unittest.TestCase):
         axis.scatter.assert_not_called()
 
     def test_primary_mass_and_uncertainty_render_without_truth(self):
-        metric = plots.metrics.position_mass_metric_config([50.0, 100.0])
+        metric = plots.metrics.position_mass_metric_config()
         keys = [plots.metrics.position_mass_metric_key(metric, radius)
                 for radius in metric.radii_m]
         health = [SimpleNamespace(
@@ -40,6 +40,7 @@ class PlotsOutputTest(unittest.TestCase):
         data = SimpleNamespace(
             manifest=SimpleNamespace(
                 position_mass_metric=metric,
+                run_kind="evaluation",
                 filter_config=SimpleNamespace(
                     n_particles=200, ess_resample_frac=0.5)),
             health=health, truth=[], proposal_events=[])
@@ -48,6 +49,12 @@ class PlotsOutputTest(unittest.TestCase):
         plots._draw_strip(data, axes)
 
         self.assertEqual(axes[0].plot.call_count, 2)
+        first_label = axes[0].plot.call_args_list[0].kwargs["label"]
+        second_label = axes[0].plot.call_args_list[1].kwargs["label"]
+        self.assertIn("PRIMARY", first_label)
+        self.assertIn("500 m", first_label)
+        self.assertIn("100 m", second_label)
+        self.assertIn("PRIMARY METRIC", axes[0].set_title.call_args.args[0])
         axes[1].plot.assert_called_once()
         axes[2].plot.assert_called_once()
 

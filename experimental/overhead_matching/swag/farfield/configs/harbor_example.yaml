@@ -125,7 +125,9 @@ localization:
   run_name: boston_harbor_leg2_v1
   init: uniform
   ablation_tags: []
-  position_mass_radii_m: [50.0, 100.0, 250.0, 500.0, 1000.0]
+  # Primary evaluation metric is normalized mass within 500 m of truth;
+  # 100 m is the tighter default companion metric.
+  position_mass_radii_m: [100.0, 500.0]
   prior_sigma_m: null
   n_particles: 50000
   seed: 0

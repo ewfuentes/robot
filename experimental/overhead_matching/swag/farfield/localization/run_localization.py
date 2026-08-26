@@ -105,7 +105,8 @@ def main():
     parser.add_argument(
         "--position_mass_radii_m", type=float, nargs="+",
         default=list(metrics.DEFAULT_POSITION_MASS_RADII_M),
-        help="radii for every-keyframe posterior probability-mass metrics")
+        help="truth-centered posterior-mass radii; must include primary 500 m "
+             "radius (default also reports 100 m)")
     parser.add_argument("--kidnap_at", type=int, default=None,
                         help="teleport the vehicle at this keyframe")
     parser.add_argument("--kidnap_east_m", type=float, default=None)
@@ -182,6 +183,9 @@ def main():
         arguments=tuple(sys.argv))
     history = result.history
 
+    print("\n" + metrics.describe_position_mass_summary(
+        result.position_mass_summary, result.manifest.run_kind))
+    print("\n--- secondary synthetic diagnostics ---")
     errors = metrics.position_errors_m(history.health, data.truth)
     heading_errors = metrics.heading_errors_deg(history.health, data.truth)
     final_truth = data.truth[-1]

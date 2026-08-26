@@ -71,12 +71,32 @@ candidate dimension to bound device memory. It is required to be numerically
 equivalent within tested tolerances, not bit-for-bit identical; the selected
 backend is part of the run record.
 
-Primary regression summaries should show probability mass near truth across
-time and over the final window, with MAP error as a secondary diagnostic.
-Also inspect null share, effective sample size/resampling, proposal
-accept/reject events, residual distributions, mode weights, and entropy.
-Rejected proposal events remain linked in health/forensics output instead of
-disappearing from the record.
+The main regression metric is the **time-normalized posterior probability mass
+within 500 m of the true position**.  The 100 m score is calculated alongside
+it by default as a tighter companion metric.  At each keyframe, the evaluation
+observer records
+
+    p_N(k) = P(||X_k - x_truth(k)|| <= N).
+
+The run score is the trapezoidal area under `p_N(k)` divided by the keyframe
+span.  It is therefore normalized to `[0, 1]`, comparable across run lengths,
+and higher is better.  A score of 1 means all posterior mass stayed within the
+radius for the whole run; a lucky MAP point cannot hide probability mass held
+by wrong modes.  The every-keyframe series is stored in `tier0_health.jsonl`,
+and the immutable run also publishes the aggregate in `metrics.json`.
+
+Truth is used only by this evaluation observer after each posterior update. It
+does not initialize the prior, alter a measurement, trigger a proposal, or feed
+back into the filter.  Only uniform-prior, bearing-enabled, non-ablation runs
+may present the 500 m score as a primary evaluation; other runs label it as a
+diagnostic-control score.
+
+Plots, the run viewer, and the run CLI put the 500 m score first and mark it as
+primary.  The 100 m score follows it, while MAP/mean error are secondary point
+diagnostics.  Also inspect null share, effective sample size/resampling,
+proposal accept/reject events, residual distributions, mode weights, and
+entropy.  Rejected proposal events remain linked in health/forensics output
+instead of disappearing from the record.
 
 ## Reading a run
 

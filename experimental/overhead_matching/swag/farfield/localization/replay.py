@@ -63,7 +63,9 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
     filter as pf,
     filter_catalog as catalog_mod,
+    metrics,
     run_io,
+    runner,
     structs,
 )
 
@@ -73,6 +75,37 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # forensics_cli and viewer_server both build paths through
 # default_counterfactual_dir.
 COUNTERFACTUAL_DIR_SUFFIX = ".counterfactuals"
+
+
+class _ObserverGroup(pf.RunObserver):
+    """Fan each read-only filter hook out to independent observers."""
+
+    def __init__(self, observers):
+        self._observers = tuple(observer for observer in observers
+                                if observer is not None)
+
+    def keyframe_start(self, keyframe_idx, belief):
+        for observer in self._observers:
+            observer.keyframe_start(keyframe_idx, belief)
+
+    def measurement(self, keyframe_idx, meas, log_weight_before, belief,
+                    pass_index):
+        for observer in self._observers:
+            observer.measurement(keyframe_idx, meas, log_weight_before, belief,
+                                 pass_index)
+
+    def injection(self, keyframe_idx, event, n_injected):
+        for observer in self._observers:
+            observer.injection(keyframe_idx, event, n_injected)
+
+    def resample(self, keyframe_idx, log_weight_before, mode_id_before, belief):
+        for observer in self._observers:
+            observer.resample(keyframe_idx, log_weight_before, mode_id_before,
+                              belief)
+
+    def keyframe_end(self, keyframe_idx, belief, health):
+        for observer in self._observers:
+            observer.keyframe_end(keyframe_idx, belief, health)
 
 
 def _edits_document(edits: "Edits") -> dict:
@@ -498,6 +531,14 @@ def replay(run_dir: Path, edits: Edits | None = None,
             "the run directory does not fully determine a verified replay\n"
             + status.report())
     edited = apply_edits(inputs, edits) if not edits.is_empty else inputs
+    metric_config = edited.manifest.position_mass_metric
+    mass_recorder = (
+        runner.PositionMassRecorder(edited.data.truth, metric_config)
+        if edited.data.truth and metric_config is not None else None)
+    observers = [value for value in (observer, mass_recorder)
+                 if value is not None]
+    run_observer = (_ObserverGroup(observers) if len(observers) > 1 else
+                    (observers[0] if observers else None))
 
     recorded = inputs.manifest.particle_history_sha256 or ""
     baseline_hash_match = None
@@ -520,7 +561,11 @@ def replay(run_dir: Path, edits: Edits | None = None,
     start = time.perf_counter()
     history = pf.run_filter(edited.config, edited.catalog, edited.odometry,
                             edited.measurements, edited.tables,
-                            observer=observer)
+                            observer=run_observer)
+    if mass_recorder is not None:
+        for record in history.health:
+            record.position_probability_mass = mass_recorder.by_keyframe[
+                record.keyframe_idx]
     elapsed = time.perf_counter() - start
 
     hash_match = None
@@ -591,6 +636,12 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
         for tracklet_id, table in result.inputs.tables.items()
         if tracklet_id in consumed_tracklets
     }
+    extra_outputs = {"counterfactual.json": counterfactual}
+    if manifest.position_mass_metric is not None:
+        summary = metrics.position_mass_summary(
+            result.history.health, manifest.position_mass_metric)
+        extra_outputs[metrics.POSITION_MASS_SUMMARY_NAME] = (
+            msgspec.json.encode(summary) + b"\n")
     run_io.write_run(output_dir, manifest, result.inputs.data.truth,
                      result.inputs.odometry, result.inputs.measurements,
                      consumed_tables, result.history,
@@ -606,5 +657,5 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
                      },
                      generator=("//experimental/overhead_matching/swag/"
                                 "farfield/localization:replay"),
-                     extra_outputs={"counterfactual.json": counterfactual})
+                     extra_outputs=extra_outputs)
     return output_dir

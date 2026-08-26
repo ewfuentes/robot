@@ -4,14 +4,17 @@ The CLI accepts one completed ``localization_inputs`` artifact, one immutable
 ``build_config.json``, and the final ``run_dir``.  Every filter setting comes
 from that build config; there are no per-run scientific overrides.
 
-Reads the export's Tier-1 inputs, runs the filter, writes a run directory
-that the plots and viewer consume unchanged, and reports the two things a
-GPS-supervised export can honestly support: **posterior-predictive bearing
-diagnostics** against the filter's own pose, and **association posteriors**.
-Those residuals are model checks, not correctness labels. Final position error
-is printed but is not the figure of merit here — when odometry is GPS and the
-candidates were selected using GPS, dead reckoning alone nearly solves the leg,
-so a small position error demonstrates very little.
+Reads the export's Tier-1 inputs, runs the filter, writes a run directory that
+the plots and viewer consume unchanged, and reports the primary evaluation
+metric: time-normalized posterior probability mass within 500 m of the true
+position.  The same score is reported at 100 m by default.  Truth is read by an
+evaluation-only observer after each posterior update and never changes the
+uniform prior or any filter decision.
+
+Posterior-predictive bearing diagnostics and association posteriors remain
+model checks, not correctness labels. Final position error is printed as a
+secondary diagnostic — a point estimate at one instant cannot score an entire,
+possibly multimodal posterior trajectory.
 
 Only uniform-prior runs that actually consume bearings are evaluations.
 Truth initialization and odometry-only executions are diagnostic controls.
@@ -318,6 +321,9 @@ def main():
                   "localization:run_export",
         arguments=tuple(sys.argv))
     history = result.history
+    if result.position_mass_summary is not None:
+        print("\n" + metrics.describe_position_mass_summary(
+            result.position_mass_summary, result.manifest.run_kind))
     _print_bearing_diagnostics(result.bearing_diagnostics)
     print("\n--- association posteriors ---")
     nulls = [a.null_share for r in history.health for a in r.associations
@@ -333,7 +339,7 @@ def main():
     print(f"measurements with a >80% single-landmark claim: "
           f"{len(confident)} / {len(nulls)}")
 
-    print("\n--- belief ---")
+    print("\n--- secondary belief diagnostics ---")
     final = history.health[-1]
     print(f"modes at end: {len(final.modes)} "
           f"(entropy {final.mode_entropy_nats:.2f}); "

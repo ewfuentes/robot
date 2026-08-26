@@ -362,8 +362,9 @@ class HealthRecord(msgspec.Struct):
     # Shannon entropy of the mode weights, in nats: 0 when the belief is
     # effectively unimodal, log(k) when k modes share the mass equally.
     mode_entropy_nats: float = 0.0
-    # Fully keyed values from RunManifest.position_mass_metric. Populated at
-    # every keyframe when truth positions are available; empty otherwise.
+    # Fully keyed posterior masses centered on the true position, from
+    # RunManifest.position_mass_metric. Populated by the evaluation-only
+    # observer at every keyframe when truth is available; empty otherwise.
     position_probability_mass: dict[str, float] = {}
 
 
@@ -448,5 +449,6 @@ class RunManifest(msgspec.Struct):
     # optional artifact mapping identifies its immutable external source.
     truth_position_artifact: dict[str, str] | None = None
     truth_position_schema: str | None = None
-    # Resolved primary-metric identity/config. None when no truth is present.
+    # Resolved truth-centered primary-metric identity/config. None when no
+    # truth is present. The default headline radius is 500 m.
     position_mass_metric: PositionMassMetricConfig | None = None

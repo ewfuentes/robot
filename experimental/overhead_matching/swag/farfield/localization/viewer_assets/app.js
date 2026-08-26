@@ -474,15 +474,27 @@ function eventRail(y0) {
 function drawStrip() {
   let y = 4, out = "";
   const S = k => H.map(h => h[k]);
-  out += sparkline(y, S("err"), "pos err (m)", "var(--port)", true); y += ROW;
   const massMetric = RUN.positionMassMetric;
-  if (massMetric) for (const radius of massMetric.radiiM) {
-    const key = `${massMetric.id}@${massMetric.version}:radius_m=${Number(radius)}`;
-    const values = H.map(h => h.positionMass ? h.positionMass[key] : undefined);
-    out += sparkline(y, values, `mass ≤ ${Number(radius)} m`,
-      "var(--starboard)", false);
-    y += ROW;
+  if (massMetric) {
+    const primary = massMetric.aggregate && massMetric.aggregate.primaryRadiusM;
+    const primaryEvaluation = RUN.runKind === "evaluation";
+    const radii = [primary, ...massMetric.radiiM]
+      .filter((radius, index, values) => radius != null
+        && values.indexOf(radius) === index);
+    for (const radius of radii) {
+      const key = `${massMetric.id}@${massMetric.version}:radius_m=${Number(radius)}`;
+      const values = H.map(h => h.positionMass
+        ? h.positionMass[key] : undefined);
+      const isPrimary = Number(radius) === Number(primary);
+      out += sparkline(y, values,
+        `${isPrimary ? (primaryEvaluation ? "PRIMARY · " : "diagnostic · ")
+          : ""}mass ≤ ${Number(radius)} m of truth`,
+        isPrimary ? "var(--accent)" : "var(--starboard)", false);
+      y += ROW;
+    }
   }
+  out += sparkline(y, S("err"), "pos err (m) · secondary", "var(--port)", true);
+  y += ROW;
   out += sparkline(y, S("sigma"), "reported σ (m)", "var(--starboard)", true); y += ROW;
   out += sparkline(y, S("ess"), "ESS", "var(--water)", true); y += ROW;
   out += sparkline(y, S("null"), "null share", "var(--caution)", false); y += ROW;
@@ -663,28 +675,40 @@ function drawMap() {
 
 // ---------- tiles + state ----------
 function drawTiles() {
-  const h = H[t], last = H[H.length - 1];
+  const h = H[t];
   let status = "ok", label = "tracking";
   if (h.err !== undefined) {
     if (h.err > 3 * Math.max(h.sigma, 1)) { status = "bad"; label = "overconfident"; }
     else if (h.modes.length > 1) { status = "warn"; label = "multimodal"; }
     else if (h.err > 500) { status = "warn"; label = "searching"; }
   } else { status = "info"; label = "no ground truth"; }
-  const tile = (k, v, u = "") => `<div class="tile"><div class="k">${k}</div>
+  const tile = (k, v, u = "", cls = "") => `<div class="tile ${cls}"><div class="k">${k}</div>
     <div class="v mono">${v}<span class="u"> ${u}</span></div></div>`;
-  $("tiles").innerHTML =
+  const massMetric = RUN.positionMassMetric;
+  const aggregate = massMetric && massMetric.aggregate;
+  const score = radius => aggregate && aggregate.scores[String(Number(radius))];
+  let tiles =
     `<div class="tile"><div class="k">status @ kf ${h.kf}</div>
-      <div class="v"><span class="pill ${status}">${label}</span></div></div>`
-    + tile("mean error", fmt(h.err), "m")
+      <div class="v"><span class="pill ${status}">${label}</span></div></div>`;
+  if (aggregate && aggregate.primaryRadiusM != null) {
+    const primary = aggregate.primaryRadiusM;
+    const label = RUN.runKind === "evaluation" ? "PRIMARY" : "diagnostic";
+    tiles += tile(`${label} · mass ≤ ${Number(primary)} m`,
+      fmt(100 * score(primary), 1), "% over time", "primary privileged");
+    if (massMetric.radiiM.some(radius => Number(radius) === 100))
+      tiles += tile("mass ≤ 100 m", fmt(100 * score(100), 1),
+        "% over time", "privileged");
+  }
+  tiles += tile("mean error", fmt(h.err), "m", "privileged")
     + tile("reported σ", fmt(h.sigma), "m")
-    + tile("MAP error", fmt(h.mapErr), "m")
+    + tile("MAP error", fmt(h.mapErr), "m", "privileged")
     + tile("modes", h.modes.length, `H=${fmt(h.entropy, 2)}`)
     + tile("ESS", fmt(h.ess), `/ ${RUN.nParticles.toLocaleString()}`)
     + tile("null share", fmt(h.null, 2))
-    + tile("final error", fmt(last.err), "m")
     + `<div class="tile"><div class="k">replay</div><div class="v">
       <span class="pill ${RUN.replayable ? "ok" : "bad"}">${
       RUN.replayable ? "exact" : "not replayable"}</span></div></div>`;
+  $("tiles").innerHTML = tiles;
 }
 
 function drawState() {

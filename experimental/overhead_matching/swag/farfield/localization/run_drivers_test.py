@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import msgspec
+import numpy as np
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
@@ -16,10 +18,12 @@ from experimental.overhead_matching.swag.farfield import (
 from experimental.overhead_matching.swag.farfield.localization import (
     export_ingest,
     filter_catalog,
+    metrics,
     run_export,
     run_io,
     run_localization,
     run_identity,
+    runner,
     structs,
 )
 
@@ -111,7 +115,7 @@ def localization_config(*, init="uniform", prior_sigma_m=None,
         "margin_m": 500.0,
         "bearings_enabled": bearings_enabled,
         "ablation_tags": [],
-        "position_mass_radii_m": [50.0, 100.0],
+        "position_mass_radii_m": [100.0, 500.0],
     })
     return config
 
@@ -208,8 +212,12 @@ class RunExportTest(unittest.TestCase):
             with mock.patch.object(run_export.export_ingest, "load",
                                    return_value=data), mock.patch(
                     "sys.argv", export_argv(
-                        input_dir, out, config_path, digest)):
+                        input_dir, out, config_path, digest)), mock.patch(
+                    "sys.stdout", new_callable=io.StringIO) as stdout:
                 run_export.main()
+            console = stdout.getvalue()
+            summary_path = out / metrics.POSITION_MASS_SUMMARY_NAME
+            summary = json.loads(summary_path.read_text())
             data = run_io.read_run(out)
             self.assertTrue(
                 (out / "posterior_predictive_bearings.json").is_file())
@@ -225,16 +233,52 @@ class RunExportTest(unittest.TestCase):
         self.assertEqual(manifest.truth_position_schema,
                          "farfield_truth_position/v1")
         self.assertEqual(manifest.position_mass_metric.radii_m,
-                         [50.0, 100.0])
+                         [100.0, 500.0])
+        self.assertIsInstance(manifest.filter_config.init,
+                              structs.UniformBoxInit)
         self.assertEqual(len(data.measurements), 1)
         self.assertEqual(len(data.health), 6)
         expected_metrics = {
-            "posterior_position_probability_mass_within_radius@1:radius_m=50",
-            "posterior_position_probability_mass_within_radius@1:radius_m=100",
+            "posterior_position_probability_mass_within_true_position_radius"
+            "@1:radius_m=100",
+            "posterior_position_probability_mass_within_true_position_radius"
+            "@1:radius_m=500",
         }
         self.assertTrue(all(
             set(record.position_probability_mass) == expected_metrics
             for record in data.health))
+        key100 = metrics.position_mass_metric_key(
+            manifest.position_mass_metric, 100.0)
+        key500 = metrics.position_mass_metric_key(
+            manifest.position_mass_metric, 500.0)
+        self.assertTrue(all(
+            0.0 <= record.position_probability_mass[key100]
+            <= record.position_probability_mass[key500] <= 1.0
+            for record in data.health))
+        self.assertEqual(summary["reference_position"], "truth")
+        self.assertEqual(summary["primary_radius_m"], 500.0)
+        self.assertEqual(set(summary["radii"]), {"100", "500"})
+        self.assertIn("--- PRIMARY LOCALIZATION METRIC ---", console)
+        self.assertIn("within 500 m of the true position over time", console)
+        self.assertLess(console.index("PRIMARY: normalized posterior mass"),
+                        console.index("MAP position error"))
+
+    def test_mass_recorder_centers_both_radii_on_true_position(self):
+        config = metrics.position_mass_metric_config()
+        recorder = runner.PositionMassRecorder(
+            [structs.TruthPose(7, 1000.0, -500.0, 0.0)], config)
+        belief = SimpleNamespace(
+            east_m=np.array([1000.0, 1100.0, 1500.0, 1500.01]),
+            north_m=np.full(4, -500.0),
+            normalized_weights=lambda: np.array([0.1, 0.2, 0.3, 0.4]))
+
+        recorder.keyframe_end(7, belief, None)
+
+        values = recorder.by_keyframe[7]
+        self.assertAlmostEqual(
+            values[metrics.position_mass_metric_key(config, 100.0)], 0.3)
+        self.assertAlmostEqual(
+            values[metrics.position_mass_metric_key(config, 500.0)], 0.6)
 
     def test_no_bearings_writes_the_run_that_happened(self):
         # The old driver wrote the FULL unconsumed measurements under
