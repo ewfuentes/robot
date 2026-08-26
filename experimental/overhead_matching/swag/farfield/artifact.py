@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
+from experimental.overhead_matching.swag.farfield import code_provenance
+
 
 SCHEMA = "farfield.artifact.v1"
 MANIFEST_NAME = "manifest.json"
@@ -41,6 +43,12 @@ _MANIFEST_KEYS = frozenset({
     "declared_outputs",
     "complete",
 })
+# Manifest keys that may be absent. `code_provenance` was added after
+# artifacts were already on disk, and it is provenance rather than contract:
+# refusing to read a manifest for lacking it would strand every artifact
+# published before it existed, for no gain -- nothing depends on it being
+# there. `_require_exact_keys` therefore checks the required set only.
+_OPTIONAL_MANIFEST_KEYS = frozenset({"code_provenance"})
 _REF_KEYS = frozenset({
     "path",
     "kind",
@@ -277,6 +285,12 @@ class ArtifactManifest:
     declared_outputs: tuple[str, ...]
     complete: bool = True
     schema: str = SCHEMA
+    # The commit and working diff of the code that produced this artifact.
+    # Recorded, never enforced: identity is data lineage (see
+    # `artifact_identity`), and this is what makes "was it made by different
+    # code?" answerable whenever someone asks. `None` on artifacts published
+    # before it existed.
+    code_provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA:
@@ -319,7 +333,7 @@ class ArtifactManifest:
                 "a published artifact manifest must have complete=true")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "schema": self.schema,
             "kind": self.kind,
             "dataset": self.dataset,
@@ -334,12 +348,24 @@ class ArtifactManifest:
             "declared_outputs": list(self.declared_outputs),
             "complete": self.complete,
         }
+        # Omitted rather than written as null when absent, so a manifest read
+        # from an older artifact round-trips to the bytes it came from.
+        if self.code_provenance is not None:
+            value["code_provenance"] = dict(self.code_provenance)
+        return value
 
     @classmethod
     def from_dict(cls, value: Any) -> "ArtifactManifest":
         if not isinstance(value, dict):
             raise ArtifactValidationError("artifact manifest must be a JSON object")
-        _require_exact_keys(value, _MANIFEST_KEYS, "artifact manifest")
+        _require_exact_keys(
+            {key: item for key, item in value.items()
+             if key not in _OPTIONAL_MANIFEST_KEYS},
+            _MANIFEST_KEYS, "artifact manifest")
+        code = value.get("code_provenance")
+        if code is not None and not isinstance(code, dict):
+            raise ArtifactValidationError(
+                "artifact code_provenance must be a JSON object")
         upstreams = value["upstreams"]
         if not isinstance(upstreams, list):
             raise ArtifactValidationError("artifact upstreams must be a JSON list")
@@ -364,6 +390,7 @@ class ArtifactManifest:
             created=value["created"],
             arguments=tuple(arguments),
             content_digest=value["content_digest"],
+            code_provenance=code,
             upstreams=tuple(ArtifactRef.from_dict(item) for item in upstreams),
             config=config,
             declared_outputs=tuple(outputs),
@@ -704,6 +731,12 @@ class ArtifactDirectoryBuilder:
             upstreams=self.upstreams,
             config=self.config,
             declared_outputs=self.declared_outputs,
+            # Stamped here rather than by each producer. There are nine of
+            # them and every one publishes through this class, so this is the
+            # only place that cannot be forgotten -- and a producer that
+            # forgot would be indistinguishable from one whose code was never
+            # recorded.
+            code_provenance=code_provenance.record(),
         )
         # This is intentionally the final write in the staging directory.
         atomic_write_json(self.staging_dir / MANIFEST_NAME, manifest.to_dict())

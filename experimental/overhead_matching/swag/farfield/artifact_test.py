@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import code_provenance
 
 
 class DigestTest(unittest.TestCase):
@@ -367,6 +368,71 @@ class TransactionFailureTest(unittest.TestCase):
                         config={},
                         declared_outputs=[bad_path],
                     )
+
+
+class CodeProvenanceStampTest(unittest.TestCase):
+    """Stamped by the builder, so no producer can forget it.
+
+    There are nine producers. A producer that forgot would be
+    indistinguishable from one whose code was genuinely never recorded, which
+    is the distinction the record exists to make.
+    """
+
+    def test_a_published_artifact_records_its_code_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            manifest = artifact.load_manifest(target)
+            self.assertIsNotNone(manifest.code_provenance)
+            block = code_provenance.validate(manifest.code_provenance)
+            self.assertEqual(block["schema"], code_provenance.SCHEMA)
+
+    def test_a_manifest_without_it_still_reads(self):
+        """Every artifact on disk predates this field. Refusing to read one
+        for lacking it would strand the corpus for no gain -- nothing depends
+        on it being there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            path = target / artifact.MANIFEST_NAME
+            document = json.loads(path.read_text())
+            del document["code_provenance"]
+            path.write_text(json.dumps(document))
+            manifest = artifact.load_manifest(target)
+            self.assertIsNone(manifest.code_provenance)
+
+    def test_a_non_object_code_block_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            path = target / artifact.MANIFEST_NAME
+            document = json.loads(path.read_text())
+            document["code_provenance"] = "not an object"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(artifact.ArtifactValidationError):
+                artifact.load_manifest(target)
+
+    def test_a_manifest_without_it_round_trips_to_its_own_bytes(self):
+        """Omitted, not written as null: an older artifact re-serialized must
+        equal what it came from, or a re-read would look like a change."""
+        manifest = artifact.ArtifactManifest(
+            kind="object_tracks", dataset="ds", version="v1",
+            generator="test", git_commit="c0ffee", created="2026-08-25",
+            arguments=(), content_digest="a" * 64, upstreams=(), config={},
+            declared_outputs=())
+        self.assertNotIn("code_provenance", manifest.to_dict())
 
 
 if __name__ == "__main__":

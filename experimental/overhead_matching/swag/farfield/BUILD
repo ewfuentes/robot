@@ -83,12 +83,16 @@ py_library(
     name = "artifact",
     srcs = ["artifact.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":code_provenance"],
 )
 
 py_test(
     name = "artifact_test",
     srcs = ["artifact_test.py"],
-    deps = [":artifact"],
+    deps = [
+        ":artifact",
+        ":code_provenance",
+    ],
 )
 
 py_library(
