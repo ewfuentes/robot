@@ -202,6 +202,34 @@ py_test(
 )
 
 py_library(
+    name = "migrate_legacy_extraction_material_lib",
+    srcs = ["migrate_legacy_extraction_material.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        FARFIELD + ":artifact",
+        FARFIELD + ":code_provenance",
+        FARFIELD + ":paths",
+    ],
+)
+
+py_binary(
+    name = "migrate_legacy_extraction_material",
+    srcs = ["migrate_legacy_extraction_material.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":migrate_legacy_extraction_material_lib"],
+)
+
+py_test(
+    name = "migrate_legacy_extraction_material_test",
+    srcs = ["migrate_legacy_extraction_material_test.py"],
+    deps = [
+        ":migrate_legacy_extraction_material_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
+    ],
+)
+
+py_library(
     name = "backfill_artifact_identity_lib",
     srcs = ["backfill_artifact_identity.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],

@@ -213,6 +213,43 @@ class RecordedTest(unittest.TestCase):
         self.assertIn("NOT part of this identity", message)
 
 
+class ResolveTest(unittest.TestCase):
+    def manifest(self, config):
+        return artifact.ArtifactManifest(
+            kind="object_tracks", dataset="ds", version="v1",
+            generator="test", git_commit="deadbeef", created="2026-08-26",
+            arguments=(), content_digest=DIGEST_C, upstreams=(),
+            config=config, declared_outputs=())
+
+    def test_a_recorded_identity_wins(self):
+        self.assertEqual(
+            ident.resolve(self.manifest({"artifact_identity": DIGEST_A}),
+                          path="/p", backfill={"/p": DIGEST_B}),
+            DIGEST_A)
+
+    def test_the_backfill_answers_for_an_unattributed_artifact(self):
+        self.assertEqual(
+            ident.resolve(self.manifest({}), path="/p",
+                          backfill={"/p": DIGEST_B}),
+            DIGEST_B)
+
+    def test_without_a_backfill_it_stays_unattributed(self):
+        self.assertEqual(
+            ident.resolve(self.manifest({}), path="/p"), ident.UNATTRIBUTED)
+
+    def test_a_path_absent_from_the_backfill_stays_unattributed(self):
+        self.assertEqual(
+            ident.resolve(self.manifest({}), path="/other",
+                          backfill={"/p": DIGEST_B}),
+            ident.UNATTRIBUTED)
+
+    def test_a_malformed_backfill_value_is_refused_not_used(self):
+        """A corrupt index must not launder a bad value into an identity."""
+        with self.assertRaises(ident.ArtifactIdentityError):
+            ident.resolve(self.manifest({}), path="/p",
+                          backfill={"/p": "not-a-digest"})
+
+
 class RejectionTest(unittest.TestCase):
     def test_a_non_ref_upstream_is_refused(self):
         with self.assertRaises(ident.ArtifactIdentityError):

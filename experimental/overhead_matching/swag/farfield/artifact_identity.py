@@ -155,6 +155,31 @@ def recorded(manifest: artifact.ArtifactManifest) -> str:
     return _digest(value, "recorded artifact_identity")
 
 
+def resolve(manifest: artifact.ArtifactManifest, *, path: str,
+            backfill: Mapping[str, str] | None = None) -> str:
+    """The identity of an artifact, from its manifest or the backfill index.
+
+    Artifacts published before identity existed record none, and their
+    manifests cannot be edited to add one: `manifest_digest` is the sha256 of
+    `manifest.json` and every downstream `ArtifactRef` records it, so an edit
+    would silently invalidate every reference. Their computed identities live
+    in a derived index beside the data instead (see
+    `dataset_tools/backfill_artifact_identity`).
+
+    The index is passed in rather than read here, so this module stays below
+    `pipeline` in the import graph and so a caller can decide -- and show --
+    whether a backfill is in play at all.
+    """
+    recorded_value = recorded(manifest)
+    if recorded_value != UNATTRIBUTED:
+        return recorded_value
+    if backfill:
+        found = backfill.get(path)
+        if isinstance(found, str) and found:
+            return _digest(found, "backfilled artifact_identity")
+    return UNATTRIBUTED
+
+
 def explain(*, expected: str, manifest: artifact.ArtifactManifest,
             kind: str) -> str:
     """Why an artifact was rejected, in terms a rebuild decision needs.
