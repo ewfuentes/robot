@@ -147,20 +147,36 @@ def _leaf_paths(value: Any, prefix: str = "") -> set[str]:
 
 
 def validate_resolved(config: dict,
-                      schema: Mapping[str, ValueSpec]) -> None:
+                      schema: Mapping[str, ValueSpec],
+                      optional: Mapping[str, ValueSpec] | None = None) -> None:
     """Validate an exact, fully resolved config tree.
 
-    Every schema leaf must be present and every config leaf must be described.
-    Rejecting unknown values matters: an ignored typo in a result-shaping key
-    is indistinguishable from silently taking a default.
+    Every `schema` leaf must be present and every config leaf must be
+    described. Rejecting unknown values matters: an ignored typo in a
+    result-shaping key is indistinguishable from silently taking a default.
+
+    `optional` is for keys where that reasoning does not apply -- presentation
+    settings, which shape a rendered page and cannot change a scientific
+    result. They are validated when present and rejected when misspelled,
+    like everything else; they are simply not *required*, because demanding
+    them would make every build recipe recorded before the key existed
+    unreadable. A result-shaping key must never go here: absence there is
+    exactly the silent default this function exists to prevent.
     """
+    if not isinstance(config, dict):
+        raise TypeError("config must be a JSON object")
+    optional = dict(optional or {})
+    overlap = sorted(set(schema) & set(optional))
+    if overlap:
+        raise InvalidConfigValue(
+            f"keys cannot be both required and optional: {overlap}")
     if not isinstance(config, dict):
         raise TypeError("config must be a JSON object")
     expected = set(schema)
     actual = _leaf_paths(config)
     missing = sorted(path for path in expected
                      if _get(config, path, _MISSING) is _MISSING)
-    unknown = sorted(actual - expected)
+    unknown = sorted(actual - expected - set(optional))
     if missing:
         raise MissingConfigValue(
             "build config is missing required values (no defaults are "
@@ -171,6 +187,10 @@ def validate_resolved(config: dict,
             "\n".join(f"  {path}" for path in unknown))
     for path, spec in schema.items():
         spec.validate(path, _get(config, path, _MISSING))
+    for path, spec in optional.items():
+        value = _get(config, path, _MISSING)
+        if value is not _MISSING:
+            spec.validate(path, value)
     try:
         _canonical_bytes(config)
     except (TypeError, ValueError) as exc:
@@ -189,6 +209,7 @@ def _identity(dataset: str, config: dict, inputs: dict) -> str:
 
 def create(build_dir: Path, *, dataset: str, config: dict,
            required: tuple = (), schema: Mapping[str, ValueSpec] | None = None,
+           optional: Mapping[str, ValueSpec] | None = None,
            generator: str, inputs: dict, notes: str = "") -> Path:
     """Validate and immutably record a new build recipe.
 
@@ -209,7 +230,7 @@ def create(build_dir: Path, *, dataset: str, config: dict,
     if not isinstance(config, dict):
         raise TypeError("config must be a JSON object")
     if schema is not None:
-        validate_resolved(config, schema)
+        validate_resolved(config, schema, optional=optional)
     missing = [key for key in required
                if _get(config, key, _MISSING) is _MISSING]
     if missing:

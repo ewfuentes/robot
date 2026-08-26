@@ -173,12 +173,22 @@ def _directory_files(root: Path, excluded: frozenset[str]) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
+# Annotations ABOUT a manifest rather than content of it, and both derived
+# from the same recipe. Excluded from `manifest_digest` so an artifact
+# published before they existed can still gain them -- see the note in
+# `manifest_digest`. Tampering with either is caught by a stronger check than
+# a digest: `artifact_recipe.verify_self_describing` recomputes the identity
+# from the recipe and requires it to equal the recorded identity, so they
+# cannot be edited independently of each other.
+_DIGEST_EXCLUDED_KEYS = frozenset({"artifact_identity", "recipe"})
+
+
 def manifest_digest(manifest_path: Path | str) -> str:
     """The digest every downstream `ArtifactRef` records for this artifact.
 
-    Deliberately computed over the manifest MINUS `artifact_identity`, not
-    over the file's bytes. Two reasons, and the second is the load-bearing
-    one:
+    Deliberately computed over the manifest MINUS the annotation keys in
+    `_DIGEST_EXCLUDED_KEYS`, not over the file's bytes. Two reasons, and the
+    second is the load-bearing one:
 
     - The identity is derived FROM the manifest's own contents. Hashing it
       into the digest that names the manifest is circular.
@@ -213,7 +223,7 @@ def manifest_digest_of_document(document: Any) -> str:
     """
     if isinstance(document, dict):
         document = {key: value for key, value in document.items()
-                    if key != "artifact_identity"}
+                    if key not in _DIGEST_EXCLUDED_KEYS}
     return hashlib.sha256(canonical_json_bytes(document) + b"\n").hexdigest()
 
 

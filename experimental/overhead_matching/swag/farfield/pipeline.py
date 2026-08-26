@@ -250,26 +250,62 @@ CONFIG_SCHEMA = {
     "localization.modes.heading_cell_deg": _positive_number(),
     "localization.modes.min_cell_weight": _number(maximum=1.0),
     "localization.modes.min_mode_weight": _number(maximum=1.0),
-    # The viewer's tuning values. They shape the published page, so they are
-    # recorded here rather than left to the viewer's own argparse defaults:
-    # with a default on each side, the orchestrator's completeness check and
-    # the tool it invokes drift apart silently, and every previously built
-    # viewer is then declared stale by a change nobody made deliberately.
-    # These are deliberately NOT part of any stage contract -- retuning the
-    # page must not invalidate the localization run it displays.
+}
+
+
+_REQUIRED = object()
+
+
+def _value(config: dict, key: str, default=_REQUIRED) -> Any:
+    """A resolved config value. Absent is an error unless a default is given.
+
+    The default path exists only for `PRESENTATION_SCHEMA` keys, which are
+    optional by design; everything else must be present or the build recipe is
+    not fully resolved.
+    """
+    try:
+        return build_config.value({"config": config}, key)
+    except build_config.MissingConfigValue:
+        # Only ABSENCE falls back. A malformed value must still raise, or a
+        # typo in a presentation key would silently become the fallback --
+        # the exact failure the no-defaults rule exists to prevent.
+        if default is _REQUIRED:
+            raise
+        return default
+
+
+# Presentation settings. They shape the published page and cannot change any
+# scientific artifact -- retuning them does not invalidate the localization run
+# the page displays. They are therefore OPTIONAL rather than required: making
+# them required made every build recipe recorded before they existed
+# unreadable, which was measured against the real root (all 24 of them). They
+# are still validated when present and still rejected when misspelled.
+PRESENTATION_SCHEMA = {
     "viewer.max_particles": _integer(minimum=1),
     "viewer.basemap_detail": _positive_number(),
     "viewer.embed_source_chips": _boolean(),
 }
 
+# What the viewer uses when a recipe predates the keys. Named here rather than
+# left to the viewer's own argparse, so the orchestrator and the viewer cannot
+# hold two different sets -- which is what putting them in the config was for.
+_REQUIRED_ABSENT = object()
 
-def _value(config: dict, key: str) -> Any:
-    return build_config.value({"config": config}, key)
+PRESENTATION_FALLBACK = {
+    "max_particles": 900,
+    "basemap_detail": 1.0,
+    "embed_source_chips": True,
+}
+
+# The two schemas always travel together: validating with the required set but
+# not the optional one rejects a perfectly good `viewer:` block as "unknown".
+# Passed as one mapping so a caller cannot supply half of it.
+SCHEMA_ARGS = {"schema": CONFIG_SCHEMA, "optional": PRESENTATION_SCHEMA}
 
 
 def validate_pipeline_config(config: dict) -> None:
     """Validate exact types, scalar domains, and cross-field invariants."""
-    build_config.validate_resolved(config, CONFIG_SCHEMA)
+    build_config.validate_resolved(config, **SCHEMA_ARGS)
     start = _value(config, "tracking.range.k_start")
     end = _value(config, "tracking.range.k_end")
     if start > end:
@@ -930,7 +966,7 @@ def cmd_new_build(args) -> None:
     inputs = _validate_build_inputs(paths, config, source_config)
     build_dir = paths.build_dir(args.build_name)
     path = build_config.create(
-        build_dir, dataset=paths.dataset, config=config, schema=CONFIG_SCHEMA,
+        build_dir, dataset=paths.dataset, config=config, **SCHEMA_ARGS,
         generator="farfield.pipeline new-build", inputs=inputs,
         notes=args.notes)
     print(f"build created: {build_dir}")
@@ -1147,16 +1183,28 @@ def viewer_config(config: dict) -> dict:
     the values it later expects to find in the published manifest, so the two
     cannot disagree.
     """
+    def setting(name):
+        """The recipe's value, or the named presentation fallback.
+
+        A recipe recorded before these keys existed has none, and refusing to
+        render its page over a presentation setting would be the wrong trade
+        -- the run it displays is unaffected either way. `PRESENTATION_SCHEMA`
+        keeps them validated when they ARE present.
+        """
+        value = _value(config, f"viewer.{name}", default=_REQUIRED_ABSENT)
+        return PRESENTATION_FALLBACK[name] if value is _REQUIRED_ABSENT \
+            else value
+
     return {
-        "max_particles": _value(config, "viewer.max_particles"),
+        "max_particles": setting("max_particles"),
         # `float` because the viewer parses this flag with `type=float` and
         # records what it parsed: a config written as `1` rather than `1.0`
         # would otherwise never compare equal to the manifest it produced.
-        "basemap_detail": float(_value(config, "viewer.basemap_detail")),
+        "basemap_detail": float(setting("basemap_detail")),
         # Fixed for the canonical page rather than configurable: `--body_only`
         # emits an embeddable fragment, and the index chain links documents.
         "body_only": False,
-        "embed_source_chips": _value(config, "viewer.embed_source_chips"),
+        "embed_source_chips": setting("embed_source_chips"),
     }
 
 

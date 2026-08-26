@@ -999,7 +999,7 @@ class BuildResolutionTest(unittest.TestCase):
             dataset_base = root / "datasets" / "ds"
             build_config.create(
                 build_dir, dataset="ds", config=config,
-                schema=pipeline.CONFIG_SCHEMA, generator="test",
+                **pipeline.SCHEMA_ARGS, generator="test",
                 inputs={"farfield_root": root,
                         "dataset_base": dataset_base})
             paths, document = pipeline.resolve_build(build_dir)
@@ -1016,7 +1016,7 @@ class BuildResolutionTest(unittest.TestCase):
             wrong = root / "runs" / "ds" / "b001"
             build_config.create(
                 wrong, dataset="ds", config=config,
-                schema=pipeline.CONFIG_SCHEMA, generator="test",
+                **pipeline.SCHEMA_ARGS, generator="test",
                 inputs={"farfield_root": root,
                         "dataset_base": root / "datasets" / "ds"})
             with self.assertRaisesRegex(ValueError, "build config says"):

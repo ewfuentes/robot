@@ -386,3 +386,61 @@ anyway, since it does not exist until the stage has run. So the recipe records
 which upstreams entered the identity, and the verification separately requires
 that set to be a subset of the manifest's lineage, so a recipe cannot invent
 an ancestor the manifest does not show.
+
+## 2026-08-26 · The identity a migration computes must be the identity the gate computes
+
+The first identity backfill computed the value itself, with `manifest.upstreams`
+as the upstream term. The gate computes it with the stage's CONFIGURED
+upstreams. Those differ for exactly one kind -- a `frame_landmarks` manifest
+records its pinhole artifact and the canonical LLM result artifact, while
+`extract` declares no artifact upstreams, and the orchestrator cannot name the
+result artifact anyway because it does not exist until the stage has run.
+
+Eight artifacts were therefore signed with an identity nothing would ever
+compute, and because every downstream stage validates its upstreams, **every
+stage of every build read INVALID**: `frame_landmarks` identity 1040d55cb665
+where the gate wanted 3ad7ddf1c69c. One wrong value, 112 symptoms, on data
+that was entirely fine.
+
+The migration that fixed it computes nothing of its own -- it calls
+`pipeline.expected_artifact_identity` and `pipeline.stage_recipe`, so agreement
+with the gate is by construction rather than by a second implementation kept in
+step by hand. That is the rule worth keeping: a migration that writes a value
+the gate will later check must obtain it from the gate's own code path.
+
+It also has to converge. Computing a child's identity validates its upstreams
+through the gate, so a child is uncomputable until its parent carries the right
+identity -- one pass per level of the DAG, two here. The values never change
+between passes: both `artifact_identity` and `recipe` sit outside
+`manifest_digest`, so correcting a parent cannot move a child's identity. Only
+the set of computable artifacts grows.
+
+**What let this ship wrong the first time:** the migration was verified against
+its own invariants -- every ref agrees with its lane, no digest moved -- and
+those all passed. Nobody ran `pipeline status`, the one command that consumes
+the data the way the pipeline does. Verifying a migration's internal
+consistency is not verifying that the result is usable.
+
+## 2026-08-26 · Presentation settings are not under the no-defaults rule
+
+`CONFIG_SCHEMA` supplies no defaults on purpose: "an ignored typo in a
+result-shaping key is indistinguishable from silently taking a default". Adding
+`viewer.max_particles`, `viewer.basemap_detail` and `viewer.embed_source_chips`
+to it made every build recipe recorded before those keys existed unreadable --
+all 24 on the real root, so `pipeline status` could not even parse a build.
+
+They moved to `PRESENTATION_SCHEMA`: validated when present, rejected when
+misspelled, but not required. The rule's rationale does not reach them, because
+they shape a rendered page and cannot change a scientific result -- retuning
+them does not invalidate the run the page displays. `viewer_config` names its
+fallbacks explicitly so the orchestrator and the viewer still cannot hold two
+different sets, which is what putting them in the config was for.
+
+The fallback fires on ABSENCE only. Catching an invalid value there too would
+have let a typo in a presentation key silently become the fallback, which is
+the failure the no-defaults rule exists to prevent.
+
+The alternative -- adding the block to the 24 recipes on disk -- was rejected:
+`source_digests.build_config` records each recipe's sha256 in the artifacts it
+produced, and although nothing compares it today, editing the files would
+leave 24 recorded digests quietly wrong.
