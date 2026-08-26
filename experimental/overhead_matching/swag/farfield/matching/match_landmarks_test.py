@@ -527,21 +527,20 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
             run_main(flags + ["--build_only"])
         self.assertIn("input artifact", str(ctx.exception))
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+    def test_byte_identical_audit_copy_is_the_same_artifact(self):
         alias = Path(self._tmp.name) / "alternate-audits"
         shutil.copytree(self.audit_dir, alias)
         flags = list(self.flags)
         flags[flags.index("--audit_dir") + 1] = str(alias)
-        with self.assertRaisesRegex(SystemExit, "exact configured lane"):
-            run_main(flags + ["--build_only"])
+        run_main(flags + ["--build_only"])
 
-    def test_byte_identical_catalog_copy_outside_configured_lane_is_rejected(self):
+    def test_byte_identical_catalog_copy_is_the_same_artifact(self):
         alias = Path(self._tmp.name) / "alternate-catalog"
         shutil.copytree(self.catalog_dir, alias)
         flags = list(self.flags)
         flags[flags.index("--catalog_dir") + 1] = str(alias)
-        with self.assertRaisesRegex(SystemExit, "exact configured lane"):
-            run_main(flags + ["--build_only"])
+        run_main(flags + ["--build_only"])
+
 
     def test_corrupt_input_manifest_is_normalized_to_stage_error(self):
         (self.audit_dir / artifact.MANIFEST_NAME).write_text("not-json\n")

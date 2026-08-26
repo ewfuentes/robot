@@ -462,27 +462,12 @@ class EndToEndTest(unittest.TestCase):
             substitute_dir, _ = write_catalog(
                 root / "substitute", node_id="node:other")
             args.catalog_dir = substitute_dir
-            with self.assertRaisesRegex(ValueError, "exact configured lane"):
+            # Rejected by comparing digests against the configured lane, which
+            # is what caught this all along -- not the path.
+            with self.assertRaisesRegex(ValueError, "stale"):
                 build_export.build(args)
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            args, _ = build_fixture(root)
-            observations_manifest_path = (
-                Path(args.observations_dir) / artifact.MANIFEST_NAME)
-            observations_document = json.loads(
-                observations_manifest_path.read_text())
-            audit_ref = artifact.ArtifactRef.from_dict(
-                observations_document["upstreams"][1])
-            alias = root / "alternate-audits"
-            shutil.copytree(Path(audit_ref.path), alias)
-            observations_document["upstreams"][1]["path"] = str(
-                alias.resolve())
-            artifact.atomic_write_json(
-                observations_manifest_path, observations_document)
-            with self.assertRaisesRegex(ValueError, "exact configured lane"):
-                build_export.build(args)
+
 
     def test_matching_partial_coverage_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -887,6 +887,7 @@ def publish_tracking(args, *, arguments: tuple[str, ...] = ()):
             arguments=arguments,
             upstreams=resolved["upstreams"],
             config=manifest_config,
+            artifact_identity=getattr(args, "artifact_identity", None),
             declared_outputs=()) as publication:
         out = publication.staging_dir
         ctx = rr.load_context(
@@ -947,6 +948,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--k_end", type=int, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     parser.add_argument("--video", type=Path, default=None)
     return parser
 

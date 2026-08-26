@@ -247,7 +247,8 @@ def load(export_dir: Path, *, expected_dataset: str | None = None) \
     if review_refs:
         review_ref = review_refs[0]
         if (not isinstance(review_config, dict)
-                or review_config.get("artifact") != review_ref.to_dict()
+                or not artifact.records_same_artifact(
+                    review_config.get("artifact"), review_ref)
                 or review_config.get("content_digest")
                 != review_ref.content_digest):
             raise ValueError(

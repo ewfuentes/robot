@@ -756,7 +756,7 @@ def _validate_recorded_request_payloads(
             prefix=".request-validation-") as temporary:
         expected = build_request_set(context, pinhole_ref, Path(temporary))
     if (recorded.fingerprint != fingerprint
-            or recorded.to_dict() != expected.to_dict()
+            or recorded != expected
             or not _request_set_matches(recorded, context, pinhole_ref)):
         raise ValueError(
             "request set differs from the reproduced extraction workload")
@@ -1221,7 +1221,7 @@ def _open_exact_frame_upstream(
         raise ValueError(
             f"{where} does not reopen as its exact typed artifact: {error}") \
             from error
-    if reopened.to_dict() != ref.to_dict():
+    if reopened != ref:
         raise ValueError(f"{where} changed identity after frame publication")
     return path, manifest
 
@@ -1265,7 +1265,8 @@ def _validate_adoption_report(
                     request_set.to_dict()["response_schema"])
             and request_report["n_expected"] == len(request_set.units)
             and request_report["coverage"] == "complete"
-            and pinhole_report["artifact_ref"] == pinhole_ref.to_dict()
+            and artifact.records_same_artifact(
+                pinhole_report["artifact_ref"], pinhole_ref)
             and pinhole_report["content_digest"]
                 == pinhole_ref.content_digest
             and pinhole_report["request_media_match"] == "complete"
@@ -1690,6 +1691,7 @@ def publish_frame_artifact(
             arguments=arguments,
             upstreams=(pinhole_ref, result_ref),
             config=config,
+            artifact_identity=getattr(args, "artifact_identity", None),
             declared_outputs=(PREDICTIONS_NAME,)) as builder:
         artifact.atomic_write_file(
             builder.output_path(PREDICTIONS_NAME), content)
@@ -1757,6 +1759,10 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     parser.add_argument(
         "--prepare_adoption", action="store_true",
         help=("publish only deterministic pinhole and request artifacts; "

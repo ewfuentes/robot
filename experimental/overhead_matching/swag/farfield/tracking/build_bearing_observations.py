@@ -48,6 +48,7 @@ def publish_observations(
         pano_width: int, bearing_sigma_deg: float,
         orchestration: dict, build_identity: str, source_digests: dict,
         git_commit: str | None = None,
+        artifact_identity: str | None = None,
         arguments: tuple[str, ...] = ()) -> artifact.ArtifactRef:
     """Build, validate, and atomically publish one observation artifact."""
     observations = tracklets.build_camera_bearing_observations(
@@ -83,6 +84,7 @@ def publish_observations(
                         if git_commit is None else git_commit),
             arguments=arguments,
             upstreams=(tracks_ref, audits_ref), config=config,
+            artifact_identity=artifact_identity,
             declared_outputs=(OUTPUT_NAME,)) as builder:
         artifact.atomic_write_file(
             builder.output_path(OUTPUT_NAME), _canonical_jsonl(records))
@@ -190,13 +192,13 @@ def load_inputs(args):
     if audit_manifest.config.get("build_identity") != document["build_identity"]:
         raise BearingObservationError(
             f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
-    if sum(ref.to_dict() == tracks_ref.to_dict()
+    if sum(ref == tracks_ref
            for ref in audit_manifest.upstreams) != 1:
         raise BearingObservationError(
             "semantic_audits must bind the exact object_tracks artifact once")
     audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
-    if (audits.tracks_ref.to_dict() != tracks_ref.to_dict()
-            or audits.semantic_audits_ref.to_dict() != audits_ref.to_dict()):
+    if (audits.tracks_ref != tracks_ref
+            or audits.semantic_audits_ref != audits_ref):
         raise BearingObservationError(
             "audit loader did not retain the exact authorized upstream refs")
 
@@ -231,6 +233,10 @@ def main() -> None:
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     args = parser.parse_args()
 
     try:
@@ -253,6 +259,7 @@ def main() -> None:
             build_identity=document["build_identity"],
             source_digests=resolved["source_digests"],
             git_commit=document["git_commit"],
+            artifact_identity=getattr(args, "artifact_identity", None),
             arguments=tuple(sys.argv))
     except (artifact.ArtifactError, audit_io.AuditArtifactError,
             BearingObservationError, dataset.ContractViolation,

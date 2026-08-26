@@ -370,6 +370,71 @@ class TransactionFailureTest(unittest.TestCase):
                     )
 
 
+class ManifestDigestExcludesIdentityTest(unittest.TestCase):
+    """`manifest_digest` must not move when an identity is added.
+
+    This is what let the 56 legacy artifacts be signed in place. Their
+    manifest digests are recorded by downstream refs AND baked into
+    downstream artifacts' immutable content (frozen request sets and work
+    snapshots, covered by `content_digest`), so a digest that moved could not
+    be chased -- 32 of the 56 were unreachable that way. If this test ever
+    fails, signing an artifact has become a breaking change to everything
+    that points at it.
+    """
+
+    def _manifest(self, **extra):
+        base = {
+            "schema": artifact.SCHEMA,
+            "kind": "object_tracks", "dataset": "ds", "version": "v1",
+            "generator": "test", "git_commit": "deadbeef",
+            "created": "2026-08-26", "arguments": [],
+            "content_digest": "c" * 64, "upstreams": [], "config": {},
+            "declared_outputs": [], "complete": True,
+        }
+        base.update(extra)
+        return base
+
+    def test_adding_an_identity_does_not_move_the_digest(self):
+        without = self._manifest()
+        with_identity = self._manifest(artifact_identity="a" * 64)
+        self.assertEqual(
+            artifact.manifest_digest_of_document(without),
+            artifact.manifest_digest_of_document(with_identity))
+
+    def test_changing_the_identity_does_not_move_the_digest(self):
+        self.assertEqual(
+            artifact.manifest_digest_of_document(
+                self._manifest(artifact_identity="a" * 64)),
+            artifact.manifest_digest_of_document(
+                self._manifest(artifact_identity="b" * 64)))
+
+    def test_changing_anything_else_does_move_the_digest(self):
+        self.assertNotEqual(
+            artifact.manifest_digest_of_document(self._manifest()),
+            artifact.manifest_digest_of_document(
+                self._manifest(content_digest="d" * 64)))
+
+    def test_it_matches_the_file_bytes_a_manifest_is_written_with(self):
+        """Backward compatibility with every digest already recorded.
+
+        Manifests are written by `atomic_write_json`, so a manifest with no
+        identity hashes to exactly what a digest over the file's bytes gave
+        before this changed.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / artifact.MANIFEST_NAME
+            document = self._manifest()
+            artifact.atomic_write_json(path, document)
+            self.assertEqual(artifact.manifest_digest(path),
+                             artifact.sha256_file(path))
+            artifact.atomic_write_json(
+                path, self._manifest(artifact_identity="a" * 64))
+            self.assertEqual(artifact.manifest_digest(path),
+                             artifact.manifest_digest_of_document(document))
+            self.assertNotEqual(artifact.manifest_digest(path),
+                                artifact.sha256_file(path))
+
+
 class CodeProvenanceStampTest(unittest.TestCase):
     """Stamped by the builder, so no producer can forget it.
 

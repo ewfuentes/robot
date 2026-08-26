@@ -538,6 +538,7 @@ def publish_audit_results(destination: Path, *, request_dir: Path,
                           dataset_name: str, version: str,
                           arguments=(), manifest_config: dict | None = None,
                           git_commit: str | None = None,
+                          artifact_identity: str | None = None,
                           ) -> artifact.ArtifactRef:
     """Publish only a complete, unique, validated semantic-audit result."""
     (request_ref, request_set, meta, source_ref, _, _, _,
@@ -579,6 +580,7 @@ def publish_audit_results(destination: Path, *, request_dir: Path,
                         if git_commit is None else git_commit),
             arguments=arguments,
             upstreams=(source_ref, frame_refs[0], request_ref),
+            artifact_identity=artifact_identity,
             config={
                 "phase": "canonical_results",
                 "request_set_fingerprint": request_set.fingerprint,
@@ -801,6 +803,10 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--gcs_prefix")
     parser.add_argument("--parallel", type=int, default=8)
@@ -829,7 +835,7 @@ def main():
     try:
         source_ref, frame_ref = open_prefix_inputs(args, document)
         source = load_source_tracks(args.tracks_dir, args.dataset)
-        if source[0].to_dict() != source_ref.to_dict():
+        if source[0] != source_ref:
             raise ValueError(
                 "track loader did not retain the exact authorized ref")
         ingest_params = dataset.IngestParams(
@@ -838,7 +844,7 @@ def main():
             seam_min_y_iou=selected["ingest.seam_min_y_iou"])
         ingest_result = dataset.run_ingest(
             args.dataset_base, args.frame_landmarks_dir, ingest_params)
-        if ingest_result.frame_landmarks_ref.to_dict() != frame_ref.to_dict():
+        if ingest_result.frame_landmarks_ref != frame_ref:
             raise ValueError(
                 "frame_landmarks identity disagrees with build_config")
         work_dir = audit_work_dir(args.output_dir)
@@ -905,7 +911,8 @@ def main():
             "orchestration": orchestration,
             "resolved_stage_config": selected,
         },
-        git_commit=provenance.git_commit())
+        git_commit=provenance.git_commit(),
+        artifact_identity=getattr(args, "artifact_identity", None))
     print(f"published complete semantic audit: {ref.path}")
 
 

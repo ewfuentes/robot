@@ -47,6 +47,15 @@ py_library(
     deps = [":artifact"],
 )
 
+py_test(
+    name = "configured_lane_test",
+    srcs = ["configured_lane_test.py"],
+    deps = [
+        ":artifact",
+        ":configured_lane",
+    ],
+)
+
 py_library(
     name = "code_provenance",
     srcs = ["code_provenance.py"],
@@ -294,6 +303,7 @@ py_library(
         requirement("pyyaml"),
         ":artifact",
         ":build_config",
+        ":code_provenance",
         ":nominal_forward",
         ":paths",
         ":provenance",

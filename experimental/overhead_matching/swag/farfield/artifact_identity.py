@@ -70,12 +70,14 @@ from experimental.overhead_matching.swag.farfield import (
 
 SCHEMA = "farfield_artifact_identity/v3"
 
-# A manifest written before per-artifact identity existed. Such an artifact is
-# not *wrong*, it is unattributed: nothing on disk says which code or which
-# resolved stage config produced it. Consumers must say what they want to do
-# about that rather than have it decided for them; see `pipeline`'s
-# `--assume-current`.
+# A manifest that records no identity. After the legacy artifacts were signed
+# in place this means one of two things: an artifact no gated stage produced
+# (a catalog, a viewer sidecar) which nothing asks about, or one published by
+# a producer run outside the pipeline, which had no identity to record. Such
+# an artifact is not *wrong*, it is unattributed -- nothing on disk says which
+# resolved recipe produced it, and no amount of reading it can recover that.
 UNATTRIBUTED = "unattributed"
+
 
 
 class ArtifactIdentityError(ValueError):
@@ -148,36 +150,22 @@ def _digest(value: Any, field: str) -> str:
 
 
 def recorded(manifest: artifact.ArtifactManifest) -> str:
-    """The identity a published artifact claims, or `UNATTRIBUTED`."""
-    value = manifest.config.get("artifact_identity")
-    if value is None:
-        return UNATTRIBUTED
-    return _digest(value, "recorded artifact_identity")
+    """The identity a published artifact claims, or `UNATTRIBUTED`.
 
+    A top-level manifest field rather than a `config` entry: `config` is the
+    stage's resolved recipe, and the identity is a property OF the artifact
+    computed partly from that recipe. Putting it in `config` would also have
+    made it one of the inputs to its own stage config digest.
 
-def resolve(manifest: artifact.ArtifactManifest, *, path: str,
-            backfill: Mapping[str, str] | None = None) -> str:
-    """The identity of an artifact, from its manifest or the backfill index.
-
-    Artifacts published before identity existed record none, and their
-    manifests cannot be edited to add one: `manifest_digest` is the sha256 of
-    `manifest.json` and every downstream `ArtifactRef` records it, so an edit
-    would silently invalidate every reference. Their computed identities live
-    in a derived index beside the data instead (see
-    `dataset_tools/backfill_artifact_identity`).
-
-    The index is passed in rather than read here, so this module stays below
-    `pipeline` in the import graph and so a caller can decide -- and show --
-    whether a backfill is in play at all.
+    The manifest is the ONLY place an identity is read from. There was for a
+    while a second path -- a derived index beside the data, for artifacts
+    published before identity existed -- and two lookup paths for one fact is
+    one too many. `manifest_digest` excluding `artifact_identity` is what let
+    those artifacts be signed in place instead; see the decision journal.
     """
-    recorded_value = recorded(manifest)
-    if recorded_value != UNATTRIBUTED:
-        return recorded_value
-    if backfill:
-        found = backfill.get(path)
-        if isinstance(found, str) and found:
-            return _digest(found, "backfilled artifact_identity")
-    return UNATTRIBUTED
+    if manifest.artifact_identity is None:
+        return UNATTRIBUTED
+    return _digest(manifest.artifact_identity, "recorded artifact_identity")
 
 
 def explain(*, expected: str, manifest: artifact.ArtifactManifest,
@@ -191,10 +179,14 @@ def explain(*, expected: str, manifest: artifact.ArtifactManifest,
     """
     found = recorded(manifest)
     if found == UNATTRIBUTED:
-        return (f"{kind} artifact {manifest.version!r} predates per-artifact "
-                "identity and records none. Rebuild it, or accept it as-is "
-                f"with --assume-current {kind} (which records that the claim "
-                "was assumed, not proven).")
+        # Deliberately does not offer a flag. An earlier version of this
+        # message told the reader to pass `--assume-current`, which never
+        # existed -- advice that sends someone hunting for a flag is worse
+        # than no advice.
+        return (f"{kind} artifact {manifest.version!r} records no identity, "
+                "so it was not published by this pipeline. Rebuild it through "
+                "`pipeline run`, which records the identity of what it "
+                "builds.")
     return (f"{kind} artifact {manifest.version!r} was built from a different "
             f"recipe: identity {found[:12]} != {expected[:12]}. Compare its "
             "manifest's stage_config_digest, upstream refs and build inputs "

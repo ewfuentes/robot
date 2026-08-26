@@ -217,8 +217,8 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         raise LocalizationInputError(
             f"bearing observations have invalid bound tracks/audits: {exc}") \
             from exc
-    if (audits.tracks_ref.to_dict() != tracks_ref.to_dict()
-            or audits.semantic_audits_ref.to_dict() != audits_ref.to_dict()):
+    if (audits.tracks_ref != tracks_ref
+            or audits.semantic_audits_ref != audits_ref):
         raise LocalizationInputError(
             "bearing-observation upstream references do not resolve to their "
             "recorded artifact identities")
@@ -363,7 +363,7 @@ def load_matching(matching_dir: Path, *, dataset_name: str,
             "semantic_audits, then catalogs")
     for expected in (tracks_ref, audits_ref, catalog_ref):
         recorded = _exact_upstream(manifest, expected.kind)
-        if recorded.to_dict() != expected.to_dict():
+        if recorded != expected:
             raise LocalizationInputError(
                 f"matching artifact is bound to a different {expected.kind} "
                 "artifact")
@@ -751,7 +751,7 @@ def build(args) -> artifact.ArtifactRef:
         expected_version=_config(
             document, "artifacts.landmark_matches_version"),
         build_identity=document["build_identity"])
-    if matching_ref.to_dict() != matching_candidate.to_dict():
+    if matching_ref != matching_candidate:
         raise LocalizationInputError(
             "matching loader did not retain the exact configured lane")
 
@@ -922,6 +922,7 @@ def build(args) -> artifact.ArtifactRef:
             arguments=sys.argv,
             upstreams=(observations_ref, matching_ref, catalog_ref)
             + (() if review_ref is None else (review_ref,)),
+            artifact_identity=getattr(args, "artifact_identity", None),
             config={
                 "orchestration": orchestration,
                 "build_identity": document["build_identity"],
@@ -1005,6 +1006,10 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     args = parser.parse_args()
     try:
         ref = build(args)

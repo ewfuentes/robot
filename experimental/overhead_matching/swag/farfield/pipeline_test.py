@@ -569,11 +569,13 @@ class ManifestCompletionTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def publish(self, kind, version, path, *, upstreams=(), config=None):
+    def publish(self, kind, version, path, *, upstreams=(), config=None,
+                artifact_identity=None):
         with artifact.ArtifactDirectoryBuilder(
                 path, kind=kind, dataset="ds", version=version,
                 generator="pipeline_test", git_commit="test",
                 arguments=(), upstreams=upstreams, config=config or {},
+                artifact_identity=artifact_identity,
                 declared_outputs=("payload.json",)) as builder:
             builder.output_path("payload.json").write_text("{}\n")
         return artifact.open_artifact(path)
@@ -584,7 +586,7 @@ class ManifestCompletionTest(unittest.TestCase):
             {key: "0" * 64 for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS},
             resolution=24, panorama_keys=("f0000",))
 
-    def publish_stage(self, stage, *, upstreams=None):
+    def publish_stage(self, stage, *, upstreams=None, build_inputs=None):
         if upstreams is None:
             upstreams = pipeline.expected_upstream_refs(
                 self.paths, self.config, stage)
@@ -602,9 +604,14 @@ class ManifestCompletionTest(unittest.TestCase):
                 output_config = self.shared_pinhole_config()
             elif stage == "extract" and kind == paths_lib.FRAME_LANDMARKS:
                 output_upstreams = (refs[0],)
+            identity = None
+            if build_inputs is not None and kind in \
+                    pipeline.PIPELINE_ARTIFACT_OWNER:
+                identity = pipeline.expected_artifact_identity(
+                    self.paths, self.config, kind, build_inputs=build_inputs)
             refs.append(self.publish(
                 kind, version, path, upstreams=output_upstreams,
-                config=output_config))
+                config=output_config, artifact_identity=identity))
         return tuple(refs)
 
     def publish_catalog(self):
@@ -753,6 +760,64 @@ class ManifestCompletionTest(unittest.TestCase):
                 self.paths, self.config, "track"))
         self.assertTrue(pipeline.stage_done(
             "extract", self.paths, self.config, build_identity="b" * 64))
+
+    def test_code_lineage_reads_the_published_provenance(self):
+        """The readout for `code_provenance`, which nothing else consumes.
+
+        Its previous reader looked in `manifest.config` for a block that is a
+        top-level manifest field, so it reported "no artifacts in this
+        lineage" for every corpus -- indistinguishable from a corpus with
+        nothing stamped, which is why the bug survived a run against real
+        data. Pin both directions."""
+        empty = pipeline.code_lineage(
+            self.paths, self.config, build_identity=self.build_identity)
+        self.assertIn("no artifacts", empty)
+        self.publish_stage("extract")
+        described = pipeline.code_lineage(
+            self.paths, self.config, build_identity=self.build_identity)
+        self.assertNotIn("no artifacts", described)
+
+    def test_a_stage_published_with_its_identity_passes_the_gate(self):
+        """What the pipeline actually does. Every other test here calls
+        `stage_done` WITHOUT build_inputs, which skips the identity branch
+        entirely -- so for a while nothing recorded an identity at all and no
+        test could notice, while `cmd_run` and `cmd_status` always pass
+        build_inputs and would have rejected every freshly built stage."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        manifest = artifact.load_manifest(self.paths.frame_landmarks)
+        self.assertEqual(
+            manifest.artifact_identity,
+            pipeline.expected_artifact_identity(
+                self.paths, self.config, paths_lib.FRAME_LANDMARKS,
+                build_inputs=inputs))
+        self.assertTrue(pipeline.stage_done(
+            "extract", self.paths, self.config,
+            build_identity=self.build_identity, build_inputs=inputs))
+
+    def test_a_stage_published_without_an_identity_is_refused(self):
+        """The honest outcome for a producer driven by hand."""
+        self.publish_stage("extract")
+        with self.assertRaisesRegex(
+                pipeline.StageContractError, "records no identity"):
+            pipeline.stage_done(
+                "extract", self.paths, self.config,
+                build_identity=self.build_identity,
+                build_inputs={"dataset_panorama_sha256": "c" * 64})
+
+    def test_every_stage_has_at_most_one_gated_output(self):
+        """`--artifact_identity` is one flag, so this must stay true."""
+        for stage in pipeline.STAGES:
+            gated = [kind for kind in pipeline.STAGE_SPECS[stage].outputs
+                     if kind in pipeline.PIPELINE_ARTIFACT_OWNER]
+            self.assertLessEqual(len(gated), 1, stage)
+
+    def test_the_flag_is_omitted_for_a_stage_with_no_gated_output(self):
+        self.assertEqual(
+            pipeline.stage_identity_flags(
+                self.paths, self.config, "localize",
+                build_inputs={"dataset_panorama_sha256": "c" * 64}),
+            [])
 
     def test_a_changed_input_digest_does_invalidate(self):
         """What replaces it. The checkpoint's PATH is in the stage config but

@@ -219,3 +219,110 @@ be preserved.
 `page.document()` is now the skeleton alone — generated mark, doctype, head,
 the caller's own stylesheet — and `page()` is written in terms of it. Shared
 skeleton, separate designs.
+
+## 2026-08-26 · Identity is data lineage; the path is not the artifact
+
+Three separate rules were removed here, and the reason is the same in each
+case: they gated on something that was not evidence about the data.
+
+**Code out of identity.** Identity was `H(kind, dataset, stage config,
+upstream manifest digests, build inputs)` plus a fingerprint of the producing
+code. Measured against the real tree: three commits touching only viewer HTML
+invalidated all eight producing stages, and one ordinary day's work
+invalidated two of eight even with presentation files excluded. Code changes
+constantly in a research tree and data does not, so gating on it means
+near-permanent invalidation of exactly the artifacts that cost money — and
+these are not byte-reproducible anyway, since extraction and matching are
+provider calls with real variance. Gating and recording are separable; only
+recording was ever needed. `code_provenance` records the commit and the
+verbatim diff; nothing refuses an artifact for it.
+
+**What the gate was worth.** `build_identity` — a digest over the *entire*
+config and *all* inputs — meant changing `localization.pi0`, a knob only the
+last stage reads, republished the paid `frame_landmarks` and the hours of
+`object_tracks` upstream of it. `stage_reuse.py` (1,034 lines) existed solely
+to undo that, and could only do so by asking a human to attest that the
+prefix-computing code had not changed — one unverified claim holding up the
+whole reuse story. Per-stage identity dissolves it: 4,013 lines deleted across
+`stage_reuse` and `legacy_extraction_adoption`, and no attestation left to
+make.
+
+**The configured-lane path rule was a false guarantee.** `configured_lane`
+used to reject an input read from anywhere but `<root>/artifacts/<kind>/
+<dataset>/<version>`, justified as stopping "a stage handed leg2's tracks
+against leg1's audits". It does not stop that — the copy carries its own
+manifest, and the kind/dataset/version checks read it and reject the mismatch
+wherever it sits. Since a differing lane is already caught by comparing
+digests, the path rule rejected exactly one case: a copy identical in kind,
+dataset, version and both digests. That copy *is* the artifact. What survives
+is the narrow real check — the lane's current contents must still be the
+artifact that was read, which fails when someone rebuilds a version in place
+instead of choosing a new one.
+
+**A record with no reader is not a record.** The only thing that read
+`code_provenance` was a one-time survey, and it read the wrong field —
+`manifest.config["farfield_code_provenance"]` rather than the top-level
+`code_provenance` — so its lineage line reported "no artifacts in this
+lineage" for every corpus, which is also what a corpus with nothing stamped
+reports. The bug was therefore invisible against real data. The readout now
+lives in `pipeline status`, which is where the question recurs.
+
+**Migration tools are deleted once applied.** The backfill computed
+identities for the 56 artifacts that predate identity and could be derived
+exactly from a surviving build recipe -- seven kinds across eight datasets,
+which is precisely the set the gate consults. The remaining 67 unattributed
+artifacts are all outside the gate: catalogs and pinhole images enter as
+upstream manifest digests, viewer sidecars re-stamp on their next refresh, and
+the rescued v4/v5 extraction material is consumed by nothing. The planners
+that computed all this are gone -- a spent one-time migration left in the tree
+reads as something you might still need to run.
+
+**One lookup path, and what it cost to get there.** Those 56 identities first
+lived in a derived index beside the data, because a manifest could not gain a
+field: `manifest_digest` was the sha256 of `manifest.json` and every
+downstream ref records it. Re-signing the DAG looked like the way out, and it
+is not. Measured on the real root: 32 of the 56 have their manifest digest
+baked into a DOWNSTREAM artifact's immutable content -- the frozen
+`request_set.json`, `matching_snapshot.json` and `settings.json` files, which
+are covered by `content_digest` and therefore cannot be rewritten at all --
+and `audit_requests` compares a stored ref to a live one
+(`source_ref not in request_set.upstreams`, and `ArtifactRef` equality
+includes the manifest digest). Re-signing would have broken that check on 4 of
+the 7 kinds. Only 24 of 56 were reachable, which would have left both
+mechanisms in place anyway.
+
+The fix was to stop hashing the annotation: `manifest_digest` is now computed
+over the manifest MINUS `artifact_identity`. Every manifest is written by
+`atomic_write_json`, so its bytes already equal canonical JSON plus a newline,
+and with no such key present the digest is bit-for-bit what it was --
+confirmed against all 115 artifacts on the real root before anything was
+written, and every upstream ref still agreed afterwards. Hashing the identity
+into the digest that names the manifest was circular to begin with. The 56
+were then signed in place, no digest moved, no immutable byte was touched, and
+the index and its reader are gone.
+
+**The gate was never exercised, and so it never worked.** Identity was read
+but never written: no producer recorded one, and the backfill's 56 entries
+were the only identities in existence. A freshly built artifact was therefore
+rejected as "predating per-artifact identity". The reason no test caught it is
+the shape of the check — `if build_inputs is not None` guards the identity
+branch, every test called `stage_done` without `build_inputs`, and `cmd_run`
+and `cmd_status` always pass it. A conditional gate plus a fixture that omits
+the condition equals a gate nobody has ever run. Producers now receive
+`--artifact_identity` from the orchestrator (computed at run time, since the
+digest reads upstream manifests that may be built earlier in the same run) and
+`ArtifactDirectoryBuilder` stamps it as a top-level manifest field. It is a
+field rather than a `config` entry for a reason worth keeping: `config` is the
+stage's resolved recipe and feeds the stage config digest, so an identity
+stored there would have been an input to its own computation.
+
+**`path` was never part of an artifact's identity, and the code already said
+so.** `ArtifactRef` declares `path: str = field(compare=False)` — "moving an
+immutable artifact does not change its identity; the two digests do" — and
+then fourteen call sites compared `a.to_dict() != b.to_dict()`, which
+reinstates exactly the field the type excludes. Those are the upstream-binding
+checks ("the audits I was handed must be the audits this artifact was built
+from"), so relocating a data root would have broken every one of them while
+every byte still agreed — and this project does move data roots. They now use
+dataclass equality, with `artifact.records_same_artifact` for the two that
+compare against a ref stored as JSON.

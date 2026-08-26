@@ -261,7 +261,8 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
                 subject.AlignmentDiagnosticError, "count disagrees"):
             subject._load_inputs(self._args())
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+    def test_byte_identical_audit_copy_is_the_same_artifact(self):
+        """A copy with the same digests IS the artifact; the path is not it."""
         alias = self.root / "alternate-audits"
         shutil.copytree(Path(self.audits_ref.path), alias)
         observations_manifest_path = (
@@ -271,8 +272,8 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         observations_document["upstreams"][1]["path"] = str(alias.resolve())
         artifact.atomic_write_json(
             observations_manifest_path, observations_document)
-        with self.assertRaisesRegex(ValueError, "exact configured lane"):
-            subject._load_inputs(self._args())
+        subject._load_inputs(self._args())
+
 
     def test_orchestration_digest_is_required_exactly(self):
         with self.assertRaisesRegex(

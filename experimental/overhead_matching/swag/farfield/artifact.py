@@ -48,7 +48,7 @@ _MANIFEST_KEYS = frozenset({
 # refusing to read a manifest for lacking it would strand every artifact
 # published before it existed, for no gain -- nothing depends on it being
 # there. `_require_exact_keys` therefore checks the required set only.
-_OPTIONAL_MANIFEST_KEYS = frozenset({"code_provenance"})
+_OPTIONAL_MANIFEST_KEYS = frozenset({"code_provenance", "artifact_identity"})
 _REF_KEYS = frozenset({
     "path",
     "kind",
@@ -172,6 +172,50 @@ def _directory_files(root: Path, excluded: frozenset[str]) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
+def manifest_digest(manifest_path: Path | str) -> str:
+    """The digest every downstream `ArtifactRef` records for this artifact.
+
+    Deliberately computed over the manifest MINUS `artifact_identity`, not
+    over the file's bytes. Two reasons, and the second is the load-bearing
+    one:
+
+    - The identity is derived FROM the manifest's own contents. Hashing it
+      into the digest that names the manifest is circular.
+    - An artifact published before identity existed cannot otherwise ever
+      gain one. `manifest_digest` is recorded by every downstream ref, and by
+      the frozen request sets and work snapshots inside downstream artifacts,
+      which are covered by `content_digest` and so cannot be rewritten at
+      all. Measured on the real root: 32 of the 56 unattributed artifacts had
+      their manifest digest baked into a downstream artifact's immutable
+      content, so adding a field to their manifests the naive way would have
+      broken checks that compare a stored ref to a live one -- and the only
+      alternative was a permanent second lookup path beside the data.
+
+    Excluding one annotation costs nothing and closes both. Every manifest on
+    disk is written by `atomic_write_json`, so its bytes already equal
+    canonical JSON plus a newline; with no `artifact_identity` key present
+    this returns exactly what `sha256_file` returned before, for all 115
+    artifacts on the real root. The migration that verified that is in the
+    decision journal.
+    """
+    manifest_path = Path(manifest_path)
+    return manifest_digest_of_document(
+        json.loads(manifest_path.read_text(encoding="utf-8")))
+
+
+def manifest_digest_of_document(document: Any) -> str:
+    """`manifest_digest` for a manifest already in hand.
+
+    The one definition, so a caller that has the document cannot compute it a
+    slightly different way -- the trailing newline `atomic_write_json` adds is
+    exactly the kind of detail two implementations disagree about.
+    """
+    if isinstance(document, dict):
+        document = {key: value for key, value in document.items()
+                    if key != "artifact_identity"}
+    return hashlib.sha256(canonical_json_bytes(document) + b"\n").hexdigest()
+
+
 def sha256_directory(path: Path | str,
                      *, exclude: Iterable[str] = (MANIFEST_NAME,)) -> str:
     """Hash the relative names, sizes, and bytes of a directory's files.
@@ -268,6 +312,26 @@ class ArtifactRef:
         )
 
 
+def records_same_artifact(document: Any, reference: "ArtifactRef") -> bool:
+    """Whether a stored ref document names the same artifact as `reference`.
+
+    For the many places that recorded an `ArtifactRef` as JSON and later have
+    to check an artifact against it. Comparing the raw dicts is wrong: it
+    reinstates `path`, which `ArtifactRef` deliberately excludes from
+    equality because moving an immutable artifact does not change what it is.
+    A relocated data root would fail every one of those bindings while every
+    byte still agreed.
+
+    Malformed stored data is not the same artifact -- it is not an error
+    either, since callers use this inside a boolean chain whose job is to
+    decide whether a recorded claim still holds.
+    """
+    try:
+        return ArtifactRef.from_dict(document) == reference
+    except (ArtifactError, ValueError, TypeError):
+        return False
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """The complete, versioned contract stored in ``manifest.json``."""
@@ -291,6 +355,11 @@ class ArtifactManifest:
     # code?" answerable whenever someone asks. `None` on artifacts published
     # before it existed.
     code_provenance: Mapping[str, Any] | None = None
+    # The data-lineage digest of this artifact, supplied by whatever drove
+    # the build. Optional for the same reason as `code_provenance`: every
+    # artifact published before it existed lacks it, and those read as
+    # UNATTRIBUTED rather than as corrupt (see `artifact_identity`).
+    artifact_identity: str | None = None
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA:
@@ -352,6 +421,8 @@ class ArtifactManifest:
         # from an older artifact round-trips to the bytes it came from.
         if self.code_provenance is not None:
             value["code_provenance"] = dict(self.code_provenance)
+        if self.artifact_identity is not None:
+            value["artifact_identity"] = self.artifact_identity
         return value
 
     @classmethod
@@ -366,6 +437,9 @@ class ArtifactManifest:
         if code is not None and not isinstance(code, dict):
             raise ArtifactValidationError(
                 "artifact code_provenance must be a JSON object")
+        identity = value.get("artifact_identity")
+        if identity is not None:
+            _require_digest(identity, "artifact artifact_identity")
         upstreams = value["upstreams"]
         if not isinstance(upstreams, list):
             raise ArtifactValidationError("artifact upstreams must be a JSON list")
@@ -391,6 +465,7 @@ class ArtifactManifest:
             arguments=tuple(arguments),
             content_digest=value["content_digest"],
             code_provenance=code,
+            artifact_identity=identity,
             upstreams=tuple(ArtifactRef.from_dict(item) for item in upstreams),
             config=config,
             declared_outputs=tuple(outputs),
@@ -612,7 +687,7 @@ def _validate_artifact(path: Path | str, *, expected_kind: str | None,
         kind=manifest.kind,
         dataset=manifest.dataset,
         version=manifest.version,
-        manifest_digest=sha256_file(manifest_path),
+        manifest_digest=manifest_digest(manifest_path),
         content_digest=manifest.content_digest,
     )
 
@@ -643,6 +718,7 @@ class ArtifactDirectoryBuilder:
                  arguments: Iterable[str] | None = None,
                  upstreams: Iterable[ArtifactRef] = (),
                  config: Mapping[str, Any] | None = None,
+                 artifact_identity: str | None = None,
                  declared_outputs: Iterable[str | Path]) -> None:
         self.destination = Path(destination)
         if self.destination.name.endswith(INCOMPLETE_SUFFIX):
@@ -669,6 +745,14 @@ class ArtifactDirectoryBuilder:
                 "artifact upstreams must contain only ArtifactRef values")
         self.config = dict(config or {})
         _validate_json_value(self.config, "artifact config")
+        # Supplied by the orchestrator that resolved this build's recipe --
+        # the identity formula needs per-stage knowledge (which recorded
+        # inputs the stage reads) that a producer does not have. Absent when
+        # a producer is driven by hand, and then the artifact is honestly
+        # UNATTRIBUTED rather than carrying a digest nobody computed.
+        if artifact_identity is not None:
+            _require_digest(artifact_identity, "artifact artifact_identity")
+        self.artifact_identity = artifact_identity
         outputs = tuple(_normalize_output(item) for item in declared_outputs)
         if len(outputs) != len(set(outputs)):
             raise ArtifactValidationError("declared outputs must be unique")
@@ -737,6 +821,7 @@ class ArtifactDirectoryBuilder:
             # forgot would be indistinguishable from one whose code was never
             # recorded.
             code_provenance=code_provenance.record(),
+            artifact_identity=self.artifact_identity,
         )
         # This is intentionally the final write in the staging directory.
         atomic_write_json(self.staging_dir / MANIFEST_NAME, manifest.to_dict())

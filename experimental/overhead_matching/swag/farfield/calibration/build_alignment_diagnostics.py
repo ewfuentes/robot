@@ -489,7 +489,7 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.object_tracks_version"))
-    if tracks_ref.to_dict() != tracks_recorded.to_dict():
+    if tracks_ref != tracks_recorded:
         raise AlignmentDiagnosticError(
             "recorded object_tracks path no longer resolves to the bound "
             "artifact identity")
@@ -498,7 +498,7 @@ def _load_inputs(args) -> dict:
         expected_dataset=args.dataset,
         expected_version=build_config.value(
             document, "artifacts.semantic_audits_version"))
-    if audits_ref.to_dict() != audits_recorded.to_dict():
+    if audits_ref != audits_recorded:
         raise AlignmentDiagnosticError(
             "recorded semantic_audits path no longer resolves to the bound "
             "artifact identity")
@@ -509,7 +509,7 @@ def _load_inputs(args) -> dict:
     if audits_manifest.config.get("build_identity") != document["build_identity"]:
         raise AlignmentDiagnosticError(
             f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
-    if sum(ref.to_dict() == tracks_ref.to_dict()
+    if sum(ref == tracks_ref
            for ref in audits_manifest.upstreams) != 1:
         raise AlignmentDiagnosticError(
             "semantic_audits must bind the exact object_tracks artifact once")
@@ -570,6 +570,7 @@ def _load_inputs(args) -> dict:
         "diagnostics": _diagnostic_config(document),
         "dataset_source_sha256": current_dataset_digest,
         "output_version": output_version,
+        "artifact_identity": getattr(args, "artifact_identity", None),
         "orchestration": orchestration,
         "nominal_forward": approved_nominal_forward,
         "nominal_forward_path": calibration_path,
@@ -1030,6 +1031,7 @@ def publish(resolved: dict, output_dir: Path, *,
             arguments=arguments,
             upstreams=(resolved["observations_ref"],),
             config=manifest_config,
+            artifact_identity=resolved.get("artifact_identity"),
             declared_outputs=(OUTPUT_NAME, SUN_REVIEW_NAME)) as builder:
         artifact.atomic_write_json(builder.output_path(OUTPUT_NAME), report)
         _write_sun_contact_sheet(
@@ -1048,6 +1050,10 @@ def main() -> None:
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     args = parser.parse_args()
     try:
         resolved = _load_inputs(args)

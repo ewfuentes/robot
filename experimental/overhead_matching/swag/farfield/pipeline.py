@@ -37,6 +37,7 @@ from experimental.overhead_matching.swag.farfield import (
     artifact,
     artifact_identity,
     build_config,
+    code_provenance,
     nominal_forward,
     paths as paths_lib,
     provenance,
@@ -593,29 +594,6 @@ def _output_descriptors(paths: paths_lib.FarfieldPaths, config: dict,
     return output
 
 
-def backfill_index(root: Path) -> dict[str, str]:
-    """Identities computed for artifacts published before identity existed.
-
-    Read from the derived index beside the data rather than from manifests,
-    which cannot carry it: `manifest_digest` is the sha256 of `manifest.json`
-    and every downstream ref records it, so editing one to add a field would
-    invalidate every reference. No index -> empty map, and those artifacts
-    read as unattributed, which is the loud outcome.
-    """
-    try:
-        document = json.loads(
-            (Path(root) / "artifact_identity_backfill.json").read_text(
-                encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    entries = document.get("entries")
-    if not isinstance(entries, dict):
-        return {}
-    return {path: value["identity"] for path, value in entries.items()
-            if isinstance(value, dict)
-            and isinstance(value.get("identity"), str)}
-
-
 def build_inputs_of(document: dict) -> dict[str, str]:
     """The inputs a build recorded, as the identity term."""
     inputs = document.get("inputs")
@@ -624,14 +602,13 @@ def build_inputs_of(document: dict) -> dict[str, str]:
 
 def expected_artifact_identity(paths: paths_lib.FarfieldPaths, config: dict,
                                kind: str, *,
-                               build_inputs: Mapping[str, str],
-                               backfill: Mapping[str, str] | None = None
+                               build_inputs: Mapping[str, str]
                                ) -> str:
     """The identity an artifact of `kind` would have under this recipe."""
     owner = PIPELINE_ARTIFACT_OWNER[kind]
     upstreams = tuple(
         _configured_ref(paths, config, upstream_kind,
-                        build_inputs=build_inputs, backfill=backfill)
+                        build_inputs=build_inputs)
         for upstream_kind in STAGE_SPECS[owner].upstreams)
     return artifact_identity.compute(
         kind=kind, dataset=paths.dataset,
@@ -643,7 +620,6 @@ def expected_artifact_identity(paths: paths_lib.FarfieldPaths, config: dict,
 def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
                     kind: str, *,
                     build_inputs: Mapping[str, str] | None = None,
-                    backfill: Mapping[str, str] | None = None,
                     ) -> artifact.ArtifactRef:
     version = _value(config, VERSION_KEYS[kind])
     path = paths.artifact(kind, version)
@@ -674,10 +650,8 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
         # exception mechanism has nothing left to except.
         if build_inputs is not None:
             expected = expected_artifact_identity(
-                paths, config, kind, build_inputs=build_inputs,
-                backfill=backfill)
-            found = artifact_identity.resolve(
-                manifest, path=str(path.resolve()), backfill=backfill)
+                paths, config, kind, build_inputs=build_inputs)
+            found = artifact_identity.recorded(manifest)
             if found != expected:
                 raise StageDependencyError(artifact_identity.explain(
                     expected=expected, manifest=manifest, kind=kind))
@@ -686,7 +660,7 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
             manifest = artifact.load_manifest(path)
         pinhole_ref = _configured_ref(
             paths, config, paths_lib.PINHOLE_IMAGES,
-            build_inputs=build_inputs, backfill=backfill)
+            build_inputs=build_inputs)
         if not _binds_exact_pinhole_once(manifest, pinhole_ref):
             raise StageDependencyError(
                 "required frame_landmarks artifact does not bind the exact "
@@ -697,11 +671,10 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
 def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
                            stage: str, *,
                            build_inputs: Mapping[str, str] | None = None,
-                           backfill: Mapping[str, str] | None = None,
                            ) -> tuple[artifact.ArtifactRef, ...]:
     refs = tuple(_configured_ref(
         paths, config, kind,
-        build_inputs=build_inputs, backfill=backfill)
+        build_inputs=build_inputs)
                  for kind in STAGE_SPECS[stage].upstreams)
     if stage != "localization_inputs":
         return refs
@@ -727,13 +700,12 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                          stage: str, *,
                          build_identity: str,
                          build_inputs: Mapping[str, str] | None = None,
-                         backfill: Mapping[str, str] | None = None,
                          ) -> tuple[artifact.ArtifactRef, ...]:
     """Return validated outputs, ``()`` when absent, or reject stale output.
 
     `build_identity` still names the localization RUN DIRECTORY -- it is a
     label there, not a gate. What decides whether an artifact may be reused is
-    `build_inputs`/`backfill`, through `artifact_identity`.
+    `build_inputs`, through `artifact_identity`.
     """
     descriptors = _output_descriptors(
         paths, config, stage, build_identity=build_identity)
@@ -743,7 +715,7 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
         return ()
     upstreams = expected_upstream_refs(
         paths, config, stage,
-        build_inputs=build_inputs, backfill=backfill)
+        build_inputs=build_inputs)
     contract = stage_contract(stage, config)
     refs = []
     for (kind, version, path), exists in zip(descriptors, present):
@@ -771,10 +743,8 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                     "configuration; choose a new output version")
             if build_inputs is not None:
                 expected = expected_artifact_identity(
-                    paths, config, kind, build_inputs=build_inputs,
-                    backfill=backfill)
-                found = artifact_identity.resolve(
-                    manifest, path=str(path.resolve()), backfill=backfill)
+                    paths, config, kind, build_inputs=build_inputs)
+                found = artifact_identity.recorded(manifest)
                 if found != expected:
                     raise StageContractError(
                         f"stage {stage!r} output: " + artifact_identity.explain(
@@ -783,7 +753,7 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
             try:
                 pinhole_ref = _configured_ref(
                     paths, config, paths_lib.PINHOLE_IMAGES,
-                    build_inputs=build_inputs, backfill=backfill)
+                    build_inputs=build_inputs)
             except StageDependencyError as exc:
                 raise StageContractError(
                     f"stage {stage!r} frame_landmarks dependency is invalid: "
@@ -804,12 +774,11 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
 
 def stage_done(stage: str, paths: paths_lib.FarfieldPaths,
                config: dict, *, build_identity: str,
-               build_inputs: Mapping[str, str] | None = None,
-               backfill: Mapping[str, str] | None = None) -> bool:
+               build_inputs: Mapping[str, str] | None = None) -> bool:
     """Completion is a validated typed manifest, never an existence marker."""
     return bool(completed_stage_refs(
         paths, config, stage, build_identity=build_identity,
-        build_inputs=build_inputs, backfill=backfill))
+        build_inputs=build_inputs))
 
 
 def _resolved_path(value: str, base: Path) -> str:
@@ -994,6 +963,33 @@ def _stage_base(build_dir: Path, config: dict, stage: str) -> list[Any]:
             stage_contract(stage, config)["config_digest"]]
 
 
+def stage_identity_flags(paths: paths_lib.FarfieldPaths, config: dict,
+                         stage: str, *,
+                         build_inputs: Mapping[str, str]
+                         ) -> list[Any]:
+    """The `--artifact_identity` flag for one stage, or none if it has no
+    gated output.
+
+    Computed here and passed down rather than derived by the producer,
+    because the formula needs per-stage knowledge the producer does not have:
+    which recorded build inputs this stage actually reads
+    (`StageSpec.inputs_not_consumed`). Computed at run time rather than in
+    `build_commands`, because it reads the upstream artifacts' manifest
+    digests and those upstreams may be built earlier in this same run.
+    """
+    gated = [kind for kind in STAGE_SPECS[stage].outputs
+             if kind in PIPELINE_ARTIFACT_OWNER]
+    if not gated:
+        return []
+    if len(gated) > 1:
+        raise StageContractError(
+            f"stage {stage!r} has more than one gated output {gated}; one "
+            "--artifact_identity flag can no longer describe it")
+    return ["--artifact_identity", expected_artifact_identity(
+        paths, config, gated[0], build_inputs=build_inputs,
+        )]
+
+
 def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
                    config: dict, *,
                    build_identity: str) -> dict[str, list[Any]]:
@@ -1146,8 +1142,7 @@ def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
 
 def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
                      build_identity: str,
-                     build_inputs: Mapping[str, str] | None = None,
-                     backfill: Mapping[str, str] | None = None) -> bool:
+                     build_inputs: Mapping[str, str] | None = None) -> bool:
     """Validate the deterministic viewer and every recorded input identity."""
     output_dir = localization_viewer_dir(
         paths, config, build_identity=build_identity)
@@ -1170,10 +1165,10 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             expected_dataset=paths.dataset, expected_version=run_dir.name)
         tracks_ref = _configured_ref(
             paths, config, paths_lib.OBJECT_TRACKS,
-            build_inputs=build_inputs, backfill=backfill)
+            build_inputs=build_inputs)
         audits_ref = _configured_ref(
             paths, config, paths_lib.SEMANTIC_AUDITS,
-            build_inputs=build_inputs, backfill=backfill)
+            build_inputs=build_inputs)
         catalog_ref = _configured_ref(paths, config, paths_lib.CATALOGS)
         feather = Path(catalog_ref.path) / "catalog.feather"
         manifest = provenance.read(output_dir)
@@ -1240,7 +1235,6 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    backfill = backfill_index(paths.root)
     build_inputs = build_inputs_of(document)
     commands = build_commands(
         paths, Path(args.build_dir), config,
@@ -1256,21 +1250,23 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
             if stage_done(
                     stage, paths, config,
                     build_identity=document["build_identity"],
-                    build_inputs=build_inputs, backfill=backfill):
+                    build_inputs=build_inputs):
                 print(f"\n-- {stage}: validated complete")
                 continue
             expected_upstream_refs(
                 paths, config, stage,
-                build_inputs=build_inputs, backfill=backfill)
+                build_inputs=build_inputs)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
-        run(commands[stage], stage, dry_run=args.dry_run)
+        run(commands[stage] + stage_identity_flags(
+                paths, config, stage, build_inputs=build_inputs),
+            stage, dry_run=args.dry_run)
         if not args.dry_run:
             try:
                 if not stage_done(
                         stage, paths, config,
                         build_identity=document["build_identity"],
-                        build_inputs=build_inputs, backfill=backfill):
+                        build_inputs=build_inputs):
                     raise StageContractError(
                         f"{stage} exited successfully without publishing its "
                         "complete artifact manifest")
@@ -1281,7 +1277,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
         try:
             complete = viewer_completed(
                 paths, config, build_identity=document["build_identity"],
-                build_inputs=build_inputs, backfill=backfill)
+                build_inputs=build_inputs)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
         if complete:
@@ -1294,10 +1290,40 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
                 if not viewer_completed(
                     paths, config,
                     build_identity=document["build_identity"],
-                    build_inputs=build_inputs, backfill=backfill):
+                    build_inputs=build_inputs):
                     raise SystemExit(
                         "viewer exited successfully without publishing its "
                         "complete side output")
+
+
+def code_lineage(paths: paths_lib.FarfieldPaths, config: dict, *,
+                 build_identity: str) -> str:
+    """One line on whether this build's artifacts share a code state.
+
+    `code_provenance` records the commit and diff that produced every
+    artifact and deliberately never gates on them -- code changes constantly
+    in a research tree and the artifacts cost money to rebuild. But a record
+    nothing reads is a record nobody can act on, and the failure it exists to
+    surface is real and silent: an evaluation whose legs were built either
+    side of a fix is a wrong conclusion with nothing visibly wrong. So it is
+    reported here, where anyone asking after a build's state already looks.
+    """
+    blocks = []
+    for stage in STAGES:
+        for kind, _, path in _output_descriptors(
+                paths, config, stage, build_identity=build_identity):
+            if not path.exists():
+                continue
+            try:
+                block = artifact.load_manifest(path).code_provenance
+            except (artifact.ArtifactError, OSError, ValueError):
+                continue
+            if isinstance(block, Mapping):
+                blocks.append(block)
+    try:
+        return code_provenance.describe(code_provenance.lineage_summary(blocks))
+    except code_provenance.CodeProvenanceError as error:
+        return f"unreadable code provenance: {error}"
 
 
 def cmd_status(args, parser: argparse.ArgumentParser) -> None:
@@ -1306,7 +1332,6 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    backfill = backfill_index(paths.root)
     build_inputs = build_inputs_of(document)
     print(f"build {args.build_dir}")
     print("localization run: " + str(localization_run_dir(
@@ -1316,7 +1341,7 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
             state = ("done" if stage_done(
                 stage, paths, config,
                 build_identity=document["build_identity"],
-                build_inputs=build_inputs, backfill=backfill) else "pending")
+                build_inputs=build_inputs) else "pending")
             detail = ""
         except (StageContractError, StageDependencyError) as exc:
             state, detail = "INVALID", f" ({exc})"
@@ -1325,12 +1350,14 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     try:
         state = ("done" if viewer_completed(
             paths, config, build_identity=document["build_identity"],
-            build_inputs=build_inputs, backfill=backfill)
+            build_inputs=build_inputs)
                  else "pending")
         detail = ""
     except (StageContractError, StageDependencyError) as exc:
         state, detail = "INVALID", f" ({exc})"
     print(f"  {'viewer':<20} {state}{detail}")
+    print("code lineage: " + code_lineage(
+        paths, config, build_identity=document["build_identity"]))
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -156,11 +156,6 @@ class BearingObservationInputBindingTest(unittest.TestCase):
                 subject.BearingObservationError, "dataset source bytes"):
             subject.load_inputs(self._args())
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
-        alias = self.root / "alternate-audits"
-        shutil.copytree(Path(self.audits_ref.path), alias)
-        with self.assertRaisesRegex(ValueError, "exact configured lane"):
-            subject.load_inputs(self._args(audit_dir=alias))
 
     def test_wrong_digest_and_output_version_are_rejected(self):
         with self.assertRaisesRegex(

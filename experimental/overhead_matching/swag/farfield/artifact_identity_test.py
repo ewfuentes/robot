@@ -166,38 +166,42 @@ class DoesNotMoveTest(unittest.TestCase):
 
 
 class RecordedTest(unittest.TestCase):
-    def manifest(self, config):
+    def manifest(self, identity=None):
+        """Identity is a top-level manifest field, not a config entry."""
         return artifact.ArtifactManifest(
             kind="object_tracks", dataset="ds", version="v1",
             generator="test", git_commit="deadbeef", created="2026-08-25",
             arguments=(), content_digest=DIGEST_C, upstreams=(),
-            config=config, declared_outputs=())
+            config={}, declared_outputs=(), artifact_identity=identity)
 
     def test_a_recorded_identity_is_returned(self):
         self.assertEqual(
-            ident.recorded(self.manifest({"artifact_identity": DIGEST_A})),
+            ident.recorded(self.manifest(DIGEST_A)),
             DIGEST_A)
 
     def test_a_manifest_without_one_is_unattributed_not_an_error(self):
         """Artifacts published before this existed are not wrong, they are
         unattributed. Treating them as corrupt would strand every artifact on
         disk; treating them as current would launder an unproven claim."""
-        self.assertEqual(ident.recorded(self.manifest({})), ident.UNATTRIBUTED)
+        self.assertEqual(ident.recorded(self.manifest()), ident.UNATTRIBUTED)
 
     def test_a_malformed_recorded_identity_is_an_error(self):
         with self.assertRaises(ident.ArtifactIdentityError):
-            ident.recorded(self.manifest({"artifact_identity": "nope"}))
+            ident.recorded(self.manifest("nope"))
 
     def test_the_unattributed_message_names_the_way_forward(self):
+        """And names something that exists: it used to name a flag that did
+        not, which sends the reader hunting."""
         message = ident.explain(expected=DIGEST_A,
-                                manifest=self.manifest({}),
+                                manifest=self.manifest(),
                                 kind="object_tracks")
-        self.assertIn("--assume-current object_tracks", message)
+        self.assertIn("pipeline run", message)
+        self.assertNotIn("--assume-current", message)
 
     def test_the_mismatch_message_names_what_to_compare(self):
         message = ident.explain(
             expected=DIGEST_A,
-            manifest=self.manifest({"artifact_identity": DIGEST_B}),
+            manifest=self.manifest(DIGEST_B),
             kind="object_tracks")
         self.assertIn("stage_config_digest", message)
         self.assertIn("upstream refs", message)
@@ -208,46 +212,41 @@ class RecordedTest(unittest.TestCase):
         why, look for a code term, and not find one."""
         message = ident.explain(
             expected=DIGEST_A,
-            manifest=self.manifest({"artifact_identity": DIGEST_B}),
+            manifest=self.manifest(DIGEST_B),
             kind="object_tracks")
         self.assertIn("NOT part of this identity", message)
 
 
-class ResolveTest(unittest.TestCase):
-    def manifest(self, config):
+class OneLookupPathTest(unittest.TestCase):
+    """The manifest is the only place an identity comes from.
+
+    There was briefly a second: a derived index beside the data, for the 56
+    artifacts published before identity existed. They now carry the identity
+    in their own manifests -- possible because `manifest_digest` excludes the
+    `artifact_identity` key, so signing them moved no digest any downstream
+    had recorded. Two lookup paths for one fact is one too many; if this test
+    has to grow a second source again, that is the thing to question.
+    """
+
+    def manifest(self, identity=None):
         return artifact.ArtifactManifest(
             kind="object_tracks", dataset="ds", version="v1",
             generator="test", git_commit="deadbeef", created="2026-08-26",
             arguments=(), content_digest=DIGEST_C, upstreams=(),
-            config=config, declared_outputs=())
+            config={}, declared_outputs=(), artifact_identity=identity)
 
-    def test_a_recorded_identity_wins(self):
-        self.assertEqual(
-            ident.resolve(self.manifest({"artifact_identity": DIGEST_A}),
-                          path="/p", backfill={"/p": DIGEST_B}),
-            DIGEST_A)
+    def test_the_only_reader_is_the_manifest_field(self):
+        self.assertEqual(ident.recorded(self.manifest(DIGEST_A)), DIGEST_A)
+        self.assertEqual(ident.recorded(self.manifest()), ident.UNATTRIBUTED)
 
-    def test_the_backfill_answers_for_an_unattributed_artifact(self):
-        self.assertEqual(
-            ident.resolve(self.manifest({}), path="/p",
-                          backfill={"/p": DIGEST_B}),
-            DIGEST_B)
-
-    def test_without_a_backfill_it_stays_unattributed(self):
-        self.assertEqual(
-            ident.resolve(self.manifest({}), path="/p"), ident.UNATTRIBUTED)
-
-    def test_a_path_absent_from_the_backfill_stays_unattributed(self):
-        self.assertEqual(
-            ident.resolve(self.manifest({}), path="/other",
-                          backfill={"/p": DIGEST_B}),
-            ident.UNATTRIBUTED)
-
-    def test_a_malformed_backfill_value_is_refused_not_used(self):
-        """A corrupt index must not launder a bad value into an identity."""
-        with self.assertRaises(ident.ArtifactIdentityError):
-            ident.resolve(self.manifest({}), path="/p",
-                          backfill={"/p": "not-a-digest"})
+    def test_identity_in_config_is_not_consulted(self):
+        """Where it used to live. A stray copy there must not answer."""
+        stale = artifact.ArtifactManifest(
+            kind="object_tracks", dataset="ds", version="v1",
+            generator="test", git_commit="deadbeef", created="2026-08-26",
+            arguments=(), content_digest=DIGEST_C, upstreams=(),
+            config={"artifact_identity": DIGEST_B}, declared_outputs=())
+        self.assertEqual(ident.recorded(stale), ident.UNATTRIBUTED)
 
 
 class RejectionTest(unittest.TestCase):

@@ -75,8 +75,8 @@ one vocabulary in `catalog/catalog.py`.
   archive/                                    explicitly retired evidence
 ```
 
-`builds/` contains only orchestration state such as `build_config.json` and,
-when used, `stage_reuse.json`. It is not a scientific artifact lane. Current
+`builds/` contains only orchestration state such as `build_config.json`. It
+is not a scientific artifact lane. Current
 scientific artifact kinds are:
 
 - `pinhole_images`, `frame_landmarks`, and `object_tracks`;

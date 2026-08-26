@@ -12,7 +12,7 @@ All code lives under `experimental/overhead_matching/swag/farfield/`:
 |---|---|
 | `geometry.py`, `nominal_forward.py` | frames, angle/ENU helpers, and the approved camera-to-platform-forward calibration |
 | `paths.py`, `build_config.py`, `artifact.py` | data-root layout, immutable build recipes, typed artifact publication and validation |
-| `stage_reuse.py` | reviewed, exact reuse of a compatible extraction/tracking prefix |
+| `artifact_identity.py`, `code_provenance.py` | what determines an artifact, hashed per stage; and the code that made it, recorded but never gating |
 | `dataset.py`, `audit_dataset.py` | the frozen dataset contract and its validation |
 | `catalog/`, `collection/`, `dataset_tools/` | catalog schema, source collection, full-catalog materialization, coverage, and trims |
 | `extraction/` | pinhole rendering, VLM requests, provider lifecycle, and retained-evidence adoption |
@@ -47,10 +47,12 @@ Read in pipeline order:
   `farfield.artifact.v1` manifest, exact declared outputs, content digests,
   and typed upstream references. Publication uses an `.incomplete` sibling
   and never treats partial output as complete.
-- **Reuse is stage-scoped, not all-or-nothing.** A reviewed
-  `stage_reuse.json` may authorize the exact existing pinhole, frame, and
-  track artifacts for a successor build whose changes are downstream of
-  tracking. It does not copy bytes or rewrite their manifests.
+- **Reuse is stage-scoped, not all-or-nothing.** An artifact is identified
+  by its own stage's resolved config, its upstreams' manifest digests, and
+  the build inputs that stage reads. A change downstream of tracking does not
+  move the identity of the extraction and tracking above it, so those are
+  reused because they still match -- no authorization, attestation or bridge
+  is involved.
 - **Datasets are frozen.** Pipeline stages never mutate `datasets/`. Approved
   nominal-forward records and other dataset inputs are content-bound before
   use.

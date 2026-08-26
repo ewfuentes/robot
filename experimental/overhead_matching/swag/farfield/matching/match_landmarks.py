@@ -1089,8 +1089,8 @@ def _build_snapshot(args, parser):
         audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
     except (artifact.ArtifactError, audit_io.AuditArtifactError) as error:
         raise SystemExit(f"invalid matching audit artifact: {error}") from error
-    if (audits.tracks_ref.to_dict() != tracks_ref.to_dict()
-            or audits.semantic_audits_ref.to_dict() != audits_ref.to_dict()):
+    if (audits.tracks_ref != tracks_ref
+            or audits.semantic_audits_ref != audits_ref):
         raise SystemExit(
             "matching audit loader changed the exact authorized refs")
     upstreams = (tracks_ref, audits_ref, catalog_ref)
@@ -1177,6 +1177,10 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path)
     parser.add_argument("--orchestration_config_digest")
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
     parser.add_argument("--online", action="store_true")
     parser.add_argument("--gcs_prefix", default=None)
     parser.add_argument("--parallel", type=int, default=8)
@@ -1426,6 +1430,7 @@ def main():
             arguments=sys.argv,
             upstreams=upstreams,
             config=manifest_config,
+            artifact_identity=getattr(args, "artifact_identity", None),
             declared_outputs=FINAL_OUTPUTS) as builder:
         artifact.atomic_write_json(
             builder.output_path(WORK_SNAPSHOT_NAME), snapshot)

@@ -1,19 +1,26 @@
-"""An input must come from its configured lane, not a copy that matches it.
+"""An input must still be what the configured lane holds right now.
 
-`open_artifact` proves a directory is the artifact it claims to be. It does
-not prove it is the artifact the recipe MEANT, because a byte-identical copy
-elsewhere on disk passes every content check: same kind, same dataset, same
-version, same digests. Only its path differs, and the path is the whole
-question -- "did this stage read the tracks the build configured, or a copy
-somebody left in a scratch directory?"
+`open_artifact` proves a directory is the artifact it claims to be, from the
+manifest inside that directory. What it cannot prove is that the artifact is
+still the one the build's recipe points at: a ref recorded by an upstream
+stage names a path, a version and two digests, and the lane it came from can
+have been republished since. So this reopens the configured lane and requires
+what is there NOW to be the same artifact that was read.
 
-That check used to live inside `stage_reuse`, which is gone: it existed to
-grant human-attested exceptions to a whole-build identity check, and with
-identity now data lineage (`artifact_identity`) there is nothing to except.
-But the lane check was never about reuse, and it is the guarantee that stops
-the wrong-directory class of bug -- a stage handed leg2's tracks against
-leg1's audits, every number well-formed and every answer wrong. So it survives
-here, on its own, doing one thing.
+This deliberately does NOT care which path the ref names. An earlier version
+rejected a byte-identical copy read from outside the lane, on the reasoning
+that "the path is the whole question". It is not, and `ArtifactRef` says so
+itself: `path` is declared `field(compare=False)` because "moving an
+immutable artifact does not change its identity; the two digests do". A copy
+with the same kind, dataset, version and digests IS the artifact. The
+wrong-directory bug that check claimed to stop -- a stage handed leg2's
+tracks against leg1's audits -- is caught by the kind/dataset/version checks
+below, which read the copy's own manifest and do not care where it sits.
+
+What is left is one narrow, real guarantee: the artifact a stage consumed
+agrees with the configured lane's current contents. That fails when a ref has
+gone stale, and stale-but-well-formed is the failure that produces confident
+wrong numbers.
 """
 
 from __future__ import annotations
@@ -24,8 +31,7 @@ from experimental.overhead_matching.swag.farfield import artifact
 
 
 class ConfiguredLaneError(ValueError):
-    """An artifact was read from somewhere other than its configured lane."""
-
+    """An input disagrees with what its configured lane holds."""
 
 def expected_lane(document: dict, kind: str) -> Path:
     """Where a build's recipe says an artifact of `kind` must live."""
@@ -46,7 +52,7 @@ def expected_lane(document: dict, kind: str) -> Path:
 
 def require(reference: artifact.ArtifactRef, *, document: dict,
             kind: str) -> artifact.ArtifactManifest:
-    """Reopen `reference` only at its exact configured lane."""
+    """Check `reference` against the configured lane and return its manifest."""
     if reference.kind != kind or reference.dataset != document.get("dataset"):
         raise ConfiguredLaneError(
             f"configured-lane check received the wrong {kind} ref")
@@ -55,10 +61,6 @@ def require(reference: artifact.ArtifactRef, *, document: dict,
     if reference.version != version:
         raise ConfiguredLaneError(
             f"{kind} ref does not use the configured version {version!r}")
-    if Path(reference.path).resolve() != lane.resolve():
-        raise ConfiguredLaneError(
-            f"{kind} must be read from its exact configured lane {lane}, not "
-            f"{reference.path}")
     try:
         reopened = artifact.open_artifact(
             lane, expected_kind=kind, expected_dataset=document["dataset"],
@@ -67,7 +69,14 @@ def require(reference: artifact.ArtifactRef, *, document: dict,
         raise ConfiguredLaneError(
             f"configured {kind} lane {lane} is not a valid artifact: {error}"
         ) from error
-    if reopened.to_dict() != reference.to_dict():
+    # `ArtifactRef` equality already excludes `path` by design, so this is
+    # the comparison the type intends and not a hand-rolled field list.
+    if reopened != reference:
+        differing = [
+            field for field, value in reopened.to_dict().items()
+            if field != "path" and value != getattr(reference, field)]
         raise ConfiguredLaneError(
-            f"{kind} at its configured lane is not the artifact that was read")
+            f"{kind} at its configured lane {lane} is not the artifact that "
+            f"was read: {', '.join(differing)} differ. The input is stale -- "
+            "the lane was republished after this ref was recorded.")
     return artifact.load_manifest(lane)
