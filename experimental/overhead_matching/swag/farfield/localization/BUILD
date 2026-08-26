@@ -39,6 +39,7 @@ py_library(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:publication",
     ],
@@ -60,6 +61,7 @@ py_test(
         ":run_io",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
     ],
 )
 
@@ -75,6 +77,7 @@ py_library(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:paths",
@@ -92,6 +95,7 @@ py_test(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:paths",
@@ -211,6 +215,7 @@ py_library(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
     ],
 )
 
@@ -350,6 +355,8 @@ py_library(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -357,7 +364,6 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
-        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/calibration:heading",
         "//experimental/overhead_matching/swag/farfield/catalog",
@@ -384,6 +390,7 @@ py_test(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
@@ -408,6 +415,7 @@ py_library(
         ":runner",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -461,6 +469,7 @@ py_test(
         ":run_localization_lib",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
@@ -502,6 +511,7 @@ py_library(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -519,6 +529,7 @@ py_library(
         ":replay",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
 )
@@ -537,6 +548,7 @@ py_test(
         ":scenario",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
     ],
 )
 
@@ -569,6 +581,7 @@ py_library(
         ":run_io",
         ":side_outputs",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
@@ -625,6 +638,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
@@ -637,6 +651,7 @@ py_test(
     deps = [
         ":sources",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
@@ -683,6 +698,7 @@ py_library(
         ":side_outputs",
         ":viewer_payload",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],

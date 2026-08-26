@@ -31,13 +31,78 @@ py_test(
     ],
 )
 
+py_test(
+    name = "identity_inputs_test",
+    srcs = ["identity_inputs_test.py"],
+    deps = [
+        ":identity_inputs",
+        ":pipeline_lib",
+    ],
+)
+
+py_library(
+    name = "configured_lane",
+    srcs = ["configured_lane.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":artifact"],
+)
+
+py_test(
+    name = "configured_lane_test",
+    srcs = ["configured_lane_test.py"],
+    deps = [
+        ":artifact",
+        ":configured_lane",
+    ],
+)
+
+py_library(
+    name = "code_provenance",
+    srcs = ["code_provenance.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = ["//toolchain:git_info"],
+)
+
+py_test(
+    name = "code_provenance_test",
+    srcs = ["code_provenance_test.py"],
+    deps = [":code_provenance"],
+)
+
+py_library(
+    name = "identity_inputs",
+    srcs = ["identity_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
 py_library(
     name = "artifact_identity",
     srcs = ["artifact_identity.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":artifact",
-        ":code_fingerprint",
+        ":identity_inputs",
+    ],
+)
+
+py_library(
+    name = "artifact_recipe",
+    srcs = ["artifact_recipe.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":artifact",
+        ":artifact_identity",
+        ":identity_inputs",
+    ],
+)
+
+py_test(
+    name = "artifact_recipe_test",
+    srcs = ["artifact_recipe_test.py"],
+    deps = [
+        ":artifact",
+        ":artifact_identity",
+        ":artifact_recipe",
     ],
 )
 
@@ -47,6 +112,7 @@ py_test(
     deps = [
         ":artifact",
         ":artifact_identity",
+        ":identity_inputs",
     ],
 )
 
@@ -54,12 +120,16 @@ py_library(
     name = "artifact",
     srcs = ["artifact.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":code_provenance"],
 )
 
 py_test(
     name = "artifact_test",
     srcs = ["artifact_test.py"],
-    deps = [":artifact"],
+    deps = [
+        ":artifact",
+        ":code_provenance",
+    ],
 )
 
 py_library(
@@ -166,21 +236,6 @@ py_library(
     deps = [":geometry"],
 )
 
-py_library(
-    name = "stage_reuse",
-    srcs = ["stage_reuse.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        ":artifact",
-        ":build_config",
-        ":llm_lifecycle",
-        ":paths",
-        ":provenance",
-        "//experimental/overhead_matching/swag/farfield/extraction:extract_landmarks_lib",
-        "//experimental/overhead_matching/swag/farfield/extraction:legacy_extraction_adoption_lib",
-    ],
-)
-
 py_test(
     name = "nominal_forward_test",
     srcs = ["nominal_forward_test.py"],
@@ -265,13 +320,15 @@ py_library(
     data = ["configs/harbor_example.yaml"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":artifact_identity",
+        ":artifact_recipe",
         requirement("pyyaml"),
         ":artifact",
         ":build_config",
+        ":code_provenance",
         ":nominal_forward",
         ":paths",
         ":provenance",
-        ":stage_reuse",
         "//experimental/overhead_matching/swag/farfield/localization:run_identity",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
     ],
@@ -298,6 +355,7 @@ py_test(
         ":llm_lifecycle",
         ":nominal_forward",
         ":paths",
+        ":artifact_recipe",
         ":pipeline_lib",
         ":testing",
         "//experimental/overhead_matching/swag/farfield/calibration:build_alignment_diagnostics_lib",
@@ -323,11 +381,4 @@ py_test(
         ":artifact",
         "@rules_python//python/runfiles",
     ],
-)
-
-py_test(
-    name = "active_regeneration_config_test",
-    srcs = ["active_regeneration_config_test.py"],
-    data = glob(["configs/active_regeneration/*.yaml"]),
-    deps = [":pipeline_lib"],
 )

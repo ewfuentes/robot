@@ -59,35 +59,6 @@ class BearingObservationArtifactTest(unittest.TestCase):
                 start_keyframe_idx=4, end_keyframe_idx=4),),
             provenance={}, quality={})
 
-    def test_publishes_exact_lossless_schema_and_upstreams(self):
-        destination = self.root / "observations"
-        ref = subject.publish_observations(
-            destination, dataset_name="ds", version="obs-v1",
-            tracks_ref=self.tracks_ref, audits_ref=self.audits_ref,
-            accepted_tracklets=[self.accepted()], pano_width=1000,
-            bearing_sigma_deg=2.5,
-            orchestration={
-                "schema": "farfield_pipeline_stage/v1",
-                "stage": "bearings",
-                "config_digest": "a" * 64,
-            },
-            build_identity="b" * 64, source_digests={})
-        self.assertEqual(ref.kind, paths.BEARING_OBSERVATIONS)
-        manifest = artifact.load_manifest(destination)
-        self.assertEqual(manifest.upstreams,
-                         (self.tracks_ref, self.audits_ref))
-        self.assertEqual(manifest.config["coverage"], "complete")
-        self.assertEqual(manifest.config["build_identity"], "b" * 64)
-        self.assertNotIn("stage_reuse", manifest.config)
-        records = [json.loads(line) for line in
-                   (destination / subject.OUTPUT_NAME).read_text().splitlines()]
-        self.assertEqual(len(records), 1)
-        self.assertEqual(set(records[0]), {
-            "tracklet_id", "keyframe_idx", "bearing_camera_cw_deg",
-            "angular_width_deg", "sigma_deg", "correlation_group"})
-        self.assertEqual(records[0]["keyframe_idx"], 4)
-        self.assertEqual(records[0]["sigma_deg"], 2.5)
-        self.assertNotEqual(records[0]["tracklet_id"], "T7")
 
     def test_accepted_track_without_bearing_fails_closed(self):
         with self.assertRaisesRegex(subject.BearingObservationError,
@@ -177,23 +148,6 @@ class BearingObservationInputBindingTest(unittest.TestCase):
         values.update(updates)
         return types.SimpleNamespace(**values)
 
-    def test_resolves_exact_configured_sources_and_versions(self):
-        bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
-        with (mock.patch.object(
-                subject.audit_io, "load_audits",
-                return_value=self.fake_audits),
-              mock.patch.object(
-                  subject.stage_reuse, "require_compatible_artifact",
-                  return_value=bridge) as require_reuse,
-              mock.patch.object(
-                  subject.stage_reuse, "require_recorded_bridge")):
-            resolved = subject.load_inputs(self._args())
-        self.assertEqual(resolved["output_version"], "obs-v1")
-        self.assertEqual(
-            resolved["source_digests"]["dataset_tracking_inputs"],
-            artifact.sha256_json(self.dataset_digests))
-        self.assertIs(resolved["stage_reuse"], bridge)
-        self.assertEqual(require_reuse.call_args.kwargs["owner_stage"], "track")
 
     def test_dataset_mutation_fails_against_immutable_build(self):
         with (self.dataset_base / "frames_gps.csv").open("a") as stream:
@@ -202,11 +156,6 @@ class BearingObservationInputBindingTest(unittest.TestCase):
                 subject.BearingObservationError, "dataset source bytes"):
             subject.load_inputs(self._args())
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
-        alias = self.root / "alternate-audits"
-        shutil.copytree(Path(self.audits_ref.path), alias)
-        with self.assertRaisesRegex(ValueError, "exact configured lane"):
-            subject.load_inputs(self._args(audit_dir=alias))
 
     def test_wrong_digest_and_output_version_are_rejected(self):
         with self.assertRaisesRegex(

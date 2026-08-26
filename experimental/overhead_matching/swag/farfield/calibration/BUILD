@@ -25,6 +25,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield/tracking:semantic_audit",
     ],
@@ -36,6 +37,7 @@ py_test(
     deps = [
         ":audit_io",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
@@ -90,6 +92,8 @@ py_library(
         ":mount_offset_sweep_lib",
         ":sun_offset_check_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -97,7 +101,6 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
-        "//experimental/overhead_matching/swag/farfield:stage_reuse",
     ],
 )
 
@@ -112,6 +115,8 @@ py_binary(
         ":mount_offset_sweep_lib",
         ":sun_offset_check_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -119,7 +124,6 @@ py_binary(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
-        "//experimental/overhead_matching/swag/farfield:stage_reuse",
     ],
 )
 
@@ -130,6 +134,7 @@ py_test(
         requirement("pillow"),
         ":build_alignment_diagnostics_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",

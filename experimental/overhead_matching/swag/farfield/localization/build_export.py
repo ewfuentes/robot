@@ -27,6 +27,8 @@ import numpy as np
 from common.python.serialization import msgspec_dec_hook, msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_recipe,
+    configured_lane,
     build_config,
     dataset as dataset_lib,
     geometry as geo,
@@ -34,7 +36,6 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     publication,
     provenance,
-    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.calibration import (
     audit_io,
@@ -171,20 +172,16 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         observations_dir, expected_kind=paths_lib.BEARING_OBSERVATIONS,
         expected_dataset=dataset_name,
         expected_version=expected_versions[paths_lib.BEARING_OBSERVATIONS])
-    target_document = None
-    authorization = None
-    if target_build_dir is not None:
-        target_document = build_config.load(target_build_dir)
-        authorization = stage_reuse.load_proof(target_build_dir)
-        stage_reuse.require_target_checkout(
-            target_build_dir, document=target_document,
-            authorization=authorization)
-        manifest = stage_reuse.require_configured_artifact(
-            observations_ref, target_build_dir=target_build_dir,
-            kind=paths_lib.BEARING_OBSERVATIONS,
-            document=target_document)
-    else:
-        manifest = artifact.load_manifest(observations_dir)
+    # `open_artifact` above proved this is the artifact it claims to be at
+    # the version the recipe names. Which generation it belongs to is the
+    # orchestrator's question, answered by `artifact_identity`.
+    target_document = (build_config.load(target_build_dir)
+                       if target_build_dir is not None else None)
+    manifest = (configured_lane.require(
+        observations_ref, document=target_document,
+        kind=paths_lib.BEARING_OBSERVATIONS)
+        if target_document is not None
+        else artifact.load_manifest(observations_dir))
     if manifest.config.get("build_identity") != build_identity:
         raise LocalizationInputError(
             "bearing_observations belongs to a different immutable build")
@@ -200,34 +197,17 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         if ref.version != expected_versions[ref.kind]:
             raise LocalizationInputError(
                 f"{ref.kind} version disagrees with immutable build config")
-    tracks_manifest = (stage_reuse.require_configured_artifact(
-        tracks_ref, target_build_dir=target_build_dir,
-        kind=paths_lib.OBJECT_TRACKS, document=target_document)
-        if target_build_dir is not None
+    tracks_manifest = (configured_lane.require(
+        tracks_ref, document=target_document, kind=paths_lib.OBJECT_TRACKS)
+        if target_document is not None
         else artifact.load_manifest(tracks_ref.path))
-    track_bridge = None
-    if target_build_dir is not None:
-        track_bridge = stage_reuse.require_compatible_artifact(
-            tracks_ref, tracks_manifest, target_build_dir=target_build_dir,
-            owner_stage="track", authorization=authorization)
-    elif tracks_manifest.config.get("build_identity") != build_identity:
+    if tracks_manifest.config.get("build_identity") != build_identity:
         raise LocalizationInputError(
             f"{paths_lib.OBJECT_TRACKS} belongs to a different immutable build")
-    audits_manifest = (stage_reuse.require_configured_artifact(
-        audits_ref, target_build_dir=target_build_dir,
-        kind=paths_lib.SEMANTIC_AUDITS, document=target_document)
-        if target_build_dir is not None
+    audits_manifest = (configured_lane.require(
+        audits_ref, document=target_document, kind=paths_lib.SEMANTIC_AUDITS)
+        if target_document is not None
         else artifact.load_manifest(audits_ref.path))
-    if target_build_dir is not None:
-        stage_reuse.require_recorded_bridge(
-            manifest.config.get("stage_reuse"), track_bridge)
-        stage_reuse.require_recorded_bridge(
-            audits_manifest.config.get("stage_reuse"), track_bridge,
-            required_artifacts=(tracks_ref,),
-            additional_artifacts=tuple(
-                reference for reference in (authorization.refs
-                                             if authorization is not None else ())
-                if reference.kind == paths_lib.FRAME_LANDMARKS))
     if audits_manifest.config.get("build_identity") != build_identity:
         raise LocalizationInputError(
             f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
@@ -238,8 +218,8 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         raise LocalizationInputError(
             f"bearing observations have invalid bound tracks/audits: {exc}") \
             from exc
-    if (audits.tracks_ref.to_dict() != tracks_ref.to_dict()
-            or audits.semantic_audits_ref.to_dict() != audits_ref.to_dict()):
+    if (audits.tracks_ref != tracks_ref
+            or audits.semantic_audits_ref != audits_ref):
         raise LocalizationInputError(
             "bearing-observation upstream references do not resolve to their "
             "recorded artifact identities")
@@ -288,8 +268,7 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         raise LocalizationInputError(
             "bearing observation sigma must be uniform in this artifact")
     return (observations_ref, records,
-            {item.tracklet_id for item in accepted}, tracks_ref, audits_ref,
-            track_bridge)
+            {item.tracklet_id for item in accepted}, tracks_ref, audits_ref)
 
 
 def reduce_observations(
@@ -385,7 +364,7 @@ def load_matching(matching_dir: Path, *, dataset_name: str,
             "semantic_audits, then catalogs")
     for expected in (tracks_ref, audits_ref, catalog_ref):
         recorded = _exact_upstream(manifest, expected.kind)
-        if recorded.to_dict() != expected.to_dict():
+        if recorded != expected:
             raise LocalizationInputError(
                 f"matching artifact is bound to a different {expected.kind} "
                 "artifact")
@@ -641,9 +620,7 @@ def build(args) -> artifact.ArtifactRef:
     """Build and publish one localization_inputs artifact."""
     config_path = Path(args.build_config)
     document = _load_build_document(config_path, args.dataset)
-    authorization = stage_reuse.load_proof(config_path.parent)
-    target_git_commit = stage_reuse.require_target_checkout(
-        config_path.parent, document=document, authorization=authorization)
+    target_git_commit = provenance.git_commit()
     dataset_base = _require_input_path(
         document, "dataset_base", args.dataset_base)
     if dataset_base.is_symlink() or not dataset_base.is_dir():
@@ -727,8 +704,8 @@ def build(args) -> artifact.ArtifactRef:
             "nominal-forward panorama_width does not match this dataset: "
             f"{calibration.panorama_width} != {panorama_width}")
 
-    (observations_ref, observations, accepted_ids, tracks_ref, audits_ref,
-     track_bridge) = \
+    (observations_ref, observations, accepted_ids, tracks_ref,
+     audits_ref) = \
         load_observations(
             args.observations_dir, dataset_name=args.dataset,
             panorama_width=panorama_width,
@@ -749,9 +726,8 @@ def build(args) -> artifact.ArtifactRef:
         args.catalog_dir, expected_kind=paths_lib.CATALOGS,
         expected_dataset=args.dataset,
         expected_version=_config(document, "artifacts.catalogs_version"))
-    stage_reuse.require_configured_artifact(
-        catalog_ref, target_build_dir=config_path.parent,
-        kind=paths_lib.CATALOGS, document=document)
+    configured_lane.require(
+        catalog_ref, document=document, kind=paths_lib.CATALOGS)
     if (catalog_ref.manifest_digest
             != document["inputs"].get("catalog_manifest_digest")
             or catalog_ref.content_digest
@@ -763,11 +739,9 @@ def build(args) -> artifact.ArtifactRef:
         expected_dataset=args.dataset,
         expected_version=_config(
             document, "artifacts.landmark_matches_version"))
-    matching_manifest = stage_reuse.require_configured_artifact(
-        matching_candidate, target_build_dir=config_path.parent,
-        kind=paths_lib.LANDMARK_MATCHES, document=document)
-    stage_reuse.require_recorded_bridge(
-        matching_manifest.config.get("stage_reuse"), track_bridge)
+    configured_lane.require(
+        matching_candidate, document=document,
+        kind=paths_lib.LANDMARK_MATCHES)
     matching_ref, matched_tables, matched_version = load_matching(
         args.matching_dir,
         dataset_name=args.dataset,
@@ -778,7 +752,7 @@ def build(args) -> artifact.ArtifactRef:
         expected_version=_config(
             document, "artifacts.landmark_matches_version"),
         build_identity=document["build_identity"])
-    if matching_ref.to_dict() != matching_candidate.to_dict():
+    if matching_ref != matching_candidate:
         raise LocalizationInputError(
             "matching loader did not retain the exact configured lane")
 
@@ -949,6 +923,9 @@ def build(args) -> artifact.ArtifactRef:
             arguments=sys.argv,
             upstreams=(observations_ref, matching_ref, catalog_ref)
             + (() if review_ref is None else (review_ref,)),
+            artifact_identity=getattr(args, "artifact_identity", None),
+            recipe=artifact_recipe.load(
+                getattr(args, "artifact_recipe", None)),
             config={
                 "orchestration": orchestration,
                 "build_identity": document["build_identity"],
@@ -982,8 +959,6 @@ def build(args) -> artifact.ArtifactRef:
                 "matching_n_successful": artifact.load_manifest(
                     args.matching_dir).config["n_successful"],
                 "reducer": meta["reducer"],
-                **({"stage_reuse": track_bridge}
-                   if track_bridge is not None else {}),
             },
             declared_outputs=tuple(outputs)) as builder:
         artifact.atomic_write_json(builder.output_path("export_meta.json"), meta)
@@ -1008,9 +983,6 @@ def build(args) -> artifact.ArtifactRef:
                 Path(review_dir) / identity_review.REVIEW_NAME,
                 builder.output_path(identity_review.REVIEW_NAME))
     assert builder.artifact_ref is not None
-    stage_reuse.require_output_commit(
-        builder.artifact_ref, target_build_dir=config_path.parent,
-        document=document, authorization=authorization)
     # Exercise the consumer boundary before reporting success.
     export_ingest.load(args.output_dir, expected_dataset=args.dataset)
     return builder.artifact_ref
@@ -1037,6 +1009,14 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    # The identity the orchestrator computed for this stage's artifact; see
+    # `pipeline.stage_identity_flags`. Optional so a producer stays runnable
+    # by hand -- the artifact is then honestly unattributed.
+    parser.add_argument("--artifact_identity", default=None)
+    parser.add_argument("--artifact_recipe", default=None,
+                        help="path to the resolved stage config and build "
+                             "inputs this artifact should record, written by "
+                             "`pipeline run`")
     args = parser.parse_args()
     try:
         ref = build(args)

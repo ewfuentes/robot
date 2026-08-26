@@ -70,34 +70,52 @@ Publication occurs in a no-clobber `.incomplete` sibling, validates the staged
 payload, then atomically makes the final directory visible. Readers reopen
 the manifest and payload; directory existence alone never means complete.
 
-The build identity is intentionally strict, but downstream code evolution
-does not require recomputing an unaffected prefix. Use the reviewed reuse
-bridge described below instead of copying artifacts or rewriting manifests.
+Reuse needs no bridge and no attestation. An artifact is identified by what
+determines it, per stage:
 
-## Stage-scoped reuse
+    artifact_identity = H(kind, dataset,
+                          that stage's own resolved config,
+                          its upstreams' manifest digests,
+                          the recorded build inputs it reads)
 
-When a successor build changes only inputs first consumed after tracking—for
-example a catalog or identity-review policy—the existing extraction/tracking
-prefix may be reused exactly:
+Changing a knob only the last stage reads therefore does not move the identity
+of the paid extraction or the hours of tracking upstream of it, and they are
+reused because they still match — not because a reviewer signed a statement
+saying they should be. The identity is recorded in each artifact's manifest at
+publish time, and the pipeline recomputes it from the recipe and compares.
+
+Code is deliberately NOT part of that identity. `code_provenance` records the
+commit and diff that produced every artifact, and `pipeline status` reports
+whether a build's artifacts share one code state, but nothing is ever refused
+for it: code changes constantly in a research tree and data does not. See
+`docs/farfield/decisions.md` for the measurements behind that.
+
+## An artifact answers for itself
+
+Two questions have to be answerable about anything on disk: how do I
+reproduce it, and are the things it was made from out of date. Both are
+answered by the artifact's own manifest, with no join to a build directory.
+
+`artifact_recipe` records the terms of the identity a manifest could not
+otherwise recover -- the stage's resolved config, the build inputs that stage
+read, and which upstream digests entered the identity. `manifest.upstreams`
+is the fuller lineage record and the identity term is a subset of it: a
+`frame_landmarks` manifest records its pinhole artifact and the canonical LLM
+result artifact, while `extract` declares no artifact upstreams at all.
 
 ```
-bazel run //...farfield:pipeline -- prove-stage-reuse \
-    --source_build_dir <source-build> \
-    --target_build_dir <successor-build> \
-    --through track \
-    --prefix_code_reviewed_by <reviewer> \
-    --prefix_code_reviewed_at <timestamp> \
-    --prefix_code_review_note <reason>
+bazel run //...farfield:pipeline -- recipe --artifact_dir <artifact>
 ```
 
-The resulting `stage_reuse.json` is not an alias or a re-stamped artifact. It
-binds the source and target build records, protected inputs, code-compatibility
-attestation, and exact pinhole/frame/track references. It replays the original
-producer validations, rejects changes consumed by the prefix, and authorizes
-only the listed artifacts through `track`. Every direct downstream consumer
-independently revalidates the proof and records the bridge in its own
-provenance. Removing, changing, relocating, or widening the proof fails
-closed.
+prints the settings, inputs and lineage, then verifies the property that
+makes the record trustworthy: **the identity recomputed from the manifest
+alone equals the identity the manifest records.** A manifest missing a term
+its identity depends on cannot satisfy that, which is why it is a check and
+not a convention.
+
+`builds/<dataset>/<build>/build_config.json` remains the recipe a run is
+driven from, and it is still where a whole multi-stage config lives. It is no
+longer load-bearing for reproducing any single artifact.
 
 ## Provider stages and recovery
 
@@ -133,16 +151,18 @@ separate, explicitly labeled experiment.
 
 ## Retained extraction evidence
 
-`extraction/legacy_extraction_adoption.py` can adopt previously paid provider
-responses without contacting a provider. Its default is report-only. It
-requires exact enumerated request/result sources, reconstructs the current
-request workload and pinhole bytes, validates primary/retry coverage and
-provider echoes, and emits complete normalization and sanitation ledgers.
+Some `frame_landmarks` artifacts were adopted from previously paid provider
+responses rather than produced by a live extraction, and they say so: their
+manifest carries the `legacy_adoption` generator and config schema, and the
+digest of the verification report that was produced when they were adopted.
+`extract_landmarks` recognises and validates them against that recorded
+digest.
 
-Explicit publication creates typed REQUEST -> canonical RESULT lineage and a
-FRAME artifact with direct PINHOLE + RESULT upstreams. Prefix publication is
-resumable only by reopening and exactly validating the already-published
-prefix; collisions or gaps fail before any suffix write.
+The adoption tool itself is gone. It re-verified the whole workload on every
+read, which existed to satisfy a whole-build identity check that no longer
+exists; the recorded report digest is what the claim actually rests on. An
+artifact adopted this way is a weaker claim than one this pipeline built, and
+its manifest is where that shows.
 
 ## Tracking and viewers
 

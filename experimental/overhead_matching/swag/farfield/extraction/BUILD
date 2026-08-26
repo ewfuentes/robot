@@ -89,6 +89,7 @@ py_library(
         ":prompts",
         ":vertex_batch_manager_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:artifact_recipe",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
@@ -111,7 +112,6 @@ py_test(
     deps = [
         requirement("pillow"),
         ":extract_landmarks_lib",
-        ":legacy_extraction_adoption_lib",
         ":prompts",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:build_config",
@@ -122,38 +122,3 @@ py_test(
     ],
 )
 
-py_library(
-    name = "legacy_extraction_adoption_lib",
-    srcs = ["legacy_extraction_adoption.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        requirement("pillow"),
-        ":extract_landmarks_lib",
-        ":prompts",
-        "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
-        "//experimental/overhead_matching/swag/farfield:paths",
-        "//experimental/overhead_matching/swag/farfield:provenance",
-        "//experimental/overhead_matching/swag/farfield:publication",
-    ],
-)
-
-py_binary(
-    name = "legacy_extraction_adoption",
-    srcs = ["legacy_extraction_adoption.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":legacy_extraction_adoption_lib"],
-)
-
-py_test(
-    name = "legacy_extraction_adoption_test",
-    srcs = ["legacy_extraction_adoption_test.py"],
-    deps = [
-        requirement("pillow"),
-        ":legacy_extraction_adoption_lib",
-        ":prompts",
-        "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:llm_lifecycle",
-        "//experimental/overhead_matching/swag/farfield:paths",
-    ],
-)

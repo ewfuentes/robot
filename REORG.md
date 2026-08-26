@@ -65,7 +65,9 @@ experimental/overhead_matching/swag/farfield/
   paths.py               # data-root/lane/dataset resolution
   build_config.py        # immutable scientific build recipes
   artifact.py            # typed refs, validation, transactional publication
-  stage_reuse.py         # reviewed exact prefix-reuse proof and authorization
+  artifact_identity.py   # what determines an artifact, hashed per stage
+  code_provenance.py     # the code that made it: recorded, never gating
+  artifact_recipe.py     # settings+inputs+lineage, so an artifact answers for itself
   dataset.py             # dataset contract: frames, metadata, ingest
   audit_dataset.py       # the contract audit CLI
   testing.py             # synthetic dataset fixtures
@@ -133,12 +135,14 @@ semantic audit → bearing observations → matching → alignment diagnostics �
 localization inputs → localization. Viewers and index refresh are derived
 presentation work, not scientific stages.
 
-A changed downstream input need not force extraction/tracking regeneration.
-`prove-stage-reuse` creates a reviewed `stage_reuse.json` that revalidates the
-source/target builds, protected inputs, producer contracts, exact artifact
-refs, and prefix-code compatibility through tracking. Every downstream
-consumer verifies the proof independently. Reuse never aliases, copies, or
-re-stamps the old scientific artifacts.
+A changed downstream input need not force extraction/tracking regeneration,
+and needs no proof or authorization to avoid it. `artifact_identity.py`
+identifies an artifact by its own stage's resolved config, its upstreams'
+manifest digests, and the build inputs that stage reads, so a knob only the
+last stage reads simply does not appear in the identity of the paid extraction
+above it. Each artifact records its identity in its manifest at publish time
+and the pipeline recomputes and compares. Code is recorded by
+`code_provenance.py` and never gates -- see `docs/farfield/decisions.md`.
 
 ### Provenance and versions
 

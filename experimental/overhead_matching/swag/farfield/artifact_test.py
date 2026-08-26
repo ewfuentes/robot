@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import code_provenance
 
 
 class DigestTest(unittest.TestCase):
@@ -367,6 +368,190 @@ class TransactionFailureTest(unittest.TestCase):
                         config={},
                         declared_outputs=[bad_path],
                     )
+
+
+class ReferenceFromManifestTest(unittest.TestCase):
+    """Identity without integrity, and what that does and does not catch."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lane = Path(self._tmp.name) / "artifacts" / "semantic_audits" \
+            / "ds" / "v1"
+        with artifact.ArtifactDirectoryBuilder(
+                self.lane, kind="semantic_audits", dataset="ds", version="v1",
+                generator="artifact_test", arguments={}, config={},
+                declared_outputs=("audits.json",), upstreams=()) as builder:
+            (builder.staging_dir / "audits.json").write_text(
+                json.dumps({"audits": []}), encoding="utf-8")
+        self.ref = builder.artifact_ref
+
+    def test_it_returns_the_same_reference_as_a_full_open(self):
+        self.assertEqual(
+            artifact.reference_from_manifest(self.lane), self.ref)
+        self.assertEqual(
+            artifact.reference_from_manifest(self.lane),
+            artifact.open_artifact(self.lane))
+
+    def test_it_does_not_read_the_content(self):
+        """The trade, stated as a test: drifted bytes pass here and fail a
+        full open. `pipeline verify` is what asks the other question."""
+        (self.lane / "audits.json").write_text(
+            json.dumps({"audits": [{"changed": True}]}), encoding="utf-8")
+        artifact.reference_from_manifest(self.lane)
+        with self.assertRaisesRegex(artifact.ArtifactValidationError,
+                                    "content digest mismatch"):
+            artifact.open_artifact(self.lane)
+
+    def test_it_still_rejects_a_mismatched_expectation(self):
+        for field, value in (("expected_kind", "object_tracks"),
+                             ("expected_dataset", "other"),
+                             ("expected_version", "v2")):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                        artifact.ArtifactValidationError, "mismatch"):
+                    artifact.reference_from_manifest(
+                        self.lane, **{field: value})
+
+    def test_it_still_rejects_a_missing_declared_output(self):
+        (self.lane / "audits.json").unlink()
+        with self.assertRaises(artifact.ArtifactValidationError):
+            artifact.reference_from_manifest(self.lane)
+
+    def test_it_still_rejects_an_unreadable_manifest(self):
+        (self.lane / artifact.MANIFEST_NAME).write_text("not-json\n")
+        with self.assertRaises(artifact.ArtifactError):
+            artifact.reference_from_manifest(self.lane)
+
+
+class ManifestDigestExcludesIdentityTest(unittest.TestCase):
+    """`manifest_digest` must not move when an identity is added.
+
+    This is what let the 56 legacy artifacts be signed in place. Their
+    manifest digests are recorded by downstream refs AND baked into
+    downstream artifacts' immutable content (frozen request sets and work
+    snapshots, covered by `content_digest`), so a digest that moved could not
+    be chased -- 32 of the 56 were unreachable that way. If this test ever
+    fails, signing an artifact has become a breaking change to everything
+    that points at it.
+    """
+
+    def _manifest(self, **extra):
+        base = {
+            "schema": artifact.SCHEMA,
+            "kind": "object_tracks", "dataset": "ds", "version": "v1",
+            "generator": "test", "git_commit": "deadbeef",
+            "created": "2026-08-26", "arguments": [],
+            "content_digest": "c" * 64, "upstreams": [], "config": {},
+            "declared_outputs": [], "complete": True,
+        }
+        base.update(extra)
+        return base
+
+    def test_adding_an_identity_does_not_move_the_digest(self):
+        without = self._manifest()
+        with_identity = self._manifest(artifact_identity="a" * 64)
+        self.assertEqual(
+            artifact.manifest_digest_of_document(without),
+            artifact.manifest_digest_of_document(with_identity))
+
+    def test_changing_the_identity_does_not_move_the_digest(self):
+        self.assertEqual(
+            artifact.manifest_digest_of_document(
+                self._manifest(artifact_identity="a" * 64)),
+            artifact.manifest_digest_of_document(
+                self._manifest(artifact_identity="b" * 64)))
+
+    def test_changing_anything_else_does_move_the_digest(self):
+        self.assertNotEqual(
+            artifact.manifest_digest_of_document(self._manifest()),
+            artifact.manifest_digest_of_document(
+                self._manifest(content_digest="d" * 64)))
+
+    def test_it_matches_the_file_bytes_a_manifest_is_written_with(self):
+        """Backward compatibility with every digest already recorded.
+
+        Manifests are written by `atomic_write_json`, so a manifest with no
+        identity hashes to exactly what a digest over the file's bytes gave
+        before this changed.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / artifact.MANIFEST_NAME
+            document = self._manifest()
+            artifact.atomic_write_json(path, document)
+            self.assertEqual(artifact.manifest_digest(path),
+                             artifact.sha256_file(path))
+            artifact.atomic_write_json(
+                path, self._manifest(artifact_identity="a" * 64))
+            self.assertEqual(artifact.manifest_digest(path),
+                             artifact.manifest_digest_of_document(document))
+            self.assertNotEqual(artifact.manifest_digest(path),
+                                artifact.sha256_file(path))
+
+
+class CodeProvenanceStampTest(unittest.TestCase):
+    """Stamped by the builder, so no producer can forget it.
+
+    There are nine producers. A producer that forgot would be
+    indistinguishable from one whose code was genuinely never recorded, which
+    is the distinction the record exists to make.
+    """
+
+    def test_a_published_artifact_records_its_code_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            manifest = artifact.load_manifest(target)
+            self.assertIsNotNone(manifest.code_provenance)
+            block = code_provenance.validate(manifest.code_provenance)
+            self.assertEqual(block["schema"], code_provenance.SCHEMA)
+
+    def test_a_manifest_without_it_still_reads(self):
+        """Every artifact on disk predates this field. Refusing to read one
+        for lacking it would strand the corpus for no gain -- nothing depends
+        on it being there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            path = target / artifact.MANIFEST_NAME
+            document = json.loads(path.read_text())
+            del document["code_provenance"]
+            path.write_text(json.dumps(document))
+            manifest = artifact.load_manifest(target)
+            self.assertIsNone(manifest.code_provenance)
+
+    def test_a_non_object_code_block_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v1"
+            with artifact.ArtifactDirectoryBuilder(
+                    target, kind="object_tracks", dataset="ds", version="v1",
+                    generator="test", arguments=(), upstreams=(), config={},
+                    declared_outputs=("payload.txt",)) as builder:
+                builder.output_path("payload.txt").write_text("x")
+            path = target / artifact.MANIFEST_NAME
+            document = json.loads(path.read_text())
+            document["code_provenance"] = "not an object"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(artifact.ArtifactValidationError):
+                artifact.load_manifest(target)
+
+    def test_a_manifest_without_it_round_trips_to_its_own_bytes(self):
+        """Omitted, not written as null: an older artifact re-serialized must
+        equal what it came from, or a re-read would look like a change."""
+        manifest = artifact.ArtifactManifest(
+            kind="object_tracks", dataset="ds", version="v1",
+            generator="test", git_commit="c0ffee", created="2026-08-25",
+            arguments=(), content_digest="a" * 64, upstreams=(), config={},
+            declared_outputs=())
+        self.assertNotIn("code_provenance", manifest.to_dict())
 
 
 if __name__ == "__main__":

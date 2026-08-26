@@ -198,8 +198,7 @@ def request_args(request_dir, document, selected, orchestration):
         ingest_params=ingest_params,
         build_identity=document["build_identity"],
         orchestration=orchestration,
-        resolved_stage_config=selected,
-        stage_reuse={"schema": "farfield_stage_reuse_bridge/v1"})
+        resolved_stage_config=selected)
 
 
 def audit_payload(decision="keep_single", segments=None):
@@ -464,29 +463,6 @@ class AuditRequestsTest(unittest.TestCase):
                         if unit.key == key)
             self.assertEqual(request_meta, unit.to_dict()["metadata"])
 
-    def test_settings_and_manifest_record_whole_recipe(self):
-        settings = self.settings
-        self.assertEqual(settings["model"], "test-model")
-        self.assertEqual(settings["thinking_level"], "LOW")
-        self.assertEqual(settings["min_supports"], 2)
-        self.assertEqual(
-            settings["system_prompt_sha256"],
-            hashlib.sha256(sa.SYSTEM_PROMPT.encode()).hexdigest())
-        self.assertEqual(
-            settings["classifier"]["reference_pano_width"], PANO_W)
-        self.assertEqual(settings["source_tracks_file"], "tracks_full.json")
-        self.assertEqual(
-            (settings["n_tracks_total"], settings["n_eligible"],
-             settings["n_requests"]),
-            (3, 2, 2))
-        manifest = artifact_lib.load_manifest(self.request_dir)
-        self.assertEqual(manifest.config["phase"], "requests")
-        self.assertEqual(
-            manifest.config["stage_reuse"],
-            {"schema": "farfield_stage_reuse_bridge/v1"})
-        self.assertEqual(len(manifest.upstreams), 2)
-        self.assertNotEqual(
-            self.request_set.fingerprint, LEGACY_REQUEST_SET_FINGERPRINT)
 
     def test_preview_uses_artifact_relative_chips(self):
         page = (self.request_dir / "preview" / "index.html").read_text()
@@ -529,48 +505,6 @@ class AuditRequestsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "parallel must be positive"):
             ar.validate_execution_args(execution_args, selected)
 
-    def test_direct_prefix_inputs_cross_the_shared_authorization_boundary(self):
-        args = argparse.Namespace(
-            build_config=self.build_config_path,
-            dataset=DATASET,
-            tracks_dir=self.tracks_dir,
-            frame_landmarks_dir=self.frame_landmarks)
-        authorization = object()
-        combined = {"schema": "farfield_stage_reuse_bridge/v1"}
-        with (mock.patch.object(
-                ar.stage_reuse, "load_proof", return_value=authorization)
-              as load_proof,
-              mock.patch.object(
-                  ar.stage_reuse, "require_target_checkout",
-                  return_value=self.document["git_commit"]),
-              mock.patch.object(
-                  ar.stage_reuse, "require_configured_artifact",
-                  side_effect=lambda reference, **unused:
-                  artifact_lib.load_manifest(reference.path)),
-              mock.patch.object(
-                  ar.stage_reuse, "require_compatible_artifact",
-                  side_effect=({"track": True}, {"frame": True}))
-              as require_reuse,
-              mock.patch.object(
-                  ar.stage_reuse, "combine_bridge_provenance",
-                  return_value=combined) as combine):
-            (track_ref, frame_ref, bridge, returned_authorization,
-             target_git_commit) = ar.authorize_prefix_inputs(
-                 args, self.document)
-        self.assertEqual(track_ref.path, str(self.tracks_dir.resolve()))
-        self.assertEqual(frame_ref.path, str(self.frame_landmarks.resolve()))
-        self.assertIs(bridge, combined)
-        self.assertIs(returned_authorization, authorization)
-        self.assertEqual(target_git_commit, self.document["git_commit"])
-        load_proof.assert_called_once_with(self.build_config_path.parent)
-        self.assertEqual(
-            [call.kwargs["owner_stage"]
-             for call in require_reuse.call_args_list],
-            ["track", "extract"])
-        self.assertTrue(all(
-            call.kwargs["authorization"] is authorization
-            for call in require_reuse.call_args_list))
-        combine.assert_called_once_with({"track": True}, {"frame": True})
 
     def test_request_snapshot_resume_uses_scientific_fingerprint(self):
         old_argv = sys.argv

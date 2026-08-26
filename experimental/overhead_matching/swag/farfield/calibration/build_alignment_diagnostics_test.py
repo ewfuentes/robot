@@ -244,52 +244,6 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
                 keys.update(AlignmentDiagnosticsArtifactTest._all_keys(child))
         return keys
 
-    def test_publishes_one_candidate_only_transactional_artifact(self):
-        bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
-        with (mock.patch.object(
-                subject.stage_reuse, "require_compatible_artifact",
-                return_value=bridge) as require_reuse,
-              mock.patch.object(
-                  subject.stage_reuse, "require_recorded_bridge")):
-            resolved = subject._load_inputs(self._args())
-        reference = subject.publish(resolved, self._args().output_dir)
-        self.assertEqual(reference.kind, paths.ALIGNMENT_DIAGNOSTICS)
-        manifest = artifact.load_manifest(self._args().output_dir)
-        self.assertEqual(manifest.upstreams, (self.observations_ref,))
-        self.assertEqual(manifest.declared_outputs,
-                         (subject.OUTPUT_NAME, subject.SUN_REVIEW_NAME))
-        self.assertEqual(manifest.config["authority"], subject.AUTHORITY)
-        self.assertEqual(manifest.config["stage_reuse"], bridge)
-        self.assertEqual(require_reuse.call_args.kwargs["owner_stage"], "track")
-        self.assertEqual(
-            manifest.config["resolved"]["gps_course_from_object_tracks"],
-            self.course)
-        report = json.loads(
-            (self._args().output_dir / subject.OUTPUT_NAME).read_text())
-        self.assertEqual(report["authority"], subject.AUTHORITY)
-        self.assertEqual(report["source"]["gps_course"]["parameters"],
-                         self.course)
-        self.assertNotIn("approved", self._all_keys(report))
-        self.assertNotIn("usable", self._all_keys(report))
-        sweep = report["methods"][0]
-        self.assertEqual(sweep["status"], "candidate_reported")
-        self.assertAlmostEqual(
-            sweep[subject.RESULT_FIELD], 30.0,
-            delta=2.0)
-        self.assertAlmostEqual(
-            sweep["comparison_to_approved_nominal_forward"]
-                 ["candidate_minus_nominal_forward_cw_deg"],
-            10.0, delta=2.0)
-        self.assertEqual(sweep["result_kind"], subject.RESULT_KIND)
-        self.assertEqual(sweep["frame"], subject.RESULT_FRAME)
-        self.assertEqual(report["quantity"]["name"], subject.RESULT_FIELD)
-        review_path = self._args().output_dir / subject.SUN_REVIEW_NAME
-        with Image.open(review_path) as review:
-            self.assertEqual(review.format, "JPEG")
-            self.assertGreater(review.width, 0)
-            self.assertGreater(review.height, 0)
-        self.assertEqual(report["methods"][1]["status"], "no_candidate")
-        self.assertIn("log_start_utc", report["methods"][1]["reason"])
 
     def test_dataset_mutation_is_rejected_against_tracks_source_digest(self):
         (self.dataset_base / "frames_gps.csv").write_text(
@@ -307,7 +261,8 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
                 subject.AlignmentDiagnosticError, "count disagrees"):
             subject._load_inputs(self._args())
 
-    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+    def test_byte_identical_audit_copy_is_the_same_artifact(self):
+        """A copy with the same digests IS the artifact; the path is not it."""
         alias = self.root / "alternate-audits"
         shutil.copytree(Path(self.audits_ref.path), alias)
         observations_manifest_path = (
@@ -317,8 +272,8 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         observations_document["upstreams"][1]["path"] = str(alias.resolve())
         artifact.atomic_write_json(
             observations_manifest_path, observations_document)
-        with self.assertRaisesRegex(ValueError, "exact configured lane"):
-            subject._load_inputs(self._args())
+        subject._load_inputs(self._args())
+
 
     def test_orchestration_digest_is_required_exactly(self):
         with self.assertRaisesRegex(

@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
+from experimental.overhead_matching.swag.farfield import code_provenance
+
 
 SCHEMA = "farfield.artifact.v1"
 MANIFEST_NAME = "manifest.json"
@@ -41,6 +43,13 @@ _MANIFEST_KEYS = frozenset({
     "declared_outputs",
     "complete",
 })
+# Manifest keys that may be absent. `code_provenance` was added after
+# artifacts were already on disk, and it is provenance rather than contract:
+# refusing to read a manifest for lacking it would strand every artifact
+# published before it existed, for no gain -- nothing depends on it being
+# there. `_require_exact_keys` therefore checks the required set only.
+_OPTIONAL_MANIFEST_KEYS = frozenset(
+    {"code_provenance", "artifact_identity", "recipe"})
 _REF_KEYS = frozenset({
     "path",
     "kind",
@@ -164,6 +173,60 @@ def _directory_files(root: Path, excluded: frozenset[str]) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
+# Annotations ABOUT a manifest rather than content of it, and both derived
+# from the same recipe. Excluded from `manifest_digest` so an artifact
+# published before they existed can still gain them -- see the note in
+# `manifest_digest`. Tampering with either is caught by a stronger check than
+# a digest: `artifact_recipe.verify_self_describing` recomputes the identity
+# from the recipe and requires it to equal the recorded identity, so they
+# cannot be edited independently of each other.
+_DIGEST_EXCLUDED_KEYS = frozenset({"artifact_identity", "recipe"})
+
+
+def manifest_digest(manifest_path: Path | str) -> str:
+    """The digest every downstream `ArtifactRef` records for this artifact.
+
+    Deliberately computed over the manifest MINUS the annotation keys in
+    `_DIGEST_EXCLUDED_KEYS`, not over the file's bytes. Two reasons, and the
+    second is the load-bearing one:
+
+    - The identity is derived FROM the manifest's own contents. Hashing it
+      into the digest that names the manifest is circular.
+    - An artifact published before identity existed cannot otherwise ever
+      gain one. `manifest_digest` is recorded by every downstream ref, and by
+      the frozen request sets and work snapshots inside downstream artifacts,
+      which are covered by `content_digest` and so cannot be rewritten at
+      all. Measured on the real root: 32 of the 56 unattributed artifacts had
+      their manifest digest baked into a downstream artifact's immutable
+      content, so adding a field to their manifests the naive way would have
+      broken checks that compare a stored ref to a live one -- and the only
+      alternative was a permanent second lookup path beside the data.
+
+    Excluding one annotation costs nothing and closes both. Every manifest on
+    disk is written by `atomic_write_json`, so its bytes already equal
+    canonical JSON plus a newline; with no `artifact_identity` key present
+    this returns exactly what `sha256_file` returned before, for all 115
+    artifacts on the real root. The migration that verified that is in the
+    decision journal.
+    """
+    manifest_path = Path(manifest_path)
+    return manifest_digest_of_document(
+        json.loads(manifest_path.read_text(encoding="utf-8")))
+
+
+def manifest_digest_of_document(document: Any) -> str:
+    """`manifest_digest` for a manifest already in hand.
+
+    The one definition, so a caller that has the document cannot compute it a
+    slightly different way -- the trailing newline `atomic_write_json` adds is
+    exactly the kind of detail two implementations disagree about.
+    """
+    if isinstance(document, dict):
+        document = {key: value for key, value in document.items()
+                    if key not in _DIGEST_EXCLUDED_KEYS}
+    return hashlib.sha256(canonical_json_bytes(document) + b"\n").hexdigest()
+
+
 def sha256_directory(path: Path | str,
                      *, exclude: Iterable[str] = (MANIFEST_NAME,)) -> str:
     """Hash the relative names, sizes, and bytes of a directory's files.
@@ -260,6 +323,26 @@ class ArtifactRef:
         )
 
 
+def records_same_artifact(document: Any, reference: "ArtifactRef") -> bool:
+    """Whether a stored ref document names the same artifact as `reference`.
+
+    For the many places that recorded an `ArtifactRef` as JSON and later have
+    to check an artifact against it. Comparing the raw dicts is wrong: it
+    reinstates `path`, which `ArtifactRef` deliberately excludes from
+    equality because moving an immutable artifact does not change what it is.
+    A relocated data root would fail every one of those bindings while every
+    byte still agreed.
+
+    Malformed stored data is not the same artifact -- it is not an error
+    either, since callers use this inside a boolean chain whose job is to
+    decide whether a recorded claim still holds.
+    """
+    try:
+        return ArtifactRef.from_dict(document) == reference
+    except (ArtifactError, ValueError, TypeError):
+        return False
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """The complete, versioned contract stored in ``manifest.json``."""
@@ -277,6 +360,24 @@ class ArtifactManifest:
     declared_outputs: tuple[str, ...]
     complete: bool = True
     schema: str = SCHEMA
+    # The commit and working diff of the code that produced this artifact.
+    # Recorded, never enforced: identity is data lineage (see
+    # `artifact_identity`), and this is what makes "was it made by different
+    # code?" answerable whenever someone asks. `None` on artifacts published
+    # before it existed.
+    code_provenance: Mapping[str, Any] | None = None
+    # The data-lineage digest of this artifact, supplied by whatever drove
+    # the build. Optional for the same reason as `code_provenance`: every
+    # artifact published before it existed lacks it, and those read as
+    # UNATTRIBUTED rather than as corrupt (see `artifact_identity`).
+    artifact_identity: str | None = None
+    # Everything needed to recompute this artifact's identity, and to know
+    # what to run to reproduce it, WITHOUT joining to a build directory.
+    # Two terms of the identity are not otherwise recoverable from a
+    # manifest -- the stage's resolved config and the build inputs the stage
+    # read -- and `builds/` is mutable orchestration state that nothing
+    # protects. See `artifact_recipe`.
+    recipe: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema != SCHEMA:
@@ -319,7 +420,7 @@ class ArtifactManifest:
                 "a published artifact manifest must have complete=true")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "schema": self.schema,
             "kind": self.kind,
             "dataset": self.dataset,
@@ -334,12 +435,35 @@ class ArtifactManifest:
             "declared_outputs": list(self.declared_outputs),
             "complete": self.complete,
         }
+        # Omitted rather than written as null when absent, so a manifest read
+        # from an older artifact round-trips to the bytes it came from.
+        if self.code_provenance is not None:
+            value["code_provenance"] = dict(self.code_provenance)
+        if self.artifact_identity is not None:
+            value["artifact_identity"] = self.artifact_identity
+        if self.recipe is not None:
+            value["recipe"] = dict(self.recipe)
+        return value
 
     @classmethod
     def from_dict(cls, value: Any) -> "ArtifactManifest":
         if not isinstance(value, dict):
             raise ArtifactValidationError("artifact manifest must be a JSON object")
-        _require_exact_keys(value, _MANIFEST_KEYS, "artifact manifest")
+        _require_exact_keys(
+            {key: item for key, item in value.items()
+             if key not in _OPTIONAL_MANIFEST_KEYS},
+            _MANIFEST_KEYS, "artifact manifest")
+        code = value.get("code_provenance")
+        if code is not None and not isinstance(code, dict):
+            raise ArtifactValidationError(
+                "artifact code_provenance must be a JSON object")
+        identity = value.get("artifact_identity")
+        if identity is not None:
+            _require_digest(identity, "artifact artifact_identity")
+        recipe = value.get("recipe")
+        if recipe is not None and not isinstance(recipe, dict):
+            raise ArtifactValidationError(
+                "artifact recipe must be a JSON object")
         upstreams = value["upstreams"]
         if not isinstance(upstreams, list):
             raise ArtifactValidationError("artifact upstreams must be a JSON list")
@@ -364,6 +488,9 @@ class ArtifactManifest:
             created=value["created"],
             arguments=tuple(arguments),
             content_digest=value["content_digest"],
+            code_provenance=code,
+            artifact_identity=identity,
+            recipe=recipe,
             upstreams=tuple(ArtifactRef.from_dict(item) for item in upstreams),
             config=config,
             declared_outputs=tuple(outputs),
@@ -563,7 +690,8 @@ def _validate_declared_outputs(root: Path, outputs: Sequence[str]) -> None:
 def _validate_artifact(path: Path | str, *, expected_kind: str | None,
                        expected_dataset: str | None,
                        expected_version: str | None,
-                       allow_incomplete: bool) -> ArtifactRef:
+                       allow_incomplete: bool,
+                       verify_content: bool = True) -> ArtifactRef:
     artifact_dir, manifest_path = _manifest_path(path)
     manifest = _load_manifest(artifact_dir, allow_incomplete=allow_incomplete)
     for field_name, expected, actual in (
@@ -575,17 +703,18 @@ def _validate_artifact(path: Path | str, *, expected_kind: str | None,
                 f"artifact {field_name} mismatch: expected {expected!r}, "
                 f"found {actual!r}")
     _validate_declared_outputs(artifact_dir, manifest.declared_outputs)
-    actual_digest = sha256_directory(artifact_dir)
-    if actual_digest != manifest.content_digest:
-        raise ArtifactValidationError(
-            "artifact content digest mismatch: expected "
-            f"{manifest.content_digest}, found {actual_digest}")
+    if verify_content:
+        actual_digest = sha256_directory(artifact_dir)
+        if actual_digest != manifest.content_digest:
+            raise ArtifactValidationError(
+                "artifact content digest mismatch: expected "
+                f"{manifest.content_digest}, found {actual_digest}")
     return ArtifactRef(
         path=str(artifact_dir.resolve()),
         kind=manifest.kind,
         dataset=manifest.dataset,
         version=manifest.version,
-        manifest_digest=sha256_file(manifest_path),
+        manifest_digest=manifest_digest(manifest_path),
         content_digest=manifest.content_digest,
     )
 
@@ -607,6 +736,41 @@ def validate_artifact(path: Path | str, *, expected_kind: str | None = None,
 open_artifact = validate_artifact
 
 
+def reference_from_manifest(
+        path: Path | str, *, expected_kind: str | None = None,
+        expected_dataset: str | None = None,
+        expected_version: str | None = None) -> ArtifactRef:
+    """This artifact's identity, without re-hashing its contents.
+
+    Two different questions were being answered by one call. INTEGRITY -- do
+    the bytes on disk still match `content_digest`? -- requires reading every
+    byte. IDENTITY -- what are this artifact's kind, dataset, version and
+    digests? -- requires only `manifest.json`, which is a few kilobytes and
+    already records the content digest.
+
+    The pipeline's reuse decision needs identity, and was paying for
+    integrity on every check: obtaining one upstream's `manifest_digest` (a
+    hash of one small file) re-hashed the whole artifact. Measured on the real
+    root, one dataset's artifacts total 4.5 GB, `object_tracks` alone 400 MB,
+    and `digest_cache` does not cover `sha256_directory` at all -- so a single
+    `pipeline status` re-read gigabytes to compute digests it could have read.
+
+    This still validates everything cheap: the manifest parses and is
+    complete, kind/dataset/version match what was expected, and every declared
+    output exists. Only the byte-level comparison is skipped. Use
+    `open_artifact` when the question really is integrity -- see
+    `pipeline verify`.
+    """
+    return _validate_artifact(
+        path,
+        expected_kind=expected_kind,
+        expected_dataset=expected_dataset,
+        expected_version=expected_version,
+        allow_incomplete=False,
+        verify_content=False,
+    )
+
+
 class ArtifactDirectoryBuilder:
     """Build and atomically publish one immutable artifact directory."""
 
@@ -616,6 +780,8 @@ class ArtifactDirectoryBuilder:
                  arguments: Iterable[str] | None = None,
                  upstreams: Iterable[ArtifactRef] = (),
                  config: Mapping[str, Any] | None = None,
+                 artifact_identity: str | None = None,
+                 recipe: Mapping[str, Any] | None = None,
                  declared_outputs: Iterable[str | Path]) -> None:
         self.destination = Path(destination)
         if self.destination.name.endswith(INCOMPLETE_SUFFIX):
@@ -642,6 +808,17 @@ class ArtifactDirectoryBuilder:
                 "artifact upstreams must contain only ArtifactRef values")
         self.config = dict(config or {})
         _validate_json_value(self.config, "artifact config")
+        # Supplied by the orchestrator that resolved this build's recipe --
+        # the identity formula needs per-stage knowledge (which recorded
+        # inputs the stage reads) that a producer does not have. Absent when
+        # a producer is driven by hand, and then the artifact is honestly
+        # UNATTRIBUTED rather than carrying a digest nobody computed.
+        if artifact_identity is not None:
+            _require_digest(artifact_identity, "artifact artifact_identity")
+        self.artifact_identity = artifact_identity
+        if recipe is not None:
+            _validate_json_value(recipe, "artifact recipe")
+        self.recipe = dict(recipe) if recipe is not None else None
         outputs = tuple(_normalize_output(item) for item in declared_outputs)
         if len(outputs) != len(set(outputs)):
             raise ArtifactValidationError("declared outputs must be unique")
@@ -704,6 +881,14 @@ class ArtifactDirectoryBuilder:
             upstreams=self.upstreams,
             config=self.config,
             declared_outputs=self.declared_outputs,
+            # Stamped here rather than by each producer. There are nine of
+            # them and every one publishes through this class, so this is the
+            # only place that cannot be forgotten -- and a producer that
+            # forgot would be indistinguishable from one whose code was never
+            # recorded.
+            code_provenance=code_provenance.record(),
+            artifact_identity=self.artifact_identity,
+            recipe=self.recipe,
         )
         # This is intentionally the final write in the staging directory.
         atomic_write_json(self.staging_dir / MANIFEST_NAME, manifest.to_dict())

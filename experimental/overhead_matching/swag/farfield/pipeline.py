@@ -22,6 +22,7 @@ artifact version; orchestration refuses to reuse a stale descendant.
 from __future__ import annotations
 
 import argparse
+import json
 import copy
 import math
 import os
@@ -30,15 +31,17 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    artifact_identity,
+    artifact_recipe,
     build_config,
+    code_provenance,
     nominal_forward,
     paths as paths_lib,
     provenance,
-    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.localization import run_identity
 from experimental.overhead_matching.swag.farfield.matching import identity_review
@@ -49,8 +52,6 @@ WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 LOCALIZATION_RUN_KIND = "localization_run"
 VIEWER_TARGET = f"{FF}/localization:viewer"
 VIEWER_GENERATOR = VIEWER_TARGET
-STAGE_REUSE_NAME = stage_reuse.PROOF_NAME
-STAGE_REUSE_SCHEMA = stage_reuse.PROOF_SCHEMA
 
 
 def _text(*, choices: tuple[str, ...] | None = None
@@ -249,26 +250,62 @@ CONFIG_SCHEMA = {
     "localization.modes.heading_cell_deg": _positive_number(),
     "localization.modes.min_cell_weight": _number(maximum=1.0),
     "localization.modes.min_mode_weight": _number(maximum=1.0),
-    # The viewer's tuning values. They shape the published page, so they are
-    # recorded here rather than left to the viewer's own argparse defaults:
-    # with a default on each side, the orchestrator's completeness check and
-    # the tool it invokes drift apart silently, and every previously built
-    # viewer is then declared stale by a change nobody made deliberately.
-    # These are deliberately NOT part of any stage contract -- retuning the
-    # page must not invalidate the localization run it displays.
+}
+
+
+_REQUIRED = object()
+
+
+def _value(config: dict, key: str, default=_REQUIRED) -> Any:
+    """A resolved config value. Absent is an error unless a default is given.
+
+    The default path exists only for `PRESENTATION_SCHEMA` keys, which are
+    optional by design; everything else must be present or the build recipe is
+    not fully resolved.
+    """
+    try:
+        return build_config.value({"config": config}, key)
+    except build_config.MissingConfigValue:
+        # Only ABSENCE falls back. A malformed value must still raise, or a
+        # typo in a presentation key would silently become the fallback --
+        # the exact failure the no-defaults rule exists to prevent.
+        if default is _REQUIRED:
+            raise
+        return default
+
+
+# Presentation settings. They shape the published page and cannot change any
+# scientific artifact -- retuning them does not invalidate the localization run
+# the page displays. They are therefore OPTIONAL rather than required: making
+# them required made every build recipe recorded before they existed
+# unreadable, which was measured against the real root (all 24 of them). They
+# are still validated when present and still rejected when misspelled.
+PRESENTATION_SCHEMA = {
     "viewer.max_particles": _integer(minimum=1),
     "viewer.basemap_detail": _positive_number(),
     "viewer.embed_source_chips": _boolean(),
 }
 
+# What the viewer uses when a recipe predates the keys. Named here rather than
+# left to the viewer's own argparse, so the orchestrator and the viewer cannot
+# hold two different sets -- which is what putting them in the config was for.
+_REQUIRED_ABSENT = object()
 
-def _value(config: dict, key: str) -> Any:
-    return build_config.value({"config": config}, key)
+PRESENTATION_FALLBACK = {
+    "max_particles": 900,
+    "basemap_detail": 1.0,
+    "embed_source_chips": True,
+}
+
+# The two schemas always travel together: validating with the required set but
+# not the optional one rejects a perfectly good `viewer:` block as "unknown".
+# Passed as one mapping so a caller cannot supply half of it.
+SCHEMA_ARGS = {"schema": CONFIG_SCHEMA, "optional": PRESENTATION_SCHEMA}
 
 
 def validate_pipeline_config(config: dict) -> None:
     """Validate exact types, scalar domains, and cross-field invariants."""
-    build_config.validate_resolved(config, CONFIG_SCHEMA)
+    build_config.validate_resolved(config, **SCHEMA_ARGS)
     start = _value(config, "tracking.range.k_start")
     end = _value(config, "tracking.range.k_end")
     if start > end:
@@ -421,6 +458,12 @@ class StageSpec:
     upstreams: tuple[str, ...]
     config_prefixes: tuple[str, ...]
     target: str
+    # Recorded build inputs this stage does NOT read, and which therefore stay
+    # out of its artifacts' identity. Everything else recorded is in: see
+    # `identity_inputs` for why the list runs this way round. Forgetting an
+    # entry here costs a rebuild that was not needed, which is loud; the
+    # opposite default would cost a stale artifact used in silence.
+    inputs_not_consumed: tuple[str, ...] = ()
 
 
 STAGE_SPECS = {
@@ -428,46 +471,92 @@ STAGE_SPECS = {
         outputs=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
         upstreams=(),
         config_prefixes=("extraction", "execution", "cost"),
-        target=f"{FF}/extraction:extract_landmarks"),
+        target=f"{FF}/extraction:extract_landmarks",
+        # Extraction reads panoramas and a prompt. It never opens the tracker
+        # weights, the motion table, the mount calibration or the catalog, so
+        # correcting any of those must not invalidate paid model calls.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "track": StageSpec(
         outputs=(paths_lib.OBJECT_TRACKS,),
         upstreams=(paths_lib.PINHOLE_IMAGES, paths_lib.FRAME_LANDMARKS),
         config_prefixes=("ingest", "tracking", "gps_course"),
-        target=f"{FF}/tracking:run_tracking"),
+        target=f"{FF}/tracking:run_tracking",
+        # Tracking runs SAM2 over the video and the GPS course, so the
+        # checkpoint bytes, the video bytes and the motion table are all
+        # determinants. It does not consult the mount calibration or the map.
+        inputs_not_consumed=(
+            "nominal_forward_sha256", "catalog_manifest_digest",
+            "catalog_content_digest")),
     "audit": StageSpec(
         outputs=(paths_lib.SEMANTIC_AUDITS,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.FRAME_LANDMARKS),
         config_prefixes=("ingest", "audit", "execution", "cost"),
-        target=f"{FF}/tracking:audit_requests"),
+        target=f"{FF}/tracking:audit_requests",
+        # The audit shows a model chips cut from panoramas. No weights, no
+        # motion, no calibration, no map.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "bearings": StageSpec(
         outputs=(paths_lib.BEARING_OBSERVATIONS,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS),
         config_prefixes=("bearing_observations",
                          "tracking.reference_pano_width"),
-        target=f"{FF}/tracking:build_bearing_observations"),
+        target=f"{FF}/tracking:build_bearing_observations",
+        # Camera-frame bearings are geometry over audited tracks. The mount
+        # calibration turns them into world bearings LATER, in localization
+        # inputs, which is why it is not a determinant here.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "match": StageSpec(
         outputs=(paths_lib.LANDMARK_MATCHES,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
                    paths_lib.CATALOGS),
         config_prefixes=("matching", "execution", "cost"),
-        target=f"{FF}/matching:match_landmarks"),
+        target=f"{FF}/matching:match_landmarks",
+        # Matching reads the catalog (as a typed upstream AND as a recorded
+        # digest) and the audit's names. Not the weights, motion or mount.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256")),
     "diagnostics": StageSpec(
         outputs=(paths_lib.ALIGNMENT_DIAGNOSTICS,),
         upstreams=(paths_lib.BEARING_OBSERVATIONS,),
         config_prefixes=("alignment_diagnostics",
                          "localization_inputs.nominal_forward_calibration"),
-        target=f"{FF}/calibration:build_alignment_diagnostics"),
+        target=f"{FF}/calibration:build_alignment_diagnostics",
+        # Diagnostics compare bearings against the GPS course and the approved
+        # nominal-forward record, so both are determinants.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
     "localization_inputs": StageSpec(
         outputs=(paths_lib.LOCALIZATION_INPUTS,),
         upstreams=(paths_lib.BEARING_OBSERVATIONS,
                    paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS),
         config_prefixes=("localization_inputs", "gps_course"),
-        target=f"{FF}/localization:build_export"),
+        target=f"{FF}/localization:build_export",
+        # The export rotates camera bearings into the world through the
+        # approved calibration and places landmarks from the catalog, using
+        # the motion table for odometry. All three are determinants.
+        inputs_not_consumed=("sam2_checkpoint_sha256", "video_sha256")),
     "localize": StageSpec(
         outputs=(LOCALIZATION_RUN_KIND,),
         upstreams=(paths_lib.LOCALIZATION_INPUTS,),
         config_prefixes=("localization",),
-        target=f"{FF}/localization:run_export"),
+        target=f"{FF}/localization:run_export",
+        # The filter consumes one typed localization_inputs artifact and
+        # nothing else from the build's raw inputs.
+        inputs_not_consumed=(
+            "sam2_checkpoint_sha256", "motion_source_sha256",
+            "nominal_forward_sha256", "video_sha256",
+            "catalog_manifest_digest", "catalog_content_digest")),
 }
 STAGES = tuple(STAGE_SPECS)
 PIPELINE_ARTIFACT_OWNER = {
@@ -486,18 +575,6 @@ class StageDependencyError(ValueError):
     """A stage cannot start because a configured upstream is incomplete."""
 
 
-StageReuseAuthorization = stage_reuse.StageReuseAuthorization
-
-
-def _reuse_accepts(
-        authorization: StageReuseAuthorization | None,
-        reference: artifact.ArtifactRef, *, owner_stage: str,
-        build_identity: str) -> bool:
-    return authorization is not None and authorization.accepts(
-        reference, owner_stage=owner_stage,
-        target_build_identity=build_identity)
-
-
 def _binds_exact_pinhole_once(
         manifest, expected: artifact.ArtifactRef) -> bool:
     """Whether a build-scoped artifact binds only the configured pinhole ref."""
@@ -512,18 +589,29 @@ def _prefixed_keys(prefixes: tuple[str, ...]) -> list[str]:
                          for prefix in prefixes))
 
 
-def stage_contract(stage: str, config: dict) -> dict:
-    """Small manifest value proving which resolved settings shaped a stage."""
+def stage_config_selection(stage: str, config: dict) -> dict:
+    """The resolved settings that shape one stage, as flat dotted keys.
+
+    Public because this is the exact dict `config_digest` is computed over,
+    and `artifact_recipe` has to store precisely it -- storing anything else
+    would make the recorded config unable to reproduce the recorded digest.
+    """
     spec = STAGE_SPECS[stage]
     selected = {key: _value(config, key)
                 for key in _prefixed_keys(spec.config_prefixes)}
     for kind in spec.outputs:
         if kind in VERSION_KEYS:
             selected[VERSION_KEYS[kind]] = _value(config, VERSION_KEYS[kind])
+    return selected
+
+
+def stage_contract(stage: str, config: dict) -> dict:
+    """Small manifest value proving which resolved settings shaped a stage."""
     return {
         "schema": "farfield_pipeline_stage/v1",
         "stage": stage,
-        "config_digest": artifact.sha256_json(selected),
+        "config_digest": artifact.sha256_json(
+            stage_config_selection(stage, config)),
     }
 
 
@@ -554,10 +642,32 @@ def _output_descriptors(paths: paths_lib.FarfieldPaths, config: dict,
     return output
 
 
+def build_inputs_of(document: dict) -> dict[str, str]:
+    """The inputs a build recorded, as the identity term."""
+    inputs = document.get("inputs")
+    return dict(inputs) if isinstance(inputs, dict) else {}
+
+
+def expected_artifact_identity(paths: paths_lib.FarfieldPaths, config: dict,
+                               kind: str, *,
+                               build_inputs: Mapping[str, str]
+                               ) -> str:
+    """The identity an artifact of `kind` would have under this recipe."""
+    owner = PIPELINE_ARTIFACT_OWNER[kind]
+    upstreams = tuple(
+        _configured_ref(paths, config, upstream_kind,
+                        build_inputs=build_inputs)
+        for upstream_kind in STAGE_SPECS[owner].upstreams)
+    return artifact_identity.compute(
+        kind=kind, dataset=paths.dataset,
+        stage_config_digest=stage_contract(owner, config)["config_digest"],
+        upstreams=upstreams, build_inputs=build_inputs,
+        inputs_not_consumed=STAGE_SPECS[owner].inputs_not_consumed)
+
+
 def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
                     kind: str, *,
-                    build_identity: str | None = None,
-                    reuse_authorization: StageReuseAuthorization | None = None,
+                    build_inputs: Mapping[str, str] | None = None,
                     ) -> artifact.ArtifactRef:
     version = _value(config, VERSION_KEYS[kind])
     path = paths.artifact(kind, version)
@@ -565,7 +675,7 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
         raise StageDependencyError(
             f"required {kind} artifact is not published: {path}")
     try:
-        ref = artifact.open_artifact(
+        ref = artifact.reference_from_manifest(
             path, expected_kind=kind, expected_dataset=paths.dataset,
             expected_version=version)
     except artifact.ArtifactError as exc:
@@ -573,33 +683,32 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
             f"required {kind} artifact is invalid: {exc}") from exc
     owner = PIPELINE_ARTIFACT_OWNER.get(kind)
     manifest = None
-    if build_identity is not None and owner is not None:
+    if build_inputs is not None and owner is not None:
         manifest = artifact.load_manifest(path)
         if manifest.config.get("orchestration") != stage_contract(owner, config):
             raise StageDependencyError(
                 f"required {kind} artifact has a different resolved "
                 "configuration; publish the configured upstream stage first")
-        # After tracking, the configured artifact version, stage-scoped
-        # recipe digest, and exact upstream refs are the cache identity.  A
-        # later run-only code/config change must not invalidate those bytes.
-        # Extract/track retain the stronger reviewed-prefix proof because they
-        # bind the large raw/model inputs that begin the chain.
-        if (manifest.config.get("build_identity") != build_identity
-                and owner in {"extract", "track"}
-                and not _reuse_accepts(
-                    reuse_authorization, ref, owner_stage=owner,
-                    build_identity=build_identity)):
-            raise StageDependencyError(
-                f"required {kind} artifact belongs to a different immutable "
-                "build identity and has no exact stage-reuse proof; publish "
-                "a new upstream version")
+        # One rule for every stage. Extract and track used to be special:
+        # they carried a whole-build check "because they bind the large
+        # raw/model inputs that begin the chain", and `stage_reuse` existed
+        # solely to grant human-attested exceptions to it. Those inputs are
+        # now IN the artifact identity (see `identity_inputs`), so the
+        # ordinary check covers what the special case reached for, and the
+        # exception mechanism has nothing left to except.
+        if build_inputs is not None:
+            expected = expected_artifact_identity(
+                paths, config, kind, build_inputs=build_inputs)
+            found = artifact_identity.recorded(manifest)
+            if found != expected:
+                raise StageDependencyError(artifact_identity.explain(
+                    expected=expected, manifest=manifest, kind=kind))
     if kind == paths_lib.FRAME_LANDMARKS:
         if manifest is None:
             manifest = artifact.load_manifest(path)
         pinhole_ref = _configured_ref(
             paths, config, paths_lib.PINHOLE_IMAGES,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs)
         if not _binds_exact_pinhole_once(manifest, pinhole_ref):
             raise StageDependencyError(
                 "required frame_landmarks artifact does not bind the exact "
@@ -609,12 +718,11 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
 
 def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
                            stage: str, *,
-                           build_identity: str,
-                           reuse_authorization: StageReuseAuthorization | None = None,
+                           build_inputs: Mapping[str, str] | None = None,
                            ) -> tuple[artifact.ArtifactRef, ...]:
     refs = tuple(_configured_ref(
-        paths, config, kind, build_identity=build_identity,
-        reuse_authorization=reuse_authorization)
+        paths, config, kind,
+        build_inputs=build_inputs)
                  for kind in STAGE_SPECS[stage].upstreams)
     if stage != "localization_inputs":
         return refs
@@ -639,9 +747,14 @@ def expected_upstream_refs(paths: paths_lib.FarfieldPaths, config: dict,
 def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                          stage: str, *,
                          build_identity: str,
-                         reuse_authorization: StageReuseAuthorization | None = None,
+                         build_inputs: Mapping[str, str] | None = None,
                          ) -> tuple[artifact.ArtifactRef, ...]:
-    """Return validated outputs, ``()`` when absent, or reject stale output."""
+    """Return validated outputs, ``()`` when absent, or reject stale output.
+
+    `build_identity` still names the localization RUN DIRECTORY -- it is a
+    label there, not a gate. What decides whether an artifact may be reused is
+    `build_inputs`, through `artifact_identity`.
+    """
     descriptors = _output_descriptors(
         paths, config, stage, build_identity=build_identity)
     present = [path.exists() or path.is_symlink()
@@ -649,15 +762,15 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
     if not any(present):
         return ()
     upstreams = expected_upstream_refs(
-        paths, config, stage, build_identity=build_identity,
-        reuse_authorization=reuse_authorization)
+        paths, config, stage,
+        build_inputs=build_inputs)
     contract = stage_contract(stage, config)
     refs = []
     for (kind, version, path), exists in zip(descriptors, present):
         if not exists:
             continue
         try:
-            ref = artifact.open_artifact(
+            ref = artifact.reference_from_manifest(
                 path, expected_kind=kind, expected_dataset=paths.dataset,
                 expected_version=version)
             manifest = artifact.load_manifest(path)
@@ -676,21 +789,19 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                 raise StageContractError(
                     f"stage {stage!r} output {path} has a different resolved "
                     "configuration; choose a new output version")
-            if (manifest.config.get("build_identity") != build_identity
-                    and stage in {"extract", "track"}
-                    and not _reuse_accepts(
-                        reuse_authorization, ref, owner_stage=stage,
-                        build_identity=build_identity)):
-                raise StageContractError(
-                    f"stage {stage!r} output {path} belongs to a different "
-                    "immutable build identity and has no exact stage-reuse "
-                    "proof; choose a new output version")
+            if build_inputs is not None:
+                expected = expected_artifact_identity(
+                    paths, config, kind, build_inputs=build_inputs)
+                found = artifact_identity.recorded(manifest)
+                if found != expected:
+                    raise StageContractError(
+                        f"stage {stage!r} output: " + artifact_identity.explain(
+                            expected=expected, manifest=manifest, kind=kind))
         if kind == paths_lib.FRAME_LANDMARKS:
             try:
                 pinhole_ref = _configured_ref(
                     paths, config, paths_lib.PINHOLE_IMAGES,
-                    build_identity=build_identity,
-                    reuse_authorization=reuse_authorization)
+                    build_inputs=build_inputs)
             except StageDependencyError as exc:
                 raise StageContractError(
                     f"stage {stage!r} frame_landmarks dependency is invalid: "
@@ -711,52 +822,11 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
 
 def stage_done(stage: str, paths: paths_lib.FarfieldPaths,
                config: dict, *, build_identity: str,
-               reuse_authorization: StageReuseAuthorization | None = None,
-               ) -> bool:
+               build_inputs: Mapping[str, str] | None = None) -> bool:
     """Completion is a validated typed manifest, never an existence marker."""
     return bool(completed_stage_refs(
         paths, config, stage, build_identity=build_identity,
-        reuse_authorization=reuse_authorization))
-
-
-# The shared module owns proof policy and direct-consumer authorization.
-_REUSABLE_THROUGH = (stage_reuse.THROUGH_STAGE,)
-
-
-def stage_reuse_proof_document(source_build_dir: Path,
-                               target_build_dir: Path, *,
-                               through_stage: str,
-                               prefix_code_compatibility: dict) -> dict:
-    """Recompute one fail-closed, exact-ref prefix-reuse proof."""
-    try:
-        return stage_reuse.proof_document(
-            source_build_dir, target_build_dir,
-            through_stage=through_stage,
-            prefix_code_compatibility=prefix_code_compatibility)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
-
-
-def create_stage_reuse_proof(source_build_dir: Path,
-                             target_build_dir: Path, *,
-                             through_stage: str,
-                             prefix_code_compatibility: dict) -> Path:
-    try:
-        return stage_reuse.create_proof(
-            source_build_dir, target_build_dir,
-            through_stage=through_stage,
-            prefix_code_compatibility=prefix_code_compatibility)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
-
-
-def load_stage_reuse_proof(
-        target_build_dir: Path) -> StageReuseAuthorization | None:
-    """Recompute and return one prefix-bounded authorization, if present."""
-    try:
-        return stage_reuse.load_proof(target_build_dir)
-    except stage_reuse.StageReuseError as error:
-        raise StageContractError(str(error)) from error
+        build_inputs=build_inputs))
 
 
 def _resolved_path(value: str, base: Path) -> str:
@@ -796,6 +866,23 @@ def _source_video_inputs(paths: paths_lib.FarfieldPaths) -> dict[str, str]:
         "video": str(video.resolve()),
         "video_sha256": artifact.sha256_file(video),
     }
+
+
+# Every key `_validate_build_inputs` can record. Declared rather than inferred
+# so `identity_inputs`' exclusion lists have something stable to be audited
+# against, and self-checked below so the declaration cannot drift from the
+# function: a recorded key missing from here fails at build creation, which is
+# the cheapest possible moment.
+RECORDED_INPUT_KEYS = frozenset({
+    "farfield_root", "dataset_base", "source_config", "source_config_sha256",
+    "sam2_checkpoint", "sam2_checkpoint_sha256",
+    "motion_source", "motion_source_sha256",
+    "nominal_forward_calibration", "nominal_forward_sha256",
+    "catalog_manifest_digest", "catalog_content_digest",
+    "video", "video_sha256",
+    "identity_review_output_dir", "identity_review_phase",
+    *paths_lib.DATASET_SOURCE_DIGEST_KEYS,
+})
 
 
 def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
@@ -846,6 +933,12 @@ def _validate_build_inputs(paths: paths_lib.FarfieldPaths, config: dict,
             "identity_review_output_dir": str(review_path.resolve()),
             "identity_review_phase": "post_match_gate",
         })
+    undeclared = sorted(set(result) - RECORDED_INPUT_KEYS)
+    if undeclared:
+        raise StageContractError(
+            f"build records inputs absent from RECORDED_INPUT_KEYS: "
+            f"{undeclared}. Add them there so artifact identity's exclusion "
+            "lists can be audited against the real key set.")
     return result
 
 
@@ -873,7 +966,7 @@ def cmd_new_build(args) -> None:
     inputs = _validate_build_inputs(paths, config, source_config)
     build_dir = paths.build_dir(args.build_name)
     path = build_config.create(
-        build_dir, dataset=paths.dataset, config=config, schema=CONFIG_SCHEMA,
+        build_dir, dataset=paths.dataset, config=config, **SCHEMA_ARGS,
         generator="farfield.pipeline new-build", inputs=inputs,
         notes=args.notes)
     print(f"build created: {build_dir}")
@@ -916,6 +1009,71 @@ def _stage_base(build_dir: Path, config: dict, stage: str) -> list[Any]:
     return ["--build_config", build_dir / build_config.BUILD_CONFIG_NAME,
             "--orchestration_config_digest",
             stage_contract(stage, config)["config_digest"]]
+
+
+def stage_recipe(paths: paths_lib.FarfieldPaths, config: dict, stage: str, *,
+                 build_inputs: Mapping[str, str]) -> dict:
+    """The self-describing block this stage's artifact records.
+
+    Built here for the same reason the identity is: the two terms it holds are
+    per-stage orchestrator knowledge (`config_prefixes` and
+    `inputs_not_consumed`) that a producer does not have.
+    """
+    return artifact_recipe.build(
+        stage=stage,
+        stage_config=stage_config_selection(stage, config),
+        build_inputs=build_inputs,
+        identity_upstreams=tuple(
+            _configured_ref(paths, config, kind, build_inputs=build_inputs)
+            for kind in STAGE_SPECS[stage].upstreams),
+        inputs_not_consumed=STAGE_SPECS[stage].inputs_not_consumed)
+
+
+def write_stage_recipe(paths: paths_lib.FarfieldPaths, build_dir: Path,
+                       config: dict, stage: str, *,
+                       build_inputs: Mapping[str, str]) -> Path:
+    """Hand the recipe over as a file, not a flag.
+
+    A resolved stage config is far too large for a command line, and the
+    producer's job is only to record what it was handed -- exactly as with
+    `--orchestration_config_digest` and `--artifact_identity`. The file lives
+    in the build directory, which is orchestration state; once the artifact is
+    published the artifact carries the content and the file is disposable.
+    """
+    recipe = stage_recipe(paths, config, stage, build_inputs=build_inputs)
+    path = Path(build_dir) / f"{stage}.recipe.json"
+    artifact.atomic_write_json(path, recipe)
+    return path
+
+
+def stage_identity_flags(paths: paths_lib.FarfieldPaths, config: dict,
+                         stage: str, *,
+                         build_inputs: Mapping[str, str],
+                         build_dir: Path | None = None) -> list[Any]:
+    """The `--artifact_identity` flag for one stage, or none if it has no
+    gated output.
+
+    Computed here and passed down rather than derived by the producer,
+    because the formula needs per-stage knowledge the producer does not have:
+    which recorded build inputs this stage actually reads
+    (`StageSpec.inputs_not_consumed`). Computed at run time rather than in
+    `build_commands`, because it reads the upstream artifacts' manifest
+    digests and those upstreams may be built earlier in this same run.
+    """
+    gated = [kind for kind in STAGE_SPECS[stage].outputs
+             if kind in PIPELINE_ARTIFACT_OWNER]
+    if not gated:
+        return []
+    if len(gated) > 1:
+        raise StageContractError(
+            f"stage {stage!r} has more than one gated output {gated}; one "
+            "--artifact_identity flag can no longer describe it")
+    flags = ["--artifact_identity", expected_artifact_identity(
+        paths, config, gated[0], build_inputs=build_inputs)]
+    if build_dir is not None:
+        flags += ["--artifact_recipe", write_stage_recipe(
+            paths, build_dir, config, stage, build_inputs=build_inputs)]
+    return flags
 
 
 def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
@@ -1025,16 +1183,28 @@ def viewer_config(config: dict) -> dict:
     the values it later expects to find in the published manifest, so the two
     cannot disagree.
     """
+    def setting(name):
+        """The recipe's value, or the named presentation fallback.
+
+        A recipe recorded before these keys existed has none, and refusing to
+        render its page over a presentation setting would be the wrong trade
+        -- the run it displays is unaffected either way. `PRESENTATION_SCHEMA`
+        keeps them validated when they ARE present.
+        """
+        value = _value(config, f"viewer.{name}", default=_REQUIRED_ABSENT)
+        return PRESENTATION_FALLBACK[name] if value is _REQUIRED_ABSENT \
+            else value
+
     return {
-        "max_particles": _value(config, "viewer.max_particles"),
+        "max_particles": setting("max_particles"),
         # `float` because the viewer parses this flag with `type=float` and
         # records what it parsed: a config written as `1` rather than `1.0`
         # would otherwise never compare equal to the manifest it produced.
-        "basemap_detail": float(_value(config, "viewer.basemap_detail")),
+        "basemap_detail": float(setting("basemap_detail")),
         # Fixed for the canonical page rather than configurable: `--body_only`
         # emits an embeddable fragment, and the index chain links documents.
         "body_only": False,
-        "embed_source_chips": _value(config, "viewer.embed_source_chips"),
+        "embed_source_chips": setting("embed_source_chips"),
     }
 
 
@@ -1070,8 +1240,7 @@ def build_viewer_command(paths: paths_lib.FarfieldPaths, config: dict, *,
 
 def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
                      build_identity: str,
-                     reuse_authorization: StageReuseAuthorization | None = None,
-                     ) -> bool:
+                     build_inputs: Mapping[str, str] | None = None) -> bool:
     """Validate the deterministic viewer and every recorded input identity."""
     output_dir = localization_viewer_dir(
         paths, config, build_identity=build_identity)
@@ -1089,17 +1258,15 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
     run_dir = localization_run_dir(
         paths, config, build_identity=build_identity)
     try:
-        run_ref = artifact.open_artifact(
+        run_ref = artifact.reference_from_manifest(
             run_dir, expected_kind=LOCALIZATION_RUN_KIND,
             expected_dataset=paths.dataset, expected_version=run_dir.name)
         tracks_ref = _configured_ref(
             paths, config, paths_lib.OBJECT_TRACKS,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs)
         audits_ref = _configured_ref(
             paths, config, paths_lib.SEMANTIC_AUDITS,
-            build_identity=build_identity,
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs)
         catalog_ref = _configured_ref(paths, config, paths_lib.CATALOGS)
         feather = Path(catalog_ref.path) / "catalog.feather"
         manifest = provenance.read(output_dir)
@@ -1166,10 +1333,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    try:
-        reuse_authorization = load_stage_reuse_proof(args.build_dir)
-    except StageContractError as exc:
-        raise SystemExit(str(exc)) from exc
+    build_inputs = build_inputs_of(document)
     commands = build_commands(
         paths, Path(args.build_dir), config,
         build_identity=document["build_identity"])
@@ -1184,22 +1348,24 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
             if stage_done(
                     stage, paths, config,
                     build_identity=document["build_identity"],
-                    reuse_authorization=reuse_authorization):
+                    build_inputs=build_inputs):
                 print(f"\n-- {stage}: validated complete")
                 continue
             expected_upstream_refs(
                 paths, config, stage,
-                build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization)
+                build_inputs=build_inputs)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
-        run(commands[stage], stage, dry_run=args.dry_run)
+        run(commands[stage] + stage_identity_flags(
+                paths, config, stage, build_inputs=build_inputs,
+                build_dir=Path(args.build_dir)),
+            stage, dry_run=args.dry_run)
         if not args.dry_run:
             try:
                 if not stage_done(
                         stage, paths, config,
                         build_identity=document["build_identity"],
-                        reuse_authorization=reuse_authorization):
+                        build_inputs=build_inputs):
                     raise StageContractError(
                         f"{stage} exited successfully without publishing its "
                         "complete artifact manifest")
@@ -1210,7 +1376,7 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
         try:
             complete = viewer_completed(
                 paths, config, build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization)
+                build_inputs=build_inputs)
         except (StageContractError, StageDependencyError) as exc:
             raise SystemExit(str(exc)) from exc
         if complete:
@@ -1223,10 +1389,40 @@ def cmd_run(args, parser: argparse.ArgumentParser) -> None:
                 if not viewer_completed(
                     paths, config,
                     build_identity=document["build_identity"],
-                    reuse_authorization=reuse_authorization):
+                    build_inputs=build_inputs):
                     raise SystemExit(
                         "viewer exited successfully without publishing its "
                         "complete side output")
+
+
+def code_lineage(paths: paths_lib.FarfieldPaths, config: dict, *,
+                 build_identity: str) -> str:
+    """One line on whether this build's artifacts share a code state.
+
+    `code_provenance` records the commit and diff that produced every
+    artifact and deliberately never gates on them -- code changes constantly
+    in a research tree and the artifacts cost money to rebuild. But a record
+    nothing reads is a record nobody can act on, and the failure it exists to
+    surface is real and silent: an evaluation whose legs were built either
+    side of a fix is a wrong conclusion with nothing visibly wrong. So it is
+    reported here, where anyone asking after a build's state already looks.
+    """
+    blocks = []
+    for stage in STAGES:
+        for kind, _, path in _output_descriptors(
+                paths, config, stage, build_identity=build_identity):
+            if not path.exists():
+                continue
+            try:
+                block = artifact.load_manifest(path).code_provenance
+            except (artifact.ArtifactError, OSError, ValueError):
+                continue
+            if isinstance(block, Mapping):
+                blocks.append(block)
+    try:
+        return code_provenance.describe(code_provenance.lineage_summary(blocks))
+    except code_provenance.CodeProvenanceError as error:
+        return f"unreadable code provenance: {error}"
 
 
 def cmd_status(args, parser: argparse.ArgumentParser) -> None:
@@ -1235,10 +1431,7 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     config = document["config"]
-    try:
-        reuse_authorization = load_stage_reuse_proof(args.build_dir)
-    except StageContractError as exc:
-        raise SystemExit(str(exc)) from exc
+    build_inputs = build_inputs_of(document)
     print(f"build {args.build_dir}")
     print("localization run: " + str(localization_run_dir(
         paths, config, build_identity=document["build_identity"])))
@@ -1247,7 +1440,7 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
             state = ("done" if stage_done(
                 stage, paths, config,
                 build_identity=document["build_identity"],
-                reuse_authorization=reuse_authorization) else "pending")
+                build_inputs=build_inputs) else "pending")
             detail = ""
         except (StageContractError, StageDependencyError) as exc:
             state, detail = "INVALID", f" ({exc})"
@@ -1256,12 +1449,71 @@ def cmd_status(args, parser: argparse.ArgumentParser) -> None:
     try:
         state = ("done" if viewer_completed(
             paths, config, build_identity=document["build_identity"],
-            reuse_authorization=reuse_authorization)
+            build_inputs=build_inputs)
                  else "pending")
         detail = ""
     except (StageContractError, StageDependencyError) as exc:
         state, detail = "INVALID", f" ({exc})"
     print(f"  {'viewer':<20} {state}{detail}")
+    print("code lineage: " + code_lineage(
+        paths, config, build_identity=document["build_identity"]))
+
+
+def cmd_recipe(args, parser: argparse.ArgumentParser) -> None:
+    """Say how one artifact was made, reading only that artifact.
+
+    No build directory, no data root, no config. If this can answer, the
+    artifact is reproducible from itself; if it cannot, that is the honest
+    finding and the reason is printed.
+    """
+    try:
+        manifest = artifact.load_manifest(args.artifact_dir)
+    except (artifact.ArtifactError, OSError, ValueError) as exc:
+        parser.error(str(exc))
+    print(artifact_recipe.describe(manifest))
+    try:
+        artifact_recipe.verify_self_describing(manifest)
+    except artifact_recipe.ArtifactRecipeError as exc:
+        print(f"\nNOT self-describing: {exc}")
+        raise SystemExit(1)
+    print("\nself-describing: the identity recomputed from this manifest "
+          "alone matches the identity it records")
+
+
+def cmd_verify(args, parser: argparse.ArgumentParser) -> None:
+    """Re-hash every artifact this build names and compare with its manifest.
+
+    The integrity question, asked deliberately. The reuse checks in `run` and
+    `status` read identity from manifests and never touch content, because
+    identity does not depend on it -- so nothing else in the pipeline would
+    notice a file that changed under a published artifact. This is what
+    notices.
+    """
+    try:
+        paths, document = resolve_build(args.build_dir)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    config = document["config"]
+    checked = failed = 0
+    for kind in sorted(PIPELINE_ARTIFACT_OWNER):
+        version = _value(config, VERSION_KEYS[kind])
+        path = paths.artifact(kind, version)
+        if not path.exists():
+            print(f"  {kind:<24} absent")
+            continue
+        checked += 1
+        try:
+            artifact.open_artifact(
+                path, expected_kind=kind, expected_dataset=paths.dataset,
+                expected_version=version)
+        except artifact.ArtifactError as exc:
+            failed += 1
+            print(f"  {kind:<24} CORRUPT: {exc}")
+        else:
+            print(f"  {kind:<24} contents match their manifest")
+    print(f"\n{checked} artifact(s) checked, {failed} corrupt")
+    if failed:
+        raise SystemExit(1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1289,16 +1541,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="validate build stage manifests")
     status.add_argument("--build_dir", type=Path, required=True)
-    reuse = sub.add_parser(
-        "prove-stage-reuse",
-        help="bind exact compatible prefix artifacts into a successor build")
-    reuse.add_argument("--source_build_dir", type=Path, required=True)
-    reuse.add_argument("--target_build_dir", type=Path, required=True)
-    reuse.add_argument("--through", dest="through_stage",
-                       choices=_REUSABLE_THROUGH, required=True)
-    reuse.add_argument("--prefix_code_reviewed_by", required=True)
-    reuse.add_argument("--prefix_code_reviewed_at", required=True)
-    reuse.add_argument("--prefix_code_review_note", required=True)
+
+    recipe = sub.add_parser(
+        "recipe", help="how one artifact was made, from its manifest alone")
+    recipe.add_argument("--artifact_dir", type=Path, required=True)
+
+    verify = sub.add_parser(
+        "verify", help="re-hash this build's artifacts and check integrity")
+    verify.add_argument("--build_dir", type=Path, required=True)
     return parser
 
 
@@ -1311,23 +1561,10 @@ def main() -> None:
         cmd_run(args, parser)
     elif args.command == "status":
         cmd_status(args, parser)
-    else:
-        try:
-            source = build_config.load(args.source_build_dir)
-            target = build_config.load(args.target_build_dir)
-            attestation = stage_reuse.reviewed_prefix_code_compatibility(
-                source_git_commit=source["git_commit"],
-                target_git_commit=target["git_commit"],
-                reviewed_by=args.prefix_code_reviewed_by,
-                reviewed_at=args.prefix_code_reviewed_at,
-                note=args.prefix_code_review_note)
-            path = create_stage_reuse_proof(
-                args.source_build_dir, args.target_build_dir,
-                through_stage=args.through_stage,
-                prefix_code_compatibility=attestation)
-        except (OSError, ValueError) as exc:
-            parser.error(str(exc))
-        print(f"stage-reuse proof created: {path}")
+    elif args.command == "recipe":
+        cmd_recipe(args, parser)
+    elif args.command == "verify":
+        cmd_verify(args, parser)
 
 
 if __name__ == "__main__":
