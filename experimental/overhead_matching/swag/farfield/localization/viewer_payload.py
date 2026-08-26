@@ -606,6 +606,9 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
             geometry["referenced"] = landmark.landmark_id in referenced
             landmark_geometry.append(geometry)
     metric_config = manifest.position_mass_metric
+    metric_summary = (
+        metrics.position_mass_summary(data.health, metric_config)
+        if metric_config is not None else None)
 
     return {
         "run": {
@@ -620,6 +623,19 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
                 "id": metric_config.metric_id,
                 "version": metric_config.metric_version,
                 "radiiM": list(metric_config.radii_m),
+                "aggregate": {
+                    "id": metric_summary["metric_id"],
+                    "version": metric_summary["metric_version"],
+                    "referencePosition": metric_summary[
+                        "reference_position"],
+                    "normalization": metric_summary["normalization"],
+                    "higherIsBetter": metric_summary["higher_is_better"],
+                    "primaryRadiusM": metric_summary["primary_radius_m"],
+                    "scores": {
+                        radius: value["time_normalized_mass"]
+                        for radius, value in metric_summary["radii"].items()
+                    },
+                },
             }),
             "nKeyframes": manifest.n_keyframes,
             "nParticles": manifest.filter_config.n_particles,

@@ -378,6 +378,10 @@ def validate_pipeline_config(config: dict) -> None:
         raise build_config.InvalidConfigValue(
             "localization.position_mass_radii_m must be finite, positive, "
             "sorted, and unique")
+    if 500.0 not in numeric_radii:
+        raise build_config.InvalidConfigValue(
+            "localization.position_mass_radii_m must include the primary "
+            "500 m radius")
     tags = _value(config, "localization.ablation_tags")
     if (any(not isinstance(tag, str) or not tag for tag in tags)
             or tags != sorted(set(tags))):

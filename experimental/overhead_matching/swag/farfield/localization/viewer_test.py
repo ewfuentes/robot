@@ -28,7 +28,8 @@ import numpy as np
 
 from experimental.overhead_matching.swag.farfield.localization import (
     attribution,
-    filter as pf,
+    metrics,
+    runner,
     run_io,
     scenario,
     side_outputs,
@@ -51,8 +52,7 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
         n_particles=n_particles, seed=seed,
         init=structs.GaussianInit(start.east_m, start.north_m, 400.0),
         checkpoint_every=10)
-    history = pf.run_filter(config, data.catalog, data.odometry,
-                            data.measurements, data.tables)
+    metric_config = metrics.position_mass_metric_config()
     manifest = structs.RunManifest(
         schema_version=structs.SCHEMA_VERSION, dataset="synthetic",
         scenario_name=cfg.name, run_kind="synthetic",
@@ -62,15 +62,17 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
         anchor_lat_deg=cfg.anchor_lat_deg, anchor_lon_deg=cfg.anchor_lon_deg,
         n_keyframes=data.n_keyframes, filter_config=config,
         landmarks=cfg.landmarks, matcher_version=scenario.MATCHER_VERSION,
-        particle_history_sha256=history.particle_history_sha256,
         max_visible_range_m=VISIBLE_RANGE_M,
         export_dir=f"synthetic:{cfg.name}",
         git_commit="test", argv=["viewer_test"],
-        created="2026-08-21T00:00:00+00:00")
-    run_io.write_run(run_dir, manifest, data.truth, data.odometry,
-                     data.measurements, data.tables, history,
-                     dataset="synthetic", version=run_dir.name)
-    return data, config, history
+        created="2026-08-21T00:00:00+00:00",
+        truth_position_schema=runner.TRUTH_POSITION_SCHEMA,
+        position_mass_metric=metric_config)
+    result = runner.execute_localization(
+        run_dir, manifest, catalog=data.catalog, truth=data.truth,
+        odometry=data.odometry, measurements=data.measurements,
+        tables=data.tables, dataset="synthetic", version=run_dir.name)
+    return data, config, result.history
 
 
 class PayloadTest(unittest.TestCase):
@@ -127,6 +129,24 @@ class PayloadTest(unittest.TestCase):
             payload = viewer_payload.build(run_dir)
             self.assertEqual(payload["run"]["maxVisibleRangeM"],
                              VISIBLE_RANGE_M)
+
+    def test_primary_mass_summary_is_truth_centered_and_headlined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            payload = viewer_payload.build(run_dir)
+
+            aggregate = payload["run"]["positionMassMetric"]["aggregate"]
+            self.assertEqual(aggregate["referencePosition"], "truth")
+            self.assertEqual(aggregate["primaryRadiusM"], 500.0)
+            self.assertEqual(set(aggregate["scores"]), {"100", "500"})
+            self.assertTrue(all(0.0 <= value <= 1.0
+                                for value in aggregate["scores"].values()))
+            summary = json.loads(
+                (run_dir / metrics.POSITION_MASS_SUMMARY_NAME).read_text())
+            self.assertEqual(summary["radii"]["500"][
+                "time_normalized_mass"],
+                             aggregate["scores"]["500"])
 
     def test_particles_are_a_weighted_sample(self):
         """T-V2. The regression this guards: uniform subsampling of a weighted
@@ -331,7 +351,7 @@ class PageTest(unittest.TestCase):
             html = viewer.render_html(viewer_payload.build(run_dir))
             asset_dir = Path(viewer.__file__).parent / "viewer_assets"
             for name, marker in (("style.css", ".privileged{"),
-                                 ("app.js", "staticTransform")):
+                                 ("app.js", "aggregate.primaryRadiusM")):
                 content = (asset_dir / name).read_text()
                 self.assertIn(marker, content,
                               f"{name} no longer carries its marker; update "
@@ -533,6 +553,17 @@ class ServerTest(unittest.TestCase):
             + viewer_server.replay_mod.COUNTERFACTUAL_DIR_SUFFIX)
         self.assertTrue((ghost_dir / run_io.RUN_MANIFEST_NAME).exists())
         self.assertTrue((ghost_dir / "counterfactual.json").exists())
+        self.assertTrue(
+            (ghost_dir / metrics.POSITION_MASS_SUMMARY_NAME).exists())
+        ghost = run_io.read_run(ghost_dir)
+        expected_keys = {
+            metrics.position_mass_metric_key(
+                ghost.manifest.position_mass_metric, radius_m)
+            for radius_m in (100.0, 500.0)
+        }
+        self.assertTrue(all(
+            set(record.position_probability_mass) == expected_keys
+            for record in ghost.health))
         refreshed = self.client.get("/api/payload").get_json()
         self.assertEqual(len(refreshed["ghosts"]), 1)
 

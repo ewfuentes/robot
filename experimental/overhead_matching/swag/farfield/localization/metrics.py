@@ -22,9 +22,19 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import structs
 
 
-POSITION_MASS_METRIC_ID = "posterior_position_probability_mass_within_radius"
+POSITION_MASS_METRIC_ID = (
+    "posterior_position_probability_mass_within_true_position_radius")
 POSITION_MASS_METRIC_VERSION = "1"
-DEFAULT_POSITION_MASS_RADII_M = (50.0, 100.0, 250.0, 500.0, 1000.0)
+TIME_NORMALIZED_POSITION_MASS_METRIC_ID = (
+    "time_normalized_posterior_position_probability_mass_within_"
+    "true_position_radius")
+TIME_NORMALIZED_POSITION_MASS_METRIC_VERSION = "1"
+POSITION_MASS_SUMMARY_SCHEMA = "farfield_position_mass_summary/v1"
+POSITION_MASS_SUMMARY_NAME = "metrics.json"
+POSITION_MASS_TIME_NORMALIZATION = (
+    "trapezoidal_area_divided_by_keyframe_span")
+PRIMARY_POSITION_MASS_RADIUS_M = 500.0
+DEFAULT_POSITION_MASS_RADII_M = (100.0, PRIMARY_POSITION_MASS_RADIUS_M)
 
 
 class KeyedMetricSeries(np.ndarray):
@@ -51,6 +61,9 @@ def position_mass_metric_config(
             or radii != sorted(set(radii))):
         raise ValueError(
             "position-mass radii must be finite, positive, unique, and sorted")
+    if PRIMARY_POSITION_MASS_RADIUS_M not in radii:
+        raise ValueError(
+            "position-mass radii must include the primary 500 m radius")
     return structs.PositionMassMetricConfig(
         metric_id=POSITION_MASS_METRIC_ID,
         metric_version=POSITION_MASS_METRIC_VERSION,
@@ -65,6 +78,113 @@ def position_mass_metric_key(config: structs.PositionMassMetricConfig,
         raise ValueError(f"radius {radius:g} m is not in the metric config")
     return (f"{config.metric_id}@{config.metric_version}:"
             f"radius_m={radius:g}")
+
+
+def position_mass_radii_in_priority_order(
+        config: structs.PositionMassMetricConfig) -> list[float]:
+    """Put the 500 m headline radius first without changing stored config."""
+    primary = PRIMARY_POSITION_MASS_RADIUS_M
+    return ([primary] if primary in config.radii_m else []) + [
+        radius for radius in config.radii_m if radius != primary]
+
+
+def time_normalized_position_mass(
+        health: list, config: structs.PositionMassMetricConfig,
+        radius_m: float) -> float:
+    """Normalized area under truth-centered posterior mass over keyframe time.
+
+    Each health value was recorded against the true position at that keyframe
+    by the evaluation-only observer in ``runner.py``.  Trapezoidal integration
+    followed by division by the keyframe span makes runs of different duration
+    comparable while retaining the whole trajectory.  The result is in [0, 1]
+    and higher is better.  A one-keyframe run has the value at that keyframe.
+    """
+    key = position_mass_metric_key(config, radius_m)
+    if not health:
+        raise ValueError("position-mass summary requires at least one keyframe")
+    keyframes = np.asarray(
+        [record.keyframe_idx for record in health], dtype=np.float64)
+    if keyframes.size > 1 and np.any(np.diff(keyframes) <= 0.0):
+        raise ValueError(
+            "position-mass summary keyframes must be strictly increasing")
+    try:
+        values = np.asarray([
+            record.position_probability_mass[key] for record in health
+        ], dtype=np.float64)
+    except KeyError as error:
+        raise ValueError(
+            f"position-mass summary is missing configured metric {key!r}"
+        ) from error
+    if (not np.isfinite(values).all()
+            or np.any(values < 0.0) or np.any(values > 1.0)):
+        raise ValueError(
+            "position-mass summary values must be finite probabilities")
+    if values.size == 1:
+        return float(values[0])
+    intervals = np.diff(keyframes)
+    area = float(np.sum(0.5 * (values[:-1] + values[1:]) * intervals))
+    normalized = area / float(keyframes[-1] - keyframes[0])
+    # The source values are probabilities, but protect the serialized contract
+    # from floating-point accumulation a few ulps outside the closed interval.
+    return min(1.0, max(0.0, normalized))
+
+
+def position_mass_summary(
+        health: list, config: structs.PositionMassMetricConfig) -> dict:
+    """Machine-readable aggregate of the every-keyframe primary metric."""
+    radii = {
+        f"{float(radius_m):g}": {
+            "radius_m": float(radius_m),
+            "time_normalized_mass": time_normalized_position_mass(
+                health, config, radius_m),
+        }
+        for radius_m in config.radii_m
+    }
+    primary = PRIMARY_POSITION_MASS_RADIUS_M
+    return {
+        "schema": POSITION_MASS_SUMMARY_SCHEMA,
+        "metric_id": TIME_NORMALIZED_POSITION_MASS_METRIC_ID,
+        "metric_version": TIME_NORMALIZED_POSITION_MASS_METRIC_VERSION,
+        "source_metric_id": config.metric_id,
+        "source_metric_version": config.metric_version,
+        "reference_position": "truth",
+        "normalization": POSITION_MASS_TIME_NORMALIZATION,
+        "higher_is_better": True,
+        "primary_radius_m": primary if primary in config.radii_m else None,
+        "n_keyframes": len(health),
+        "keyframe_span": (health[-1].keyframe_idx - health[0].keyframe_idx
+                          if len(health) > 1 else 0),
+        "radii": radii,
+    }
+
+
+def describe_position_mass_summary(summary: dict, run_kind: str) -> str:
+    """Human-readable primary-first rendering of the aggregate contract."""
+    primary_run = run_kind == "evaluation"
+    classification = ("PRIMARY LOCALIZATION METRIC" if primary_run else
+                      f"LOCALIZATION METRIC — {run_kind.replace('_', ' ').upper()}")
+    lines = [f"--- {classification} ---"]
+    primary_radius = summary["primary_radius_m"]
+    ordered_radii = ([primary_radius] if primary_radius is not None else [])
+    ordered_radii += [
+        value["radius_m"] for value in summary["radii"].values()
+        if value["radius_m"] != primary_radius
+    ]
+    for radius_m in ordered_radii:
+        value = summary["radii"][f"{float(radius_m):g}"][
+            "time_normalized_mass"]
+        if radius_m == primary_radius:
+            label = "PRIMARY" if primary_run else "headline (diagnostic)"
+        else:
+            label = "secondary"
+        lines.append(
+            f"{label}: normalized posterior mass within {radius_m:g} m of "
+            f"the true position over time = {value:.4f} "
+            f"({100.0 * value:.2f}%)")
+    lines.append(
+        "higher is better; truth is evaluation-only and never initializes "
+        "or updates the filter")
+    return "\n".join(lines)
 
 
 def mean_pose(belief):
@@ -124,10 +244,12 @@ def heading_std_deg(belief) -> float:
 
 def mass_within_radius(belief, east_m: float, north_m: float,
                        radius_m: float) -> float:
-    """Posterior mass within `radius_m` of a point.
+    """Posterior mass within `radius_m` of a reference position.
 
-    The multimodality-safe accuracy metric: unlike mean error it stays
-    meaningful when the belief holds several hypotheses (§5.1, A-9).
+    The run observer always supplies the true position as the reference.  This
+    is an evaluation-only, multimodality-safe accuracy metric: unlike mean
+    error it stays meaningful when the belief holds several hypotheses
+    (§5.1, A-9).
     """
     w = belief.normalized_weights()
     within = np.hypot(belief.east_m - east_m,

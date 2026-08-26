@@ -163,7 +163,7 @@ class ConfigContractTest(unittest.TestCase):
         self.assertEqual(config["localization"]["ablation_tags"], [])
         self.assertEqual(
             config["localization"]["position_mass_radii_m"],
-            [50.0, 100.0, 250.0, 500.0, 1000.0])
+            [100.0, 500.0])
 
     def test_missing_value_is_rejected(self):
         config = example_config()
@@ -296,6 +296,12 @@ class ConfigContractTest(unittest.TestCase):
         config["localization"]["position_mass_radii_m"] = [100.0, 50.0]
         with self.assertRaisesRegex(build_config.InvalidConfigValue,
                                     "sorted"):
+            pipeline.validate_pipeline_config(config)
+
+        config = example_config()
+        config["localization"]["position_mass_radii_m"] = [100.0]
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "primary 500 m"):
             pipeline.validate_pipeline_config(config)
 
         config = example_config()

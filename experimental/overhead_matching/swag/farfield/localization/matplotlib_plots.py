@@ -165,15 +165,29 @@ def _draw_strip(data, axes):
 
     metric_config = data.manifest.position_mass_metric
     if metric_config is not None:
-        for radius_m in metric_config.radii_m:
+        summary = metrics.position_mass_summary(data.health, metric_config)
+        primary_run = data.manifest.run_kind == "evaluation"
+        for radius_m in metrics.position_mass_radii_in_priority_order(
+                metric_config):
             key = metrics.position_mass_metric_key(metric_config, radius_m)
             values = [record.position_probability_mass[key]
                       for record in data.health]
+            primary = radius_m == metrics.PRIMARY_POSITION_MASS_RADIUS_M
             axes[0].plot(
-                keyframes, values, lw=1.0,
-                label=f"within {radius_m:g} m")
+                keyframes, values, lw=1.8 if primary else 1.0,
+                label=(f"{'PRIMARY' if primary_run else 'diagnostic'}: "
+                       f"within {radius_m:g} m of truth"
+                       if primary else f"within {radius_m:g} m of truth"))
+        primary = summary["radii"].get(
+            f"{metrics.PRIMARY_POSITION_MASS_RADIUS_M:g}")
+        if primary is not None:
+            axes[0].set_title(
+                ("PRIMARY METRIC" if primary_run else "DIAGNOSTIC METRIC")
+                + " — time-normalized mass within 500 m of "
+                f"truth: {primary['time_normalized_mass']:.3f}",
+                loc="left", fontsize=9)
         axes[0].legend(fontsize=7)
-    axes[0].set_ylabel("posterior mass")
+    axes[0].set_ylabel("truth-centered\nposterior mass")
     axes[0].set_ylim(-0.02, 1.02)
 
     if data.truth:

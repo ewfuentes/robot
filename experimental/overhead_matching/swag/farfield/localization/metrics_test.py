@@ -24,25 +24,102 @@ class MapPoseTest(unittest.TestCase):
         self.assertLess(abs(mean_east - (-200.0)), 60.0)
         self.assertLess(abs(map_east - (-1000.0)), 60.0)
 
-    def test_mass_within_radius(self):
+    def test_mass_within_true_radius_normalizes_weights_and_boundary(self):
+        # The reference is deliberately far from the origin so this pins the
+        # evaluation contract: radii are centered on truth, not on map origin
+        # or the posterior mean. Particles exactly on the radius are included.
         belief = pf.ParticleBelief(
-            np.array([0.0, 10.0, 500.0]), np.zeros(3), np.zeros(3),
-            np.zeros(3))
+            np.array([1000.0, 1100.0, 1500.0, 1500.01]),
+            np.full(4, -500.0), np.zeros(4),
+            np.log(np.array([0.1, 0.2, 0.3, 0.4])))
         self.assertAlmostEqual(
-            metrics.mass_within_radius(belief, 0.0, 0.0, 100.0),
-            2.0 / 3.0, places=6)
+            metrics.mass_within_radius(belief, 1000.0, -500.0, 100.0),
+            0.3, places=6)
+        self.assertAlmostEqual(
+            metrics.mass_within_radius(belief, 1000.0, -500.0, 500.0),
+            0.6, places=6)
 
     def test_position_mass_config_has_stable_identity_and_strict_radii(self):
-        config = metrics.position_mass_metric_config([50, 100.0])
+        config = metrics.position_mass_metric_config()
+        self.assertEqual(config.radii_m, [100.0, 500.0])
         self.assertEqual(config.metric_id,
                          metrics.POSITION_MASS_METRIC_ID)
         self.assertEqual(config.metric_version,
                          metrics.POSITION_MASS_METRIC_VERSION)
         self.assertEqual(
-            metrics.position_mass_metric_key(config, 50.0),
-            "posterior_position_probability_mass_within_radius@1:radius_m=50")
+            metrics.position_mass_metric_key(config, 500.0),
+            "posterior_position_probability_mass_within_true_position_radius"
+            "@1:radius_m=500")
         with self.assertRaisesRegex(ValueError, "sorted"):
-            metrics.position_mass_metric_config([100.0, 50.0])
+            metrics.position_mass_metric_config([500.0, 100.0])
+        with self.assertRaisesRegex(ValueError, "primary 500 m"):
+            metrics.position_mass_metric_config([100.0])
+
+
+class TimeNormalizedPositionMassTest(unittest.TestCase):
+    def setUp(self):
+        self.config = metrics.position_mass_metric_config()
+        self.key100 = metrics.position_mass_metric_key(self.config, 100.0)
+        self.key500 = metrics.position_mass_metric_key(self.config, 500.0)
+
+    def _record(self, keyframe_idx, mass100, mass500):
+        return SimpleNamespace(
+            keyframe_idx=keyframe_idx,
+            position_probability_mass={
+                self.key100: mass100,
+                self.key500: mass500,
+            })
+
+    def test_trapezoidal_auc_is_divided_by_keyframe_span(self):
+        # Irregular spacing distinguishes the time-normalized AUC from a plain
+        # sample mean: (0.5 * 1 + 1.0 * 3) / 4 = 0.875.
+        health = [self._record(0, 0.0, 0.0),
+                  self._record(1, 0.0, 1.0),
+                  self._record(4, 0.0, 1.0)]
+        self.assertAlmostEqual(
+            metrics.time_normalized_position_mass(
+                health, self.config, 500.0),
+            0.875)
+        self.assertEqual(
+            metrics.time_normalized_position_mass(
+                health, self.config, 100.0),
+            0.0)
+
+    def test_summary_contract_marks_500_m_primary_and_higher_better(self):
+        health = [self._record(7, 0.25, 0.75)]
+        summary = metrics.position_mass_summary(health, self.config)
+        self.assertEqual(summary["schema"],
+                         metrics.POSITION_MASS_SUMMARY_SCHEMA)
+        self.assertEqual(summary["reference_position"], "truth")
+        self.assertEqual(summary["primary_radius_m"], 500.0)
+        self.assertTrue(summary["higher_is_better"])
+        self.assertEqual(summary["normalization"],
+                         metrics.POSITION_MASS_TIME_NORMALIZATION)
+        self.assertEqual(summary["radii"]["100"]["time_normalized_mass"],
+                         0.25)
+        self.assertEqual(summary["radii"]["500"]["time_normalized_mass"],
+                         0.75)
+        primary = metrics.describe_position_mass_summary(summary, "evaluation")
+        diagnostic = metrics.describe_position_mass_summary(
+            summary, "diagnostic_control")
+        self.assertIn("PRIMARY LOCALIZATION METRIC", primary)
+        self.assertIn("PRIMARY: normalized posterior mass within 500 m", primary)
+        self.assertIn("DIAGNOSTIC CONTROL", diagnostic)
+        self.assertIn("headline (diagnostic):", diagnostic)
+        self.assertNotIn("PRIMARY:", diagnostic)
+
+    def test_rejects_incomplete_or_out_of_order_series(self):
+        incomplete = [SimpleNamespace(
+            keyframe_idx=0,
+            position_probability_mass={self.key100: 0.5})]
+        with self.assertRaisesRegex(ValueError, "missing configured metric"):
+            metrics.time_normalized_position_mass(
+                incomplete, self.config, 500.0)
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            metrics.time_normalized_position_mass(
+                [self._record(2, 0.5, 0.5),
+                 self._record(2, 0.5, 0.5)],
+                self.config, 500.0)
 
 
 class ErrorSeriesTest(unittest.TestCase):

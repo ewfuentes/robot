@@ -32,10 +32,16 @@ class ExecutionResult:
     history: pf.FilterHistory
     artifact_ref: artifact.ArtifactRef
     bearing_diagnostics: tuple[structs.BearingResidualDiagnostic, ...]
+    position_mass_summary: dict | None
 
 
-class _PositionMassRecorder(pf.RunObserver):
-    """Read weighted beliefs at every keyframe without retaining particles."""
+class PositionMassRecorder(pf.RunObserver):
+    """Evaluation-only truth scorer with no feedback into the filter.
+
+    The observer reads the completed posterior at each keyframe and retains only
+    scalar masses.  It cannot alter the belief, prior, measurements, or proposal
+    path, so truth remains an evaluation reference rather than a filter input.
+    """
 
     def __init__(self, truth: list, config: structs.PositionMassMetricConfig):
         self._truth = {record.keyframe_idx: record for record in truth}
@@ -124,7 +130,7 @@ def execute_localization(
         extra_outputs: dict[str, bytes] | None = None) -> ExecutionResult:
     """Run, instrument, finalize, and atomically publish one localization run."""
     _validate_metadata(manifest, truth)
-    recorder = (_PositionMassRecorder(truth, manifest.position_mass_metric)
+    recorder = (PositionMassRecorder(truth, manifest.position_mass_metric)
                 if truth else None)
     history = pf.run_filter(
         manifest.filter_config, catalog, odometry, measurements, tables,
@@ -133,6 +139,10 @@ def execute_localization(
         for record in history.health:
             record.position_probability_mass = recorder.by_keyframe[
                 record.keyframe_idx]
+    mass_summary = (
+        metrics.position_mass_summary(
+            history.health, manifest.position_mass_metric)
+        if recorder is not None else None)
 
     diagnostics = tuple(metrics.bearing_residual_diagnostics(
         catalog, measurements, history.health))
@@ -150,6 +160,13 @@ def execute_localization(
     manifest = msgspec.structs.replace(
         manifest, particle_history_sha256=history.particle_history_sha256)
     outputs = dict(extra_outputs or {})
+    if metrics.POSITION_MASS_SUMMARY_NAME in outputs:
+        raise ValueError(
+            f"{metrics.POSITION_MASS_SUMMARY_NAME!r} is owned by the shared "
+            "runner")
+    if mass_summary is not None:
+        outputs[metrics.POSITION_MASS_SUMMARY_NAME] = (
+            msgspec.json.encode(mass_summary) + b"\n")
     if BEARING_DIAGNOSTIC_NAME in outputs:
         raise ValueError(
             f"{BEARING_DIAGNOSTIC_NAME!r} is owned by the shared runner")
@@ -163,4 +180,5 @@ def execute_localization(
         manifest=manifest,
         history=history,
         artifact_ref=reference,
-        bearing_diagnostics=diagnostics)
+        bearing_diagnostics=diagnostics,
+        position_mass_summary=mass_summary)

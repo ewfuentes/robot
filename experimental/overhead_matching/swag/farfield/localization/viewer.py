@@ -36,9 +36,8 @@ self-contained offline file.
 
 Two rules the page keeps:
 
-**Truth-privileged content is fenced.** Anything derived from GPS truth lives
-inside a marked band and is never mixed into a panel that reads as a result.
-The 452 m harbour run's error budget is a debugging artifact, not a measurement.
+**Truth-privileged content is fenced.** Anything derived from GPS truth is
+visually marked and is evaluation output only; it is never a filter input.
 
 **Nothing is silently truncated.** Where a cap applies — particles per frame,
 table entries shown, basemap vertices — the page states it.
@@ -78,6 +77,15 @@ def render_html(payload: dict, body_only: bool = False) -> str:
     replay_pill = ("ok" if run["replayable"] else "bad")
     replay_text = ("replayable" if run["replayable"]
                    else "not faithfully replayable")
+    primary_evaluation = (
+        run["runKind"] == "evaluation"
+        and run["initialization"] == "uniform"
+        and run["bearingsConsumed"])
+    evaluation_pill = "ok" if primary_evaluation else "warn"
+    evaluation_text = (
+        "PRIMARY EVALUATION · uniform prior · bearings consumed"
+        if primary_evaluation else
+        f"{run['runKind']} · {run['initialization']} initialization")
     body = f"""<div class="wrap">
 <header>
 <div class="eyebrow">Bearing-only localization &middot; run viewer</div>
@@ -91,7 +99,8 @@ backend <b>{_escape(run['backend'])}</b> &middot;
 matcher <b>{_escape(run['matcher'])}</b> &middot;
 history <code>{_escape(run['historyHash'])}</code>
 <span class="pill info" id="liveStatus">static viewer</span>
-<span class="pill {replay_pill}">{replay_text}</span></div>
+<span class="pill {replay_pill}">{replay_text}</span>
+<span class="pill {evaluation_pill}">{_escape(evaluation_text)}</span></div>
 <div class="meta" style="margin-top:4px">triage (truth-privileged):
 {_escape(payload.get('triageSummary', ''))}</div>
 {notes_html}
