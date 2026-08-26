@@ -5,10 +5,14 @@ are written as those judgements: a container crane survives without a height
 tag, a bench does not, and a bare shed does not while a grain terminal does.
 """
 
+import csv
+import copy
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import geopandas as gpd
 import numpy as np
@@ -41,6 +45,55 @@ def drops(tags: list, areas=None, min_area=2000.0, min_levels=6.0):
     areas = np.zeros(len(tags)) if areas is None else np.asarray(areas)
     masks = tc.evaluate_rules(tags, areas, min_area, min_levels)
     return {name: mask.tolist() for name, mask in masks.items()}
+
+
+BOSTON_SCOPE = "boston_harbor_20260712"
+BOSTON_LEG1 = "boston_harbor_leg1"
+
+
+def write_active_dataset(root: Path, dataset: str, points):
+    dataset_dir = root / "datasets" / dataset
+    dataset_dir.mkdir(parents=True)
+    mapping = dataset_dir / "pano_id_mapping.csv"
+    gps = dataset_dir / "frames_gps.csv"
+    frames = dataset_dir / "frames"
+    frames.mkdir()
+    rows = []
+    for index, (lat, lon) in enumerate(points):
+        pano_id = f"f{index:06d}"
+        filename = f"{pano_id},{lat:.7f},{lon:.7f},.jpg"
+        rows.append((pano_id, lat, lon, filename))
+        (frames / filename).write_bytes(b"jpeg")
+    with mapping.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(tc.active_catalogs.MAPPING_COLUMNS)
+        writer.writerows(rows)
+    with gps.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("idx", "latitude", "longitude", "dist_m",
+                         "video_t_s"))
+        for index, (_, lat, lon, _) in enumerate(rows):
+            writer.writerow((index, lat, lon, index, index))
+    (dataset_dir / "panorama").symlink_to(
+        "frames", target_is_directory=True)
+    return gps
+
+
+def reviewed_clip_plan(farfield_root: Path, output_dataset=BOSTON_LEG1,
+                       minimum_area_km2=625.0):
+    scope = tc.active_catalogs.SCOPE_BY_NAME[BOSTON_SCOPE]
+    for index, dataset in enumerate(scope.bbox_datasets):
+        write_active_dataset(
+            farfield_root, dataset,
+            [(42.30 + index * 0.01, -71.05 + index * 0.01)])
+    plan = tc.build_clip_plan(
+        scope_name=BOSTON_SCOPE,
+        output_dataset=output_dataset,
+        farfield_root=farfield_root,
+        nominal_buffer_km=5.0,
+        minimum_buffer_km=1.0,
+        minimum_area_km2=minimum_area_km2)
+    return plan, tuple(plan["bbox_wsen"])
 
 
 class RuleTest(unittest.TestCase):
@@ -266,31 +319,33 @@ class GeometryTest(unittest.TestCase):
         self.assertEqual(areas[2], 0.0)
 
 
-def catalog(rows) -> gpd.GeoDataFrame:
+def catalog(rows, crs="EPSG:4326") -> gpd.GeoDataFrame:
     """Tiny dict-schema catalog: [(id, tags, geometry), ...]."""
     return gpd.GeoDataFrame(
         {"id": [r[0] for r in rows],
          "landmark_type": ["osm"] * len(rows),
          "tags": [json.dumps(r[1]) for r in rows]},
-        geometry=[r[2] for r in rows], crs="EPSG:4326")
+        geometry=[r[2] for r in rows], crs=crs)
 
 
 DATASET = "test_dataset"
 
 
 def publish_catalog(root: Path, rows, version: str = "v1",
-                    upstreams=()) -> Path:
+                    upstreams=(), dataset=DATASET,
+                    crs="EPSG:4326") -> Path:
     output_dir = Path(root) / version
     with artifact.ArtifactDirectoryBuilder(
             output_dir,
             kind=paths_lib.CATALOGS,
-            dataset=DATASET,
+            dataset=dataset,
             version=version,
             generator="trim_catalog_test",
             git_commit="test",
             upstreams=upstreams,
             declared_outputs=("catalog.feather",)) as builder:
-        catalog(rows).to_feather(builder.output_path("catalog.feather"))
+        catalog(rows, crs=crs).to_feather(
+            builder.output_path("catalog.feather"))
     return output_dir
 
 
@@ -691,6 +746,26 @@ class WriteProtectionTest(unittest.TestCase):
                 tc.main(loose, tmp / "v2", None, 2000.0, 6.0, False)
         self.assertIn("invalid input catalog artifact", str(caught.exception))
 
+    def test_non_wgs84_catalog_is_rejected_before_spatial_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = publish_catalog(
+                root,
+                [("a", {"man_made": "tower"}, Point(0.0, 0.0))],
+                crs="EPSG:3857")
+            with self.assertRaisesRegex(
+                    SystemExit, "exactly WGS84.*EPSG:4326"):
+                tc.main(source, root / "v2", None, 2000.0, 6.0, False)
+            self.assertFalse((root / "v2").exists())
+
+
+class CliTest(unittest.TestCase):
+
+    def test_help_renders_percent_literal(self):
+        with self.assertRaises(SystemExit) as caught:
+            tc.cli(["--help"])
+        self.assertEqual(caught.exception.code, 0)
+
 
 class PositiveSetIdentityTest(unittest.TestCase):
 
@@ -775,6 +850,23 @@ class RuleFingerprintTest(unittest.TestCase):
             tc.HARD_UNOBSERVABLE_TAGS = original
         self.assertNotEqual(changed, tc.rule_fingerprint(2000.0, 6.0))
 
+    def test_no_clip_fingerprint_remains_compatible(self):
+        self.assertEqual(tc.rule_fingerprint(2000.0, 6.0),
+                         "074398ff556ba26a")
+
+    def test_changes_with_exact_spatial_boundary_and_plan(self):
+        first = tc.rule_fingerprint(
+            2000.0, 6.0, clip_bbox_wsen=(-71.1, 42.2, -70.8, 42.5),
+            clip_plan_digest="a" * 64)
+        moved = tc.rule_fingerprint(
+            2000.0, 6.0, clip_bbox_wsen=(-71.1, 42.2, -70.7, 42.5),
+            clip_plan_digest="a" * 64)
+        new_plan = tc.rule_fingerprint(
+            2000.0, 6.0, clip_bbox_wsen=(-71.1, 42.2, -70.8, 42.5),
+            clip_plan_digest="b" * 64)
+        self.assertNotEqual(first, moved)
+        self.assertNotEqual(first, new_plan)
+
 
 class ClipBoxTest(unittest.TestCase):
 
@@ -801,6 +893,35 @@ class ClipBoxTest(unittest.TestCase):
         self.assertEqual(tc.clip_mask(gdf, 42.36, -71.08, 20.0).tolist(),
                          [True, False])      # half-box 10 km: east one only
 
+    def test_exact_bbox_is_inclusive_and_uses_representative_points(self):
+        crossing = LineString([(-71.2, 42.35), (-71.0, 42.35)])
+        gdf = catalog([
+            ("west", {"man_made": "tower"}, Point(-71.1, 42.3)),
+            ("north", {"man_made": "tower"}, Point(-71.0, 42.4)),
+            ("outside", {"man_made": "tower"}, Point(-70.9, 42.3)),
+            ("crossing", {"man_made": "pier"}, crossing),
+        ])
+        mask = tc.clip_bbox_mask(gdf, (-71.1, 42.3, -71.0, 42.4))
+        self.assertEqual(mask.tolist(), [True, True, False, True])
+
+    def test_invalid_or_mixed_bbox_configuration_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = publish_catalog(
+                tmp, [("a", {"man_made": "tower"},
+                       Point(-71.0, 42.3))])
+            for bbox in [(-71.0, 42.3, -71.1, 42.4),
+                         (-71.1, 42.3, float("nan"), 42.4)]:
+                with self.subTest(bbox=bbox), self.assertRaises(SystemExit):
+                    tc.main(source, tmp / "v2", None, 2000.0, 6.0, False,
+                            clip_bbox_wsen=bbox)
+            with self.assertRaises(SystemExit) as caught:
+                tc.main(source, tmp / "v2", None, 2000.0, 6.0, False,
+                        clip_km=25.0, clip_center_lat=42.35,
+                        clip_center_lon=-71.05,
+                        clip_bbox_wsen=(-71.1, 42.3, -71.0, 42.4))
+        self.assertIn("mutually exclusive", str(caught.exception))
+
     def test_clip_without_a_centre_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -825,6 +946,369 @@ class ClipBoxTest(unittest.TestCase):
         self.assertEqual(record["drops_per_rule"]["outside_clip_box"], 1)
         self.assertEqual(record["rows_out"], 1)
         self.assertEqual(record["clip_km"], 25.0)
+
+    def test_exact_bbox_and_reviewed_plan_are_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            farfield_root = tmp / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            digest = artifact.sha256_json(plan)
+            plan_path = tmp / "clip_plan.json"
+            plan_path.write_text(json.dumps(plan))
+            source = publish_catalog(
+                tmp / "source",
+                [("inside", {"man_made": "tower"}, Point(-71.02, 42.32)),
+                 ("outside", {"man_made": "tower"},
+                  Point(-70.5, 42.32))], dataset=BOSTON_LEG1)
+            tc.main(
+                source, tmp / "v2_trimmed", None, 2000.0, 6.0, False,
+                clip_bbox_wsen=bbox, clip_plan_path=plan_path,
+                expected_clip_plan_digest=digest,
+                farfield_root=farfield_root)
+            record = trim_config(tmp / "v2_trimmed")
+            expected_sources = tc.verify_clip_plan_sources(
+                plan, farfield_root)
+        self.assertEqual(record["clip_mode"], "bbox_wsen")
+        self.assertEqual(record["clip_bbox_wsen"], list(bbox))
+        self.assertEqual(record["clip_plan"], plan)
+        self.assertEqual(record["clip_plan_digest"], digest)
+        self.assertEqual(record["clip_plan_source_verification"],
+                         expected_sources)
+        self.assertEqual(record["drops_per_rule"]["outside_clip_bbox"], 1)
+        self.assertEqual(record["rows_out"], 1)
+        self.assertEqual(
+            record["rule_fingerprint"],
+            tc.rule_fingerprint(
+                2000.0, 6.0, clip_bbox_wsen=bbox,
+                clip_plan_digest=digest))
+
+    def test_edited_or_mismatched_clip_plan_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            farfield_root = tmp / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            digest = artifact.sha256_json(plan)
+            plan_path = tmp / "clip_plan.json"
+            source = publish_catalog(
+                tmp / "source",
+                [("inside", {"man_made": "tower"},
+                  Point(-71.02, 42.32))], dataset=BOSTON_LEG1)
+            plan_path.write_text(json.dumps(plan))
+            with self.assertRaises(SystemExit) as caught:
+                tc.main(
+                    source, tmp / "v2", None, 2000.0, 6.0, False,
+                    clip_bbox_wsen=bbox, clip_plan_path=plan_path,
+                    expected_clip_plan_digest="0" * 64,
+                    farfield_root=farfield_root)
+            self.assertIn("digest mismatch", str(caught.exception))
+
+            plan["bbox_wsen"][0] += 0.01
+            plan_path.write_text(json.dumps(plan))
+            with self.assertRaises(SystemExit) as caught:
+                tc.main(
+                    source, tmp / "v2", None, 2000.0, 6.0, False,
+                    clip_bbox_wsen=bbox, clip_plan_path=plan_path,
+                    expected_clip_plan_digest=artifact.sha256_json(plan),
+                    farfield_root=farfield_root)
+            self.assertIn("does not exactly match", str(caught.exception))
+            self.assertFalse((tmp / "v2").exists())
+
+    def test_clip_plan_json_rejects_duplicate_keys_and_nonfinite_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            plan, bbox = reviewed_clip_plan(tmp / "farfield")
+            plan_path = tmp / "clip_plan.json"
+
+            encoded = json.dumps(plan)
+            resolved_number = json.dumps(
+                plan["policy"]["resolved_buffer_km"])
+            resolved_field = f'"resolved_buffer_km": {resolved_number}'
+            duplicate = encoded.replace(
+                f'"scope": "{BOSTON_SCOPE}"',
+                f'"scope": "{BOSTON_SCOPE}", "scope": "shadow"')
+            plan_path.write_text(duplicate)
+            with self.assertRaises(ValueError) as caught:
+                tc.load_clip_plan(
+                    plan_path, "0" * 64, bbox,
+                    output_dataset=BOSTON_LEG1)
+            self.assertIn("duplicate JSON object key", str(caught.exception))
+
+            nonfinite = encoded.replace(
+                resolved_field,
+                '"resolved_buffer_km": NaN')
+            plan_path.write_text(nonfinite)
+            with self.assertRaises(ValueError) as caught:
+                tc.load_clip_plan(
+                    plan_path, "0" * 64, bbox,
+                    output_dataset=BOSTON_LEG1)
+            self.assertIn("non-finite JSON constant", str(caught.exception))
+
+            overflow = encoded.replace(
+                resolved_field,
+                '"resolved_buffer_km": 1e9999')
+            plan_path.write_text(overflow)
+            with self.assertRaises(ValueError) as caught:
+                tc.load_clip_plan(
+                    plan_path, "0" * 64, bbox,
+                    output_dataset=BOSTON_LEG1)
+            self.assertIn("non-finite JSON number", str(caught.exception))
+
+    def test_clip_plan_objects_have_exact_key_schemas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, bbox = reviewed_clip_plan(Path(tmp) / "farfield")
+
+            missing_top = dict(plan)
+            del missing_top["scope"]
+            extra_top = dict(plan, surprise=True)
+            missing_policy = dict(plan)
+            missing_policy["policy"] = dict(plan["policy"])
+            del missing_policy["policy"]["minimum_area_km2"]
+            extra_policy = dict(plan)
+            extra_policy["policy"] = dict(plan["policy"], surprise=True)
+
+            cases = [
+                (missing_top, "top-level fields has missing"),
+                (extra_top, "top-level fields has unknown"),
+                (missing_policy, "policy fields has missing"),
+                (extra_policy, "policy fields has unknown"),
+            ]
+            for document, message in cases:
+                with self.subTest(message=message), self.assertRaises(
+                        ValueError) as caught:
+                    tc.validate_clip_plan(
+                        document, bbox, output_dataset=BOSTON_LEG1)
+                self.assertIn(message, str(caught.exception))
+
+    def test_clip_plan_verifies_live_canonical_gps_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            farfield_root = tmp / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            plan_path = tmp / "clip_plan.json"
+            plan_path.write_text(json.dumps(plan))
+            gps_path = (farfield_root / "datasets" / BOSTON_LEG1 /
+                        "frames_gps.csv")
+            gps_path.write_text(gps_path.read_text() +
+                                "99,42.3,-71.05,0,0\n")
+            with self.assertRaises(ValueError) as caught:
+                loaded, _ = tc.load_clip_plan(
+                    plan_path, artifact.sha256_json(plan), bbox,
+                    output_dataset=BOSTON_LEG1)
+                tc.verify_clip_plan_sources(loaded, farfield_root)
+            self.assertIn("cannot verify canonical dataset",
+                          str(caught.exception))
+
+    def test_clip_plan_is_bound_to_active_scope_and_exact_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, bbox = reviewed_clip_plan(Path(tmp) / "farfield")
+            wrong_output = copy.deepcopy(plan)
+            wrong_output["output_dataset"] = "boston_harbor_leg2"
+            wrong_bbox_set = copy.deepcopy(plan)
+            wrong_bbox_set["bbox_datasets"] = [BOSTON_LEG1]
+            unknown_scope = copy.deepcopy(plan)
+            unknown_scope["scope"] = "made_up_scope"
+
+            cases = [
+                (wrong_output, "output_dataset does not exactly match"),
+                (wrong_bbox_set, "bbox_datasets does not exactly match"),
+                (unknown_scope, "SCOPE_BY_NAME"),
+            ]
+            for document, message in cases:
+                with self.subTest(message=message), self.assertRaises(
+                        ValueError) as caught:
+                    tc.validate_clip_plan(
+                        document, bbox, output_dataset=BOSTON_LEG1)
+                self.assertIn(message, str(caught.exception))
+
+    def test_boston_scope_policy_rejects_area_below_625(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            farfield_root = Path(tmp) / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            with self.assertRaisesRegex(
+                    ValueError, "trusted scope floor of 625"):
+                tc.build_clip_plan(
+                    scope_name=BOSTON_SCOPE,
+                    output_dataset=BOSTON_LEG1,
+                    farfield_root=farfield_root,
+                    nominal_buffer_km=5.0,
+                    minimum_buffer_km=1.0,
+                    minimum_area_km2=624.999)
+
+            below = copy.deepcopy(plan)
+            below["policy"]["minimum_area_km2"] = 624.999
+            with self.assertRaisesRegex(
+                    ValueError, "trusted scope floor of 625"):
+                tc.validate_clip_plan(
+                    below, bbox, output_dataset=BOSTON_LEG1)
+
+    def test_boston_scope_policy_accepts_625_and_larger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            farfield_root = Path(tmp) / "farfield"
+            at_floor, floor_bbox = reviewed_clip_plan(farfield_root)
+            self.assertEqual(at_floor["scope_policy"], {
+                "schema": tc.CLIP_SCOPE_POLICY_SCHEMA,
+                "minimum_area_floor_km2": 625.0,
+                "require_reviewed_bbox_plan": True,
+            })
+            tc.validate_clip_plan(
+                at_floor, floor_bbox, output_dataset=BOSTON_LEG1)
+
+            larger = tc.build_clip_plan(
+                scope_name=BOSTON_SCOPE,
+                output_dataset=BOSTON_LEG1,
+                farfield_root=farfield_root,
+                nominal_buffer_km=5.0,
+                minimum_buffer_km=1.0,
+                minimum_area_km2=900.0)
+            tc.validate_clip_plan(
+                larger, tuple(larger["bbox_wsen"]),
+                output_dataset=BOSTON_LEG1)
+
+    def test_boston_exact_bbox_requires_reviewed_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = publish_catalog(
+                root / "source",
+                [("a", {"man_made": "tower"}, Point(-71.0, 42.3))],
+                dataset=BOSTON_LEG1)
+            with self.assertRaisesRegex(
+                    SystemExit, "governed dataset requires --clip_plan"):
+                tc.main(
+                    source, root / "v2", None, 2000.0, 6.0, True,
+                    clip_bbox_wsen=(-71.1, 42.2, -70.9, 42.4))
+            self.assertFalse((root / "v2").exists())
+
+    def test_non_governed_exact_bbox_remains_available_without_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = publish_catalog(
+                root / "source",
+                [("a", {"man_made": "tower"}, Point(-71.0, 42.3))])
+            result = tc.main(
+                source, root / "v2", None, 2000.0, 6.0, True,
+                clip_bbox_wsen=(-71.1, 42.2, -70.9, 42.4))
+            self.assertEqual(len(result), 1)
+            self.assertFalse((root / "v2").exists())
+
+    def test_recorded_area_one_ulp_below_minimum_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, bbox = reviewed_clip_plan(Path(tmp) / "farfield")
+            below = copy.deepcopy(plan)
+            minimum = below["policy"]["minimum_area_km2"]
+            below["policy"]["resolved_area_km2"] = math.nextafter(
+                minimum, -math.inf)
+            with self.assertRaisesRegex(
+                    ValueError, "resolved_area_km2 is below"):
+                tc.validate_clip_plan(
+                    below, bbox, output_dataset=BOSTON_LEG1)
+
+    def test_plan_table_paths_are_records_not_read_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            farfield_root = Path(tmp) / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            redirected = copy.deepcopy(plan)
+            redirected["dataset_tables"][0]["frames_gps"]["path"] = \
+                "/tmp/attacker-selected-frames_gps.csv"
+            loaded = tc.validate_clip_plan(
+                redirected, bbox, output_dataset=BOSTON_LEG1)
+            with self.assertRaisesRegex(
+                    ValueError, "tables no longer match"):
+                tc.verify_clip_plan_sources(loaded, farfield_root)
+
+    def test_arbitrary_minimum_area_uses_the_exact_positive_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, bbox = reviewed_clip_plan(
+                Path(tmp) / "farfield", minimum_area_km2=777.0)
+            policy = plan["policy"]
+            self.assertAlmostEqual(policy["resolved_area_km2"], 777.0,
+                                   places=9)
+            self.assertGreaterEqual(policy["resolved_area_km2"], 777.0)
+            self.assertGreater(policy["resolved_buffer_km"], 5.0)
+            tc.validate_clip_plan(
+                plan, bbox, output_dataset=BOSTON_LEG1)
+
+            # A larger buffer satisfies every inequality but is not the
+            # uniquely reviewed minimum and therefore must fail closed.
+            padded = copy.deepcopy(plan)
+            track = tuple(policy["track_bbox_wsen"])
+            buffer_km = policy["resolved_buffer_km"] + 1.0
+            width, height, km_lon, km_lat, _ = tc._track_metrics(track)
+            padded["policy"]["resolved_buffer_km"] = buffer_km
+            padded["policy"]["resolved_area_km2"] = \
+                (width + 2 * buffer_km) * (height + 2 * buffer_km)
+            west, south, east, north = track
+            padded_bbox = (
+                west - buffer_km / km_lon, south - buffer_km / km_lat,
+                east + buffer_km / km_lon, north + buffer_km / km_lat)
+            padded["bbox_wsen"] = list(padded_bbox)
+            with self.assertRaisesRegex(
+                    ValueError, "not the exact policy minimum"):
+                tc.validate_clip_plan(
+                    padded, padded_bbox, output_dataset=BOSTON_LEG1)
+
+    def test_plan_numbers_require_actual_finite_numeric_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, bbox = reviewed_clip_plan(Path(tmp) / "farfield")
+            values = ["5", True, 10 ** 10000]
+            for value in values:
+                altered = copy.deepcopy(plan)
+                altered["policy"]["nominal_buffer_km"] = value
+                with self.subTest(value=type(value).__name__), \
+                     self.assertRaises(ValueError):
+                    tc.validate_clip_plan(
+                        altered, bbox, output_dataset=BOSTON_LEG1)
+
+            for value in ["-71", True, 10 ** 10000]:
+                with self.subTest(bbox_value=type(value).__name__), \
+                     self.assertRaises(ValueError):
+                    tc.validate_bbox_wsen((value, 42.0, -70.0, 43.0))
+
+    def test_surrogate_json_and_plan_symlinks_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            plan, bbox = reviewed_clip_plan(tmp / "farfield")
+            surrogate = copy.deepcopy(plan)
+            surrogate["dataset_tables"][0]["frames_gps"]["path"] = "\ud800"
+            real_plan = tmp / "real-plan.json"
+            real_plan.write_text(json.dumps(surrogate))
+            with self.assertRaisesRegex(ValueError, "canonical JSON"):
+                tc.load_clip_plan(
+                    real_plan, "0" * 64, bbox,
+                    output_dataset=BOSTON_LEG1)
+
+            real_plan.write_text(json.dumps(plan))
+            linked_plan = tmp / "linked-plan.json"
+            linked_plan.symlink_to(real_plan.name)
+            with self.assertRaisesRegex(ValueError, "regular non-symlink"):
+                tc.load_clip_plan(
+                    linked_plan, artifact.sha256_json(plan), bbox,
+                    output_dataset=BOSTON_LEG1)
+
+    def test_sources_are_reverified_inside_publication_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            farfield_root = tmp / "farfield"
+            plan, bbox = reviewed_clip_plan(farfield_root)
+            digest = artifact.sha256_json(plan)
+            plan_path = tmp / "clip-plan.json"
+            plan_path.write_text(json.dumps(plan))
+            source = publish_catalog(
+                tmp / "source",
+                [("inside", {"man_made": "tower"},
+                  Point(-71.02, 42.32))], dataset=BOSTON_LEG1)
+            output = tmp / "v2"
+            initial = tc.verify_clip_plan_sources(plan, farfield_root)
+            with mock.patch.object(
+                    tc, "verify_clip_plan_sources",
+                    side_effect=[initial, ValueError("changed at publish")]), \
+                 self.assertRaisesRegex(
+                     SystemExit, "changed before publication"):
+                tc.main(
+                    source, output, None, 2000.0, 6.0, False,
+                    clip_bbox_wsen=bbox, clip_plan_path=plan_path,
+                    expected_clip_plan_digest=digest,
+                    farfield_root=farfield_root)
+            self.assertFalse(output.exists())
 
 
 class ProvenanceTest(unittest.TestCase):
@@ -852,6 +1336,11 @@ class ProvenanceTest(unittest.TestCase):
         self.assertEqual(manifest.config["clip_km"], 25.0)
         self.assertEqual(manifest.config["clip_center_lat"], 42.32)
         self.assertEqual(manifest.config["clip_center_lon"], -70.89)
+        self.assertEqual(manifest.config["clip_mode"], "metric_square")
+        self.assertIsNone(manifest.config["clip_bbox_wsen"])
+        self.assertIsNone(manifest.config["clip_plan_digest"])
+        self.assertIsNone(
+            manifest.config["clip_plan_source_verification"])
         self.assertEqual(manifest.config["rows_out"], 1)
         self.assertTrue(manifest.config["rule_fingerprint"])
         self.assertTrue(manifest.git_commit)

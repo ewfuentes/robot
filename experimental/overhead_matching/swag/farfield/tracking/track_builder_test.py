@@ -239,6 +239,34 @@ class TrackBuilderTest(unittest.TestCase):
         self.assertEqual(len(builder.tracks), 1)
         self.assertEqual(builder.tracks[0].birth_keyframe, 1)
 
+    def test_terminal_step_supports_existing_but_does_not_seed_new_track(self):
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good])
+        first = FakeObs("f0000__lm0__box0")
+        first_box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(
+            0, [first], {first.obs_id: first_box})
+        matching = FakeObs("f0001__lm0__box0")
+        unclaimed = FakeObs(
+            "f0001__lm1__box0", tag=("natural", "peak"))
+        boxes = {
+            matching.obs_id: first_box,
+            unclaimed.obs_id: centered_pano_box(2000, 1920, 40, 80),
+        }
+        builder.step(
+            0, crops_fn_factory(builder), [matching, unclaimed], boxes,
+            allow_new_births=False)
+        self.assertEqual(len(builder.tracks), 1)
+        track = builder.tracks[0]
+        self.assertEqual(track.records[-1]["action"], "reanchor_clean")
+        supported = [
+            support for support in track.records[-1]["supports"]
+            if support["class"] in tb.SUPPORT_CLASSES
+        ]
+        self.assertEqual(
+            [support["obs_id"] for support in supported], [matching.obs_id])
+        self.assertNotEqual(track.birth_obs_id, unclaimed.obs_id)
+
     def test_all_unusable_tracks_still_seed_later_detection(self):
         good = rect_mask(108, 88, 148, 168)
         _, builder = self._mk([good])

@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import types
 import unittest
@@ -77,6 +78,7 @@ class BearingObservationArtifactTest(unittest.TestCase):
                          (self.tracks_ref, self.audits_ref))
         self.assertEqual(manifest.config["coverage"], "complete")
         self.assertEqual(manifest.config["build_identity"], "b" * 64)
+        self.assertNotIn("stage_reuse", manifest.config)
         records = [json.loads(line) for line in
                    (destination / subject.OUTPUT_NAME).read_text().splitlines()]
         self.assertEqual(len(records), 1)
@@ -124,13 +126,15 @@ class BearingObservationInputBindingTest(unittest.TestCase):
                 "bearing_observations": {"bearing_sigma_deg": 1.5},
             },
             inputs={
+                "farfield_root": str(self.root.resolve()),
                 "dataset_base": str(self.dataset_base.resolve()),
                 **self.dataset_digests,
             })
         document = build_config.load(self.build_path.parent)
         self.build_identity = document["build_identity"]
         self.tracks_ref = self._publish(
-            self.root / "tracks-v1", paths.OBJECT_TRACKS, "tracks-v1",
+            self.root / "artifacts" / paths.OBJECT_TRACKS / "ds"
+            / "tracks-v1", paths.OBJECT_TRACKS, "tracks-v1",
             config={
                 "build_identity": self.build_identity,
                 "source_digests": {
@@ -139,7 +143,8 @@ class BearingObservationInputBindingTest(unittest.TestCase):
                 },
             })
         self.audits_ref = self._publish(
-            self.root / "audits-v1", paths.SEMANTIC_AUDITS, "audits-v1",
+            self.root / "artifacts" / paths.SEMANTIC_AUDITS / "ds"
+            / "audits-v1", paths.SEMANTIC_AUDITS, "audits-v1",
             upstreams=(self.tracks_ref,),
             config={"build_identity": self.build_identity})
         self.fake_audits = types.SimpleNamespace(
@@ -163,7 +168,8 @@ class BearingObservationInputBindingTest(unittest.TestCase):
             "dataset_base": self.dataset_base,
             "tracks_dir": Path(self.tracks_ref.path),
             "audit_dir": Path(self.audits_ref.path),
-            "output_dir": self.root / "obs-v1",
+            "output_dir": self.root / "artifacts"
+                / paths.BEARING_OBSERVATIONS / "ds" / "obs-v1",
             "build_config": self.build_path,
             "orchestration_config_digest":
                 subject.orchestration_contract(document)["config_digest"],
@@ -172,14 +178,22 @@ class BearingObservationInputBindingTest(unittest.TestCase):
         return types.SimpleNamespace(**values)
 
     def test_resolves_exact_configured_sources_and_versions(self):
-        with mock.patch.object(
+        bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
+        with (mock.patch.object(
                 subject.audit_io, "load_audits",
-                return_value=self.fake_audits):
+                return_value=self.fake_audits),
+              mock.patch.object(
+                  subject.stage_reuse, "require_compatible_artifact",
+                  return_value=bridge) as require_reuse,
+              mock.patch.object(
+                  subject.stage_reuse, "require_recorded_bridge")):
             resolved = subject.load_inputs(self._args())
         self.assertEqual(resolved["output_version"], "obs-v1")
         self.assertEqual(
             resolved["source_digests"]["dataset_tracking_inputs"],
             artifact.sha256_json(self.dataset_digests))
+        self.assertIs(resolved["stage_reuse"], bridge)
+        self.assertEqual(require_reuse.call_args.kwargs["owner_stage"], "track")
 
     def test_dataset_mutation_fails_against_immutable_build(self):
         with (self.dataset_base / "frames_gps.csv").open("a") as stream:
@@ -187,6 +201,12 @@ class BearingObservationInputBindingTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 subject.BearingObservationError, "dataset source bytes"):
             subject.load_inputs(self._args())
+
+    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+        alias = self.root / "alternate-audits"
+        shutil.copytree(Path(self.audits_ref.path), alias)
+        with self.assertRaisesRegex(ValueError, "exact configured lane"):
+            subject.load_inputs(self._args(audit_dir=alias))
 
     def test_wrong_digest_and_output_version_are_rejected(self):
         with self.assertRaisesRegex(

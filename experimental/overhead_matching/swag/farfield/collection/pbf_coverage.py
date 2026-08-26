@@ -345,8 +345,48 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
-def leaf_regions(cache_dir: Path):
-    """The smallest downloadable regions, with geometry: Geofabrik's leaves."""
+def _raw_geometry_bounds(geometry) -> tuple[float, float, float, float]:
+    """Return GeoJSON bounds without constructing or validating its topology."""
+    if not isinstance(geometry, dict):
+        raise ValueError("GeoJSON geometry must be an object")
+    points = []
+
+    def collect(value):
+        if not isinstance(value, list) or not value:
+            raise ValueError("GeoJSON coordinates must be non-empty arrays")
+        if (len(value) >= 2
+                and all(not isinstance(item, bool)
+                        and isinstance(item, (int, float)) for item in value[:2])):
+            lon, lat = map(float, value[:2])
+            if not math.isfinite(lon) or not math.isfinite(lat):
+                raise ValueError("GeoJSON coordinates must be finite")
+            points.append((lon, lat))
+            return
+        for child in value:
+            collect(child)
+
+    if geometry.get("type") == "GeometryCollection":
+        members = geometry.get("geometries")
+        if not isinstance(members, list) or not members:
+            raise ValueError("GeoJSON GeometryCollection must be non-empty")
+        bounds = [_raw_geometry_bounds(member) for member in members]
+        return (min(item[0] for item in bounds), min(item[1] for item in bounds),
+                max(item[2] for item in bounds), max(item[3] for item in bounds))
+    collect(geometry.get("coordinates"))
+    if not points:
+        raise ValueError("GeoJSON geometry has no coordinates")
+    return (min(point[0] for point in points), min(point[1] for point in points),
+            max(point[0] for point in points), max(point[1] for point in points))
+
+
+def leaf_regions(cache_dir: Path, bbox=None):
+    """The smallest downloadable regions intersecting an optional bbox.
+
+    Raw coordinate bounds prune unrelated global leaves before Shapely parses
+    and validates their topology. An invalid leaf that can intersect the
+    request remains a hard failure; an unrelated invalid leaf cannot block a
+    local coverage decision.
+    """
     from shapely.geometry import shape
 
     index = load_index(cache_dir)
@@ -377,6 +417,18 @@ def leaf_regions(cache_dir: Path):
             continue
         if not isinstance(url, str):
             raise ValueError(f"Geofabrik feature {props['id']} has invalid PBF URL")
+        if bbox is not None:
+            try:
+                raw_west, raw_south, raw_east, raw_north = (
+                    _raw_geometry_bounds(feature.get("geometry")))
+            except ValueError as error:
+                raise ValueError(
+                    f"Geofabrik feature {props['id']} has invalid raw geometry: "
+                    f"{error}") from error
+            west, south, east, north = bbox
+            if (raw_east < west or raw_west > east
+                    or raw_north < south or raw_south > north):
+                continue
         geometry = shape(feature.get("geometry"))
         if geometry.is_empty or not geometry.is_valid:
             raise ValueError(f"Geofabrik feature {props['id']} has invalid geometry")
@@ -397,7 +449,8 @@ def mapped_area(bbox, cache_dir: Path):
     from shapely.ops import unary_union
 
     want = box(*bbox)
-    pieces = [r["geom"].intersection(want) for r in leaf_regions(cache_dir)]
+    pieces = [r["geom"].intersection(want)
+              for r in leaf_regions(cache_dir, bbox=bbox)]
     pieces = [p for p in pieces if not p.is_empty]
     return unary_union(pieces) if pieces else None
 
@@ -420,7 +473,7 @@ def suggest_extracts(bbox, cache_dir: Path):
         return [], 0.0
 
     candidates = []
-    for region in leaf_regions(cache_dir):
+    for region in leaf_regions(cache_dir, bbox=bbox):
         overlap = region["geom"].intersection(want)
         if overlap.is_empty or overlap.area <= 0:
             continue

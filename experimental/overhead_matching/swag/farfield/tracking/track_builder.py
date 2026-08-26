@@ -268,7 +268,7 @@ class TrackBuilder:
         return track.center_x - size / 2.0, track.center_y - size / 2.0
 
     def step(self, keyframe: int, crops_fn, detections: list,
-             det_pano_boxes: dict):
+             det_pano_boxes: dict, *, allow_new_births: bool = True):
         """Advance all alive tracks across the interval keyframe->keyframe+1.
 
         crops_fn(track, size) -> (crops, origins): per-frame window crops
@@ -276,6 +276,9 @@ class TrackBuilder:
         origins, heading-compensated by the caller.
         detections: observations at keyframe+1; det_pano_boxes maps obs_id to
         unwrapped pano bbox.
+        allow_new_births is false for the terminal interval: detections may
+        still support existing tracks, but cannot seed tracks that would have
+        no later interval in which to create and validate a birth record.
         """
         cfg = self.cfg
         # Plan every track's prompt first, propagate them together, then apply
@@ -310,7 +313,9 @@ class TrackBuilder:
         if not plans:
             with PROFILE.phase("track_overlaps"):
                 self._record_track_overlaps(keyframe + 1)
-            self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
+            if allow_new_births:
+                self.seed_unassigned(
+                    keyframe + 1, detections, det_pano_boxes)
             return
 
         with PROFILE.phase("propagate_batch", items=len(plans)):
@@ -381,7 +386,8 @@ class TrackBuilder:
 
         with PROFILE.phase("track_overlaps"):
             self._record_track_overlaps(keyframe + 1)
-        self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
+        if allow_new_births:
+            self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
 
     def seed_unassigned(self, keyframe, detections, det_pano_boxes):
         """Detections that supported no track become new seeds. Also used to

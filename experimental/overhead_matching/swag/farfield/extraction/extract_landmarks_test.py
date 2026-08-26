@@ -21,6 +21,7 @@ from experimental.overhead_matching.swag.farfield.collection import (
 )
 from experimental.overhead_matching.swag.farfield.extraction import (
     extract_landmarks as ex,
+    legacy_extraction_adoption as adoption,
     prompts,
 )
 
@@ -169,7 +170,7 @@ class CliAndConfigTest(ExtractionFixture):
             "--output_dir", "--build_config",
             "--orchestration_config_digest", "--online", "--gcs_prefix",
             "--parallel", "--poll_interval", "--cost_limit",
-            "--approve_cost",
+            "--approve_cost", "--prepare_adoption",
         }.issubset(options))
         self.assertTrue({
             "--run_dir", "--allow_incomplete", "--retry_failed", "--force",
@@ -257,6 +258,114 @@ class ResponseValidationTest(unittest.TestCase):
 
 
 class TypedPublicationTest(ExtractionFixture):
+    def test_real_producer_accepts_fully_reverified_legacy_adoption(self):
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=self.fake_render):
+            pinhole_ref, prepared_request_ref = ex.prepare_adoption(
+                self.args, arguments=("extract_landmarks", "--test"))
+        request_set = llm_lifecycle.load_request_set(
+            Path(prepared_request_ref.path) / llm_lifecycle.REQUEST_SET_NAME)
+        primary_requests = self.tmp / "retained-primary-requests.jsonl"
+        primary_requests.write_bytes(
+            llm_lifecycle.transport_requests_bytes(request_set))
+
+        retained_results = self.tmp / "retained-batch-results.jsonl"
+        result_records = []
+        for unit in request_set.to_dict()["units"]:
+            echoed = unit["request"]
+            parts = echoed["contents"][0]["parts"]
+            for part in parts[:4]:
+                part["text"] = None
+            parts[4]["inline_data"] = None
+            parts[4]["media_resolution"] = None
+            result_records.append({
+                "key": unit["key"],
+                "processed_time": "2026-08-25T12:00:00Z",
+                "request": echoed,
+                "response": response(provider_prediction()),
+                "status": "",
+            })
+        retained_results.write_bytes(b"".join(
+            artifact.canonical_json_bytes(record) + b"\n"
+            for record in result_records))
+        plan = adoption.verify_adoption(
+            dataset=self.args.dataset, request_set=request_set,
+            pinhole_dir=Path(pinhole_ref.path),
+            request_sources=(adoption.LegacyRequestSource(
+                source_id="primary", path=primary_requests,
+                role=adoption.REQUEST_ROLE_PRIMARY),),
+            result_sources=(adoption.LegacyResultSource(
+                source_id="batch", path=retained_results,
+                result_format=adoption.RESULT_FORMAT_VERTEX_BATCH),),
+            empty_error_sidecars=(), spec_sha256="e" * 64)
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        published = adoption.publish_verified_adoption(
+            plan=plan, request_set=request_set, dataset=self.args.dataset,
+            final_build_identity=context.document["build_identity"],
+            frame_version=context.frame_version,
+            request_output_dir=self.tmp / "adopted-requests",
+            result_output_dir=self.tmp / "adopted-results",
+            frame_output_dir=self.args.output_dir,
+            arguments=("legacy-adoption-test",),
+            git_commit=context.document["git_commit"])
+
+        validated = ex.validate_existing_frame_artifact(
+            self.args, context, pinhole_ref)
+        self.assertEqual(validated, published.frame_landmarks_artifact)
+        reproduced = adoption.reverify_published_report(
+            plan.report, dataset=self.args.dataset,
+            request_set=request_set, pinhole_dir=Path(pinhole_ref.path))
+        self.assertEqual(reproduced.report_sha256, plan.report_sha256)
+        self.assertEqual(
+            reproduced.canonical_results_bytes,
+            plan.canonical_results_bytes)
+        self.assertEqual(
+            reproduced.predictions_bytes, plan.predictions_bytes)
+
+    def test_prepare_adoption_succeeds_before_cost_or_provider_boundary(self):
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=self.fake_render), mock.patch.object(
+                    ex.llm_cost, "enforce_limit") as cost_gate, \
+                mock.patch.object(
+                    ex.vbm, "run_requests") as provider:
+            first = ex.prepare_adoption(
+                self.args,
+                arguments=("extract_landmarks", "--prepare_adoption"))
+
+        cost_gate.assert_not_called()
+        provider.assert_not_called()
+        pinhole_ref, request_ref = first
+        self.assertFalse(self.args.output_dir.exists())
+        self.assertEqual(
+            artifact.load_manifest(Path(request_ref.path)).upstreams,
+            (pinhole_ref,))
+        request_set = llm_lifecycle.load_request_set(
+            Path(request_ref.path) / llm_lifecycle.REQUEST_SET_NAME)
+        context = ex.load_context(self.args)
+        self.assertTrue(ex._request_set_matches(
+            request_set, context, pinhole_ref))
+        work_dir = Path(request_ref.path).parent
+        self.assertFalse((work_dir / ex.ATTEMPTS_DIR_NAME).exists())
+        self.assertFalse((work_dir / "transport").exists())
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError("published pinhole must be reused")), \
+                mock.patch.object(
+                    ex.llm_cost, "enforce_limit",
+                    side_effect=AssertionError("cost gate must not run")), \
+                mock.patch.object(
+                    ex.vbm, "run_requests",
+                    side_effect=AssertionError("provider must not run")):
+            second = ex.prepare_adoption(
+                self.args,
+                arguments=("extract_landmarks", "--prepare_adoption"))
+        self.assertEqual(second, first)
+
     def test_two_artifacts_publish_with_exact_files_and_provenance(self):
         pinhole_ref, frame_ref = self.run_successfully()
         self.assertEqual(pinhole_ref.kind, paths_lib.PINHOLE_IMAGES)
@@ -319,6 +428,156 @@ class TypedPublicationTest(ExtractionFixture):
                     side_effect=AssertionError("must not execute")):
             second = ex.run(self.args)
         self.assertEqual(first, second)
+
+    def test_self_consistent_forged_request_media_is_reproduced_and_rejected(
+            self):
+        pinhole_ref, _ = self.run_successfully()
+        frame_manifest = artifact.load_manifest(self.args.output_dir)
+        result_manifest = artifact.load_manifest(
+            frame_manifest.upstreams[1].path)
+        request_path = Path(result_manifest.upstreams[0].path)
+        recorded = llm_lifecycle.load_request_set(
+            request_path / llm_lifecycle.REQUEST_SET_NAME)
+        recorded_document = recorded.to_dict()
+        units = recorded_document["units"]
+        media = next(
+            part["inline_data"]
+            for part in units[0]["request"]["contents"][0]["parts"]
+            if "inline_data" in part)
+        data = media["data"]
+        media["data"] = ("A" if data[0] != "A" else "B") + data[1:]
+        forged = llm_lifecycle.RequestSet.create(
+            stage=recorded.stage,
+            model=recorded.model,
+            system_prompt=recorded.system_prompt,
+            response_schema=recorded_document["response_schema"],
+            media_settings=recorded_document["media_settings"],
+            input_digests=recorded_document["input_digests"],
+            upstreams=recorded.upstreams,
+            units=tuple(llm_lifecycle.RequestUnit.from_dict(value)
+                        for value in units))
+        artifact.atomic_write_json(
+            request_path / llm_lifecycle.REQUEST_SET_NAME,
+            forged.to_dict())
+        artifact.atomic_write_file(
+            request_path / llm_lifecycle.REQUESTS_NAME,
+            llm_lifecycle.transport_requests_bytes(forged))
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        with self.assertRaisesRegex(
+                ValueError, "reproduced extraction workload"):
+            ex._validate_recorded_request_payloads(
+                request_path, context, pinhole_ref, forged.fingerprint)
+
+    def test_normal_selected_config_tamper_is_rejected(self):
+        self.run_successfully()
+        manifest_path = self.args.output_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["selected_config"][
+            "extraction.thinking_level"] = "LOW"
+        artifact.atomic_write_json(manifest_path, document)
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        pinhole_ref = ex.validate_existing_pinhole_artifact(
+            self.args, context)
+        with self.assertRaisesRegex(ValueError, "extraction contract"):
+            ex.validate_existing_frame_artifact(
+                self.args, context, pinhole_ref)
+
+    def test_prediction_payload_tamper_is_rejected_after_rehash(self):
+        self.run_successfully()
+        prediction_path = self.args.output_dir / ex.PREDICTIONS_NAME
+        records = [json.loads(line) for line in
+                   prediction_path.read_text().splitlines()]
+        records[0]["prediction"]["location_type"] = "tampered"
+        prediction_path.write_bytes(b"".join(
+            artifact.canonical_json_bytes(record) + b"\n"
+            for record in records))
+        manifest_path = self.args.output_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["content_digest"] = artifact.sha256_directory(
+            self.args.output_dir)
+        artifact.atomic_write_json(manifest_path, document)
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        pinhole_ref = ex.validate_existing_pinhole_artifact(
+            self.args, context)
+        with self.assertRaisesRegex(
+                ValueError, "predictions differ from canonical results"):
+            ex.validate_existing_frame_artifact(
+                self.args, context, pinhole_ref)
+
+    def test_canonical_result_tamper_cannot_be_rebound_to_frame(self):
+        self.run_successfully()
+        frame_manifest_path = self.args.output_dir / artifact.MANIFEST_NAME
+        frame_document = json.loads(frame_manifest_path.read_text())
+        result_path = Path(frame_document["upstreams"][1]["path"])
+        canonical_path = (
+            result_path / llm_lifecycle.CANONICAL_RESULTS_NAME)
+        records = [json.loads(line) for line in
+                   canonical_path.read_text().splitlines()]
+        records[0]["result"]["location_type"] = "tampered"
+        canonical_path.write_bytes(b"".join(
+            artifact.canonical_json_bytes(record) + b"\n"
+            for record in records))
+        result_manifest_path = result_path / artifact.MANIFEST_NAME
+        result_document = json.loads(result_manifest_path.read_text())
+        result_document["content_digest"] = artifact.sha256_directory(
+            result_path)
+        artifact.atomic_write_json(result_manifest_path, result_document)
+        result_ref = artifact.open_artifact(result_path)
+        frame_document["upstreams"][1] = result_ref.to_dict()
+        frame_document["config"]["canonical_results_artifact"] = (
+            ex._ref_identity(result_ref))
+        artifact.atomic_write_json(frame_manifest_path, frame_document)
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        pinhole_ref = ex.validate_existing_pinhole_artifact(
+            self.args, context)
+        with self.assertRaisesRegex(
+                ValueError, "predictions differ from canonical results"):
+            ex.validate_existing_frame_artifact(
+                self.args, context, pinhole_ref)
+
+    def test_rehashed_pinhole_pixel_tamper_fails_reproduction(self):
+        self.run_successfully()
+        face = (
+            self.args.pinhole_output_dir / self.stems[0] / "yaw_000.jpg")
+        Image.new("RGB", (RESOLUTION, RESOLUTION), (255, 0, 255)).save(face)
+        manifest_path = (
+            self.args.pinhole_output_dir / artifact.MANIFEST_NAME)
+        document = json.loads(manifest_path.read_text())
+        document["content_digest"] = artifact.sha256_directory(
+            self.args.pinhole_output_dir)
+        artifact.atomic_write_json(manifest_path, document)
+        context = ex.load_artifact_validation_context(
+            build_config_path=self.args.build_config,
+            dataset=self.args.dataset, dataset_base=self.dataset_base)
+        with self.assertRaisesRegex(
+                ValueError, "does not reproduce its source panorama"):
+            ex.validate_existing_pinhole_artifact(self.args, context)
+
+    def test_adoption_marker_never_weakens_normal_frame_validation(self):
+        self.run_successfully()
+        manifest_path = self.args.output_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["legacy_adoption_schema"] = (
+            ex.LEGACY_ADOPTION_CONFIG_SCHEMA)
+        artifact.atomic_write_json(manifest_path, document)
+
+        with mock.patch.object(
+                ex.panorama_to_pinhole, "process_panoramas",
+                side_effect=AssertionError("pinhole must be reused")), \
+                mock.patch.object(
+                    ex.vbm, "run_requests",
+                    side_effect=AssertionError("provider must not run")):
+            with self.assertRaisesRegex(
+                    ValueError, "invalid adopted-frame config shape"):
+                ex.run(self.args)
 
     def test_valid_pinhole_is_reused_after_crash_before_frame_publish(self):
         context = ex.load_context(self.args)

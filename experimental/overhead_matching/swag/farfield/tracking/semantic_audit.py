@@ -27,6 +27,7 @@ viewer so the two render byte-identical chips); it is re-exported here for
 the audit stages.
 """
 
+import copy
 import json
 from dataclasses import dataclass
 from typing import Literal
@@ -142,6 +143,81 @@ class TrackAudit(BaseModel):
     unresolved: str               # "" if nothing remains ambiguous
 
 
+ProviderDecision = Literal[
+    "keep_single",
+    "keep_partial_identity_switch",
+    "drop_dynamic_object_single_identity",
+    "drop_dynamic_object_multiple_identities",
+    "drop_not_physical_single_identity",
+    "drop_not_physical_multiple_identities",
+    "drop_identity_broken_single_identity",
+    "drop_identity_broken_multiple_identities",
+    "drop_insufficient_evidence_single_identity",
+    "drop_insufficient_evidence_multiple_identities",
+]
+
+
+class ProviderTrackAudit(BaseModel):
+    """Unambiguous provider response; converted once to canonical TrackAudit."""
+
+    landmark_kind: Literal[
+        "fixed_structure", "navigation_aid", "terrain", "vegetation",
+        "vessel_or_vehicle", "transient_phenomenon", "mixed_or_unclear"]
+    decision: ProviderDecision
+    valid_segments: list[Segment]
+    primary_object: PrimaryObject
+    strike_votes: list[StrikeVote]
+    secondary_objects: list[SecondaryObject]
+    confidence: Literal["low", "medium", "high"]
+    unresolved: str
+
+
+# This text is deliberately shared by the prompt and the two provider-schema
+# fields that encode acceptance. Keeping one source of truth prevents the
+# provider-facing instructions from drifting apart.
+PROVIDER_DECISION_CONTRACT = """Exhaustive decision contract; choose exactly one:
+- keep_single means one physical identity. valid_segments must be nonempty and
+  contain every usable span of that same object. Trim same-object unreliable,
+  drift, occlusion, or gap spans here; they do not make the decision partial.
+- keep_partial_identity_switch only means a true switch to another physical
+  object. valid_segments must be nonempty and contain only primary-object spans.
+- Every drop decision names both a concrete reason and whether the track had a
+  single stable identity or multiple identities. The exact drop decisions are
+  drop_dynamic_object_single_identity,
+  drop_dynamic_object_multiple_identities,
+  drop_not_physical_single_identity,
+  drop_not_physical_multiple_identities,
+  drop_identity_broken_single_identity,
+  drop_identity_broken_multiple_identities,
+  drop_insufficient_evidence_single_identity, and
+  drop_insufficient_evidence_multiple_identities. identity_broken means the
+  identity binding is unusable, including either a stable wrong-target identity
+  or a multi-object switch. Drop valid_segments may be empty or nonempty;
+  downstream excludes every drop decision."""
+
+
+PROVIDER_DECISION_TO_CANONICAL = {
+    "keep_single": ("keep", True, "none"),
+    "keep_partial_identity_switch": ("keep_partial", False, "none"),
+    "drop_dynamic_object_single_identity": (
+        "drop", True, "dynamic_object"),
+    "drop_dynamic_object_multiple_identities": (
+        "drop", False, "dynamic_object"),
+    "drop_not_physical_single_identity": (
+        "drop", True, "not_a_physical_landmark"),
+    "drop_not_physical_multiple_identities": (
+        "drop", False, "not_a_physical_landmark"),
+    "drop_identity_broken_single_identity": (
+        "drop", True, "identity_broken"),
+    "drop_identity_broken_multiple_identities": (
+        "drop", False, "identity_broken"),
+    "drop_insufficient_evidence_single_identity": (
+        "drop", True, "insufficient_evidence"),
+    "drop_insufficient_evidence_multiple_identities": (
+        "drop", False, "insufficient_evidence"),
+}
+
+
 def _resolve_refs(schema, defs=None):
     """Recursively inline $ref definitions (mirrors semantic_landmark_extractor)."""
     if defs is None:
@@ -173,8 +249,73 @@ def _require_all(schema):
     return schema
 
 
-def get_audit_schema() -> dict:
-    return _require_all(_resolve_refs(TrackAudit.model_json_schema()))
+def get_provider_audit_schema() -> dict:
+    """Gemini responseSchema for the unambiguous provider representation."""
+    base = _require_all(
+        _resolve_refs(ProviderTrackAudit.model_json_schema()))
+    properties = base["properties"]
+    properties["decision"]["description"] = PROVIDER_DECISION_CONTRACT
+    properties["valid_segments"]["description"] = PROVIDER_DECISION_CONTRACT
+
+    # Gemini responseSchema supports anyOf, string enums, and minItems. The
+    # Vertex endpoint requires anyOf to be the only root field, so each branch
+    # repeats the complete object schema.  The single enum discriminator makes
+    # every accepted combination structural without unsupported boolean const
+    # or non-string enum values.
+    def variant(decisions, *, min_segments, description):
+        result = copy.deepcopy(base)
+        result["description"] = description
+        decision = result["properties"]["decision"]
+        decision["enum"] = list(decisions)
+        decision["description"] = description
+        segments = result["properties"]["valid_segments"]
+        if min_segments:
+            segments["minItems"] = min_segments
+        segments["description"] = description
+        return result
+
+    accepted = (
+        "keep_single", "keep_partial_identity_switch")
+    dropped = tuple(
+        decision for decision in PROVIDER_DECISION_TO_CANONICAL
+        if decision.startswith("drop_"))
+    return {"anyOf": [
+        variant(
+            accepted, min_segments=1,
+            description=(
+                "Accepted decision: choose keep_single for one physical "
+                "identity or keep_partial_identity_switch only for a true "
+                "physical-object switch; valid_segments must be nonempty.")),
+        variant(
+            dropped, min_segments=0,
+            description=(
+                "Drop decision: the enum names the concrete reason and the "
+                "single- versus multiple-identity diagnostic; valid_segments "
+                "may be empty or nonempty and are excluded downstream.")),
+    ]}
+
+
+def canonicalize_provider_audit(provider: ProviderTrackAudit) -> dict:
+    """Deterministically map one validated provider decision to TrackAudit."""
+    if not isinstance(provider, ProviderTrackAudit):
+        raise TypeError("provider must be a validated ProviderTrackAudit")
+    value = provider.model_dump()
+    decision = value.pop("decision")
+    verdict, single_object, drop_reason = (
+        PROVIDER_DECISION_TO_CANONICAL[decision])
+    canonical = {
+        "landmark_kind": value["landmark_kind"],
+        "single_object": single_object,
+        "valid_segments": value["valid_segments"],
+        "verdict": verdict,
+        "drop_reason": drop_reason,
+        "primary_object": value["primary_object"],
+        "strike_votes": value["strike_votes"],
+        "secondary_objects": value["secondary_objects"],
+        "confidence": value["confidence"],
+        "unresolved": value["unresolved"],
+    }
+    return TrackAudit.model_validate(canonical).model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -598,14 +739,22 @@ be small in the frame; judge only what is visible.
 </calibration>
 
 <output_semantics>
+<decision_contract>
+""" + PROVIDER_DECISION_CONTRACT + """
+</decision_contract>
+
 - landmark_kind: what the tracked object fundamentally is. Movable things
   (vessels, vehicles) and transient phenomena (wakes, glare, clouds, shadows)
-  are not landmarks: verdict=drop with drop_reason=dynamic_object or
-  not_a_physical_landmark.
-- single_object / valid_segments: if the mask visibly switches objects,
-  report the time spans that belong to the PRIMARY object (the one supported
-  by most evidence) as valid_segments and use verdict=keep_partial. If no
-  usable span remains, verdict=drop with drop_reason=identity_broken.
+  are not landmarks: choose a drop_dynamic_object_* or drop_not_physical_*
+  decision, with the identity suffix that describes the observed track.
+- decision / valid_segments: judge physical identity first. A visible switch
+  to a different physical object is the only reason to choose
+  keep_partial_identity_switch; report only the PRIMARY object's spans (the one
+  supported by most evidence). Mask unreliability, drift, occlusion, or gaps
+  that remain on the same physical object use keep_single and trim those spans
+  from valid_segments. Use drop_identity_broken_single_identity for a stable
+  wrong-target binding and drop_identity_broken_multiple_identities for an
+  unusable multi-object switch.
 - primary_object.tags: weighted distribution over OSM-style tags for the
   primary object. Include every tag the map might plausibly index this object
   under; weights express your relative belief and need not sum to 1.
@@ -804,7 +953,7 @@ def build_request(track_key: str, dossier_text: str,
         track_key,
         system_instruction=SYSTEM_PROMPT,
         parts=parts,
-        response_schema=get_audit_schema(),
+        response_schema=get_provider_audit_schema(),
         thinking_level=cfg.thinking_level,
     ))
 

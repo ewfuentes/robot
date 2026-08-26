@@ -95,6 +95,34 @@ def orchestration_contract(document: dict) -> dict:
     }
 
 
+def localization_inputs_contract(document: dict) -> dict:
+    """Recompute the exact recipe that shaped the consumed input artifact.
+
+    Localization is a downstream experiment over an immutable export.  A new
+    filter backend or run name must not force that export to be republished
+    when its own version and complete stage-scoped recipe are unchanged.
+    """
+    config = document.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("build config has no config object")
+    selected = {}
+    for prefix in ("localization_inputs", "gps_course"):
+        value = config.get(prefix)
+        if not isinstance(value, dict):
+            raise ValueError(f"build config does not record {prefix!r}")
+        selected.update({
+            f"{prefix}.{key}": child
+            for key, child in _flatten(value).items()
+        })
+    selected["artifacts.localization_inputs_version"] = build_config.value(
+        document, "artifacts.localization_inputs_version")
+    return {
+        "schema": "farfield_pipeline_stage/v1",
+        "stage": "localization_inputs",
+        "config_digest": artifact.sha256_json(selected),
+    }
+
+
 def _load_config(path: Path, data: export_ingest.ExportData,
                  expected_digest: str) -> tuple[dict, dict]:
     path = Path(path)
@@ -112,10 +140,22 @@ def _load_config(path: Path, data: export_ingest.ExportData,
     if data.artifact_ref.version != expected_version:
         raise ValueError(
             "localization input version disagrees with build config")
-    if data.manifest is None or data.manifest.config.get(
-            "build_identity") != document["build_identity"]:
+    if data.manifest is None:
+        raise ValueError("localization inputs have no typed manifest")
+    if (data.manifest.config.get("orchestration")
+            != localization_inputs_contract(document)):
         raise ValueError(
-            "localization inputs belong to a different immutable build")
+            "localization inputs were produced by a different stage-scoped "
+            "recipe")
+    root = document.get("inputs", {}).get("farfield_root")
+    if isinstance(root, str) and root:
+        expected_path = (Path(root) / "artifacts" / "localization_inputs"
+                         / document["dataset"] / expected_version)
+        if (Path(data.artifact_ref.path) != expected_path
+                or data.artifact_ref.path != str(expected_path.resolve())):
+            raise ValueError(
+                "localization inputs are not the exact configured artifact "
+                "lane")
     orchestration = orchestration_contract(document)
     if expected_digest != orchestration["config_digest"]:
         raise ValueError(
@@ -270,6 +310,8 @@ def main():
             "run_identity": run_version,
             "localization_inputs_manifest_sha256": (
                 data.artifact_ref.manifest_digest),
+            "localization_inputs_build_identity": (
+                data.manifest.config.get("build_identity")),
             "build_config_sha256": artifact.sha256_file(args.build_config),
         },
         generator="//experimental/overhead_matching/swag/farfield/"

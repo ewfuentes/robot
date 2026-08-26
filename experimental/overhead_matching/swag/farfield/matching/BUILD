@@ -13,6 +13,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/catalog",
         "//experimental/overhead_matching/swag/farfield/catalog:lineage",

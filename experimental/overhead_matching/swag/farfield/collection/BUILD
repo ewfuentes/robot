@@ -276,6 +276,46 @@ py_test(
 )
 
 py_library(
+    name = "active_catalogs_lib",
+    srcs = ["active_catalogs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":geometry_helpers",
+        ":pbf_coverage_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield/catalog:lineage",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:download_enc_cells_lib",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_enc_lib",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:extract_landmarks_from_osm_lib",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:merge_landmark_feathers_lib",
+    ],
+)
+
+py_binary(
+    name = "active_catalogs",
+    srcs = ["active_catalogs.py"],
+    deps = [":active_catalogs_lib"],
+)
+
+py_test(
+    name = "active_catalogs_test",
+    srcs = ["active_catalogs_test.py"],
+    deps = [
+        ":active_catalogs_lib",
+        ":geometry_helpers",
+        requirement("shapely"),
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/catalog:lineage",
+        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+    ],
+)
+
+py_library(
     name = "run_farfield_collection_lib",
     srcs = ["run_farfield_collection.py"],
     data = [

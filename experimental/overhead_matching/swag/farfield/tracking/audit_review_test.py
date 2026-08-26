@@ -153,10 +153,8 @@ def make_inputs(root: Path):
 def audit_payload(*, with_edits):
     payload = {
         "landmark_kind": "fixed_structure",
-        "single_object": True,
+        "decision": "keep_single",
         "valid_segments": [{"start_t": 0, "end_t": 2}],
-        "verdict": "keep",
-        "drop_reason": "none",
         "primary_object": {
             "tags": [{"tag": "man_made=lighthouse", "weight": 0.9}],
             "name_candidates": [{

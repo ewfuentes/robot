@@ -1371,6 +1371,10 @@ def run_filter(
                                                     rng))
             proposal_events.append(_proposal_event_record(
                 result, n_injected, gate_passed, gate_best, gate_ref))
+            # Health links every proposal attempt, including an attempt that
+            # the evidence gate rejects.  The event's n_injected/gate_passed
+            # fields distinguish an accepted injection from a rejected one.
+            event_id = result.event_id
             if observer is not None:
                 observer.injection(kf, proposal_events[-1], n_injected)
             if not gate_passed:
@@ -1380,7 +1384,6 @@ def run_filter(
                 # without this the gate would be re-evaluated every keyframe.
                 last_proposal_kf = kf
             if n_injected:
-                event_id = result.event_id
                 last_proposal_kf = kf
                 null_history.clear()
                 low_ess_run = 0

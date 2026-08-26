@@ -4,10 +4,12 @@ the stage transport writes, and aggregation runs with --aggregate_only."""
 
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import msgspec
 import shapely
@@ -105,9 +107,10 @@ def audit(verdict="keep", name="Graves Light") -> dict:
     }
 
 
-def write_bound_inputs(root: Path):
+def write_bound_inputs(root: Path, build_identity: str):
     """Publish the three exact typed upstreams consumed by matching."""
-    tracks_dir = root / "object_tracks" / TRACKS_VERSION
+    tracks_dir = (root / "artifacts" / paths_lib.OBJECT_TRACKS / DATASET /
+                  TRACKS_VERSION)
     tracks_document = {
         "range": {"name": "seg0"},
         "tracks": [track(1, [0, 1, 2]), track(2, [1, 2, 3]),
@@ -121,6 +124,7 @@ def write_bound_inputs(root: Path):
             generator="test:tracks",
             git_commit="test",
             arguments=(),
+            config={"build_identity": build_identity},
             declared_outputs=("tracks_seg0.json",)) as builder:
         artifact.atomic_write_json(
             builder.output_path("tracks_seg0.json"), tracks_document)
@@ -129,7 +133,8 @@ def write_bound_inputs(root: Path):
     tracks_by_id = {item["track_id"]: item
                     for item in tracks_document["tracks"]}
 
-    audit_dir = root / "semantic_audits" / AUDITS_VERSION
+    audit_dir = (root / "artifacts" / paths_lib.SEMANTIC_AUDITS / DATASET /
+                 AUDITS_VERSION)
     requests = {}
     result_lines = []
     for tid, payload in ((1, audit()),
@@ -167,6 +172,7 @@ def write_bound_inputs(root: Path):
             arguments=(),
             upstreams=(tracks_ref,),
             config={
+                "build_identity": build_identity,
                 "phase": "canonical_results",
                 "coverage": "complete",
                 "n_expected": len(requests),
@@ -177,7 +183,8 @@ def write_bound_inputs(root: Path):
         artifact.atomic_write_file(
             builder.output_path("results.jsonl"), b"".join(result_lines))
 
-    catalog_dir = root / "catalogs" / CATALOG_VERSION
+    catalog_dir = (root / "artifacts" / paths_lib.CATALOGS / DATASET /
+                   CATALOG_VERSION)
     with artifact.ArtifactDirectoryBuilder(
             catalog_dir,
             kind=paths_lib.CATALOGS,
@@ -377,6 +384,28 @@ class ResponseValidationTest(unittest.TestCase):
         self.assertEqual([item["set_1_id"] for item in result["matches"]],
                          [0, 1])
 
+    def test_provider_thought_signature_metadata_is_accepted(self):
+        response = self.response([self.entry(0), self.entry(1)])
+        response["candidates"][0]["content"]["parts"][0][
+            "thoughtSignature"] = "opaque-provider-signature"
+        result = ml.validate_matching_response("q", response, self.metadata)
+        self.assertEqual([item["set_1_id"] for item in result["matches"]],
+                         [0, 1])
+
+    def test_other_part_metadata_and_invalid_thought_signature_are_rejected(self):
+        response = self.response([self.entry(0), self.entry(1)])
+        response["candidates"][0]["content"]["parts"][0]["unexpected"] = True
+        with self.assertRaisesRegex(ValueError, "optional provider"):
+            ml.validate_matching_response("q", response, self.metadata)
+
+        for signature in ("", None, 7):
+            with self.subTest(signature=signature):
+                response = self.response([self.entry(0), self.entry(1)])
+                response["candidates"][0]["content"]["parts"][0][
+                    "thoughtSignature"] = signature
+                with self.assertRaisesRegex(ValueError, "nonempty string"):
+                    ml.validate_matching_response("q", response, self.metadata)
+
     def test_missing_set1_item_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "exactly 2"):
             ml.validate_matching_response(
@@ -409,11 +438,13 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         tmp = Path(self._tmp.name)
         self.dataset_base = tmp / "datasets" / "tiny_harbor"
         self.dataset_base.mkdir(parents=True)
-        (self.tracks_dir, self.audit_dir,
-         self.catalog_dir) = write_bound_inputs(tmp)
-        self.feather = self.catalog_dir / "catalog.feather"
         self.build_config, orchestration_digest = write_build_config(
             tmp, self.dataset_base)
+        document = build_config.load(self.build_config.parent)
+        (self.tracks_dir, self.audit_dir,
+         self.catalog_dir) = write_bound_inputs(
+             tmp, document["build_identity"])
+        self.feather = self.catalog_dir / "catalog.feather"
         self.match_dir = tmp / "landmark_matches" / MATCHES_VERSION
         self.work_dir = ml.matching_work_dir(self.match_dir)
         self.flags = [
@@ -488,7 +519,14 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
                 }) + "\n")
 
     def test_build_then_aggregate(self):
-        self._build()
+        bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
+        with (mock.patch.object(
+                ml.stage_reuse, "require_compatible_artifact",
+                return_value=bridge) as require_reuse,
+              mock.patch.object(
+                  ml.stage_reuse, "require_recorded_bridge")):
+            self._build()
+        self.assertEqual(require_reuse.call_args.kwargs["owner_stage"], "track")
 
         # --- request construction -------------------------------------------
         requests = [json.loads(line) for line in
@@ -524,7 +562,10 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
         # --- aggregate --------------------------------------------------------
         self._fabricate_results()
-        run_main(self.aggregate_flags)
+        with mock.patch.object(
+                ml, "revalidate_work_snapshot_inputs",
+                return_value=ml.provenance.git_commit()):
+            run_main(self.aggregate_flags)
 
         # Raw provider output is retained as bound attempts, while the only
         # publishable aggregation input is complete canonical output.
@@ -546,6 +587,7 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertEqual(manifest.config["coverage"], "complete")
         self.assertEqual(manifest.config["n_expected"], len(snapshot.units))
         self.assertEqual(manifest.config["n_successful"], len(snapshot.units))
+        self.assertEqual(manifest.config["stage_reuse"], bridge)
         self.assertEqual(
             [ref.kind for ref in manifest.upstreams],
             [paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
@@ -646,31 +688,35 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
             run_main(flags + ["--build_only"])
         self.assertIn("input artifact", str(ctx.exception))
 
-    def test_catalog_without_passed_source_coverage_is_rejected(self):
-        failed_dir = Path(self._tmp.name) / "failed-catalog" / CATALOG_VERSION
-        with artifact.ArtifactDirectoryBuilder(
-                failed_dir,
-                kind=paths_lib.CATALOGS,
-                dataset=DATASET,
-                version=CATALOG_VERSION,
-                generator="test:failed-catalog",
-                git_commit="test",
-                arguments=(),
-                config={
-                    "schema": schema.FULL_ARTIFACT_SCHEMA,
-                    "source_coverage": {
-                        "schema": "farfield_catalog_source_coverage/v2",
-                        "status": "failed",
-                        "message": "requested source area is incomplete",
-                        "details": [],
-                    },
-                },
-                declared_outputs=("catalog.feather",)) as builder:
-            write_feather(builder.output_path("catalog.feather"))
+    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+        alias = Path(self._tmp.name) / "alternate-audits"
+        shutil.copytree(self.audit_dir, alias)
         flags = list(self.flags)
-        flags[flags.index("--catalog_dir") + 1] = str(failed_dir)
-        with self.assertRaisesRegex(SystemExit, "status='passed'"):
+        flags[flags.index("--audit_dir") + 1] = str(alias)
+        with self.assertRaisesRegex(SystemExit, "exact configured lane"):
             run_main(flags + ["--build_only"])
+
+    def test_byte_identical_catalog_copy_outside_configured_lane_is_rejected(self):
+        alias = Path(self._tmp.name) / "alternate-catalog"
+        shutil.copytree(self.catalog_dir, alias)
+        flags = list(self.flags)
+        flags[flags.index("--catalog_dir") + 1] = str(alias)
+        with self.assertRaisesRegex(SystemExit, "exact configured lane"):
+            run_main(flags + ["--build_only"])
+
+    def test_corrupt_input_manifest_is_normalized_to_stage_error(self):
+        (self.audit_dir / artifact.MANIFEST_NAME).write_text("not-json\n")
+        with self.assertRaisesRegex(
+                SystemExit, "invalid matching input artifact"):
+            self._build()
+
+    def test_catalog_without_passed_source_coverage_is_rejected(self):
+        manifest_path = self.catalog_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["source_coverage"]["status"] = "failed"
+        artifact.atomic_write_json(manifest_path, document)
+        with self.assertRaisesRegex(SystemExit, "status='passed'"):
+            self._build()
 
     def test_one_missing_request_refuses_all_publication(self):
         self._build()

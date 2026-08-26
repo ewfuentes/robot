@@ -56,7 +56,11 @@ CELL_RE = re.compile(r"US[1-6][A-Z0-9]{5}\Z")
 STATE_RE = re.compile(r"[A-Z]{2}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GENERATOR = "farfield/dataset_tools/download_enc_cells.py"
-ENC_ROOT_AUXILIARY_FILES = frozenset({"CATALOG.031", "README.TXT"})
+ENC_ROOT_AUXILIARY_FILES = frozenset({
+    "CATALOG.031",
+    "README.TXT",
+    "USERAGREEMENT.TXT",
+})
 CELL_MANIFEST_KEYS = frozenset({
     "schema", "cell", "source_url", "archive_sha256", "archive_size",
     "files", "generator", "git_commit", "created", "complete",

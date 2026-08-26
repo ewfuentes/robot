@@ -45,6 +45,14 @@ class IndexRefreshError(RuntimeError):
 DATASET_ASSETS = ("trajectory.png", "vehicle_anchor.png",
                   "gps_timelapse.mp4")
 
+# These are collection containers under datasets/, not active datasets. Keep
+# their children browsable without reporting the container itself as a
+# zero-panorama dataset.
+DATASET_COLLECTIONS = (
+    "unvetted",
+    "out_of_date_but_usable_mapillary_datasets",
+)
+
 # (directory suffix, page path, label), in display order. These paths are
 # relative to an experiment index beside the run and its diagnostic siblings.
 RUN_SIBLING_PAGES = (
@@ -63,6 +71,9 @@ RUN_SIDE_DIRECTORY_SUFFIXES = (
     ".attribution",
     artifact_lib.INCOMPLETE_SUFFIX,
 )
+
+FRAME_VIEWER_KIND = "frame_landmark_viewer"
+FRAME_VIEWER_SCHEMA = "farfield_frame_landmark_viewer/v1"
 
 
 def _require_directory(path: Path, *, allow_missing: bool = False) -> bool:
@@ -141,6 +152,68 @@ def _manifest_summary(version_dir: Path) -> tuple:
             pg.esc(doc.get("created", "")))
 
 
+def _manifest_kind(version_dir: Path) -> str | None:
+    manifest = version_dir / artifact_lib.MANIFEST_NAME
+    try:
+        document = json.loads(manifest.read_text())
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    kind = document.get("kind")
+    return kind if isinstance(kind, str) else None
+
+
+def _frame_viewer_links(data_root: Path) -> dict[str, dict[tuple[str, str], Path]]:
+    """Map exact frame/track dataset+versions to their newest sidecar.
+
+    Navigation is a best-effort scan, not artifact validation.  The linked
+    sidecar itself remains strictly manifested and validates its exact
+    FRAME_LANDMARKS + OBJECT_TRACKS upstream identities when opened.
+    """
+    links = {"frame_landmarks": {}, "object_tracks": {}}
+    created_by_key = {"frame_landmarks": {}, "object_tracks": {}}
+    lane = data_root / "artifacts" / "frame_landmarks"
+    for dataset_dir in _dirs(lane):
+        for viewer_dir in _dirs(dataset_dir):
+            manifest_path = viewer_dir / artifact_lib.MANIFEST_NAME
+            try:
+                document = json.loads(manifest_path.read_text())
+            except (FileNotFoundError, OSError, UnicodeError,
+                    json.JSONDecodeError):
+                continue
+            if (document.get("kind") != FRAME_VIEWER_KIND
+                    or (document.get("config") or {}).get("schema")
+                    != FRAME_VIEWER_SCHEMA
+                    or not _regular_page(viewer_dir / "index.html")
+                    or not _regular_page(viewer_dir / "tracks" / "index.html")):
+                continue
+            track_refs = [
+                ref for ref in document.get("upstreams", [])
+                if isinstance(ref, dict)
+                and ref.get("kind") == "object_tracks"
+            ]
+            frame_refs = [
+                ref for ref in document.get("upstreams", [])
+                if isinstance(ref, dict)
+                and ref.get("kind") == "frame_landmarks"
+            ]
+            if len(track_refs) != 1 or len(frame_refs) != 1:
+                continue
+            created = document.get("created", "")
+            if not isinstance(created, str):
+                created = ""
+            for kind, reference in (
+                    ("frame_landmarks", frame_refs[0]),
+                    ("object_tracks", track_refs[0])):
+                key = (reference.get("dataset"), reference.get("version"))
+                if not all(isinstance(value, str) and value for value in key):
+                    continue
+                if (key not in links[kind]
+                        or created > created_by_key[kind][key]):
+                    links[kind][key] = viewer_dir
+                    created_by_key[kind][key] = created
+    return links
+
+
 def _dirs(path: Path) -> list[Path]:
     if not _require_directory(path, allow_missing=True):
         return []
@@ -174,6 +247,69 @@ def _regular_page(path: Path) -> bool:
     if not stat.S_ISREG(metadata.st_mode):
         raise IndexRefreshError(f"page is not a regular file: {path}")
     return True
+
+
+def _panorama_directory(dataset: Path) -> Path | None:
+    """Return a safe panorama directory, including ``panorama -> frames``.
+
+    Dataset storage deliberately uses a relative in-dataset symlink so the
+    same frame bytes have one owner. Index generation may follow that exact
+    shape, but never an absolute, dangling, or dataset-escaping link.
+    """
+    panorama = dataset / "panorama"
+    try:
+        metadata = panorama.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISDIR(metadata.st_mode):
+        return panorama
+    if not stat.S_ISLNK(metadata.st_mode):
+        raise IndexRefreshError(
+            f"panorama entry is neither a directory nor symlink: {panorama}")
+    target_text = os.readlink(panorama)
+    if Path(target_text).is_absolute():
+        raise IndexRefreshError(
+            f"refusing absolute panorama symlink: {panorama} -> {target_text}")
+    if target_text != "frames":
+        raise IndexRefreshError(
+            f"panorama symlink target must be exactly 'frames': "
+            f"{panorama} -> {target_text}")
+    frames = dataset / "frames"
+    try:
+        target = panorama.resolve(strict=True)
+        expected = dataset.resolve(strict=True) / "frames"
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise IndexRefreshError(
+            f"refusing dangling panorama symlink: "
+            f"{panorama} -> {target_text}") from exc
+    try:
+        frames_metadata = frames.lstat()
+    except FileNotFoundError as exc:
+        raise IndexRefreshError(
+            f"refusing dangling panorama symlink: "
+            f"{panorama} -> {target_text}") from exc
+    if (stat.S_ISLNK(frames_metadata.st_mode)
+            or not stat.S_ISDIR(frames_metadata.st_mode)
+            or target != expected):
+        raise IndexRefreshError(
+            f"panorama symlink must resolve to the real in-dataset frames "
+            f"directory: {panorama} -> {target_text}")
+    return panorama
+
+
+def _dataset_row(dataset: Path, *, href_prefix: str = "") -> list[str]:
+    assets = " ".join(
+        f'<a href="{href_prefix}{dataset.name}/{name}">'
+        f'{name.split(".")[0]}</a>'
+        for name in DATASET_ASSETS if (dataset / name).exists())
+    panorama = _panorama_directory(dataset)
+    n_panoramas = len(list(panorama.glob("*.jpg"))) if panorama else 0
+    return [
+        f'<a href="{href_prefix}{dataset.name}/">'
+        f'{pg.esc(dataset.name)}</a>',
+        str(n_panoramas),
+        assets or "<span class='muted'>—</span>",
+    ]
 
 
 def _run_page_links(run: Path) -> list[tuple[str, str]]:
@@ -212,38 +348,81 @@ def _refresh_locked(data_root: Path) -> dict:
             written.append(str(Path(directory) / "index.html"))
 
     # --- datasets lane -----------------------------------------------------
-    datasets = _dirs(data_root / "datasets")
-    rows = []
-    for ds in datasets:
-        assets = " ".join(
-            f'<a href="{ds.name}/{name}">{name.split(".")[0]}</a>'
-            for name in DATASET_ASSETS if (ds / name).exists())
-        panorama_dir = ds / "panorama"
-        n_panos = (len(list(panorama_dir.glob("*.jpg")))
-                   if _require_directory(panorama_dir, allow_missing=True)
-                   else 0)
-        rows.append([f'<a href="{ds.name}/">{pg.esc(ds.name)}</a>',
-                     str(n_panos), assets or "<span class='muted'>—</span>"])
+    dataset_entries = _dirs(data_root / "datasets")
+    collections = [entry for entry in dataset_entries
+                   if entry.name in DATASET_COLLECTIONS]
+    datasets = [entry for entry in dataset_entries
+                if entry.name not in DATASET_COLLECTIONS]
+    rows = [_dataset_row(dataset) for dataset in datasets]
+    collection_rows = []
+    for collection in collections:
+        children = _dirs(collection)
+        emit(collection, f"datasets / {collection.name}",
+             pg.table(["dataset", "panoramas", "assets"],
+                      [_dataset_row(child) for child in children]),
+             [("farfield", "../../index.html"),
+              ("datasets", "../index.html"), (collection.name, None)])
+        collection_rows.append([
+            f'<a href="{collection.name}/index.html">'
+            f'{pg.esc(collection.name)}</a>', str(len(children))])
     if _require_directory(data_root / "datasets", allow_missing=True):
+        body = pg.table(["dataset", "panoramas", "assets"], rows)
+        if collection_rows:
+            body += "\n<h2>collections</h2>\n" + pg.table(
+                ["collection", "datasets"], collection_rows)
         emit(data_root / "datasets", "datasets",
-             pg.table(["dataset", "panoramas", "assets"], rows),
+             body,
              [("farfield", "../index.html"), ("datasets", None)])
 
     # --- artifacts lane ----------------------------------------------------
     kinds = _dirs(data_root / "artifacts")
+    frame_viewers = _frame_viewer_links(data_root)
     for kind in kinds:
         krows = []
         for ds in _dirs(kind):
             versions = _dirs(ds)
+            # Viewer sidecars are attached to the exact scientific frame and
+            # track versions they visualize; they are not competing versions
+            # of frame-landmark science and should never be presented as such.
+            if kind.name == "frame_landmarks":
+                versions = [
+                    version for version in versions
+                    if _manifest_kind(version) != FRAME_VIEWER_KIND
+                ]
             cells = []
             for version in versions:
                 generator, created = _manifest_summary(version)
-                inner = (f'<a href="{ds.name}/{version.name}/">'
-                         f'{pg.esc(version.name)}</a>')
-                # Link a version's own index page when a stage produced one.
-                if (version / "index.html").exists():
-                    inner = (f'<a href="{ds.name}/{version.name}/'
-                             f'index.html">{pg.esc(version.name)}</a>')
+                track_viewer = frame_viewers["object_tracks"].get(
+                    (ds.name, version.name))
+                frame_viewer = frame_viewers["frame_landmarks"].get(
+                    (ds.name, version.name))
+                if kind.name == "object_tracks" and track_viewer is not None:
+                    viewer_href = (
+                        f"../frame_landmarks/{ds.name}/{track_viewer.name}/"
+                        "tracks/index.html")
+                    inner = (f'<a href="{viewer_href}">'
+                             f'{pg.esc(version.name)}</a> '
+                             "<span class='muted'>frames ↔ tracks</span>")
+                elif kind.name == "object_tracks":
+                    # Never fall back to presentation bytes embedded in the
+                    # scientific artifact.  A missing sidecar is visible as a
+                    # missing deliverable, not silently normalized as the UI.
+                    inner = (f'{pg.esc(version.name)} '
+                             "<span class='warn'>viewer sidecar missing</span>")
+                elif (kind.name == "frame_landmarks"
+                      and frame_viewer is not None):
+                    viewer_href = f"{ds.name}/{frame_viewer.name}/index.html"
+                    inner = (f'<a href="{viewer_href}">'
+                             f'{pg.esc(version.name)}</a> '
+                             "<span class='muted'>keyframes</span>")
+                else:
+                    inner = (f'<a href="{ds.name}/{version.name}/">'
+                             f'{pg.esc(version.name)}</a>')
+                    # Link a version's own index when no viewer sidecar owns
+                    # presentation for it.
+                    if (version / "index.html").exists():
+                        inner = (f'<a href="{ds.name}/{version.name}/'
+                                 f'index.html">{pg.esc(version.name)}</a>')
                 cells.append(f"{inner} <span class='muted'>{generator} "
                              f"{created}</span>")
             krows.append([f"{pg.esc(ds.name)}", "<br>".join(cells)])

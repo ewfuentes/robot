@@ -165,6 +165,18 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
     if end < birth:
         raise TrackletContractError(
             f"track {track_id} ends before it is born ({birth}..{end})")
+    # `end_keyframe` is the last geometrically supported keyframe and bounds
+    # the evidence lifetime exposed to semantic audit.  The tracker may keep
+    # propagating the mask through an unsupported tail before closing it;
+    # `last_keyframe` bounds those lifecycle records.  Do not conflate the two
+    # horizons or valid unsupported records make every real track malformed.
+    raw_last = track.get("last_keyframe")
+    last = end if raw_last is None else _integer(
+        raw_last, f"track {track_id} last_keyframe")
+    if last < end:
+        raise TrackletContractError(
+            f"track {track_id} last_keyframe {last} precedes its supported "
+            f"end_keyframe {end}")
     records = track.get("records")
     if not isinstance(records, list) or not records:
         raise TrackletContractError(f"track {track_id} has no records")
@@ -175,10 +187,10 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
                 f"track {track_id} record {i} is not an object")
         keyframe = _integer(record.get("keyframe"),
                             f"track {track_id} record {i} keyframe")
-        if not birth <= keyframe <= end:
+        if not birth <= keyframe <= last:
             raise TrackletContractError(
                 f"track {track_id} record keyframe {keyframe} is outside "
-                f"its lifetime {birth}..{end}")
+                f"its lifecycle {birth}..{last}")
         if keyframe in seen:
             raise TrackletContractError(
                 f"track {track_id} repeats keyframe {keyframe}")
@@ -188,7 +200,15 @@ def _validate_track(track: dict, expected_id) -> tuple[int, int, list]:
 
 def normalize_valid_segments(track: dict, audit: dict) \
         -> tuple[ValidSegment, ...]:
-    """Validate ordered, inclusive audit segments against track lifetime."""
+    """Validate and conservatively intersect audit segments with support.
+
+    The audit dossier can include context frames from the unsupported
+    propagation tail through ``last_keyframe``.  A model may therefore return
+    a segment ending in that context tail.  Bearings are evidence and must
+    never be created from unsupported propagation, so intersect such a segment
+    with ``end_keyframe`` (the last supported frame).  Segments outside the
+    actual lifecycle or containing no supported frame remain hard errors.
+    """
     if not isinstance(audit, dict):
         raise TrackletContractError("audit must be an object")
     if "valid_segments" not in audit:
@@ -199,7 +219,11 @@ def normalize_valid_segments(track: dict, audit: dict) \
 
     birth = _integer(track.get("birth_keyframe"), "birth_keyframe")
     end = _integer(track.get("end_keyframe"), "end_keyframe")
-    lifetime = end - birth + 1
+    raw_last = track.get("last_keyframe")
+    last = end if raw_last is None else _integer(
+        raw_last, "last_keyframe")
+    supported_end_t = end - birth
+    lifecycle_end_t = last - birth
     normalized = []
     previous_end = -1
     for i, segment in enumerate(raw_segments):
@@ -210,19 +234,25 @@ def normalize_valid_segments(track: dict, audit: dict) \
                            f"valid_segments[{i}].start_t")
         end_t = _integer(segment.get("end_t"),
                          f"valid_segments[{i}].end_t")
-        if start_t < 0 or end_t < start_t or end_t >= lifetime:
+        if (start_t < 0 or end_t < start_t
+                or end_t > lifecycle_end_t):
             raise TrackletContractError(
                 f"valid segment {i} [{start_t}, {end_t}] is outside track "
-                f"lifetime t0..t{lifetime - 1}")
+                f"lifecycle t0..t{lifecycle_end_t}")
+        if start_t > supported_end_t:
+            raise TrackletContractError(
+                f"valid segment {i} [{start_t}, {end_t}] contains no "
+                f"supported evidence in t0..t{supported_end_t}")
+        normalized_end_t = min(end_t, supported_end_t)
         if start_t <= previous_end:
             raise TrackletContractError(
                 f"valid segment {i} starts at t{start_t} before or within "
                 f"the preceding segment ending at t{previous_end}")
         normalized.append(ValidSegment(
-            index=i, start_t=start_t, end_t=end_t,
+            index=i, start_t=start_t, end_t=normalized_end_t,
             start_keyframe_idx=birth + start_t,
-            end_keyframe_idx=birth + end_t))
-        previous_end = end_t
+            end_keyframe_idx=birth + normalized_end_t))
+        previous_end = normalized_end_t
     return tuple(normalized)
 
 
@@ -268,7 +298,9 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
     Missing audits are allowed: tracks below the recorded audit support bar
     were never requested. An audit referring to a missing track is stale and
     is an error. drop is always excluded; only valid keep and keep_partial
-    records are returned.
+    records are returned. For either accepted verdict, valid_segments is the
+    sole observation whitelist: keep records may trim unreliable spans while
+    still asserting that every retained span belongs to one physical object.
     """
     if not isinstance(tracks, Mapping) or not isinstance(audits, Mapping):
         raise TrackletContractError("tracks and audits must be mappings")
@@ -283,7 +315,7 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
             raise TrackletContractError(
                 f"audit for track {track_id!r} has no source track")
         track = tracks[track_id]
-        birth, end, _ = _validate_track(track, track_id)
+        _validate_track(track, track_id)
         audit = audits[track_id]
         if not isinstance(audit, dict):
             raise TrackletContractError(
@@ -296,16 +328,6 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
         if not segments:
             raise TrackletContractError(
                 f"accepted audit for track {track_id!r} has no valid segment")
-        if verdict == "keep":
-            expected = (birth, end)
-            actual = ((segments[0].start_keyframe_idx,
-                       segments[0].end_keyframe_idx)
-                      if len(segments) == 1 else None)
-            if actual != expected:
-                raise TrackletContractError(
-                    f"verdict=keep for track {track_id!r} must retain its "
-                    f"whole lifetime {birth}..{end}")
-
         local = _local_id(track_id)
         provenance = _audit_provenance(audits, track_id)
         actual_track_digest = _canonical_sha256(track)
@@ -326,6 +348,18 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
             "source_tracks_artifact_id", f"sha256:{source_digest}")
         global_id = f"{source_identity}@sha256:{source_digest}#{local}"
         provenance.setdefault("source_track_sha256", actual_track_digest)
+        segment_clips = [
+            {
+                "index": segment.index,
+                "submitted_end_t": audit["valid_segments"][segment.index][
+                    "end_t"],
+                "accepted_end_t": segment.end_t,
+                "reason": "unsupported_lifecycle_tail",
+            }
+            for segment in segments
+            if audit["valid_segments"][segment.index]["end_t"]
+            != segment.end_t
+        ]
         accepted.append(AcceptedTracklet(
             tracklet_id=global_id,
             local_id=local,
@@ -337,6 +371,7 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
                 "audit_confidence": audit.get("confidence"),
                 "n_records": len(track["records"]),
                 "n_valid_segments": len(segments),
+                "valid_segment_clips": segment_clips,
             }))
     return accepted
 

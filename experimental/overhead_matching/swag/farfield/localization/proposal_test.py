@@ -759,8 +759,7 @@ class ProvenancePlumbingTest(unittest.TestCase):
         fired_keyframes = [r.keyframe_idx for r in history.health
                            if r.proposal_event_id is not None]
         self.assertEqual(fired_keyframes,
-                         [e.keyframe_idx for e in history.proposal_events
-                          if e.n_injected])
+                         [e.keyframe_idx for e in history.proposal_events])
 
 
 if __name__ == "__main__":

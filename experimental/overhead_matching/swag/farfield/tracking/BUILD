@@ -31,6 +31,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
     ],
 )
@@ -145,6 +146,7 @@ py_library(
         requirement("numpy"),
         requirement("opencv-python"),
         requirement("pillow"),
+        ":keyframe_viewer_lib",
         ":perf_profile",
         ":range_runner",
         ":track_builder",
@@ -196,6 +198,8 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/viewers:indexes",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
@@ -238,6 +242,7 @@ py_test(
     name = "semantic_audit_test",
     srcs = ["semantic_audit_test.py"],
     deps = [
+        requirement("google-genai"),
         ":semantic_audit",
         ":track_builder",
         "//experimental/overhead_matching/swag/farfield:dataset",
@@ -260,6 +265,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/extraction:vertex_batch_manager_lib",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
@@ -279,6 +285,7 @@ py_test(
         ":audit_requests_lib",
         ":semantic_audit",
         ":track_builder",
+        ":tracklets",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:build_config",
         "//experimental/overhead_matching/swag/farfield:dataset",
@@ -286,6 +293,7 @@ py_test(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:pipeline_lib",
         "//experimental/overhead_matching/swag/farfield:testing",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/extraction:prompts",
     ],
 )

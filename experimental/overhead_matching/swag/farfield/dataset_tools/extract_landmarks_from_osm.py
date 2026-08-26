@@ -3,11 +3,16 @@
 This is the far-field owner of OSM-to-Feather conversion. Collection stage 5
 calls this target with an explicit WGS84 bounding box.
 
-The common libosmium extractor selects an element when it carries any key in
-``TAG_FILTER_KEYS``.  Once selected, all of the element's raw OSM tags are
-preserved in the compact JSON object.  Pruning is a separate catalog-trimming
-decision: doing it here would make the source Feather impossible to revisit
-when the trim rules change.
+The common libosmium extractor reads the exact source PBF directly and indexes
+all nodes and relation members needed to preserve complete selected geometry.
+It selects an element when it carries any key in ``TAG_FILTER_KEYS``.  Once
+selected, all of the element's raw OSM tags are preserved in the compact JSON
+object.  Pruning is a separate catalog-trimming decision: doing it here would
+make the source Feather impossible to revisit when the trim rules change.
+Complete but topologically invalid source geometry is interpreted
+deterministically with Shapely ``make_valid`` and audited by source ID,
+validity reason, and before/after type.  This is an explicit interpretation of
+the pinned historical geometry, not a claim to reproduce a later OSM edit.
 
 Each invocation writes:
 
@@ -25,18 +30,16 @@ Example:
 import argparse
 import hashlib
 import math
-import os
-import subprocess
 import sys
-import tempfile
 from collections import Counter
 from pathlib import Path
 
 import geopandas as gpd
+import shapely
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from common.openstreetmap import extract_landmarks_python as elm
-from experimental.overhead_matching.swag.farfield import artifact, provenance
+from experimental.overhead_matching.swag.farfield import provenance
 from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
     source_publication,
@@ -95,6 +98,22 @@ _OSM_TYPE_NAMES = {
 }
 _OSM_TYPE_ORDER = {"node": 0, "way": 1, "relation": 2}
 
+_SOURCE_GEOMETRY_TYPES = frozenset({
+    "Point", "LineString", "Polygon", "MultiPolygon",
+})
+_SUPPORTED_REPAIR_GEOMETRY_TYPES = frozenset({
+    "Point", "LineString", "Polygon",
+    "MultiPoint", "MultiLineString", "MultiPolygon", "GeometryCollection",
+})
+_GEOMETRY_REPAIR_METHOD = "shapely.make_valid"
+_GEOMETRY_REPAIR_KEYS = frozenset({
+    "id",
+    "method",
+    "validity_reason",
+    "geometry_type_before",
+    "geometry_type_after",
+})
+
 
 def validate_bbox(bbox) -> tuple[float, float, float, float]:
     """Validate and return ``(west, south, east, north)`` in WGS84 degrees."""
@@ -146,7 +165,8 @@ def create_shapely_geometry(geometry):
     raise ValueError(f"unknown OSM geometry type {type(geometry).__name__}")
 
 
-def _feature_record(feature) -> dict:
+def _feature_record(feature, *, geometry_repairs: list[dict] | None = None) \
+        -> dict:
     try:
         osm_type = _OSM_TYPE_NAMES[feature.osm_type]
     except KeyError as exc:
@@ -171,10 +191,37 @@ def _feature_record(feature) -> dict:
                 f"value {value!r}")
 
     geometry = create_shapely_geometry(feature.geometry)
-    if geometry.is_empty or not geometry.is_valid:
+    if geometry.is_empty:
         raise ValueError(
-            f"OSM {osm_type} {osm_id} produced "
-            f"{'empty' if geometry.is_empty else 'invalid'} geometry")
+            f"OSM {osm_type} {osm_id} produced empty geometry")
+    if not geometry.is_valid:
+        before_type = geometry.geom_type
+        validity_reason = shapely.is_valid_reason(geometry)
+        try:
+            repaired = shapely.make_valid(geometry)
+        except shapely.errors.GEOSException as exc:
+            raise ValueError(
+                f"OSM {osm_type} {osm_id} invalid geometry could not be "
+                f"repaired: {validity_reason}") from exc
+        after_type = repaired.geom_type
+        if after_type not in _SUPPORTED_REPAIR_GEOMETRY_TYPES:
+            raise ValueError(
+                f"OSM {osm_type} {osm_id} make_valid produced unsupported "
+                f"geometry type {after_type!r}")
+        if repaired.is_empty or not repaired.is_valid:
+            outcome = "empty" if repaired.is_empty else "invalid"
+            raise ValueError(
+                f"OSM {osm_type} {osm_id} make_valid produced {outcome} "
+                f"geometry")
+        geometry = repaired
+        if geometry_repairs is not None:
+            geometry_repairs.append({
+                "id": f"osm:{osm_type}:{osm_id}",
+                "method": _GEOMETRY_REPAIR_METHOD,
+                "validity_reason": validity_reason,
+                "geometry_type_before": before_type,
+                "geometry_type_after": after_type,
+            })
 
     return {
         "id": f"osm:{osm_type}:{osm_id}",
@@ -185,9 +232,14 @@ def _feature_record(feature) -> dict:
     }
 
 
-def features_to_geodataframe(features: list) -> gpd.GeoDataFrame:
+def features_to_geodataframe(
+        features: list, *, geometry_repairs: list[dict] | None = None
+) -> gpd.GeoDataFrame:
     """Build the exact four-column compact far-field catalog frame."""
-    records = [_feature_record(feature) for feature in features]
+    records = [
+        _feature_record(feature, geometry_repairs=geometry_repairs)
+        for feature in features
+    ]
     records.sort(
         key=lambda record: (
             _OSM_TYPE_ORDER[record["osm_type"]], record["osm_id"]
@@ -223,67 +275,56 @@ def _same_stat(left: dict, right: dict) -> bool:
             and left["mtime_ns"] == right["mtime_ns"])
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def smart_preextract(source: Path, bbox, output_path: Path,
-                     *, osmium_binary: str = "osmium") -> tuple[Path, dict]:
-    """Create a dependency-complete bounded PBF with osmium's smart strategy."""
-    source = Path(source)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    workspace = Path(tempfile.mkdtemp(
-        prefix=f".{output_path.stem}.smart.",
-        suffix=artifact.INCOMPLETE_SUFFIX,
-        dir=output_path.parent,
-    ))
-    completed = workspace / "bounded.osm.pbf"
-    partial = workspace / "bounded.partial.osm.pbf"
-    try:
-        version_result = subprocess.run(
-            [osmium_binary, "--version"], check=True, text=True,
-            capture_output=True)
-        subprocess.run([
-            osmium_binary,
-            "extract",
-            "--strategy",
-            "smart",
-            "--bbox",
-            ",".join(f"{value:.12g}" for value in bbox),
-            "--output",
-            str(partial),
-            str(source),
-        ], check=True, text=True, capture_output=True)
-    except FileNotFoundError as error:
-        raise RuntimeError(
-            f"osmium executable is unavailable ({osmium_binary!r}); refusing "
-            "to fall back to incomplete vertex truncation") from error
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout or str(error)).strip()
-        raise RuntimeError(f"osmium smart pre-extract failed: {detail}") from error
-    if partial.is_symlink() or not partial.is_file() \
-            or partial.stat().st_size <= 0:
-        raise RuntimeError(
-            f"osmium did not produce a non-empty regular PBF: {partial}")
-    identity = {
-        "osmium_version": version_result.stdout.strip(),
-        "strategy": "smart",
-        "bbox_wgs84": list(bbox),
-        "size_bytes": partial.stat().st_size,
-        "sha256": _sha256(partial),
+def _validate_source_geometry_repairs(
+        frame: gpd.GeoDataFrame, repairs) -> list[dict]:
+    """Validate the exact repair audit retained beside a completed source."""
+    if not isinstance(repairs, list):
+        raise ValueError("source geometry repairs must be a list")
+    geometry_types = {
+        landmark_id: geometry.geom_type
+        for landmark_id, geometry in zip(frame["id"], frame.geometry)
     }
-    os.replace(partial, completed)
-    _fsync_directory(completed.parent)
-    return completed, identity
+    validated = []
+    seen = set()
+    for position, repair in enumerate(repairs):
+        if not isinstance(repair, dict) or set(repair) != _GEOMETRY_REPAIR_KEYS:
+            raise ValueError(
+                f"source geometry repair {position} has invalid fields")
+        landmark_id = repair["id"]
+        if (not isinstance(landmark_id, str)
+                or landmark_id not in geometry_types
+                or landmark_id in seen):
+            raise ValueError(
+                f"source geometry repair {position} has invalid id")
+        seen.add(landmark_id)
+        if repair["method"] != _GEOMETRY_REPAIR_METHOD:
+            raise ValueError(
+                f"source geometry repair {landmark_id} has invalid method")
+        reason = repair["validity_reason"]
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                f"source geometry repair {landmark_id} has invalid reason")
+        before_type = repair["geometry_type_before"]
+        after_type = repair["geometry_type_after"]
+        if before_type not in _SOURCE_GEOMETRY_TYPES:
+            raise ValueError(
+                f"source geometry repair {landmark_id} has invalid input type")
+        if (after_type not in _SUPPORTED_REPAIR_GEOMETRY_TYPES
+                or after_type != geometry_types[landmark_id]):
+            raise ValueError(
+                f"source geometry repair {landmark_id} has invalid output type")
+        validated.append(dict(repair))
+    if [repair["id"] for repair in validated] != sorted(seen):
+        raise ValueError("source geometry repairs must be sorted by id")
+    return validated
 
 
-def _diagnostics(frame: gpd.GeoDataFrame,
-                 bbox: tuple[float, float, float, float]) -> dict:
+def _diagnostics(
+        frame: gpd.GeoDataFrame,
+        bbox: tuple[float, float, float, float],
+        *,
+        source_geometry_repairs: list[dict],
+) -> dict:
     tags = schema.tag_dicts(frame)
     osm_types = [landmark_id.split(":", 2)[1] for landmark_id in frame["id"]]
     geometry_types = [geometry.geom_type for geometry in frame.geometry]
@@ -310,6 +351,10 @@ def _diagnostics(frame: gpd.GeoDataFrame,
         "place_rows": sum("place" in record for record in tags),
         "seamark_type_rows": sum("seamark:type" in record for record in tags),
         "tag_filter_hit_counts": filter_hit_counts,
+        # A source feature is never silently dropped or accepted with invalid
+        # topology. Exact IDs and GEOS reasons make the narrow make_valid
+        # interpretation visible and reproducible from the pinned PBF.
+        "source_geometry_repairs": source_geometry_repairs,
         "geometry_bounds_wgs84": bounds,
         # Ways and relations are selected by an in-bbox vertex; their complete
         # geometry may legitimately extend beyond the requested selection box.
@@ -317,8 +362,7 @@ def _diagnostics(frame: gpd.GeoDataFrame,
     }
 
 
-def main(pbf_file: Path, bbox, output_path: Path,
-         *, osmium_binary: str = "osmium") -> gpd.GeoDataFrame:
+def main(pbf_file: Path, bbox, output_path: Path) -> gpd.GeoDataFrame:
     """Extract, validate, atomically write, and describe one OSM source table."""
     pbf_file = Path(pbf_file)
     if not pbf_file.is_file():
@@ -339,43 +383,29 @@ def main(pbf_file: Path, bbox, output_path: Path,
         "arguments": {
             "bbox_wgs84": list(bbox),
             "output_path": str(feather_path),
-            "geometry_index_mode": "smart_preextract_then_full_index",
+            "geometry_index_mode": "full_pbf_complete_geometry_index",
             "tag_filter_keys": list(TAG_FILTER_KEYS),
         },
     }
 
     def expected_provenance(frame, document):
-        inputs = document.get("inputs")
-        smart = (inputs.get("smart_preextract")
-                 if isinstance(inputs, dict) else None)
-        if (not isinstance(smart, dict)
-                or set(smart) != {
-                    "osmium_version", "strategy", "bbox_wgs84",
-                    "size_bytes", "sha256"}
-                or not isinstance(smart["osmium_version"], str)
-                or not smart["osmium_version"]
-                or smart["strategy"] != "smart"
-                or smart["bbox_wgs84"] != list(bbox)
-                or isinstance(smart["size_bytes"], bool)
-                or not isinstance(smart["size_bytes"], int)
-                or smart["size_bytes"] <= 0
-                or not isinstance(smart["sha256"], str)
-                or len(smart["sha256"]) != 64
-                or any(character not in "0123456789abcdef"
-                       for character in smart["sha256"])):
-            raise ValueError(
-                "completed OSM source has invalid smart-preextract identity")
+        document_diagnostics = document.get("diagnostics")
+        repairs = _validate_source_geometry_repairs(
+            frame,
+            (document_diagnostics.get("source_geometry_repairs")
+             if isinstance(document_diagnostics, dict) else None),
+        )
         return {
             **provenance_base,
             "inputs": {
                 "pbf": {**source_after_hash, "sha256": source_sha256},
-                "smart_preextract": smart,
             },
             "output_contract": {
                 "catalog_schema_version": schema.SCHEMA_VERSION,
                 "columns": list(frame.columns),
             },
-            "diagnostics": _diagnostics(frame, bbox),
+            "diagnostics": _diagnostics(
+                frame, bbox, source_geometry_repairs=repairs),
         }
 
     completed = source_publication.reuse_completed(
@@ -385,14 +415,12 @@ def main(pbf_file: Path, bbox, output_path: Path,
         return completed
     feather_path, sidecar, _ = source_publication.preflight_output(output_path)
 
-    bounded_pbf, preextract_identity = smart_preextract(
-        pbf_file, bbox, Path(output_path), osmium_binary=osmium_binary)
     bbox_object = elm.BoundingBox(*bbox)
     tag_filters = {key: True for key in TAG_FILTER_KEYS}
-    print(f"Extracting OSM landmarks from smart pre-extract {bounded_pbf}")
+    print(f"Extracting OSM landmarks directly from full PBF {pbf_file}")
     print(f"  bbox (west south east north): {bbox}")
     results = elm.extract_landmarks(
-        str(bounded_pbf), {REGION_ID: bbox_object}, tag_filters)
+        str(pbf_file), {REGION_ID: bbox_object}, tag_filters)
     unexpected_regions = sorted({region for region, _ in results} - {REGION_ID})
     if unexpected_regions:
         raise RuntimeError(
@@ -403,8 +431,14 @@ def main(pbf_file: Path, bbox, output_path: Path,
         raise RuntimeError(f"source PBF changed during extraction: {pbf_file}")
 
     features = [feature for region, feature in results if region == REGION_ID]
-    frame = features_to_geodataframe(features)
-    diagnostics = _diagnostics(frame, bbox)
+    geometry_repairs = []
+    frame = features_to_geodataframe(
+        features, geometry_repairs=geometry_repairs)
+    geometry_repairs.sort(key=lambda repair: repair["id"])
+    geometry_repairs = _validate_source_geometry_repairs(
+        frame, geometry_repairs)
+    diagnostics = _diagnostics(
+        frame, bbox, source_geometry_repairs=geometry_repairs)
     print(f"  {schema.summarize(frame)}")
     print(f"  OSM types: {diagnostics['by_osm_type']}")
     print(
@@ -419,7 +453,6 @@ def main(pbf_file: Path, bbox, output_path: Path,
                 **source_after_extraction,
                 "sha256": source_sha256,
             },
-            "smart_preextract": preextract_identity,
         },
         "output_contract": {
             "catalog_schema_version": schema.SCHEMA_VERSION,
@@ -427,20 +460,6 @@ def main(pbf_file: Path, bbox, output_path: Path,
         },
         "diagnostics": diagnostics,
     })
-    try:
-        bounded_pbf.unlink()
-        workspace = bounded_pbf.parent
-        expected_prefix = f".{Path(output_path).stem}.smart."
-        if (workspace.parent.resolve() == Path(output_path).parent.resolve()
-                and workspace.name.startswith(expected_prefix)
-                and workspace.name.endswith(artifact.INCOMPLETE_SUFFIX)):
-            workspace.rmdir()
-            _fsync_directory(workspace.parent)
-        else:
-            _fsync_directory(workspace)
-    except OSError as error:
-        print(f"WARNING: published output is complete, but private smart "
-              f"pre-extract cleanup failed: {error}")
     print(f"Wrote {feather_path}")
     print(f"      {sidecar}")
     return frame
@@ -466,18 +485,12 @@ if __name__ == "__main__":
         type=Path,
         help="output path; the .feather suffix is applied",
     )
-    parser.add_argument(
-        "--osmium_binary",
-        default="osmium",
-        help="osmium executable used for the required smart pre-extract",
-    )
     arguments = parser.parse_args()
     try:
         main(
             pbf_file=arguments.pbf_file,
             bbox=arguments.bbox,
             output_path=arguments.output_path,
-            osmium_binary=arguments.osmium_binary,
         )
     except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as error:
         parser.error(str(error))

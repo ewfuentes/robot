@@ -20,6 +20,7 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     publication,
     provenance,
+    stage_reuse,
 )
 from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
@@ -46,6 +47,8 @@ def publish_observations(
         accepted_tracklets: list[tracklets.AcceptedTracklet],
         pano_width: int, bearing_sigma_deg: float,
         orchestration: dict, build_identity: str, source_digests: dict,
+        stage_reuse_provenance: dict | None = None,
+        git_commit: str | None = None,
         arguments: tuple[str, ...] = ()) -> artifact.ArtifactRef:
     """Build, validate, and atomically publish one observation artifact."""
     observations = tracklets.build_camera_bearing_observations(
@@ -73,11 +76,15 @@ def publish_observations(
         "n_observations": len(records),
         "coverage": "complete",
         "source_digests": source_digests,
+        **({"stage_reuse": stage_reuse_provenance}
+           if stage_reuse_provenance is not None else {}),
     }
     with publication.published_artifact(
             output_dir, kind=paths_lib.BEARING_OBSERVATIONS,
             dataset=dataset_name, version=version, generator=GENERATOR,
-            git_commit=provenance.git_commit(), arguments=arguments,
+            git_commit=(provenance.git_commit()
+                        if git_commit is None else git_commit),
+            arguments=arguments,
             upstreams=(tracks_ref, audits_ref), config=config,
             declared_outputs=(OUTPUT_NAME,)) as builder:
         artifact.atomic_write_file(
@@ -162,29 +169,53 @@ def load_inputs(args):
             "--orchestration_config_digest does not match the immutable "
             "bearings-stage config selection")
 
-    audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
     expected_versions = {
         paths_lib.OBJECT_TRACKS: build_config.value(
             document, "artifacts.object_tracks_version"),
         paths_lib.SEMANTIC_AUDITS: build_config.value(
             document, "artifacts.semantic_audits_version"),
     }
-    for ref in (audits.tracks_ref, audits.semantic_audits_ref):
-        if (ref.dataset != args.dataset
-                or ref.version != expected_versions[ref.kind]):
-            raise BearingObservationError(
-                f"{ref.kind} artifact identity disagrees with build config")
-        manifest = artifact.load_manifest(ref.path)
-        if manifest.config.get("build_identity") != document["build_identity"]:
-            raise BearingObservationError(
-                f"{ref.kind} belongs to a different immutable build")
-    audit_manifest = artifact.load_manifest(audits.semantic_audits_ref.path)
-    if audit_manifest.upstreams.count(audits.tracks_ref) != 1:
+    tracks_ref = artifact.open_artifact(
+        args.tracks_dir, expected_kind=paths_lib.OBJECT_TRACKS,
+        expected_dataset=args.dataset,
+        expected_version=expected_versions[paths_lib.OBJECT_TRACKS])
+    audits_ref = artifact.open_artifact(
+        args.audit_dir, expected_kind=paths_lib.SEMANTIC_AUDITS,
+        expected_dataset=args.dataset,
+        expected_version=expected_versions[paths_lib.SEMANTIC_AUDITS])
+    authorization = stage_reuse.load_proof(config_path.parent)
+    stage_reuse.require_target_checkout(
+        config_path.parent, document=document, authorization=authorization)
+    tracks_manifest = stage_reuse.require_configured_artifact(
+        tracks_ref, target_build_dir=config_path.parent,
+        kind=paths_lib.OBJECT_TRACKS, document=document)
+    track_bridge = stage_reuse.require_compatible_artifact(
+        tracks_ref, tracks_manifest, target_build_dir=config_path.parent,
+        owner_stage="track", authorization=authorization)
+    audit_manifest = stage_reuse.require_configured_artifact(
+        audits_ref, target_build_dir=config_path.parent,
+        kind=paths_lib.SEMANTIC_AUDITS, document=document)
+    stage_reuse.require_recorded_bridge(
+        audit_manifest.config.get("stage_reuse"), track_bridge,
+        required_artifacts=(tracks_ref,),
+        additional_artifacts=tuple(
+            reference for reference in (authorization.refs
+                                         if authorization is not None else ())
+            if reference.kind == paths_lib.FRAME_LANDMARKS))
+    if audit_manifest.config.get("build_identity") != document["build_identity"]:
+        raise BearingObservationError(
+            f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
+    if sum(ref.to_dict() == tracks_ref.to_dict()
+           for ref in audit_manifest.upstreams) != 1:
         raise BearingObservationError(
             "semantic_audits must bind the exact object_tracks artifact once")
+    audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
+    if (audits.tracks_ref.to_dict() != tracks_ref.to_dict()
+            or audits.semantic_audits_ref.to_dict() != audits_ref.to_dict()):
+        raise BearingObservationError(
+            "audit loader did not retain the exact authorized upstream refs")
 
     dataset_source_digest = artifact.sha256_json(dataset_digests)
-    tracks_manifest = artifact.load_manifest(audits.tracks_ref.path)
     recorded_sources = tracks_manifest.config.get("source_digests")
     if (not isinstance(recorded_sources, dict)
             or recorded_sources.get("dataset_tracking_inputs")
@@ -203,6 +234,8 @@ def load_inputs(args):
             paths_lib.SEMANTIC_AUDITS:
                 audits.semantic_audits_ref.content_digest,
         },
+        "stage_reuse": track_bridge,
+        "reuse_authorization": authorization,
     }
 
 
@@ -223,7 +256,7 @@ def main() -> None:
         audits = resolved["audits"]
         accepted = tracklets.build_accepted_tracklets(
             audits.source_tracks, audits)
-        publish_observations(
+        reference = publish_observations(
             args.output_dir, dataset_name=args.dataset,
             version=resolved["output_version"],
             tracks_ref=audits.tracks_ref,
@@ -236,7 +269,13 @@ def main() -> None:
             orchestration=resolved["orchestration"],
             build_identity=document["build_identity"],
             source_digests=resolved["source_digests"],
+            stage_reuse_provenance=resolved["stage_reuse"],
+            git_commit=document["git_commit"],
             arguments=tuple(sys.argv))
+        stage_reuse.require_output_commit(
+            reference, target_build_dir=Path(args.build_config).parent,
+            document=document,
+            authorization=resolved["reuse_authorization"])
     except (artifact.ArtifactError, audit_io.AuditArtifactError,
             BearingObservationError, dataset.ContractViolation,
             tracklets.TrackletContractError, OSError, ValueError) as error:

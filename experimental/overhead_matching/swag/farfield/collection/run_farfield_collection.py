@@ -91,9 +91,9 @@ DATASET_TOOLS = "//experimental/overhead_matching/swag/farfield/dataset_tools"
 # tree. Only the stages that genuinely need a subprocess consult this.
 WORKSPACE = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
 
-# The OSM writer first runs an osmium smart pre-extract, then gives the bounded
-# result to the common extractor with its complete node index.  Keep a cgroup
-# ceiling as a final host-safety guard, independent of source PBF size.
+# The OSM writer reads the caller-selected full PBF directly with the common
+# extractor's complete geometry index. Keep a cgroup ceiling as a final
+# host-safety guard, independent of source PBF size.
 EXTRACT_MEM_CAP_GB = 24
 
 PINHOLE_FACES = paths_lib.PINHOLE_FACES
@@ -352,7 +352,7 @@ def _finish_landmark_stage(name: str, selected: Path, pbf_paths, bbox,
                 if enc_selection is not None else None
             ),
             "dedupe_tolerance_m": args.dedupe_tolerance_m,
-            "osm_preextract_strategy": "smart",
+            "osm_geometry_index_mode": "full_pbf_complete_geometry_index",
             "source_coverage": source_coverage,
         },
     )
@@ -551,7 +551,7 @@ def _write_provenance(source_dir: Path, name: str, pbf_paths, bbox,
                 if enc_selection is not None else None
             ),
             "dedupe_tolerance_m": args.dedupe_tolerance_m,
-            "osm_preextract_strategy": "smart",
+            "osm_geometry_index_mode": "full_pbf_complete_geometry_index",
         },
         notes=("OSM+ENC merged catalog" if merged else
                "OSM-only catalog: NOAA ENC covers US waters only, so fixed "

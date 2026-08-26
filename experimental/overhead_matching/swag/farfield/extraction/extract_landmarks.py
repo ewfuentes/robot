@@ -21,6 +21,7 @@ for every request.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import math
@@ -54,6 +55,15 @@ from experimental.overhead_matching.swag.farfield.extraction import (
 
 GENERATOR = ("//experimental/overhead_matching/swag/farfield/extraction:"
              "extract_landmarks")
+LEGACY_ADOPTION_GENERATOR = (
+    "//experimental/overhead_matching/swag/farfield/extraction:"
+    "legacy_extraction_adoption")
+LEGACY_ADOPTION_CONFIG_SCHEMA = (
+    "farfield.legacy_extraction_adopted_artifact/v1")
+LEGACY_ADOPTION_PROOF_SCHEMA = (
+    "farfield.legacy_extraction_publication_proof/v1")
+LEGACY_ADOPTION_REPORT_SCHEMA = (
+    "farfield.legacy_extraction_adoption_report/v1")
 PREDICTIONS_NAME = dataset_lib.PREDICTIONS_NAME
 ATTEMPTS_DIR_NAME = llm_lifecycle.ATTEMPTS_DIR_NAME
 REQUEST_ARTIFACT_DIR = "requests"
@@ -156,6 +166,18 @@ def _validate_ref_identity(value: Any, *, kind: str, dataset: str,
             or not _DIGEST_RE.fullmatch(value["content_digest"])):
         raise ValueError(f"{where} contains an invalid version or digest")
     return value
+
+
+def legacy_adoption_marker(report_sha256: str) -> dict[str, str]:
+    """Return the exact immutable marker for specialized adopted artifacts."""
+    if (not isinstance(report_sha256, str)
+            or not _DIGEST_RE.fullmatch(report_sha256)):
+        raise ValueError(
+            "legacy adoption report digest must be a lowercase SHA-256")
+    return {
+        "legacy_adoption_schema": LEGACY_ADOPTION_CONFIG_SCHEMA,
+        "legacy_adoption_report_sha256": report_sha256,
+    }
 
 
 def _validate_schema(value: Any, schema: Mapping[str, Any],
@@ -348,9 +370,16 @@ def _validate_selected(selected: dict[str, Any]) -> None:
             "execution.batch_gcs_prefix must be null in on_demand mode")
 
 
-def load_context(args: argparse.Namespace) -> ExtractionContext:
-    """Load the exact recipe and validate its dataset/stage binding."""
-    config_path = Path(args.build_config)
+def load_artifact_validation_context(
+        *, build_config_path: Path, dataset: str,
+        dataset_base: Path) -> ExtractionContext:
+    """Load the immutable extraction context without transport CLI state.
+
+    Completed-artifact readers and stage-reuse authorization deliberately use
+    this same context constructor as the producer.  That keeps pixel, prompt,
+    request, and prediction validation bound to one implementation.
+    """
+    config_path = Path(build_config_path)
     if config_path.name != build_config.BUILD_CONFIG_NAME:
         raise ValueError(
             f"--build_config must name {build_config.BUILD_CONFIG_NAME}")
@@ -358,11 +387,11 @@ def load_context(args: argparse.Namespace) -> ExtractionContext:
     if config_path.resolve() != (
             config_path.parent / build_config.BUILD_CONFIG_NAME).resolve():
         raise ValueError("--build_config does not name the loaded recipe")
-    if document["dataset"] != args.dataset:
+    if document["dataset"] != dataset:
         raise ValueError(
             f"build config dataset {document['dataset']!r} does not match "
-            f"--dataset {args.dataset!r}")
-    dataset_base = Path(args.dataset_base).resolve()
+            f"--dataset {dataset!r}")
+    dataset_base = Path(dataset_base).resolve()
     recorded_base = document["inputs"].get("dataset_base")
     if recorded_base is None or Path(recorded_base).resolve() != dataset_base:
         raise ValueError(
@@ -371,45 +400,14 @@ def load_context(args: argparse.Namespace) -> ExtractionContext:
     selected = _selected_values(document)
     _validate_selected(selected)
     actual_digest = artifact.sha256_json(selected)
-    if args.orchestration_config_digest != actual_digest:
-        raise ValueError(
-            "--orchestration_config_digest does not match the immutable "
-            "extraction/execution/cost recipe")
     orchestration = {
         "schema": "farfield_pipeline_stage/v1",
         "stage": "extract",
         "config_digest": actual_digest,
     }
-
-    expected_online = selected["execution.llm_transport"] == "on_demand"
-    if bool(args.online) != expected_online:
-        raise ValueError(
-            "--online selection disagrees with execution.llm_transport")
-    expected_prefix = selected["execution.batch_gcs_prefix"]
-    if ((expected_online and args.gcs_prefix is not None)
-            or (not expected_online and args.gcs_prefix != expected_prefix)):
-        raise ValueError(
-            "--gcs_prefix disagrees with execution.batch_gcs_prefix")
-    if bool(args.approve_cost) != selected["execution.approve_cost"]:
-        raise ValueError(
-            "--approve_cost disagrees with execution.approve_cost")
-    if args.cost_limit != float(selected["cost.limit_usd"]):
-        raise ValueError("--cost_limit disagrees with cost.limit_usd")
-    if args.parallel < 1 or args.poll_interval < 1:
-        raise ValueError("--parallel and --poll_interval must be positive")
-    args.model = selected["extraction.model"]
-
-    pinhole_output = Path(args.pinhole_output_dir).resolve()
-    frame_output = Path(args.output_dir).resolve()
-    if (pinhole_output == frame_output
-            or pinhole_output in frame_output.parents
-            or frame_output in pinhole_output.parents):
-        raise ValueError(
-            "--pinhole_output_dir and --output_dir must be disjoint")
-
     metadata = dataset_lib.load_metadata(dataset_base)
     dataset_lib.require_camera_frame_panoramas(metadata, dataset_base)
-    if metadata["dataset_name"] != args.dataset:
+    if metadata["dataset_name"] != dataset:
         raise ValueError(
             "pipeline_metadata.json dataset_name does not match --dataset")
     frames = tuple(dataset_lib.load_frames(dataset_base))
@@ -447,6 +445,45 @@ def load_context(args: argparse.Namespace) -> ExtractionContext:
         panorama_dir=panorama_dir,
         input_digests=input_digests,
     )
+
+
+def load_context(args: argparse.Namespace) -> ExtractionContext:
+    """Load the exact recipe and validate its dataset/stage binding."""
+    context = load_artifact_validation_context(
+        build_config_path=args.build_config, dataset=args.dataset,
+        dataset_base=args.dataset_base)
+    selected = context.selected
+    actual_digest = context.orchestration["config_digest"]
+    if args.orchestration_config_digest != actual_digest:
+        raise ValueError(
+            "--orchestration_config_digest does not match the immutable "
+            "extraction/execution/cost recipe")
+    expected_online = selected["execution.llm_transport"] == "on_demand"
+    if bool(args.online) != expected_online:
+        raise ValueError(
+            "--online selection disagrees with execution.llm_transport")
+    expected_prefix = selected["execution.batch_gcs_prefix"]
+    if ((expected_online and args.gcs_prefix is not None)
+            or (not expected_online and args.gcs_prefix != expected_prefix)):
+        raise ValueError(
+            "--gcs_prefix disagrees with execution.batch_gcs_prefix")
+    if bool(args.approve_cost) != selected["execution.approve_cost"]:
+        raise ValueError(
+            "--approve_cost disagrees with execution.approve_cost")
+    if args.cost_limit != float(selected["cost.limit_usd"]):
+        raise ValueError("--cost_limit disagrees with cost.limit_usd")
+    if args.parallel < 1 or args.poll_interval < 1:
+        raise ValueError("--parallel and --poll_interval must be positive")
+    args.model = selected["extraction.model"]
+
+    pinhole_output = Path(args.pinhole_output_dir).resolve()
+    frame_output = Path(args.output_dir).resolve()
+    if (pinhole_output == frame_output
+            or pinhole_output in frame_output.parents
+            or frame_output in pinhole_output.parents):
+        raise ValueError(
+            "--pinhole_output_dir and --output_dir must be disjoint")
+    return context
 
 
 def _pinhole_outputs(context: ExtractionContext) -> tuple[str, ...]:
@@ -549,6 +586,23 @@ def validate_pinhole_images(path: Path, context: ExtractionContext) -> None:
                     f"(maximum channel difference {int(difference.max())})")
 
 
+def validate_existing_pinhole_artifact(
+        args: argparse.Namespace,
+        context: ExtractionContext) -> artifact.ArtifactRef:
+    """Run the producer's complete pixel and manifest reuse validation."""
+    destination = Path(args.pinhole_output_dir)
+    validate_pinhole_images(destination, context)
+    ref = artifact.open_artifact(
+        destination,
+        expected_kind=paths_lib.PINHOLE_IMAGES,
+        expected_dataset=args.dataset,
+        expected_version=context.pinhole_version)
+    _validate_manifest(
+        destination, upstreams=(), config=_pinhole_config(context),
+        declared_outputs=_pinhole_outputs(context))
+    return ref
+
+
 def ensure_pinhole_artifact(
         args: argparse.Namespace, context: ExtractionContext,
         *, arguments: Sequence[str] = ()) -> artifact.ArtifactRef:
@@ -557,16 +611,7 @@ def ensure_pinhole_artifact(
     outputs = _pinhole_outputs(context)
     config = _pinhole_config(context)
     if destination.exists() or destination.is_symlink():
-        validate_pinhole_images(destination, context)
-        ref = artifact.open_artifact(
-            destination,
-            expected_kind=paths_lib.PINHOLE_IMAGES,
-            expected_dataset=args.dataset,
-            expected_version=context.pinhole_version)
-        _validate_manifest(
-            destination, upstreams=(), config=config,
-            declared_outputs=outputs)
-        return ref
+        return validate_existing_pinhole_artifact(args, context)
 
     with publication.published_artifact(
             destination,
@@ -698,6 +743,31 @@ def build_request_set(
         upstreams=(pinhole_ref,),
         units=units,
     )
+
+
+def _validate_recorded_request_payloads(
+        request_path: Path, context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef,
+        fingerprint: str) -> llm_lifecycle.RequestSet:
+    """Rebuild pixels-to-request bytes and require their exact snapshot."""
+    request_set_path = request_path / llm_lifecycle.REQUEST_SET_NAME
+    recorded = llm_lifecycle.load_request_set(request_set_path)
+    with tempfile.TemporaryDirectory(
+            prefix=".request-validation-") as temporary:
+        expected = build_request_set(context, pinhole_ref, Path(temporary))
+    if (recorded.fingerprint != fingerprint
+            or recorded.to_dict() != expected.to_dict()
+            or not _request_set_matches(recorded, context, pinhole_ref)):
+        raise ValueError(
+            "request set differs from the reproduced extraction workload")
+    expected_request_set_bytes = (
+        artifact.canonical_json_bytes(recorded.to_dict()) + b"\n")
+    if request_set_path.read_bytes() != expected_request_set_bytes:
+        raise ValueError("request_set.json is not canonical")
+    if (request_path / llm_lifecycle.REQUESTS_NAME).read_bytes() \
+            != llm_lifecycle.transport_requests_bytes(recorded):
+        raise ValueError("requests.jsonl differs from its typed request set")
+    return recorded
 
 
 def _request_version(context: ExtractionContext, fingerprint: str) -> str:
@@ -1138,6 +1208,337 @@ def _read_predictions(path: Path, expected_keys: Sequence[str]) -> list[dict]:
     return records
 
 
+def _open_exact_frame_upstream(
+        ref: artifact.ArtifactRef, *, kind: str, dataset: str,
+        where: str) -> tuple[Path, artifact.ArtifactManifest]:
+    path = Path(ref.path)
+    try:
+        reopened = artifact.open_artifact(
+            path, expected_kind=kind, expected_dataset=dataset,
+            expected_version=ref.version)
+        manifest = artifact.load_manifest(path)
+    except (artifact.ArtifactError, OSError) as error:
+        raise ValueError(
+            f"{where} does not reopen as its exact typed artifact: {error}") \
+            from error
+    if reopened.to_dict() != ref.to_dict():
+        raise ValueError(f"{where} changed identity after frame publication")
+    return path, manifest
+
+
+def _validate_adoption_report(
+        report: Any, *, dataset: str,
+        request_set: llm_lifecycle.RequestSet,
+        pinhole_ref: artifact.ArtifactRef,
+        canonical_bytes: bytes,
+        prediction_bytes: bytes,
+        results: Sequence[llm_lifecycle.CanonicalResult]) -> None:
+    expected_keys = {
+        "schema", "dataset", "status", "provider_calls", "spec_sha256",
+        "request_set", "pinhole_images", "request_sources",
+        "result_sources", "empty_error_sidecars", "attempts",
+        "normalization_ledger", "attempt_summary", "sanitation_ledger",
+        "canonical_outputs", "publication_plan",
+    }
+    if not isinstance(report, dict) or set(report) != expected_keys:
+        raise ValueError("legacy adoption report has an invalid exact shape")
+    try:
+        request_report = report["request_set"]
+        pinhole_report = report["pinhole_images"]
+        attempt_summary = report["attempt_summary"]
+        canonical = report["canonical_outputs"]
+        publication_plan = report["publication_plan"]
+        anchors_ok = (
+            report["schema"] == LEGACY_ADOPTION_REPORT_SCHEMA
+            and report["dataset"] == dataset
+            and report["status"] == "ready_for_explicit_publication"
+            and report["provider_calls"] == 0
+            and set(request_report) == {
+                "fingerprint", "model", "prompt_sha256",
+                "response_schema_sha256", "n_expected", "coverage"}
+            and request_report["fingerprint"] == request_set.fingerprint
+            and request_report["model"] == request_set.model
+            and request_report["prompt_sha256"] == hashlib.sha256(
+                request_set.system_prompt.encode("utf-8")).hexdigest()
+            and request_report["response_schema_sha256"]
+                == artifact.sha256_json(
+                    request_set.to_dict()["response_schema"])
+            and request_report["n_expected"] == len(request_set.units)
+            and request_report["coverage"] == "complete"
+            and pinhole_report["artifact_ref"] == pinhole_ref.to_dict()
+            and pinhole_report["content_digest"]
+                == pinhole_ref.content_digest
+            and pinhole_report["request_media_match"] == "complete"
+            and set(attempt_summary) == {
+                "n_total", "n_valid", "n_failed_or_invalid",
+                "raw_provenance"}
+            and attempt_summary["raw_provenance"]
+                == "complete_by_source_and_line_digest"
+            and set(canonical) == {
+                "n_results", "canonical_results_sha256",
+                "predictions_sha256", "coverage"}
+            and canonical["n_results"] == len(results)
+            and canonical["canonical_results_sha256"]
+                == hashlib.sha256(canonical_bytes).hexdigest()
+            and canonical["predictions_sha256"]
+                == hashlib.sha256(prediction_bytes).hexdigest()
+            and canonical["coverage"]
+                == "complete_unique_in_request_order"
+            and set(publication_plan) == {
+                "mode", "requires_explicit_write_authorization",
+                "provider_calls", "normal_reader_compatibility_fallback",
+                "raw_source_policy", "artifacts"}
+            and publication_plan["mode"]
+                == "transactional_typed_adoption"
+            and publication_plan[
+                "requires_explicit_write_authorization"] is True
+            and publication_plan["provider_calls"] == 0
+            and publication_plan[
+                "normal_reader_compatibility_fallback"] is False
+            and publication_plan["raw_source_policy"]
+                == "retain_verbatim_by_reported_sha256"
+            and [item.get("kind")
+                 for item in publication_plan["artifacts"]] == [
+                    paths_lib.PINHOLE_IMAGES,
+                    llm_lifecycle.REQUEST_ARTIFACT_KIND,
+                    llm_lifecycle.RESULT_ARTIFACT_KIND,
+                    paths_lib.FRAME_LANDMARKS,
+                ]
+            and isinstance(report["normalization_ledger"], list)
+            and isinstance(report["sanitation_ledger"], list))
+    except (AttributeError, KeyError, TypeError):
+        anchors_ok = False
+    if not anchors_ok:
+        raise ValueError(
+            "legacy adoption report lacks its zero-provider raw-source proof")
+
+    def require_source_digests(records: Any, where: str) -> None:
+        if not isinstance(records, list) or not records:
+            raise ValueError(f"legacy adoption report has no {where}")
+        for index, record in enumerate(records):
+            digest = record.get("sha256") if isinstance(record, dict) else None
+            if (not isinstance(record, dict)
+                    or not isinstance(digest, str)
+                    or not _DIGEST_RE.fullmatch(digest)
+                    or not isinstance(record.get("path"), str)
+                    or not record["path"]):
+                raise ValueError(
+                    f"legacy adoption report {where}[{index}] lacks raw bytes "
+                    "provenance")
+
+    require_source_digests(report["request_sources"], "request_sources")
+    require_source_digests(report["result_sources"], "result_sources")
+    attempts = report["attempts"]
+    if not isinstance(attempts, list) or not attempts:
+        raise ValueError("legacy adoption report has no preserved attempts")
+    attempt_ids = set()
+    for index, attempt in enumerate(attempts):
+        raw_line_digest = (attempt.get("raw_line_sha256")
+                           if isinstance(attempt, dict) else None)
+        if (not isinstance(attempt, dict)
+                or not isinstance(attempt.get("attempt_id"), str)
+                or not attempt["attempt_id"]
+                or not isinstance(raw_line_digest, str)
+                or not _DIGEST_RE.fullmatch(raw_line_digest)):
+            raise ValueError(
+                f"legacy adoption report attempts[{index}] lacks raw-line "
+                "provenance")
+        attempt_ids.add(attempt["attempt_id"])
+    if (len(attempt_ids) != len(attempts)
+            or attempt_summary["n_total"] != len(attempts)
+            or attempt_summary["n_valid"] != len(results)
+            or attempt_summary["n_failed_or_invalid"]
+                != len(attempts) - len(results)):
+        raise ValueError(
+            "legacy adoption attempt summary is internally inconsistent")
+    if any(result.attempt_id not in attempt_ids for result in results):
+        raise ValueError(
+            "canonical results are not bound to preserved legacy attempts")
+
+
+def _validate_existing_adopted_frame_artifact(
+        args: argparse.Namespace,
+        context: ExtractionContext,
+        pinhole_ref: artifact.ArtifactRef,
+        destination: Path,
+        frame_ref: artifact.ArtifactRef,
+        frame_manifest: artifact.ArtifactManifest,
+        result_ref: artifact.ArtifactRef,
+        frame_config: dict[str, Any]) -> artifact.ArtifactRef:
+    expected_frame_keys = {
+        "purpose", "orchestration", "build_identity", "prompt_sha256",
+        "response_schema_sha256", "request_set_fingerprint",
+        "request_artifact", "canonical_results_artifact", "coverage",
+        "n_expected", "n_successful", "legacy_adoption_schema",
+        "legacy_adoption_report_sha256",
+    }
+    if set(frame_config) != expected_frame_keys:
+        raise ValueError(
+            f"{destination} has an invalid adopted-frame config shape")
+    report_digest = frame_config["legacy_adoption_report_sha256"]
+    marker = legacy_adoption_marker(report_digest)
+    fingerprint = frame_config["request_set_fingerprint"]
+    if (frame_config["legacy_adoption_schema"]
+            != LEGACY_ADOPTION_CONFIG_SCHEMA
+            or frame_config["purpose"] != "frame_landmark_extraction"
+            or frame_config["orchestration"] != context.orchestration
+            or frame_config["build_identity"]
+                != context.document["build_identity"]
+            or frame_config["prompt_sha256"] != prompts.prompt_sha256(
+                context.selected["extraction.prompt_type"])
+            or frame_config["response_schema_sha256"]
+                != artifact.sha256_json(prompts.response_schema())
+            or frame_config["coverage"] != "complete"
+            or frame_config["n_expected"] != len(context.frames)
+            or frame_config["n_successful"] != len(context.frames)
+            or not isinstance(fingerprint, str)
+            or not _DIGEST_RE.fullmatch(fingerprint)):
+        raise ValueError(
+            f"{destination} has a different adopted extraction contract")
+
+    request_identity = _validate_ref_identity(
+        frame_config["request_artifact"],
+        kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+        dataset=args.dataset,
+        where="manifest.config.request_artifact")
+    result_identity = _validate_ref_identity(
+        frame_config["canonical_results_artifact"],
+        kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+        dataset=args.dataset,
+        where="manifest.config.canonical_results_artifact")
+    if result_identity != _ref_identity(result_ref):
+        raise ValueError(
+            "adopted frame config and canonical-result upstream differ")
+    if (request_identity["version"] != _request_version(context, fingerprint)
+            or result_identity["version"] != _result_version(
+                context, fingerprint)):
+        raise ValueError(
+            "adopted LLM artifact versions do not match the request "
+            "fingerprint")
+
+    result_path, result_manifest = _open_exact_frame_upstream(
+        result_ref, kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+        dataset=args.dataset, where="adopted canonical-result upstream")
+    if (len(result_manifest.upstreams) != 1
+            or result_manifest.upstreams[0].kind
+                != llm_lifecycle.REQUEST_ARTIFACT_KIND
+            or result_manifest.upstreams[0].dataset != args.dataset):
+        raise ValueError(
+            "adopted canonical result must bind exactly one typed request")
+    request_ref = result_manifest.upstreams[0]
+    if request_identity != _ref_identity(request_ref):
+        raise ValueError(
+            "adopted frame config and result request upstream differ")
+    request_path, request_manifest = _open_exact_frame_upstream(
+        request_ref, kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+        dataset=args.dataset, where="adopted request upstream")
+
+    if any(manifest.generator != LEGACY_ADOPTION_GENERATOR
+           for manifest in (
+               request_manifest, result_manifest, frame_manifest)):
+        raise ValueError(
+            "adopted lineage was not published by the adoption generator")
+    if (len({manifest.git_commit for manifest in (
+                request_manifest, result_manifest, frame_manifest)}) != 1
+            or len({manifest.arguments for manifest in (
+                request_manifest, result_manifest, frame_manifest)}) != 1):
+        raise ValueError(
+            "adopted lineage does not share one publisher invocation")
+
+    request_set = _validate_recorded_request_payloads(
+        request_path, context, pinhole_ref, fingerprint)
+
+    request_config = dict(request_manifest.config)
+    expected_request_keys = {
+        "purpose", "orchestration", "build_identity",
+        "request_set_fingerprint", "n_expected", "legacy_adoption_schema",
+        "legacy_adoption_report_sha256", "legacy_adoption",
+    }
+    if set(request_config) != expected_request_keys:
+        raise ValueError("adopted request manifest has an invalid config shape")
+    proof = request_config["legacy_adoption"]
+    if (not isinstance(proof, dict)
+            or set(proof) != {
+                "schema", "verification_report_sha256",
+                "verification_report"}
+            or proof["schema"] != LEGACY_ADOPTION_PROOF_SCHEMA
+            or proof["verification_report_sha256"] != report_digest
+            or artifact.sha256_json(proof["verification_report"])
+                != report_digest):
+        raise ValueError(
+            "adopted request manifest has an invalid verification proof")
+    expected_request_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "request_set_fingerprint": fingerprint,
+        **marker,
+        "n_expected": len(request_set.units),
+        "legacy_adoption": proof,
+    }
+    _validate_manifest(
+        request_path, upstreams=(pinhole_ref,),
+        config=expected_request_config,
+        declared_outputs=(
+            llm_lifecycle.REQUEST_SET_NAME, llm_lifecycle.REQUESTS_NAME))
+
+    canonical_path = result_path / llm_lifecycle.CANONICAL_RESULTS_NAME
+    results = llm_lifecycle.load_canonical_results(
+        canonical_path, request_set)
+    canonical_bytes = llm_lifecycle.canonical_results_bytes(
+        request_set, results)
+    if canonical_path.read_bytes() != canonical_bytes:
+        raise ValueError(
+            "adopted canonical-result payload is not exact canonical JSONL")
+    expected_result_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "request_set_fingerprint": fingerprint,
+        "n_expected": len(request_set.units),
+        "n_successful": len(results),
+        "coverage": "complete",
+        **marker,
+    }
+    _validate_manifest(
+        result_path, upstreams=(request_ref,),
+        config=expected_result_config,
+        declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+
+    expected_predictions = predictions_bytes(request_set, results)
+    prediction_path = destination / PREDICTIONS_NAME
+    if prediction_path.read_bytes() != expected_predictions:
+        raise ValueError(
+            "adopted frame predictions differ from canonical results")
+    _read_predictions(prediction_path, context.stems)
+    expected_frame_config = {
+        "purpose": "frame_landmark_extraction",
+        "orchestration": context.orchestration,
+        "build_identity": context.document["build_identity"],
+        "prompt_sha256": prompts.prompt_sha256(
+            context.selected["extraction.prompt_type"]),
+        "response_schema_sha256": artifact.sha256_json(
+            prompts.response_schema()),
+        "request_set_fingerprint": fingerprint,
+        "request_artifact": _ref_identity(request_ref),
+        "canonical_results_artifact": _ref_identity(result_ref),
+        "coverage": "complete",
+        "n_expected": len(request_set.units),
+        "n_successful": len(results),
+        **marker,
+    }
+    _validate_manifest(
+        destination, upstreams=(pinhole_ref, result_ref),
+        config=expected_frame_config,
+        declared_outputs=(PREDICTIONS_NAME,))
+    _validate_adoption_report(
+        proof["verification_report"], dataset=args.dataset,
+        request_set=request_set, pinhole_ref=pinhole_ref,
+        canonical_bytes=canonical_bytes,
+        prediction_bytes=expected_predictions, results=results)
+    return frame_ref
+
+
 def validate_existing_frame_artifact(
         args: argparse.Namespace,
         context: ExtractionContext,
@@ -1161,6 +1562,11 @@ def validate_existing_frame_artifact(
         raise ValueError(
             f"{destination} does not bind a canonical LLM result artifact")
     config = dict(manifest.config)
+    if (config.get("legacy_adoption_schema")
+            == LEGACY_ADOPTION_CONFIG_SCHEMA):
+        return _validate_existing_adopted_frame_artifact(
+            args, context, pinhole_ref, destination, ref, manifest,
+            result_ref, config)
     expected_keys = {
         "orchestration", "build_identity", "selected_config",
         "prompt_sha256", "response_schema_sha256",
@@ -1203,7 +1609,60 @@ def validate_existing_frame_artifact(
         raise ValueError(
             "manifest LLM artifact versions do not match its request "
             "fingerprint")
-    _read_predictions(destination / PREDICTIONS_NAME, context.stems)
+
+    result_path, result_manifest = _open_exact_frame_upstream(
+        result_ref, kind=llm_lifecycle.RESULT_ARTIFACT_KIND,
+        dataset=args.dataset, where="canonical-result upstream")
+    if (len(result_manifest.upstreams) != 1
+            or result_manifest.upstreams[0].kind
+                != llm_lifecycle.REQUEST_ARTIFACT_KIND
+            or result_manifest.upstreams[0].dataset != args.dataset):
+        raise ValueError(
+            "canonical result must bind exactly one typed request")
+    request_ref = result_manifest.upstreams[0]
+    if request_identity != _ref_identity(request_ref):
+        raise ValueError(
+            "frame config and result request upstream identities differ")
+    request_path, request_manifest = _open_exact_frame_upstream(
+        request_ref, kind=llm_lifecycle.REQUEST_ARTIFACT_KIND,
+        dataset=args.dataset, where="request upstream")
+    if any(item.generator != GENERATOR for item in (
+            request_manifest, result_manifest, manifest)):
+        raise ValueError(
+            "normal extraction lineage was not published by its producer")
+
+    request_set = _validate_recorded_request_payloads(
+        request_path, context, pinhole_ref, fingerprint)
+    _validate_manifest(
+        request_path, upstreams=(pinhole_ref,),
+        config=_request_config(context, request_set),
+        declared_outputs=(
+            llm_lifecycle.REQUEST_SET_NAME, llm_lifecycle.REQUESTS_NAME))
+
+    canonical_path = result_path / llm_lifecycle.CANONICAL_RESULTS_NAME
+    results = llm_lifecycle.load_canonical_results(
+        canonical_path, request_set)
+    canonical_bytes = llm_lifecycle.canonical_results_bytes(
+        request_set, results)
+    if canonical_path.read_bytes() != canonical_bytes:
+        raise ValueError(
+            "canonical-result payload is not exact canonical JSONL")
+    _validate_manifest(
+        result_path, upstreams=(request_ref,),
+        config=_result_config(context, request_set),
+        declared_outputs=(llm_lifecycle.CANONICAL_RESULTS_NAME,))
+
+    prediction_path = destination / PREDICTIONS_NAME
+    expected_predictions = predictions_bytes(request_set, results)
+    if prediction_path.read_bytes() != expected_predictions:
+        raise ValueError(
+            "frame predictions differ from canonical results")
+    _read_predictions(prediction_path, context.stems)
+    _validate_manifest(
+        destination, upstreams=(pinhole_ref, result_ref),
+        config=_frame_config(
+            context, request_set, request_ref, result_ref),
+        declared_outputs=(PREDICTIONS_NAME,))
     return ref
 
 
@@ -1236,6 +1695,27 @@ def publish_frame_artifact(
             builder.output_path(PREDICTIONS_NAME), content)
     assert builder.artifact_ref is not None
     return builder.artifact_ref
+
+
+def prepare_adoption(
+        args: argparse.Namespace, *, arguments: Sequence[str] = (),
+        ) -> tuple[artifact.ArtifactRef, artifact.ArtifactRef]:
+    """Publish only the deterministic PINHOLE and REQUEST prerequisites.
+
+    This explicit mode succeeds before cost enforcement or provider execution.
+    It is resumable, but refuses to prepare beside an already-published final
+    frame artifact.
+    """
+    context = load_context(args)
+    destination = Path(args.output_dir)
+    if destination.exists() or destination.is_symlink():
+        raise ValueError(
+            "--prepare_adoption requires an unpublished frame output")
+    pinhole_ref = ensure_pinhole_artifact(
+        args, context, arguments=arguments)
+    _, request_ref, _ = ensure_request_artifact(
+        args, context, pinhole_ref, arguments=arguments)
+    return pinhole_ref, request_ref
 
 
 def run(args: argparse.Namespace, *, arguments: Sequence[str] = ()) \
@@ -1277,6 +1757,10 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
+    parser.add_argument(
+        "--prepare_adoption", action="store_true",
+        help=("publish only deterministic pinhole and request artifacts; "
+              "make no provider call and do not enter cost enforcement"))
 
     execution = parser.add_argument_group("model transport")
     execution.add_argument("--online", action="store_true")
@@ -1294,9 +1778,15 @@ def main() -> None:
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(line_buffering=True)
     args = make_parser().parse_args()
-    pinhole_ref, frame_ref = run(args, arguments=tuple(sys.argv))
-    print(f"pinhole_images: {pinhole_ref.path}")
-    print(f"frame_landmarks: {frame_ref.path}")
+    if args.prepare_adoption:
+        pinhole_ref, request_ref = prepare_adoption(
+            args, arguments=tuple(sys.argv))
+        print(f"pinhole_images: {pinhole_ref.path}")
+        print(f"llm_requests: {request_ref.path}")
+    else:
+        pinhole_ref, frame_ref = run(args, arguments=tuple(sys.argv))
+        print(f"pinhole_images: {pinhole_ref.path}")
+        print(f"frame_landmarks: {frame_ref.path}")
 
 
 if __name__ == "__main__":

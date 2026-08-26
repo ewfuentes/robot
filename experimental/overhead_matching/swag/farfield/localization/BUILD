@@ -357,6 +357,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield:stage_reuse",
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
         "//experimental/overhead_matching/swag/farfield/calibration:heading",
         "//experimental/overhead_matching/swag/farfield/catalog",
@@ -416,7 +417,12 @@ py_binary(
     name = "run_export",
     srcs = ["run_export.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":run_export_lib"],
+    deps = [
+        requirement("torch"),
+        ":run_export_lib",
+        ":torch_backend",
+        "//common/torch:load_torch_deps",
+    ],
 )
 
 py_library(

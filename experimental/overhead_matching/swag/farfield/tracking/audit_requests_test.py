@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from experimental.overhead_matching.swag.farfield import (
     artifact as artifact_lib,
@@ -18,6 +19,7 @@ from experimental.overhead_matching.swag.farfield import (
     pipeline,
     testing,
 )
+from experimental.overhead_matching.swag.farfield.calibration import audit_io
 from experimental.overhead_matching.swag.farfield.extraction import (
     prompts as request_adapter,
 )
@@ -25,11 +27,14 @@ from experimental.overhead_matching.swag.farfield.tracking import (
     audit_requests as ar,
     semantic_audit as sa,
     track_builder as tb,
+    tracklets,
 )
 
 DATASET = "tiny_harbor"
 PANO_W = 256
 CLEAN = {"iou": 0.8, "inter_over_mask": 0.9, "inter_over_box": 0.9}
+LEGACY_REQUEST_SET_FINGERPRINT = (
+    "c2aa323319dd6915ab971b7de4c13a5126f3d09b571415a2c3f6b05772b1cfc9")
 
 
 def audit_stage_config():
@@ -193,16 +198,17 @@ def request_args(request_dir, document, selected, orchestration):
         ingest_params=ingest_params,
         build_identity=document["build_identity"],
         orchestration=orchestration,
-        resolved_stage_config=selected)
+        resolved_stage_config=selected,
+        stage_reuse={"schema": "farfield_stage_reuse_bridge/v1"})
 
 
-def audit_payload():
+def audit_payload(decision="keep_single", segments=None):
+    if segments is None:
+        segments = [{"start_t": 0, "end_t": 3}]
     return {
         "landmark_kind": "fixed_structure",
-        "single_object": True,
-        "valid_segments": [{"start_t": 0, "end_t": 3}],
-        "verdict": "keep",
-        "drop_reason": "none",
+        "decision": decision,
+        "valid_segments": segments,
         "primary_object": {
             "tags": [{"tag": "man_made=tower", "weight": 1.0}],
             "name_candidates": [{
@@ -222,6 +228,18 @@ def audit_payload():
     }
 
 
+def legacy_correlated_payload(
+        verdict, single_object, drop_reason, segments=None):
+    payload = audit_payload(segments=segments)
+    del payload["decision"]
+    payload.update({
+        "verdict": verdict,
+        "single_object": single_object,
+        "drop_reason": drop_reason,
+    })
+    return payload
+
+
 def success(request_set, key, attempt_id, payload=None):
     response = {
         "candidates": [{"content": {"parts": [{
@@ -235,6 +253,14 @@ def success(request_set, key, attempt_id, payload=None):
         response=response,
         error=None,
         metadata={"transport": "test"})
+
+
+def provider_response(payload):
+    return {
+        "candidates": [{"content": {"parts": [{
+            "text": json.dumps(payload),
+        }]}}],
+    }
 
 
 class AuditRequestsTest(unittest.TestCase):
@@ -307,6 +333,8 @@ class AuditRequestsTest(unittest.TestCase):
         self.assertEqual(
             generation["thinkingConfig"]["thinkingLevel"], "LOW")
         self.assertEqual(generation["responseMimeType"], "application/json")
+        self.assertEqual(
+            generation["responseSchema"], sa.get_provider_audit_schema())
         images = [part for part in request["contents"][0]["parts"]
                   if "inline_data" in part]
         self.assertEqual(
@@ -321,7 +349,101 @@ class AuditRequestsTest(unittest.TestCase):
             online["config"]["thinking_config"], {
                 "thinking_level": "LOW",
             })
+        self.assertEqual(
+            online["config"]["response_schema"],
+            sa.get_provider_audit_schema())
         self.assertNotIn("media_resolution", online["config"])
+
+    def test_observed_invalid_cross_field_results_are_rejected(self):
+        observed = (
+            ("boston_harbor_leg1/T1", True, "none", [(0, 19)], ""),
+            ("boston_harbor_leg1/T40", False, "identity_broken",
+             [(0, 0)], ""),
+            ("boston_harbor_leg1/T123", True, "none", [(0, 14)], ""),
+            ("boston_harbor_leg1/T147", True, "none", [(0, 15)], ""),
+            ("boston_harbor_leg1/T172", True, "none",
+             [(0, 1), (3, 3)],
+             "mask drifted into sky at t2 then re-anchored at t3"),
+            ("boston_harbor_leg1/T214", True, "none", [(0, 5)], ""),
+            ("mount_washington_20260815_leg1/T77", True, "none",
+             [(0, 4)],
+             "mask drifts after t4 but remains on the same mountain massif"),
+        )
+        for (key, single_object, drop_reason, raw_segments,
+             unresolved) in observed:
+            with self.subTest(key=key):
+                payload = legacy_correlated_payload(
+                    "keep_partial", single_object, drop_reason,
+                    [
+                        {"start_t": start, "end_t": end}
+                        for start, end in raw_segments
+                    ])
+                payload["unresolved"] = unresolved
+                with self.assertRaisesRegex(
+                        ValueError, "invalid ProviderTrackAudit response"):
+                    ar._validate_audit_response(  # noqa: SLF001
+                        key, provider_response(payload))
+
+    def test_legacy_correlated_provider_shape_is_always_rejected(self):
+        reasons = (
+            "none", "dynamic_object", "not_a_physical_landmark",
+            "identity_broken", "insufficient_evidence")
+        segment_options = ([], [{"start_t": 0, "end_t": 3}])
+        for verdict in ("keep", "keep_partial", "drop"):
+            for single_object in (False, True):
+                for drop_reason in reasons:
+                    for segments in segment_options:
+                        payload = legacy_correlated_payload(
+                            verdict, single_object, drop_reason, segments)
+                        response = provider_response(payload)
+                        with self.subTest(
+                                verdict=verdict,
+                                single_object=single_object,
+                                drop_reason=drop_reason,
+                                has_segments=bool(segments)):
+                            with self.assertRaises(ValueError):
+                                ar._validate_audit_response(  # noqa: SLF001
+                                    "T-contract", response)
+
+    def test_provider_shape_rejects_reintroduced_correlated_fields(self):
+        for field, value in (
+                ("verdict", "keep"),
+                ("single_object", True),
+                ("drop_reason", "none")):
+            with self.subTest(field=field):
+                payload = audit_payload()
+                payload[field] = value
+                with self.assertRaisesRegex(
+                        ValueError, "fields must be exactly"):
+                    ar._validate_audit_response(  # noqa: SLF001
+                        "T-extra", provider_response(payload))
+
+    def test_each_provider_decision_maps_to_one_canonical_variant(self):
+        for decision, expected in sa.PROVIDER_DECISION_TO_CANONICAL.items():
+            is_accepted = decision.startswith("keep_")
+            segment_options = (
+                ([{"start_t": 0, "end_t": 3}],)
+                if is_accepted else
+                ([], [{"start_t": 0, "end_t": 1}]))
+            for segments in segment_options:
+                with self.subTest(decision=decision, segments=segments):
+                    payload = audit_payload(decision, segments)
+                    canonical = ar._validate_audit_response(  # noqa: SLF001
+                        "T-valid", provider_response(payload))
+                    self.assertEqual(
+                        (canonical["verdict"], canonical["single_object"],
+                         canonical["drop_reason"]), expected)
+                    self.assertEqual(canonical["valid_segments"], segments)
+                    self.assertNotIn("decision", canonical)
+
+    def test_accepted_provider_decisions_require_nonempty_segments(self):
+        for decision in ("keep_single", "keep_partial_identity_switch"):
+            with self.subTest(decision=decision):
+                with self.assertRaisesRegex(
+                        ValueError, "requires at least one valid segment"):
+                    ar._validate_audit_response(  # noqa: SLF001
+                        "T-empty",
+                        provider_response(audit_payload(decision, [])))
 
     def test_meta_is_v2_and_binds_file_artifact_and_each_track(self):
         self.assertEqual(self.meta["schema"], ar.AUDIT_META_SCHEMA)
@@ -359,7 +481,12 @@ class AuditRequestsTest(unittest.TestCase):
             (3, 2, 2))
         manifest = artifact_lib.load_manifest(self.request_dir)
         self.assertEqual(manifest.config["phase"], "requests")
+        self.assertEqual(
+            manifest.config["stage_reuse"],
+            {"schema": "farfield_stage_reuse_bridge/v1"})
         self.assertEqual(len(manifest.upstreams), 2)
+        self.assertNotEqual(
+            self.request_set.fingerprint, LEGACY_REQUEST_SET_FINGERPRINT)
 
     def test_preview_uses_artifact_relative_chips(self):
         page = (self.request_dir / "preview" / "index.html").read_text()
@@ -402,6 +529,49 @@ class AuditRequestsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "parallel must be positive"):
             ar.validate_execution_args(execution_args, selected)
 
+    def test_direct_prefix_inputs_cross_the_shared_authorization_boundary(self):
+        args = argparse.Namespace(
+            build_config=self.build_config_path,
+            dataset=DATASET,
+            tracks_dir=self.tracks_dir,
+            frame_landmarks_dir=self.frame_landmarks)
+        authorization = object()
+        combined = {"schema": "farfield_stage_reuse_bridge/v1"}
+        with (mock.patch.object(
+                ar.stage_reuse, "load_proof", return_value=authorization)
+              as load_proof,
+              mock.patch.object(
+                  ar.stage_reuse, "require_target_checkout",
+                  return_value=self.document["git_commit"]),
+              mock.patch.object(
+                  ar.stage_reuse, "require_configured_artifact",
+                  side_effect=lambda reference, **unused:
+                  artifact_lib.load_manifest(reference.path)),
+              mock.patch.object(
+                  ar.stage_reuse, "require_compatible_artifact",
+                  side_effect=({"track": True}, {"frame": True}))
+              as require_reuse,
+              mock.patch.object(
+                  ar.stage_reuse, "combine_bridge_provenance",
+                  return_value=combined) as combine):
+            (track_ref, frame_ref, bridge, returned_authorization,
+             target_git_commit) = ar.authorize_prefix_inputs(
+                 args, self.document)
+        self.assertEqual(track_ref.path, str(self.tracks_dir.resolve()))
+        self.assertEqual(frame_ref.path, str(self.frame_landmarks.resolve()))
+        self.assertIs(bridge, combined)
+        self.assertIs(returned_authorization, authorization)
+        self.assertEqual(target_git_commit, self.document["git_commit"])
+        load_proof.assert_called_once_with(self.build_config_path.parent)
+        self.assertEqual(
+            [call.kwargs["owner_stage"]
+             for call in require_reuse.call_args_list],
+            ["track", "extract"])
+        self.assertTrue(all(
+            call.kwargs["authorization"] is authorization
+            for call in require_reuse.call_args_list))
+        combine.assert_called_once_with({"track": True}, {"frame": True})
+
     def test_request_snapshot_resume_uses_scientific_fingerprint(self):
         old_argv = sys.argv
         sys.argv = ["audit_requests", "--aggregate_only"]
@@ -428,6 +598,36 @@ class AuditRequestsTest(unittest.TestCase):
             })
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 ar.load_source_tracks(tracks_dir, DATASET)
+
+    def test_track_without_records_cannot_reach_audit_requests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            ghost = {
+                "track_id": 99,
+                "birth_obs_id": self.tracks[0]["birth_obs_id"],
+                "birth_keyframe": 4,
+                "status": "alive",
+                "close_reason": "",
+                "end_keyframe": None,
+                "last_keyframe": None,
+                "modal_label": "man_made=tower",
+                "n_supported_keyframes": 0,
+                "records": [],
+            }
+            tracks_dir = temporary / "tracks"
+            write_tracks_artifact(
+                tracks_dir,
+                {"tracks_full.json": track_payload([
+                    self.tracks[0], ghost])})
+            source = ar.load_source_tracks(tracks_dir, DATASET)
+            args = request_args(
+                temporary / "requests", self.document, self.selected,
+                self.orchestration)
+            with self.assertRaisesRegex(
+                    ValueError, "source track 99 has no records"):
+                ar.build_request_artifact(
+                    args, self.paths, *source, self.ingest_result)
+            self.assertFalse(args.output_dir.exists())
 
     def test_incomplete_or_legacy_results_cannot_publish(self):
         only_one = (success(self.request_set, "T1", "one"),)
@@ -479,6 +679,60 @@ class AuditRequestsTest(unittest.TestCase):
             self.assertIn(key, {"T1", "T5"})
             self.assertIsNone(error)
             self.assertEqual(parsed["verdict"], "keep")
+            self.assertNotIn("decision", parsed)
+
+    def test_provider_trimmed_keep_reaches_bearings_without_excluded_frame(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            attempts_dir = temporary / llm.ATTEMPTS_DIR_NAME
+            trimmed = audit_payload(
+                "keep_single",
+                [{"start_t": 0, "end_t": 1},
+                 {"start_t": 3, "end_t": 3}])
+            full_second_track = audit_payload(
+                "keep_single", [{"start_t": 0, "end_t": 2}])
+            llm.publish_attempt(
+                attempts_dir,
+                success(self.request_set, "T1", "trimmed", trimmed))
+            llm.publish_attempt(
+                attempts_dir,
+                success(
+                    self.request_set, "T5", "full", full_second_track))
+            audit_dir = temporary / "semantic_audits"
+            ar.publish_audit_results(
+                audit_dir,
+                request_dir=self.request_dir,
+                tracks_dir=self.tracks_dir,
+                attempts_dir=attempts_dir,
+                dataset_name=DATASET,
+                version="trimmed-keep-v1",
+                arguments=("test",))
+
+            audits = audit_io.load_audits(self.tracks_dir, audit_dir)
+            accepted = tracklets.build_accepted_tracklets(
+                audits.source_tracks, audits)
+            accepted_t1 = next(
+                item for item in accepted if item.local_id == "T1")
+            self.assertEqual(accepted_t1.audit["verdict"], "keep")
+            self.assertTrue(accepted_t1.audit["single_object"])
+            self.assertEqual(
+                [(segment.start_keyframe_idx, segment.end_keyframe_idx)
+                 for segment in accepted_t1.valid_segments],
+                [(0, 1), (3, 3)])
+
+            observations = tracklets.build_camera_bearing_observations(
+                accepted, PANO_W, bearing_sigma_deg=1.25)
+            t1_observations = [
+                observation for observation in observations
+                if observation.tracklet_id.endswith("#T1")
+            ]
+            self.assertEqual(
+                [observation.keyframe_idx for observation in t1_observations],
+                [1, 3])
+            self.assertNotIn(
+                2,
+                [observation.keyframe_idx
+                 for observation in t1_observations])
 
 
 if __name__ == "__main__":

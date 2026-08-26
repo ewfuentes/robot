@@ -1,8 +1,11 @@
 """Library tests: dossier/evidence construction from synthetic tracks and
 observations, chip/description selection, result-line parsing."""
 
+import hashlib
 import json
 import unittest
+
+from google.genai import types as genai_types
 
 from experimental.overhead_matching.swag.farfield import dataset
 from experimental.overhead_matching.swag.farfield.tracking import (
@@ -11,6 +14,17 @@ from experimental.overhead_matching.swag.farfield.tracking import (
 )
 
 PANO_W = 1024
+LEGACY_SYSTEM_PROMPT_SHA256 = (
+    "f40a8e8f886219da3bbce5111910cf9f6aa05de503dccb2476dfbb17c4949112")
+LEGACY_AUDIT_SCHEMA_SHA256 = (
+    "92eb7397371304c8cd776b27f8f7fdc02ca4f7107ad64822cf303e29972a23cd")
+
+
+def json_digest(value):
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def make_cfg(**overrides):
@@ -306,13 +320,75 @@ class MergeTracksTest(unittest.TestCase):
 
 class SchemaTest(unittest.TestCase):
     def test_schema_is_inlined_and_required_everywhere(self):
-        schema = sa.get_audit_schema()
+        schema = sa.get_provider_audit_schema()
         self.assertNotIn("$ref", json.dumps(schema))
-        self.assertEqual(set(schema["required"]),
-                         set(schema["properties"].keys()))
-        primary = schema["properties"]["primary_object"]
-        self.assertEqual(set(primary["required"]),
-                         set(primary["properties"].keys()))
+        self.assertEqual(set(schema), {"anyOf"})
+        for variant in schema["anyOf"]:
+            self.assertEqual(set(variant["required"]),
+                             set(variant["properties"].keys()))
+            primary = variant["properties"]["primary_object"]
+            self.assertEqual(set(primary["required"]),
+                             set(primary["properties"].keys()))
+
+    def test_prompt_and_schema_carry_the_same_decision_contract(self):
+        schema = sa.get_provider_audit_schema()
+        self.assertIn(sa.PROVIDER_DECISION_CONTRACT, sa.SYSTEM_PROMPT)
+        for variant in schema["anyOf"]:
+            for field in ("decision", "valid_segments"):
+                self.assertEqual(
+                    variant["properties"][field]["description"],
+                    variant["description"])
+        for language in (
+                "keep_single means one physical identity",
+                "keep_partial_identity_switch only means a true switch",
+                "stable wrong-target",
+                "multi-object switch",
+                "Drop valid_segments may be empty or nonempty"):
+            self.assertIn(language, sa.PROVIDER_DECISION_CONTRACT)
+
+    def test_schema_uses_only_supported_variant_constraints(self):
+        schema = sa.get_provider_audit_schema()
+        encoded = json.dumps(schema)
+        self.assertNotIn('"oneOf"', encoded)
+        self.assertNotIn('"const"', encoded)
+        self.assertEqual(set(schema), {"anyOf"})
+        accepted, dropped = schema["anyOf"]
+        for variant in (accepted, dropped):
+            self.assertNotIn("verdict", variant["properties"])
+            self.assertNotIn("single_object", variant["properties"])
+            self.assertNotIn("drop_reason", variant["properties"])
+        self.assertEqual(
+            accepted["properties"]["valid_segments"]["minItems"], 1)
+        self.assertEqual(
+            set(accepted["properties"]["decision"]["enum"]),
+            {"keep_single", "keep_partial_identity_switch"})
+        self.assertNotIn(
+            "minItems", dropped["properties"]["valid_segments"])
+        self.assertEqual(
+            set(dropped["properties"]["decision"]["enum"]),
+            {decision for decision in sa.PROVIDER_DECISION_TO_CANONICAL
+             if decision.startswith("drop_")})
+        self.assertEqual(
+            (set(accepted["properties"]["decision"]["enum"])
+             | set(dropped["properties"]["decision"]["enum"])),
+            set(sa.PROVIDER_DECISION_TO_CANONICAL))
+
+        # Exercise the repository's pinned Gemini SDK dialect rather than
+        # assuming arbitrary JSON Schema keywords are provider-compatible.
+        provider_schema = genai_types.Schema.model_validate(schema)
+        self.assertEqual(len(provider_schema.any_of), 2)
+        provider_json = provider_schema.model_dump(
+            by_alias=True, exclude_none=True)
+        self.assertIn("anyOf", provider_json)
+        self.assertNotIn("oneOf", provider_json)
+
+    def test_contract_changes_both_sealed_request_digests(self):
+        self.assertNotEqual(
+            hashlib.sha256(sa.SYSTEM_PROMPT.encode()).hexdigest(),
+            LEGACY_SYSTEM_PROMPT_SHA256)
+        self.assertNotEqual(
+            json_digest(sa.get_provider_audit_schema()),
+            LEGACY_AUDIT_SCHEMA_SHA256)
 
 
 def valid_audit_payload(**overrides):
@@ -336,6 +412,35 @@ def valid_audit_payload(**overrides):
         unresolved="").model_dump()
     payload.update(overrides)
     return payload
+
+
+def provider_audit_payload(decision="keep_single", **overrides):
+    canonical = valid_audit_payload()
+    payload = {
+        key: value for key, value in canonical.items()
+        if key not in {"single_object", "verdict", "drop_reason"}
+    }
+    payload["decision"] = decision
+    payload.update(overrides)
+    return payload
+
+
+class CanonicalizeProviderAuditTest(unittest.TestCase):
+    def test_every_decision_has_one_deterministic_canonical_mapping(self):
+        for decision, expected in sa.PROVIDER_DECISION_TO_CANONICAL.items():
+            with self.subTest(decision=decision):
+                segments = ([{"start_t": 0, "end_t": 4}]
+                            if decision.startswith("keep_") else [])
+                provider = sa.ProviderTrackAudit.model_validate(
+                    provider_audit_payload(
+                        decision, valid_segments=segments))
+                canonical = sa.canonicalize_provider_audit(provider)
+                self.assertEqual(
+                    (canonical["verdict"], canonical["single_object"],
+                     canonical["drop_reason"]),
+                    expected)
+                self.assertEqual(canonical["valid_segments"], segments)
+                self.assertNotIn("decision", canonical)
 
 
 def result_line(key, payload):

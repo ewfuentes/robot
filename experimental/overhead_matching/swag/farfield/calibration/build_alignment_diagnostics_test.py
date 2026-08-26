@@ -1,8 +1,10 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from PIL import Image
 
@@ -108,6 +110,7 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
             self.build_dir, dataset="ds", config=self.config,
             generator="test", inputs={
                 "dataset_base": self.dataset_base,
+                "farfield_root": str(self.root.resolve()),
                 **self.dataset_digests,
             })
         document = build_config.load(self.build_dir)
@@ -115,10 +118,13 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         self.course = {"min_displacement_m": 1.0, "smooth_window_s": 0.0}
         self.tracks_ref = self._publish_tracks()
         self.audits_ref = self._publish_artifact(
-            self.root / "audits-v1", paths.SEMANTIC_AUDITS, "audits-v1",
+            self.root / "artifacts" / paths.SEMANTIC_AUDITS / "ds" /
+            "audits-v1", paths.SEMANTIC_AUDITS, "audits-v1",
             upstreams=(self.tracks_ref,),
             config={"build_identity": self.build_identity})
-        self.observations_dir = self.root / "obs-v1"
+        self.observations_dir = (
+            self.root / "artifacts" / paths.BEARING_OBSERVATIONS / "ds" /
+            "obs-v1")
         self.observations_ref = self._publish_observations(
             self.observations_dir)
 
@@ -137,7 +143,8 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
 
     def _publish_tracks(self):
         return self._publish_artifact(
-            self.root / "tracks-v1", paths.OBJECT_TRACKS, "tracks-v1",
+            self.root / "artifacts" / paths.OBJECT_TRACKS / "ds" /
+            "tracks-v1", paths.OBJECT_TRACKS, "tracks-v1",
             config={
                 "schema": "farfield_object_tracks/v1",
                 "coverage": "complete",
@@ -215,7 +222,9 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
             "dataset_base": self.dataset_base,
             "observations_dir": self.observations_dir,
             "nominal_forward_calibration": self.nominal_forward_path,
-            "output_dir": self.root / "diag-v1",
+            "output_dir": (
+                self.root / "artifacts" / paths.ALIGNMENT_DIAGNOSTICS /
+                "ds" / "diag-v1"),
             "build_config": self.build_dir / build_config.BUILD_CONFIG_NAME,
             "orchestration_config_digest":
                 subject.orchestration_contract(document)["config_digest"],
@@ -236,19 +245,27 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         return keys
 
     def test_publishes_one_candidate_only_transactional_artifact(self):
-        resolved = subject._load_inputs(self._args())
-        reference = subject.publish(resolved, self.root / "diag-v1")
+        bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
+        with (mock.patch.object(
+                subject.stage_reuse, "require_compatible_artifact",
+                return_value=bridge) as require_reuse,
+              mock.patch.object(
+                  subject.stage_reuse, "require_recorded_bridge")):
+            resolved = subject._load_inputs(self._args())
+        reference = subject.publish(resolved, self._args().output_dir)
         self.assertEqual(reference.kind, paths.ALIGNMENT_DIAGNOSTICS)
-        manifest = artifact.load_manifest(self.root / "diag-v1")
+        manifest = artifact.load_manifest(self._args().output_dir)
         self.assertEqual(manifest.upstreams, (self.observations_ref,))
         self.assertEqual(manifest.declared_outputs,
                          (subject.OUTPUT_NAME, subject.SUN_REVIEW_NAME))
         self.assertEqual(manifest.config["authority"], subject.AUTHORITY)
+        self.assertEqual(manifest.config["stage_reuse"], bridge)
+        self.assertEqual(require_reuse.call_args.kwargs["owner_stage"], "track")
         self.assertEqual(
             manifest.config["resolved"]["gps_course_from_object_tracks"],
             self.course)
         report = json.loads(
-            (self.root / "diag-v1" / subject.OUTPUT_NAME).read_text())
+            (self._args().output_dir / subject.OUTPUT_NAME).read_text())
         self.assertEqual(report["authority"], subject.AUTHORITY)
         self.assertEqual(report["source"]["gps_course"]["parameters"],
                          self.course)
@@ -266,7 +283,7 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
         self.assertEqual(sweep["result_kind"], subject.RESULT_KIND)
         self.assertEqual(sweep["frame"], subject.RESULT_FRAME)
         self.assertEqual(report["quantity"]["name"], subject.RESULT_FIELD)
-        review_path = self.root / "diag-v1" / subject.SUN_REVIEW_NAME
+        review_path = self._args().output_dir / subject.SUN_REVIEW_NAME
         with Image.open(review_path) as review:
             self.assertEqual(review.format, "JPEG")
             self.assertGreater(review.width, 0)
@@ -282,11 +299,26 @@ class AlignmentDiagnosticsArtifactTest(unittest.TestCase):
             subject._load_inputs(self._args())
 
     def test_observation_count_mismatch_fails_closed(self):
-        bad_dir = self.root / "bad-obs"
-        self._publish_observations(bad_dir, count_delta=1, version="obs-v1")
+        manifest_path = self.observations_dir / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        document["config"]["n_observations"] += 1
+        artifact.atomic_write_json(manifest_path, document)
         with self.assertRaisesRegex(
                 subject.AlignmentDiagnosticError, "count disagrees"):
-            subject._load_inputs(self._args(observations_dir=bad_dir))
+            subject._load_inputs(self._args())
+
+    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+        alias = self.root / "alternate-audits"
+        shutil.copytree(Path(self.audits_ref.path), alias)
+        observations_manifest_path = (
+            self.observations_dir / artifact.MANIFEST_NAME)
+        observations_document = json.loads(
+            observations_manifest_path.read_text())
+        observations_document["upstreams"][1]["path"] = str(alias.resolve())
+        artifact.atomic_write_json(
+            observations_manifest_path, observations_document)
+        with self.assertRaisesRegex(ValueError, "exact configured lane"):
+            subject._load_inputs(self._args())
 
     def test_orchestration_digest_is_required_exactly(self):
         with self.assertRaisesRegex(

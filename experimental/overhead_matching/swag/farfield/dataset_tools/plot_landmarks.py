@@ -62,7 +62,7 @@ _FULL_CONFIG_KEYS = frozenset({
     "enc_available",
     "enc_selection",
     "dedupe_tolerance_m",
-    "osm_preextract_strategy",
+    "osm_geometry_index_mode",
     "selected_source_feather",
     "selected_source_sha256",
     "rows",
@@ -198,9 +198,10 @@ def validate_full_catalog_config(
             "OSM-only full catalog cannot carry an ENC selection")
     _finite(config["dedupe_tolerance_m"],
             "full catalog dedupe_tolerance_m", minimum=0.0)
-    if config["osm_preextract_strategy"] != "smart":
+    if (config["osm_geometry_index_mode"]
+            != "full_pbf_complete_geometry_index"):
         raise CoverageError(
-            "full catalog osm_preextract_strategy must be 'smart'")
+            "full catalog must record direct full-PBF complete geometry indexing")
     if (not isinstance(config["selected_source_feather"], str)
             or not config["selected_source_feather"]):
         raise CoverageError(

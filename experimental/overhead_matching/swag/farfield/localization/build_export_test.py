@@ -1,9 +1,11 @@
 import dataclasses
 import json
+import shutil
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import msgspec
 import shapely
@@ -83,7 +85,8 @@ def result_line(payload):
 def write_tracks_and_audits(root: Path, build_identity: str,
                             dataset_source_digest: str):
     track = source_track()
-    tracks_dir = root / "tracks"
+    tracks_dir = (
+        root / "artifacts" / paths_lib.OBJECT_TRACKS / DATASET / "v1")
     tracks_document = {
         "range": {"name": "full", "k_start": 0, "k_end": 3},
         "tracks": [track],
@@ -117,7 +120,8 @@ def write_tracks_and_audits(root: Path, build_identity: str,
             },
         },
     }
-    audits_dir = root / "audits"
+    audits_dir = (
+        root / "artifacts" / paths_lib.SEMANTIC_AUDITS / DATASET / "v1")
     with artifact.ArtifactDirectoryBuilder(
             audits_dir, kind=paths_lib.SEMANTIC_AUDITS, dataset=DATASET,
             version="v1", generator="test", git_commit="test", arguments=(),
@@ -140,7 +144,8 @@ def write_observations(root: Path, tracks_dir: Path, audits_dir: Path,
     observations = tracklets.build_camera_bearing_observations(
         accepted, PANO_W, 1.0)
     observations.sort(key=lambda item: (item.tracklet_id, item.keyframe_idx))
-    observations_dir = root / "observations"
+    observations_dir = (
+        root / "artifacts" / paths_lib.BEARING_OBSERVATIONS / DATASET / "v1")
     payload = b"".join(
         artifact.canonical_json_bytes(dataclasses.asdict(item)) + b"\n"
         for item in observations)
@@ -160,7 +165,7 @@ def write_observations(root: Path, tracks_dir: Path, audits_dir: Path,
 
 
 def write_catalog(root: Path, *, node_id="node:1"):
-    catalog_dir = root / "catalog"
+    catalog_dir = root / "artifacts" / paths_lib.CATALOGS / DATASET / "v1"
     with artifact.ArtifactDirectoryBuilder(
             catalog_dir, kind=paths_lib.CATALOGS, dataset=DATASET,
             version="v1", generator="test", git_commit="test", arguments=(),
@@ -193,7 +198,11 @@ def write_matching(root: Path, tracks_dir: Path, audits_dir: Path,
     if build_identity is None:
         build_identity = artifact.load_manifest(
             tracks_dir).config["build_identity"]
-    matching_dir = root / f"matching_{coverage}_{len(list(root.iterdir()))}"
+    configured_dir = (
+        root / "artifacts" / paths_lib.LANDMARK_MATCHES / DATASET / "v1")
+    matching_dir = configured_dir
+    if matching_dir.exists():
+        matching_dir = root / f"matching-{coverage}"
     table = structs.CompatibilityTable(
         tracklet_id=table_tracklet_id or tracklet_id,
         matcher_version="matcher-v1",
@@ -295,6 +304,7 @@ def build_fixture(root: Path):
             "nominal_forward_sha256": artifact.sha256_file(calibration),
             "catalog_manifest_digest": catalog_ref.manifest_digest,
             "catalog_content_digest": catalog_ref.content_digest,
+            "farfield_root": str(root.resolve()),
             **dataset_digests,
         })
     document = build_config.load(build_dir)
@@ -306,7 +316,8 @@ def build_fixture(root: Path):
     matching_dir = write_matching(
         root, tracks_dir, audits_dir, catalog_ref, tracklet_id,
         build_identity=build_identity)
-    output = root / "v1"
+    output = (
+        root / "artifacts" / paths_lib.LOCALIZATION_INPUTS / DATASET / "v1")
     args = types.SimpleNamespace(
         dataset=DATASET,
         dataset_base=base,
@@ -377,7 +388,15 @@ class EndToEndTest(unittest.TestCase):
     def test_publishes_valid_strict_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             args, tracklet_id = build_fixture(Path(temporary))
-            reference = build_export.build(args)
+            bridge = {"schema": "farfield_stage_reuse_bridge/v1"}
+            with (mock.patch.object(
+                    build_export.stage_reuse,
+                    "require_compatible_artifact",
+                    return_value=bridge) as require_reuse,
+                  mock.patch.object(
+                      build_export.stage_reuse,
+                      "require_recorded_bridge")):
+                reference = build_export.build(args)
             data = export_ingest.load(
                 args.output_dir, expected_dataset=DATASET)
             self.assertEqual(reference.kind, paths_lib.LOCALIZATION_INPUTS)
@@ -397,6 +416,9 @@ class EndToEndTest(unittest.TestCase):
                 [paths_lib.BEARING_OBSERVATIONS,
                  paths_lib.LANDMARK_MATCHES, paths_lib.CATALOGS])
             self.assertEqual(manifest.config["matching_coverage"], "complete")
+            self.assertEqual(manifest.config["stage_reuse"], bridge)
+            self.assertEqual(
+                require_reuse.call_args.kwargs["owner_stage"], "track")
             self.assertEqual(
                 manifest.config["orchestration"],
                 build_export.orchestration_contract(
@@ -478,20 +500,35 @@ class EndToEndTest(unittest.TestCase):
             substitute_dir, _ = write_catalog(
                 root / "substitute", node_id="node:other")
             args.catalog_dir = substitute_dir
-            with self.assertRaisesRegex(
-                    build_export.LocalizationInputError,
-                    "catalog artifact identity"):
+            with self.assertRaisesRegex(ValueError, "exact configured lane"):
+                build_export.build(args)
+
+    def test_byte_identical_audit_copy_outside_configured_lane_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _ = build_fixture(root)
+            observations_manifest_path = (
+                Path(args.observations_dir) / artifact.MANIFEST_NAME)
+            observations_document = json.loads(
+                observations_manifest_path.read_text())
+            audit_ref = artifact.ArtifactRef.from_dict(
+                observations_document["upstreams"][1])
+            alias = root / "alternate-audits"
+            shutil.copytree(Path(audit_ref.path), alias)
+            observations_document["upstreams"][1]["path"] = str(
+                alias.resolve())
+            artifact.atomic_write_json(
+                observations_manifest_path, observations_document)
+            with self.assertRaisesRegex(ValueError, "exact configured lane"):
                 build_export.build(args)
 
     def test_matching_partial_coverage_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            args, tracklet_id = build_fixture(root)
-            args.matching_dir = write_matching(
-                root, artifact.load_manifest(args.observations_dir).upstreams[0].path,
-                artifact.load_manifest(args.observations_dir).upstreams[1].path,
-                artifact.open_artifact(args.catalog_dir), tracklet_id,
-                coverage="partial")
+            args, _ = build_fixture(Path(temporary))
+            manifest_path = Path(args.matching_dir) / artifact.MANIFEST_NAME
+            document = json.loads(manifest_path.read_text())
+            document["config"]["coverage"] = "partial"
+            artifact.atomic_write_json(manifest_path, document)
             with self.assertRaisesRegex(
                     build_export.LocalizationInputError, "coverage='complete'"):
                 build_export.build(args)
