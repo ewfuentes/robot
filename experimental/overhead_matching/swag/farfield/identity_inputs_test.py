@@ -81,9 +81,22 @@ class ContributingTest(unittest.TestCase):
         self.assertNotIn("sam2_checkpoint_sha256", contributed)
         self.assertIn("motion_source_sha256", contributed)
 
-    def test_excluding_an_unrecorded_key_is_refused(self):
-        with self.assertRaises(identity_inputs.IdentityInputError):
-            identity_inputs.contributing(sample_inputs(), ("no_such_input",))
+    def test_excluding_a_key_this_build_lacks_is_a_no_op(self):
+        """Several inputs are optional. A dataset with no source video records
+        no `video_sha256`, and `extract` excludes that key -- raising here
+        would have made every no-video dataset uncomputable. Staleness is a
+        question about the declared key set, and `audit` asks it."""
+        partial = {"dataset_panorama_sha256": "a" * 64}
+        self.assertEqual(
+            identity_inputs.contributing(partial, ("video_sha256",)),
+            partial)
+
+    def test_a_stage_exclusion_naming_nothing_recordable_is_caught_by_audit(self):
+        for stage, spec in pipeline.STAGE_SPECS.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(
+                    sorted(set(spec.inputs_not_consumed) - RECORDED_INPUTS),
+                    [], f"{stage} excludes inputs no build can record")
 
     def test_the_result_is_ordered_so_the_digest_is_stable(self):
         contributed = identity_inputs.contributing(sample_inputs())

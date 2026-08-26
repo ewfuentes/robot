@@ -78,13 +78,13 @@ def contributing(inputs: Mapping[str, str],
     """
     if not isinstance(inputs, Mapping):
         raise IdentityInputError("build inputs must be a mapping")
-    unknown_exclusion = sorted(set(not_consumed) - set(inputs))
-    if unknown_exclusion:
-        # A stage excluding a key that is not recorded is a stale declaration:
-        # harmless today, wrong the moment the key comes back under a new
-        # meaning. Fail while the mistake is cheap to fix.
-        raise IdentityInputError(
-            f"stage excludes inputs that no build records: {unknown_exclusion}")
+    # Excluding a key this particular build did not record is a no-op, not an
+    # error. Several inputs are genuinely optional -- a dataset with no source
+    # video records no `video_sha256`, and `extract` excludes that key -- so
+    # raising here would have made every no-video dataset uncomputable. The
+    # staleness question ("does this exclusion name anything a build can EVER
+    # record?") is about the declared key set, not one build's map, and
+    # `audit` is where it belongs.
     dropped = set(GLOBAL_EXCLUSIONS) | set(not_consumed)
     contributed = {key: value for key, value in inputs.items()
                    if key not in dropped}

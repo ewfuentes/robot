@@ -202,6 +202,37 @@ py_test(
 )
 
 py_library(
+    name = "backfill_artifact_identity_lib",
+    srcs = ["backfill_artifact_identity.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        FARFIELD + ":artifact",
+        FARFIELD + ":artifact_identity",
+        FARFIELD + ":paths",
+        FARFIELD + ":pipeline_lib",
+        FARFIELD + ":provenance",
+    ],
+)
+
+py_binary(
+    name = "backfill_artifact_identity",
+    srcs = ["backfill_artifact_identity.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":backfill_artifact_identity_lib"],
+)
+
+py_test(
+    name = "backfill_artifact_identity_test",
+    srcs = ["backfill_artifact_identity_test.py"],
+    deps = [
+        ":backfill_artifact_identity_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":artifact_identity",
+        FARFIELD + ":provenance",
+    ],
+)
+
+py_library(
     name = "survey_artifact_identity_lib",
     srcs = ["survey_artifact_identity.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
