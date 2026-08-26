@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield import digest_cache
 
 DEFAULT_ROOT = Path("/data/farfield_matching")
 ROOT_ENV_VAR = "FARFIELD_ROOT"
@@ -139,6 +140,12 @@ def dataset_source_digests(dataset_base: Path) -> dict[str, str]:
     panoramas = sorted(panorama_dir.glob("*.jpg"))
     if not panoramas:
         raise MissingInput(f"dataset has no panorama JPEGs: {panorama_dir}")
+    # A frozen dataset is rehashed once per stage, so an eight-stage run over
+    # pohang_canal_04 reads 8 x 3.3 GB to re-confirm bytes documented as
+    # unchanging. The cache keys each digest on the filesystem's own identity
+    # for the file and rehashes only when that moves; see digest_cache for the
+    # trade it makes and for what still reads every byte.
+    cache_root = default_root()
     records = []
     for path in panoramas:
         target = path.resolve()
@@ -147,13 +154,15 @@ def dataset_source_digests(dataset_base: Path) -> dict[str, str]:
         records.append({
             "path": path.name,
             "size": target.stat().st_size,
-            "sha256": artifact.sha256_file(target),
+            "sha256": digest_cache.sha256_file(target, root=cache_root),
         })
     try:
-        metadata_digest = artifact.sha256_file(metadata)
-        gps_digest = artifact.sha256_file(frames_gps)
-    except artifact.ArtifactValidationError as exc:
+        metadata_digest = digest_cache.sha256_file(metadata, root=cache_root)
+        gps_digest = digest_cache.sha256_file(frames_gps, root=cache_root)
+    except (artifact.ArtifactValidationError, OSError) as exc:
         raise MissingInput(f"invalid dataset source: {exc}") from exc
+    # One cache write for the whole dataset rather than one per panorama.
+    digest_cache.flush()
     return {
         DATASET_PIPELINE_METADATA_SHA256: metadata_digest,
         DATASET_FRAMES_GPS_SHA256: gps_digest,

@@ -79,5 +79,27 @@ class DynamicImportTest(unittest.TestCase):
             cf.fingerprint(entry)
 
 
+class ModuleOfTest(unittest.TestCase):
+    def test_a_source_file_names_its_own_module(self):
+        self.assertEqual(cf.module_of(cf.__file__),
+                         f"{cf.PACKAGE}.code_fingerprint")
+
+    def test_a_nested_module_keeps_its_package_path(self):
+        from experimental.overhead_matching.swag.farfield.tracking import (
+            tracklets,
+        )
+        self.assertEqual(cf.module_of(tracklets.__file__),
+                         f"{cf.PACKAGE}.tracking.tracklets")
+
+    def test_a_file_outside_the_package_is_refused(self):
+        with self.assertRaises(cf.CodeFingerprintError):
+            cf.module_of("/etc/hostname")
+
+    def test_round_trips_into_a_fingerprint(self):
+        """What a producer actually does: it knows its file, not its name."""
+        self.assertEqual(cf.fingerprint(cf.module_of(cf.__file__)),
+                         cf.fingerprint(f"{cf.PACKAGE}.code_fingerprint"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -100,6 +100,29 @@ def compute(*, kind: str, dataset: str, stage_config_digest: str,
     return artifact.sha256_json(payload)
 
 
+def for_stage(*, kind: str, dataset: str, orchestration: Mapping[str, Any],
+              upstreams: Iterable[artifact.ArtifactRef], source_file: str,
+              dataset_source_digests: Mapping[str, str] | None = None) -> str:
+    """`compute` for a producer, from the values it already holds.
+
+    `source_file` is the producer's own `__file__`. Under `bazel run` a stage
+    sees `__name__ == "__main__"` and cannot name itself, and a hand-written
+    module constant is one more thing to keep in step with the file it
+    describes -- so the file is the input, and the module name is derived.
+    """
+    if not isinstance(orchestration, Mapping):
+        raise ArtifactIdentityError("orchestration must be the stage contract")
+    digest = orchestration.get("config_digest")
+    if digest is None:
+        raise ArtifactIdentityError(
+            "stage contract records no config_digest")
+    return compute(
+        kind=kind, dataset=dataset, stage_config_digest=digest,
+        upstreams=upstreams,
+        entry_module=code_fingerprint.module_of(source_file),
+        dataset_source_digests=dataset_source_digests)
+
+
 def _digest(value: Any, field: str) -> str:
     if (not isinstance(value, str) or len(value) != 64
             or not all(character in "0123456789abcdef" for character in value)):

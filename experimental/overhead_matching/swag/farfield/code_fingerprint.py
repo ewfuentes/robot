@@ -160,3 +160,24 @@ def fingerprint(entry_module: str) -> str:
 def modules(entry_module: str) -> tuple[str, ...]:
     """The fingerprinted module set, for reporting why an id moved."""
     return tuple(sorted(_closure(entry_module)))
+
+
+def module_of(path: str | Path) -> str:
+    """Dotted farfield module name for a source file.
+
+    A producer running under `bazel run` sees `__name__ == "__main__"`, so it
+    cannot name itself. It can always name its own file, and the file is the
+    honest answer to "what code is this": `fingerprint(module_of(__file__))`
+    is the fingerprint of the module actually executing, with no constant to
+    keep in step with the file it describes.
+    """
+    resolved = Path(path).resolve()
+    try:
+        relative = resolved.relative_to(_ROOT)
+    except ValueError as error:
+        raise CodeFingerprintError(
+            f"{resolved} is outside the farfield package") from error
+    parts = list(relative.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return ".".join([PACKAGE, *parts]) if parts else PACKAGE
