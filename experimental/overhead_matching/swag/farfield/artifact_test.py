@@ -370,6 +370,60 @@ class TransactionFailureTest(unittest.TestCase):
                     )
 
 
+class ReferenceFromManifestTest(unittest.TestCase):
+    """Identity without integrity, and what that does and does not catch."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lane = Path(self._tmp.name) / "artifacts" / "semantic_audits" \
+            / "ds" / "v1"
+        with artifact.ArtifactDirectoryBuilder(
+                self.lane, kind="semantic_audits", dataset="ds", version="v1",
+                generator="artifact_test", arguments={}, config={},
+                declared_outputs=("audits.json",), upstreams=()) as builder:
+            (builder.staging_dir / "audits.json").write_text(
+                json.dumps({"audits": []}), encoding="utf-8")
+        self.ref = builder.artifact_ref
+
+    def test_it_returns_the_same_reference_as_a_full_open(self):
+        self.assertEqual(
+            artifact.reference_from_manifest(self.lane), self.ref)
+        self.assertEqual(
+            artifact.reference_from_manifest(self.lane),
+            artifact.open_artifact(self.lane))
+
+    def test_it_does_not_read_the_content(self):
+        """The trade, stated as a test: drifted bytes pass here and fail a
+        full open. `pipeline verify` is what asks the other question."""
+        (self.lane / "audits.json").write_text(
+            json.dumps({"audits": [{"changed": True}]}), encoding="utf-8")
+        artifact.reference_from_manifest(self.lane)
+        with self.assertRaisesRegex(artifact.ArtifactValidationError,
+                                    "content digest mismatch"):
+            artifact.open_artifact(self.lane)
+
+    def test_it_still_rejects_a_mismatched_expectation(self):
+        for field, value in (("expected_kind", "object_tracks"),
+                             ("expected_dataset", "other"),
+                             ("expected_version", "v2")):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(
+                        artifact.ArtifactValidationError, "mismatch"):
+                    artifact.reference_from_manifest(
+                        self.lane, **{field: value})
+
+    def test_it_still_rejects_a_missing_declared_output(self):
+        (self.lane / "audits.json").unlink()
+        with self.assertRaises(artifact.ArtifactValidationError):
+            artifact.reference_from_manifest(self.lane)
+
+    def test_it_still_rejects_an_unreadable_manifest(self):
+        (self.lane / artifact.MANIFEST_NAME).write_text("not-json\n")
+        with self.assertRaises(artifact.ArtifactError):
+            artifact.reference_from_manifest(self.lane)
+
+
 class ManifestDigestExcludesIdentityTest(unittest.TestCase):
     """`manifest_digest` must not move when an identity is added.
 

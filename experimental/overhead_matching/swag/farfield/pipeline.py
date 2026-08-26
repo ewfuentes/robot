@@ -675,7 +675,7 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
         raise StageDependencyError(
             f"required {kind} artifact is not published: {path}")
     try:
-        ref = artifact.open_artifact(
+        ref = artifact.reference_from_manifest(
             path, expected_kind=kind, expected_dataset=paths.dataset,
             expected_version=version)
     except artifact.ArtifactError as exc:
@@ -770,7 +770,7 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
         if not exists:
             continue
         try:
-            ref = artifact.open_artifact(
+            ref = artifact.reference_from_manifest(
                 path, expected_kind=kind, expected_dataset=paths.dataset,
                 expected_version=version)
             manifest = artifact.load_manifest(path)
@@ -1258,7 +1258,7 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
     run_dir = localization_run_dir(
         paths, config, build_identity=build_identity)
     try:
-        run_ref = artifact.open_artifact(
+        run_ref = artifact.reference_from_manifest(
             run_dir, expected_kind=LOCALIZATION_RUN_KIND,
             expected_dataset=paths.dataset, expected_version=run_dir.name)
         tracks_ref = _configured_ref(
@@ -1480,6 +1480,42 @@ def cmd_recipe(args, parser: argparse.ArgumentParser) -> None:
           "alone matches the identity it records")
 
 
+def cmd_verify(args, parser: argparse.ArgumentParser) -> None:
+    """Re-hash every artifact this build names and compare with its manifest.
+
+    The integrity question, asked deliberately. The reuse checks in `run` and
+    `status` read identity from manifests and never touch content, because
+    identity does not depend on it -- so nothing else in the pipeline would
+    notice a file that changed under a published artifact. This is what
+    notices.
+    """
+    try:
+        paths, document = resolve_build(args.build_dir)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    config = document["config"]
+    checked = failed = 0
+    for kind in sorted(PIPELINE_ARTIFACT_OWNER):
+        version = _value(config, VERSION_KEYS[kind])
+        path = paths.artifact(kind, version)
+        if not path.exists():
+            print(f"  {kind:<24} absent")
+            continue
+        checked += 1
+        try:
+            artifact.open_artifact(
+                path, expected_kind=kind, expected_dataset=paths.dataset,
+                expected_version=version)
+        except artifact.ArtifactError as exc:
+            failed += 1
+            print(f"  {kind:<24} CORRUPT: {exc}")
+        else:
+            print(f"  {kind:<24} contents match their manifest")
+    print(f"\n{checked} artifact(s) checked, {failed} corrupt")
+    if failed:
+        raise SystemExit(1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1509,6 +1545,10 @@ def build_parser() -> argparse.ArgumentParser:
     recipe = sub.add_parser(
         "recipe", help="how one artifact was made, from its manifest alone")
     recipe.add_argument("--artifact_dir", type=Path, required=True)
+
+    verify = sub.add_parser(
+        "verify", help="re-hash this build's artifacts and check integrity")
+    verify.add_argument("--build_dir", type=Path, required=True)
     return parser
 
 
@@ -1523,6 +1563,8 @@ def main() -> None:
         cmd_status(args, parser)
     elif args.command == "recipe":
         cmd_recipe(args, parser)
+    elif args.command == "verify":
+        cmd_verify(args, parser)
 
 
 if __name__ == "__main__":

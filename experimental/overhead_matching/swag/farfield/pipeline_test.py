@@ -707,15 +707,31 @@ class ManifestCompletionTest(unittest.TestCase):
             "track", self.paths, self.config,
             build_identity=self.build_identity))
 
-    def test_manifest_content_digest_is_validated(self):
+    def test_drifted_content_is_not_noticed_by_the_reuse_check(self):
+        """Deliberate, and the reason `pipeline verify` exists.
+
+        `stage_done` used to re-hash every artifact's contents, which caught
+        this -- at the cost of gigabytes per call (4.5 GB for one dataset on
+        the real root), because obtaining an upstream's manifest digest went
+        through a full `open_artifact`. Reuse depends on identity, and identity
+        does not depend on the bytes, so the reuse check now reads manifests
+        only. This test states the consequence rather than leaving it to be
+        discovered."""
         self.publish_stage("extract")
-        path = self.paths.frame_landmarks / "payload.json"
-        path.write_text("changed\n")
-        with self.assertRaisesRegex(pipeline.StageContractError,
+        (self.paths.frame_landmarks / "payload.json").write_text("changed\n")
+        self.assertTrue(pipeline.stage_done(
+            "extract", self.paths, self.config,
+            build_identity=self.build_identity))
+
+    def test_drifted_content_is_noticed_by_a_full_open(self):
+        """The other half: the guarantee still exists, asked for explicitly.
+
+        This is the check `pipeline verify` runs over a build's artifacts."""
+        self.publish_stage("extract")
+        (self.paths.frame_landmarks / "payload.json").write_text("changed\n")
+        with self.assertRaisesRegex(artifact.ArtifactValidationError,
                                     "content digest mismatch"):
-            pipeline.stage_done(
-                "extract", self.paths, self.config,
-                build_identity=self.build_identity)
+            artifact.open_artifact(self.paths.frame_landmarks)
 
     def test_changed_stage_config_cannot_reuse_output(self):
         self.publish_stage("extract")

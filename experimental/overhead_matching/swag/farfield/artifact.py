@@ -690,7 +690,8 @@ def _validate_declared_outputs(root: Path, outputs: Sequence[str]) -> None:
 def _validate_artifact(path: Path | str, *, expected_kind: str | None,
                        expected_dataset: str | None,
                        expected_version: str | None,
-                       allow_incomplete: bool) -> ArtifactRef:
+                       allow_incomplete: bool,
+                       verify_content: bool = True) -> ArtifactRef:
     artifact_dir, manifest_path = _manifest_path(path)
     manifest = _load_manifest(artifact_dir, allow_incomplete=allow_incomplete)
     for field_name, expected, actual in (
@@ -702,11 +703,12 @@ def _validate_artifact(path: Path | str, *, expected_kind: str | None,
                 f"artifact {field_name} mismatch: expected {expected!r}, "
                 f"found {actual!r}")
     _validate_declared_outputs(artifact_dir, manifest.declared_outputs)
-    actual_digest = sha256_directory(artifact_dir)
-    if actual_digest != manifest.content_digest:
-        raise ArtifactValidationError(
-            "artifact content digest mismatch: expected "
-            f"{manifest.content_digest}, found {actual_digest}")
+    if verify_content:
+        actual_digest = sha256_directory(artifact_dir)
+        if actual_digest != manifest.content_digest:
+            raise ArtifactValidationError(
+                "artifact content digest mismatch: expected "
+                f"{manifest.content_digest}, found {actual_digest}")
     return ArtifactRef(
         path=str(artifact_dir.resolve()),
         kind=manifest.kind,
@@ -732,6 +734,41 @@ def validate_artifact(path: Path | str, *, expected_kind: str | None = None,
 
 # ``open_artifact`` makes the rejection boundary explicit at reader call sites.
 open_artifact = validate_artifact
+
+
+def reference_from_manifest(
+        path: Path | str, *, expected_kind: str | None = None,
+        expected_dataset: str | None = None,
+        expected_version: str | None = None) -> ArtifactRef:
+    """This artifact's identity, without re-hashing its contents.
+
+    Two different questions were being answered by one call. INTEGRITY -- do
+    the bytes on disk still match `content_digest`? -- requires reading every
+    byte. IDENTITY -- what are this artifact's kind, dataset, version and
+    digests? -- requires only `manifest.json`, which is a few kilobytes and
+    already records the content digest.
+
+    The pipeline's reuse decision needs identity, and was paying for
+    integrity on every check: obtaining one upstream's `manifest_digest` (a
+    hash of one small file) re-hashed the whole artifact. Measured on the real
+    root, one dataset's artifacts total 4.5 GB, `object_tracks` alone 400 MB,
+    and `digest_cache` does not cover `sha256_directory` at all -- so a single
+    `pipeline status` re-read gigabytes to compute digests it could have read.
+
+    This still validates everything cheap: the manifest parses and is
+    complete, kind/dataset/version match what was expected, and every declared
+    output exists. Only the byte-level comparison is skipped. Use
+    `open_artifact` when the question really is integrity -- see
+    `pipeline verify`.
+    """
+    return _validate_artifact(
+        path,
+        expected_kind=expected_kind,
+        expected_dataset=expected_dataset,
+        expected_version=expected_version,
+        allow_incomplete=False,
+        verify_content=False,
+    )
 
 
 class ArtifactDirectoryBuilder:

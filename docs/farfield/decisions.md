@@ -444,3 +444,35 @@ The alternative -- adding the block to the 24 recipes on disk -- was rejected:
 `source_digests.build_config` records each recipe's sha256 in the artifacts it
 produced, and although nothing compares it today, editing the files would
 leave 24 recorded digests quietly wrong.
+
+## 2026-08-26 · Identity is read from a manifest; integrity is a separate question
+
+Obtaining an upstream's `manifest_digest` went through `open_artifact`, which
+re-hashes the artifact's entire contents. The digest itself is a hash of one
+small `manifest.json`, and the manifest already records `content_digest` -- so
+a `pipeline status` re-read gigabytes to compute values it could have read.
+Measured on the real root: `boston_harbor_leg1`'s artifacts total 4.5 GB,
+`object_tracks` alone 400 MB, re-hashed once per stage that names it.
+`digest_cache` did not help: it caches file digests for dataset source inputs
+and `artifact.py` never imported it, so `sha256_directory` was entirely
+uncached. The earlier claim that #685 "stopped rehashing frozen inputs on every
+stage" was true only of dataset sources, not of the far larger artifact path.
+
+Two questions were being answered by one call. INTEGRITY -- do the bytes still
+match? -- must read every byte. IDENTITY -- what are this artifact's kind,
+dataset, version and digests? -- needs only the manifest.
+`artifact.reference_from_manifest` answers the second and the pipeline's three
+hot call sites use it. Full `status` on a real build went from minutes to
+**7.0 s including bazel startup**, same output.
+
+It still validates everything that is cheap: the manifest parses and is
+complete, kind/dataset/version match, and every declared output exists. Only
+the byte comparison is skipped, and `open_artifact` is unchanged, so every
+other caller keeps full verification.
+
+**What this gives up, deliberately:** a file that changes under a published
+artifact is no longer noticed by `run` or `status`. That used to be caught
+incidentally on every check, paid for in gigabytes. It is now
+`pipeline verify --build_dir`, which re-hashes each artifact against its
+manifest and reports per kind. A routine status catches strictly less than
+before; the trade is that it can actually be run.
