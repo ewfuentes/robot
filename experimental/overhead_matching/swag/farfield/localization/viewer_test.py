@@ -12,11 +12,13 @@ same payload.
         dead weight does not render as if it were alive
   T-V3  the referenced/backdrop split covers the catalog exactly once
   T-V4  a stale attribution cache is surfaced as a note, not silently used
-  T-V5  the page renders self-contained, with no external references — the
+  T-V5  the page renders self-contained, with no external subresources — the
         CSS/JS now live as viewer_assets/ files and must be INLINED
   T-V6  the server serves the same payload and its two extra endpoints
   T-V7  live-only detail is opt-in, while satellite and track-fit semantics are
         shared with the static viewer
+  T-V8  presentation helpers preserve natural ordering, bounded MAP emphasis,
+        click-only OSM navigation, and ancestry-bound tracking evidence
 """
 
 import json
@@ -24,10 +26,15 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import msgspec
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    paths as paths_lib,
+)
 from experimental.overhead_matching.swag.farfield.localization import (
     attribution,
     metrics,
@@ -90,7 +97,30 @@ def _make_satellite(directory: Path) -> None:
     }))
 
 
+def _make_tracking_viewer_artifact(directory: Path) -> Path:
+    outputs = ("index.html", "track_full_T2.html", "videos/full_T2.mp4")
+    with artifact.ArtifactDirectoryBuilder(
+            directory, kind=paths_lib.OBJECT_TRACKS, dataset="synthetic",
+            version="viewer-test", generator="viewer_test",
+            git_commit="test", arguments=(), upstreams=(),
+            config={"range": {"name": "full"}},
+            declared_outputs=outputs) as builder:
+        builder.output_path("index.html").write_text("track index")
+        builder.output_path("track_full_T2.html").write_text(
+            "<video src='videos/full_T2.mp4'></video>")
+        video = builder.output_path("videos/full_T2.mp4")
+        video.parent.mkdir()
+        video.write_bytes(b"test-video")
+    return directory
+
+
 class PayloadTest(unittest.TestCase):
+    def test_tracklet_ids_sort_naturally(self):
+        tracklets = ["LT10", "LT2", "LT1", "LT20", "LT11"]
+        self.assertEqual(
+            sorted(tracklets, key=viewer_payload._natural_key),  # noqa: SLF001
+            ["LT1", "LT2", "LT10", "LT11", "LT20"])
+
     def test_bare_run_directory_still_builds(self):
         """T-V1. Optional context is optional."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,9 +364,10 @@ class PageTest(unittest.TestCase):
             self.assertTrue(html.startswith(page.GENERATED_MARK))
             self.assertIn("<!DOCTYPE html>", html)
             self.assertIn("window.__RUN__", html)
-            # No external hosts, no external subresources.
+            # No external subresources. Ordinary <a href> navigation is okay:
+            # OSM ids are clickable, but nothing leaves the page until click.
             for pattern in (r'src\s*=\s*["\']https?://',
-                            r'href\s*=\s*["\']https?://',
+                            r'<link[^>]*href\s*=\s*["\']https?://',
                             r'@import\s+url\(', r'fetch\(["\']https?://'):
                 self.assertIsNone(re.search(pattern, html),
                                   f"page references something external: "
@@ -346,6 +377,24 @@ class PageTest(unittest.TestCase):
                               re.S)
             self.assertIsNotNone(match)
             json.loads(match.group(1))
+
+    def test_presentation_helpers_are_inlined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertIn("const TRAIL_TAIL = 60", html)
+            self.assertIn('stroke-width=".8" opacity=".18"', html)
+            self.assertIn("latest 60 keyframes emphasized", html)
+            self.assertIn("/^osm:(node|way|relation):(\\d+)$/", html)
+            self.assertIn(
+                'href="https://www.openstreetmap.org/${m[1]}/${m[2]}"',
+                html)
+            self.assertIn('target="_blank" rel="noopener"', html)
+            for term in ("consistent", "geometry-unexplained", "no-evidence",
+                         "matcher-fault", "filter-fault", "anti"):
+                self.assertIn(f"<b>{term}</b>", html)
 
     def test_page_feature_detects_the_live_server_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -577,6 +626,30 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(payload["satellite"]["layers"]), 1)
         self.assertTrue(payload["satellite"]["layers"][0]["uri"].startswith(
             "data:image/jpeg;base64,"))
+
+    def test_tracking_evidence_serves_only_declared_ancestor_files(self):
+        tracks_dir = _make_tracking_viewer_artifact(
+            Path(self._tmp.name) / "tracks")
+        stub_payload = {"checkpoints": {}}
+        with mock.patch.object(
+                viewer_server.viewer_payload, "build",
+                return_value=stub_payload) as build:
+            client = viewer_server.create_app(
+                self.run_dir, tracks_dir=tracks_dir,
+                audit_dir=Path(self._tmp.name) / "audits").test_client()
+
+            page_response = client.get(
+                "/api/tracking/track_full_T2.html")
+            video_response = client.get(
+                "/api/tracking/videos/full_T2.mp4")
+            missing_response = client.get(
+                "/api/tracking/undeclared.txt")
+
+        self.assertEqual(page_response.status_code, 200)
+        self.assertIn(b"videos/full_T2.mp4", page_response.data)
+        self.assertEqual(video_response.data, b"test-video")
+        self.assertEqual(missing_response.status_code, 404)
+        build.assert_called_once()
 
     def test_missing_checkpoint_lists_what_exists(self):
         response = self.client.get("/api/checkpoint/999999")

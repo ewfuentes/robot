@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class TrackletSource:
     features: tuple[str, ...]
     unresolved: str
     chip_data_uri: str | None
+    evidence_page: str | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,46 @@ def _validate_run_ancestry(
             raise SourceContractError(
                 f"viewed run's matching artifact is not bound to the supplied "
                 f"{label} artifact")
+
+
+def _tracking_evidence_pages(
+        tracks_ref: artifact.ArtifactRef) -> dict[int, str]:
+    """Track id -> declared evidence page in the exact tracks artifact.
+
+    The range name and page inventory both come from the typed ancestor's
+    manifest.  In particular this does not search a mutable run directory for
+    whatever old ``m3`` filename happens to match a track id.
+    """
+    try:
+        current_ref = artifact.open_artifact(
+            tracks_ref.path, expected_kind=paths_lib.OBJECT_TRACKS,
+            expected_dataset=tracks_ref.dataset)
+        if current_ref != tracks_ref:
+            raise SourceContractError(
+                "object_tracks artifact changed after ancestry validation")
+        manifest = artifact.load_manifest(current_ref.path)
+    except artifact.ArtifactError as error:
+        raise SourceContractError(
+            f"cannot resolve tracking evidence pages: {error}") from error
+    range_config = manifest.config.get("range")
+    range_name = (range_config.get("name")
+                  if isinstance(range_config, dict) else None)
+    if not isinstance(range_name, str) or not range_name:
+        return {}
+    pattern = re.compile(
+        rf"track_{re.escape(range_name)}_T([0-9]+)\.html\Z")
+    pages: dict[int, str] = {}
+    for relative in manifest.declared_outputs:
+        match = pattern.fullmatch(relative)
+        if match is None:
+            continue
+        track_id = int(match.group(1))
+        if track_id in pages:
+            raise SourceContractError(
+                f"object_tracks artifact declares multiple evidence pages "
+                f"for track {track_id}")
+        pages[track_id] = relative
+    return pages
 
 
 def _load_meta(audit_dir: Path) -> dict:
@@ -177,6 +219,7 @@ def load(run_dir: Path, tracks_dir: Path, audit_dir: Path, tracklet_ids,
             "run names tracklets absent from the exact audited-track join: "
             + ", ".join(missing[:4]))
     request_meta = _load_meta(Path(audit_dir))
+    evidence_pages = _tracking_evidence_pages(audits.tracks_ref)
 
     result = {}
     notes = []
@@ -219,7 +262,8 @@ def load(run_dir: Path, tracks_dir: Path, audit_dir: Path, tracklet_ids,
             description=primary["description"],
             features=tuple(primary["distinctive_features"]),
             unresolved=audit["unresolved"],
-            chip_data_uri=chip_uri)
+            chip_data_uri=chip_uri,
+            evidence_page=evidence_pages.get(track["track_id"]))
     if skipped:
         notes.append(
             f"source-chip budget reached: {len(skipped)} tracklet chip(s) "

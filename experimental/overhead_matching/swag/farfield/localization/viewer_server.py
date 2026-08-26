@@ -2,8 +2,8 @@
 
 `viewer.py` writes a self-contained page — the frozen record, shareable and
 immune to code drift. This serves the *same* payload from
-`viewer_payload.build`, with the same HTML and the same JavaScript, and adds the
-two things a static file structurally cannot have:
+`viewer_payload.build`, with the same HTML and the same JavaScript, and adds
+two live capabilities plus a bridge to the exact tracking ancestor:
 
   GET /checkpoint/<kf>       every particle at that keyframe, not a 900-point
                              sample. Reading whether a mode has a real tail or
@@ -16,6 +16,8 @@ two things a static file structurally cannot have:
                              <run>.counterfactuals/ directory
                              (replay.default_counterfactual_dir), leaving the
                              completed source artifact immutable.
+  GET /api/tracking/<path>   a declared page or media file from the exact
+                             object_tracks ancestor, when supplied.
 
 The page feature-detects this server (`GET /api/health`) and lights up the
 extra affordances when it answers, so one HTML/JS implementation covers both
@@ -37,8 +39,9 @@ from pathlib import Path
 
 import msgspec
 import numpy as np
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
     replay as replay_mod,
     run_io,
@@ -54,6 +57,7 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
     state = {
         "payload": None,
         "checkpoints": None,
+        "tracking_outputs": None,
         # One replay at a time: each one saturates the GPU (or several CPU
         # cores), and two concurrent replays would just make both slow while
         # making the progress reporting meaningless.
@@ -95,6 +99,29 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
     def api_payload():
         return Response(json.dumps(payload(), separators=(",", ":")),
                         mimetype="application/json")
+
+    @app.get("/api/tracking/<path:relative>")
+    def tracking_evidence(relative: str):
+        """Serve only files declared by the validated tracks ancestor.
+
+        Calling payload first is intentional: source loading proves that this
+        exact object_tracks artifact is an ancestor of the viewed localization
+        run. ``send_from_directory`` then confines navigation to that artifact,
+        while the manifest allow-list excludes undeclared scratch files.
+        """
+        if tracks_dir is None:
+            abort(404)
+        payload()
+        if state["tracking_outputs"] is None:
+            try:
+                manifest = artifact.load_manifest(tracks_dir)
+            except (artifact.ArtifactError, OSError, ValueError):
+                abort(404)
+            state["tracking_outputs"] = frozenset(
+                manifest.declared_outputs)
+        if relative not in state["tracking_outputs"]:
+            abort(404)
+        return send_from_directory(tracks_dir, relative)
 
     @app.get("/api/checkpoint/<int:keyframe_idx>")
     def api_checkpoint(keyframe_idx: int):

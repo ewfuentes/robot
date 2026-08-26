@@ -139,8 +139,9 @@ The live server keeps the fast weighted particle sample unless <b>full
 particles</b> is explicitly enabled. The zoom is in the projection, so landmark
 glyphs, labels and flag rings keep a constant size while 1&sigma; circles and the
 scale bar stay true to the ground.</div>
-<div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
-dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
+<div class="legend">Dashed grey is ground truth, magenta is the MAP trail
+(latest 60 keyframes emphasized, older history faint), dashed blue are
+counterfactual ghosts. Circles are per-mode 1&sigma; with a
 heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
 selected mode; dashed coloured lines are correspondence with opacity &prop;
 association posterior. A <b style="color:var(--port)">red dotted line and

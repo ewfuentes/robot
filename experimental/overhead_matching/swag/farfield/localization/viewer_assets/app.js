@@ -14,6 +14,32 @@ const fmt = (v, d = 0) => (v === undefined || v === null || !isFinite(v))
   ? "—" : v.toFixed(d);
 const esc = s => String(s == null ? "" : s)
   .replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const OSM_ID = /^osm:(node|way|relation):(\d+)$/;
+// OSM ids are navigation links, never fetched resources. stopPropagation
+// keeps a click from also selecting the containing association/tracklet row.
+const lmLink = id => {
+  const m = OSM_ID.exec(String(id));
+  return m ? `<a href="https://www.openstreetmap.org/${m[1]}/${m[2]}"
+    target="_blank" rel="noopener"
+    onclick="event.stopPropagation()">${esc(id)}</a>` : esc(id);
+};
+// Proposal provenance is recorded as strings in current run logs and as arrays
+// in some older logs. Link exact OSM ids in either representation without
+// trying to interpret any other provenance text.
+const lmLinks = value => [].concat(value).map(item => String(item)
+  .split(/(osm:(?:node|way|relation):\d+)/g)
+  .map(part => OSM_ID.test(part) ? lmLink(part) : esc(part)).join(""))
+  .join(", ");
+const trackingEvidenceLink = src => {
+  const label = `${esc(src.localId)} (track ${esc(src.sourceTrackId)})`;
+  if (!src.evidencePage) return label;
+  const href = D.server
+    ? "/api/tracking/" + src.evidencePage.split("/")
+      .map(encodeURIComponent).join("/")
+    : src.evidenceHref;
+  return href ? `<a href="${esc(href)}" target="_blank"
+    rel="noopener">${label}</a>` : label;
+};
 const ckKeys = Object.keys(D.checkpoints).map(Number).sort((a, b) => a - b);
 const nearestCk = kf => ckKeys.reduce((best, k) =>
   Math.abs(k - kf) < Math.abs(best - kf) ? k : best, ckKeys[0]);
@@ -602,10 +628,20 @@ function drawMap() {
     out += `<path d="${d}" fill="none" stroke="var(--water)" stroke-width="1.4"
       stroke-dasharray="6 3" opacity=".8"><title>${esc(g.label)}</title></path>`;
   });
-  let dm = "";
-  H.slice(0, t + 1).forEach((r, i) => {
-    dm += (i ? "L" : "M") + px(r.mapE).toFixed(1) + " " + py(r.mapN).toFixed(1); });
-  out += `<path d="${dm}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`;
+  // Keep the complete MAP history visible without letting a long, basin-
+  // hopping run bury the current local behavior in an opaque scribble.
+  const TRAIL_TAIL = 60;
+  const trailSegment = (start, end) => { let d = "";
+    for (let i = start; i <= end; i++)
+      d += (i === start ? "M" : "L") + px(H[i].mapE).toFixed(1) + " "
+        + py(H[i].mapN).toFixed(1);
+    return d; };
+  const trailCut = Math.max(0, t - TRAIL_TAIL);
+  if (trailCut > 0)
+    out += `<path d="${trailSegment(0, trailCut)}" fill="none"
+      stroke="var(--accent)" stroke-width=".8" opacity=".18"/>`;
+  out += `<path d="${trailSegment(trailCut, t)}" fill="none"
+    stroke="var(--accent)" stroke-width="1.6" opacity=".9"/>`;
 
   // Per-mode 1-sigma circle + heading tick.
   h.modes.forEach(m => {
@@ -775,7 +811,7 @@ function assocTable() {
   let out = "";
   for (const a of rows) {
     const parts = Object.entries(a.resp)
-      .map(([lm, p]) => `${esc(lm)} <b>${(p * 100).toFixed(0)}%</b>`).join(" · ");
+      .map(([lm, p]) => `${lmLink(lm)} <b>${(p * 100).toFixed(0)}%</b>`).join(" · ");
     out += `<tr class="click" data-trk="${esc(a.trk)}">
       <td><code>${esc(a.trk)}</code></td>
       <td class="num">${(a.null * 100).toFixed(0)}%</td>
@@ -831,7 +867,7 @@ function drawModes() {
     const p = mode.prov || {};
     const origin = p.source === "proposal"
       ? `proposal #${p.proposal_event_id} (${p.trigger || "?"})`
-        + (p.landmark_ids ? `<br><code>${esc(p.landmark_ids)}</code>` : "")
+        + (p.landmark_ids ? `<br><code>${lmLinks(p.landmark_ids)}</code>` : "")
       : "motion";
     // Sparkline of this mode's weight over its whole life: the §7.4 "weight
     // trajectory" at row scale, so the ledger answers "was it ever strong".
@@ -899,8 +935,18 @@ function drawTrackletList() {
     <th class="num">nats</th><th>verdict</th></tr></thead>
     <tbody>${rows}</tbody></table></div>
     <div class="legend">"nats" is this tracklet's total contribution to the
-    whole belief's log-likelihood (§7.2). "verdict" is truth-privileged.
-    </div>`;
+    whole belief's log-likelihood (§7.2). "verdict" is truth-privileged triage
+    (<code>forensics triage</code>): every catalog row is fit against the
+    tracklet's GPS-derived world bearings. <b>consistent</b> = an endorsed
+    entry explains every epoch and the filter put mass there;
+    <b>geometry-unexplained</b> = no catalog row explains every epoch;
+    <b>no-evidence</b> = the bearings are explicable but the matcher endorsed
+    nothing; <b>matcher-fault</b> = a catalog row fits but no endorsed entry
+    does; <b>filter-fault</b> = an endorsed entry fits but the belief put its
+    mass elsewhere; <b>anti</b> = the matcher's top claim is contradicted by
+    the geometry, not merely unhelpful. Open a tracklet to see the
+    "geometrically ambiguous" flag: so many catalog rows fit the bearings that
+    the verdict is a weak claim.</div>`;
   $("trklist").querySelectorAll("tr.click").forEach(r => r.onclick = () => {
     selTrk = selTrk === r.dataset.trk ? null : r.dataset.trk;
     render(); if (selTrk) $("inspector").scrollIntoView({block: "nearest"}); });
@@ -987,8 +1033,7 @@ function drawInspector() {
     if (src.chip) source += `<img class="crop" src="${src.chip}"
       alt="audited evidence chip for ${esc(src.localId)}" loading="lazy">`;
     source += `<dl class="kv" style="margin-top:8px">
-      <dt>source track</dt><dd>${esc(src.localId)} (track ${
-        src.sourceTrackId})</dd>
+      <dt>source track</dt><dd>${trackingEvidenceLink(src)}</dd>
       <dt>audit</dt><dd><span class="pill ${
         src.verdict === "drop" ? "bad" : src.verdict === "keep_partial"
           ? "warn" : "ok"}">${esc(src.verdict)}</span>
@@ -1029,7 +1074,7 @@ function drawInspector() {
     let bars = "";
     for (const e of tbl.entries.slice(0, 14)) {
       const w = Math.abs(e.lr) / maxAbs * 96;
-      bars += `<div class="lab">${e.endorsed ? "" : "· "}${esc(e.lm)}</div>
+      bars += `<div class="lab">${e.endorsed ? "" : "· "}${lmLink(e.lm)}</div>
         <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
         <span class="bar" style="width:${w.toFixed(1)}px;background:${
         e.endorsed ? "var(--water)" : "var(--ink-faint)"}"></span>
@@ -1097,7 +1142,7 @@ function drawInspector() {
       <text class="axis" x="0" y="9">1</text></svg>
       <div class="legend">${list.map((lm, k) =>
         `<span style="color:${D.colors[k % D.colors.length]}">▬</span> ${
-        esc(lm)}`).join(" ")}
+        lmLink(lm)}`).join(" ")}
         <span style="color:var(--ink-faint)">╌ null</span></div>`;
   }
 
@@ -1106,7 +1151,7 @@ function drawInspector() {
   const tri = trk.triage;
   if (tri) {
     const fitLine = (label, fit) => fit
-      ? `<dt>${label}</dt><dd><code>${esc(fit.lm)}</code> — RMS ${
+      ? `<dt>${label}</dt><dd><code>${lmLink(fit.lm)}</code> — RMS ${
         fmt(fit.rms, 2)}°, worst ${fmt(fit.max, 1)}°, ${
         (fit.rangeM / 1000).toFixed(1)} km${fit.lr !== null
           ? `, LLR ${fit.lr >= 0 ? "+" : ""}${fit.lr.toFixed(2)}` : ""}${
@@ -1121,7 +1166,7 @@ function drawInspector() {
       <td class="num">${e.worldBearing.toFixed(0)}</td>
       <td class="num">${fmt(e.bestRes, 2)}</td>
       <td class="num">${fmt(e.topRes, 1)}</td>
-      <td><code>${esc(e.filterTop || "—")}</code>
+      <td><code>${e.filterTop ? lmLink(e.filterTop) : "—"}</code>
         <span class="prov">${(e.filterTopShare * 100).toFixed(0)}%</span></td>
       <td class="num">${(e.bestFitShare * 100).toFixed(0)}%</td>
       <td class="num">${(e.null * 100).toFixed(0)}%</td>

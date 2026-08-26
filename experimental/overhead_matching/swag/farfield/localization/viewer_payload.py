@@ -29,6 +29,7 @@ import base64
 import dataclasses
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -248,6 +249,13 @@ def _mode_trajectories(data) -> list:
     return sorted(trajectories.values(), key=lambda m: m["id"])
 
 
+def _natural_key(value: str) -> tuple:
+    """Compare numeric runs numerically, so LT2 sorts before LT10."""
+    parts = re.split(r"([0-9]+)", value)
+    return tuple((1, int(part)) if part.isdigit()
+                 else (0, part.casefold()) for part in parts)
+
+
 def _tracklet_dossiers(data, cache, triage, bundle,
                        max_table_entries: int = 40) -> list:
     """The §7.4 view-3 payload: one tracklet's whole life in one object."""
@@ -269,7 +277,7 @@ def _tracklet_dossiers(data, cache, triage, bundle,
             })
 
     out = []
-    for tracklet_id in sorted(epochs_by_tracklet):
+    for tracklet_id in sorted(epochs_by_tracklet, key=_natural_key):
         epochs = sorted(epochs_by_tracklet[tracklet_id],
                         key=lambda m: m.anchor_keyframe_idx)
         table = data.tables.get(tracklet_id)
@@ -333,6 +341,13 @@ def _tracklet_dossiers(data, cache, triage, bundle,
                 "verdict": source.verdict,
                 "confidence": source.confidence,
                 "chip": source.chip_data_uri,
+                # Resolved from the exact ancestor artifact's manifest, never
+                # by searching old tracking-run filenames.
+                "evidencePage": source.evidence_page,
+                "evidenceHref": (
+                    (Path(bundle.tracks_ref.path) / source.evidence_page)
+                    .resolve().as_uri()
+                    if source.evidence_page is not None else None),
             }
         out.append(entry)
     return out

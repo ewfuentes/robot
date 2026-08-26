@@ -34,6 +34,8 @@
 body{margin:0;background:var(--paper);color:var(--ink);
   font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   -webkit-font-smoothing:antialiased}
+a{color:var(--water);text-decoration:none}
+a:hover{text-decoration:underline}
 .mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-variant-numeric:tabular-nums}
 .wrap{max-width:1560px;margin:0 auto;padding:0 22px}
