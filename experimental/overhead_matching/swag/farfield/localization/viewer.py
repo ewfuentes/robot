@@ -123,6 +123,7 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <div class="controls" style="margin-bottom:8px">
 <button id="tgBase" class="on">basemap</button>
 <button id="tgPart" class="on">particles</button>
+<button id="tgFull" disabled>full particles</button>
 <button id="tgGhost" class="on">ghosts</button>
 <button id="tgSat" class="on">satellite</button>
 <button id="tgFitTrack">fit track</button>
@@ -132,10 +133,12 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <svg id="map"></svg>
 <div class="legend"><span id="mapnote"></span></div>
 <div class="legend"><b>Scroll to zoom, drag to pan, double-click to zoom in.</b>
-Opens fitted to the trajectory; <b>full extent</b> restores the whole catalog box
-and <b>fit track</b> returns. The zoom is in the projection, so landmark glyphs,
-labels and flag rings keep a constant size while 1&sigma; circles and the scale
-bar stay true to the ground.</div>
+Opens fitted to the complete truth track (the estimate when truth is absent);
+<b>full extent</b> restores the whole catalog box and <b>fit track</b> returns.
+The live server keeps the fast weighted particle sample unless <b>full
+particles</b> is explicitly enabled. The zoom is in the projection, so landmark
+glyphs, labels and flag rings keep a constant size while 1&sigma; circles and the
+scale bar stay true to the ground.</div>
 <div class="legend">Dashed grey is ground truth, magenta is the MAP trail,
 dashed blue are counterfactual ghosts. Circles are per-mode 1&sigma; with a
 heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the

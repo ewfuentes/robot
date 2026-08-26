@@ -3,6 +3,7 @@ const H = D.health, KF = D.run.nKeyframes - 1, RUN = D.run;
 const $ = id => document.getElementById(id);
 let t = 0, selMode = null, selTrk = null, tab = "state";
 let showGhosts = true, showBase = true, showParticles = true;
+let showFullParticles = false;
 // Imagery defaults ON when supplied: if someone went to the
 // trouble of fetching a mosaic, they want to see it.
 let showSat = true;
@@ -22,8 +23,8 @@ const wrap180 = a => ((a % 360) + 540) % 360 - 180;
 
 // ---------- optional localhost server ----------
 const LIVE = {
-  features: new Set(), requestedCheckpoints: new Set(),
-  loadedCheckpoints: new Set(), health: null
+  features: new Set(), requestedCheckpoint: null,
+  fullCheckpoint: null, health: null
 };
 
 async function apiJson(path, options) {
@@ -42,6 +43,10 @@ async function detectLiveServer() {
     const status = $("liveStatus");
     status.textContent = "live server";
     status.className = "pill ok";
+    const full = $("tgFull");
+    full.disabled = !LIVE.features.has("checkpoint");
+    full.title = full.disabled ? "requires the localhost viewer server"
+      : "explicitly load every particle for the nearest checkpoint";
     drawTiles();
     drawMap();
     if (tab === "whatif") drawWhatIf();
@@ -52,27 +57,37 @@ async function detectLiveServer() {
 }
 
 async function loadFullCheckpoint(keyframe) {
-  if (!LIVE.features.has("checkpoint")
-      || LIVE.loadedCheckpoints.has(keyframe)
-      || LIVE.requestedCheckpoints.has(keyframe)) return;
-  LIVE.requestedCheckpoints.add(keyframe);
+  if (!showFullParticles || !LIVE.features.has("checkpoint")
+      || (LIVE.fullCheckpoint
+          && LIVE.fullCheckpoint.keyframe === keyframe)
+      || LIVE.requestedCheckpoint === keyframe) return;
+  LIVE.requestedCheckpoint = keyframe;
   try {
-    const body = await apiJson("/api/checkpoint/" + keyframe);
-    D.checkpoints[String(keyframe)] = {
-      e: body.e, n: body.n_m, h: body.h, m: body.mode,
-      w: body.w, event: body.event
+    const body = await apiJson("/api/checkpoint/" + keyframe + "?view=map");
+    // Keep one full checkpoint at a time and leave the inlined weighted samples
+    // untouched. Scrubbing with full particles off therefore remains cheap, and
+    // turning the option off immediately returns to the bounded representation.
+    if (!showFullParticles || nearestCk(t) !== keyframe) return;
+    LIVE.fullCheckpoint = {
+      keyframe: keyframe,
+      particles: {e: body.e, n: body.n_m, m: body.mode}
     };
-    LIVE.loadedCheckpoints.add(keyframe);
     const status = $("liveStatus");
     status.textContent = "live · " + body.n.toLocaleString()
       + " particles at kf " + keyframe;
     drawMap();
   } catch (error) {
-    LIVE.requestedCheckpoints.delete(keyframe);
-    const status = $("liveStatus");
-    status.textContent = "live checkpoint error";
-    status.className = "pill bad";
-    status.title = error.message;
+    // A request can finish after the user has scrubbed away or disabled full
+    // particles. In that case it is stale, not a failure of the current view.
+    if (showFullParticles && nearestCk(t) === keyframe) {
+      const status = $("liveStatus");
+      status.textContent = "live checkpoint error";
+      status.className = "pill bad";
+      status.title = error.message;
+    }
+  } finally {
+    if (LIVE.requestedCheckpoint === keyframe)
+      LIVE.requestedCheckpoint = null;
   }
 }
 
@@ -163,15 +178,17 @@ function viewFit(x0, y0, x1, y1) {          // rect in BASE pixel space
 
 function viewFitAll() { viewFit(0, 0, MW, MH); }
 
-// The truth track plus the complete estimate trajectory. With no truth, the
-// estimate alone still defines a useful fit instead of falling back to all.
+// "Track" means the recorded trajectory, not every hypothesis the filter has
+// visited. A badly localized MAP estimate can span the entire prior and make a
+// truth+estimate fit indistinguishable from "full extent". Without truth, the
+// estimate remains the only useful fallback.
 function viewFitTrack() {
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
   const g = (x, y) => { if (!isFinite(x) || !isFinite(y)) return;
     x0 = Math.min(x0, x); x1 = Math.max(x1, x);
     y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
-  D.truth.forEach(p => g(px0(p[0]), py0(p[1])));
-  H.forEach(h => g(px0(h.mapE), py0(h.mapN)));
+  const track = D.truth.length ? D.truth : H.map(h => [h.mapE, h.mapN]);
+  track.forEach(p => g(px0(p[0]), py0(p[1])));
   if (x1 <= x0 || y1 <= y0) { viewFitAll(); return; }
   viewFit(x0, y0, x1, y1);
 }
@@ -290,6 +307,25 @@ const LANDMARK_GEOMETRY = !(D.landmarkGeometry || []).length ? ""
     return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1"
       stroke-linejoin="round" opacity="${g.referenced ? .75 : .38}"/>`;
   }).join("");
+
+function mapLayers() {
+  const svg = $("map");
+  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);
+  if (!$("dynamicmap")) {
+    // These strings can contain tens of thousands of vertices and embedded
+    // imagery. Parse them once; subsequent frames replace only the dynamic
+    // group instead of reconstructing the entire SVG tree.
+    svg.innerHTML = `<g id="staticmap">
+      <g id="satelliteLayer">${SATELLITE}</g>
+      <g id="basemapLayer">${BASEMAP}</g>
+      <g id="contextLayer">${LANDMARK_GEOMETRY}${BACKDROP}</g>
+      </g><g id="dynamicmap"></g>`;
+  }
+  $("staticmap").setAttribute("transform", staticTransform());
+  $("satelliteLayer").style.display = showSat ? "" : "none";
+  $("basemapLayer").style.display = showBase ? "" : "none";
+  return $("dynamicmap");
+}
 
 // Scale bar: a map with no basemap and no scale is unreadable at a glance.
 // Recomputed for the current viewport rather than built once, for two reasons:
@@ -530,14 +566,13 @@ function drawStrip() {
 
 // ---------- view 2: map ----------
 function drawMap() {
-  const h = H[t], ck = nearestCk(t), P = D.checkpoints[ck];
-  loadFullCheckpoint(ck);
-  // Static layers stay in base coordinates and are moved by one transform:
-  // re-emitting 138k basemap vertices on every wheel tick is not affordable.
-  let out = `<g id="staticmap" transform="${staticTransform()}">`
-    + (showSat ? SATELLITE : "")
-    + (showBase ? BASEMAP : "") + LANDMARK_GEOMETRY + BACKDROP
-    + `</g>`;
+  const h = H[t], ck = nearestCk(t);
+  const full = (showFullParticles && LIVE.fullCheckpoint
+                && LIVE.fullCheckpoint.keyframe === ck)
+    ? LIVE.fullCheckpoint.particles : null;
+  const P = full || D.checkpoints[ck];
+  if (showFullParticles) loadFullCheckpoint(ck);
+  let out = "";
 
   if (showParticles && P) {
     // One path per mode rather than one circle per particle: 900 DOM nodes per
@@ -651,6 +686,9 @@ function drawMap() {
   D.landmarks.forEach(l => {
     const hot = active[l.id] !== undefined;
     const r = many ? (hot ? 4.5 : 2.2) : 5.5;
+    const x = px(l.e), y = py(l.n), margin = r + 10;
+    if (x < -margin || x > MW + margin || y < -margin || y > MH + margin)
+      return;
     out += glyph(l, r, hot);
     if ((hot || !many) && (selTrk === null || true))
       out += `<text class="axis" x="${(px(l.e) + 8).toFixed(1)}"
@@ -661,12 +699,16 @@ function drawMap() {
       r="4.5" fill="none" stroke="var(--truth)" stroke-width="2"/>`;
   out += scaleBar();
 
-  const svg = $("map");
-  svg.setAttribute("viewBox", `0 0 ${MW} ${MH}`);   // fixed: the zoom is in VIEW
-  svg.innerHTML = out;
+  mapLayers().innerHTML = out;
+  const particleDescription = full
+    ? `all ${P.e.length.toLocaleString()}`
+    : `weighted sample ${P ? P.e.length.toLocaleString() : "0"} of `
+      + RUN.nParticles.toLocaleString();
+  const loading = showFullParticles && !full
+    ? " · loading all particles" : "";
   $("mapnote").innerHTML =
-    `particles: weighted sample of ${RUN.nParticles.toLocaleString()} from `
-    + `checkpoint kf ${ck}${ck !== t ? ` (nearest to ${t})` : ""}`
+    `particles: ${particleDescription} from checkpoint kf ${ck}`
+    + `${ck !== t ? ` (nearest to ${t})` : ""}${loading}`
     + (flags.length ? ` · <b style="color:var(--port)">${flags.length} `
         + `LLR/geometry disagreement${flags.length > 1 ? "s" : ""}: `
         + flags.map(f => `${esc(f.trk)} ${f.deg.toFixed(0)}°`).join(", ")
@@ -1310,6 +1352,16 @@ $("tgBase").onclick = e => { showBase = !showBase;
   e.target.classList.toggle("on", showBase); drawMap(); };
 $("tgPart").onclick = e => { showParticles = !showParticles;
   e.target.classList.toggle("on", showParticles); drawMap(); };
+$("tgFull").onclick = e => {
+  showFullParticles = !showFullParticles;
+  LIVE.fullCheckpoint = null;
+  e.target.classList.toggle("on", showFullParticles);
+  const status = $("liveStatus");
+  status.textContent = showFullParticles ? "live · loading full checkpoint"
+    : "live server";
+  status.className = "pill ok";
+  drawMap();
+};
 $("tgGhost").onclick = e => { showGhosts = !showGhosts;
   e.target.classList.toggle("on", showGhosts); drawMap(); };
 if ($("tgSat")) {

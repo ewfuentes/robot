@@ -15,6 +15,8 @@ same payload.
   T-V5  the page renders self-contained, with no external references — the
         CSS/JS now live as viewer_assets/ files and must be INLINED
   T-V6  the server serves the same payload and its two extra endpoints
+  T-V7  live-only detail is opt-in, while satellite and track-fit semantics are
+        shared with the static viewer
 """
 
 import json
@@ -73,6 +75,19 @@ def _make_run(run_dir: Path, n_particles: int = 3000, seed: int = 3):
         odometry=data.odometry, measurements=data.measurements,
         tables=data.tables, dataset="synthetic", version=run_dir.name)
     return data, config, result.history
+
+
+def _make_satellite(directory: Path) -> None:
+    directory.mkdir()
+    (directory / "wide.jpg").write_bytes(b"test-jpeg")
+    (directory / "satellite.json").write_text(json.dumps({
+        "source": "viewer test imagery",
+        "layers": [{
+            "image": "wide.jpg", "zoom": 12,
+            "east_min": -1000.0, "east_max": 1000.0,
+            "north_min": -500.0, "north_max": 500.0,
+        }],
+    }))
 
 
 class PayloadTest(unittest.TestCase):
@@ -338,9 +353,25 @@ class PageTest(unittest.TestCase):
             _make_run(run_dir)
             html = viewer.render_html(viewer_payload.build(run_dir))
             self.assertIn('id="liveStatus"', html)
+            self.assertIn('id="tgFull" disabled', html)
             self.assertIn('apiJson("/api/health")', html)
-            self.assertIn('apiJson("/api/checkpoint/" + keyframe)', html)
+            self.assertIn(
+                'apiJson("/api/checkpoint/" + keyframe + "?view=map")', html)
             self.assertIn('apiJson("/api/replay"', html)
+            self.assertIn(
+                "if (showFullParticles) loadFullCheckpoint(ck);", html)
+            self.assertIn("mapLayers().innerHTML = out", html)
+
+    def test_fit_track_prefers_truth_and_falls_back_to_the_estimate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            _make_run(run_dir)
+            html = viewer.render_html(viewer_payload.build(run_dir))
+
+            self.assertIn(
+                "const track = D.truth.length ? D.truth : H.map(", html)
+            self.assertNotIn(
+                "D.truth.forEach(p => g(px0(p[0]), py0(p[1])));", html)
 
     def test_assets_are_inlined_from_the_asset_files(self):
         """The CSS/JS live as viewer_assets/ files (data deps) and are inlined
@@ -516,6 +547,36 @@ class ServerTest(unittest.TestCase):
         self.assertGreater(n, viewer_payload.MAX_PARTICLES_PER_FRAME,
                            "the run is too small for this test to prove the "
                            "endpoint beats the inlined sample")
+
+    def test_checkpoint_map_view_omits_unused_particle_fields(self):
+        data = run_io.read_run(self.run_dir)
+        kf = sorted(data.checkpoints)[len(data.checkpoints) // 2]
+
+        response = self.client.get(f"/api/checkpoint/{kf}?view=map")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        n = data.checkpoints[kf]["east_m"].shape[0]
+        self.assertEqual(set(body), {"n", "e", "n_m", "mode"})
+        self.assertEqual(body["n"], n)
+        for key in ("e", "n_m", "mode"):
+            self.assertEqual(len(body[key]), n, f"{key} is truncated")
+
+    def test_live_server_passes_satellite_to_the_shared_payload(self):
+        satellite = Path(self._tmp.name) / "satellite"
+        _make_satellite(satellite)
+        client = viewer_server.create_app(
+            self.run_dir, satellite=satellite).test_client()
+
+        response = client.get("/api/payload")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["satellite"]["source"],
+                         "viewer test imagery")
+        self.assertEqual(len(payload["satellite"]["layers"]), 1)
+        self.assertTrue(payload["satellite"]["layers"][0]["uri"].startswith(
+            "data:image/jpeg;base64,"))
 
     def test_missing_checkpoint_lists_what_exists(self):
         response = self.client.get("/api/checkpoint/999999")
