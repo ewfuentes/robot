@@ -181,9 +181,22 @@ class ViewerTest(unittest.TestCase):
         # Track links use each track's own range name (all ranges loaded,
         # not next(glob)).
         self.assertIn("track_seg0_T1.html", page)
-        self.assertIn("semantic_audit/review/index.html#T1", page)
+        self.assertIn("preview/index.html#T1", page)
+        self.assertNotIn("../../semantic_audit/", page)
+        no_match = next(
+            key for key in mv.load_uniqueness(self.match_dir)
+            if key.endswith("#T2"))
+        self.assertIn(f"<tr id='{no_match}'>", page)
         self.assertIn("aggregate confidence", page)
         self.assertNotIn("<th>probability</th>", page)
+        self.assertIn("Human match note", page)
+        self.assertIn("MATCH_NOTES_CONTEXT", page)
+        self.assertIn("/api/match-notes", page)
+        self.assertIn("data-note-select=", page)
+        matching_digest = json.loads(
+            (self.match_dir / "manifest.json").read_text())["content_digest"]
+        self.assertIn(
+            f'"content_digest":"{matching_digest}"', page)
         self.assertTrue(
             (self._page("review-no-map").parent /
              "identity_review_draft.json").is_file())

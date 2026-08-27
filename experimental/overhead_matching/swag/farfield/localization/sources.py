@@ -16,6 +16,7 @@ from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import (
     artifact,
+    nominal_forward,
     paths as paths_lib,
 )
 from experimental.overhead_matching.swag.farfield.calibration import audit_io
@@ -47,6 +48,7 @@ class TrackletSource:
     unresolved: str
     chip_data_uri: str | None
     evidence_page: str | None
+    frame_bearings: tuple[tuple[int, float, float], ...]
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ def _one_upstream(manifest, kind: str, label: str) -> artifact.ArtifactRef:
 def _validate_run_ancestry(
         run_dir: Path,
         tracks_ref: artifact.ArtifactRef,
-        audits_ref: artifact.ArtifactRef) -> None:
+        audits_ref: artifact.ArtifactRef) -> artifact.ArtifactRef:
     try:
         run_ref = artifact.open_artifact(
             run_dir, expected_kind=LOCALIZATION_RUN_KIND,
@@ -94,6 +96,19 @@ def _validate_run_ancestry(
             raise SourceContractError(
                 f"viewed run's matching artifact is not bound to the supplied "
                 f"{label} artifact")
+    return inputs_ref
+
+
+def _frame_bearings(item, calibration) -> tuple[tuple[int, float, float], ...]:
+    """Every accepted source-frame bearing, in nominal-forward coordinates."""
+    segments = [{"start_t": segment.start_t, "end_t": segment.end_t}
+                for segment in item.valid_segments]
+    return tuple(
+        (keyframe,
+         nominal_forward.camera_to_forward_cw_deg(camera_bearing, calibration),
+         angular_width)
+        for keyframe, camera_bearing, angular_width in tracklets.bearing_series(
+            item.source_track, calibration.panorama_width, segments))
 
 
 def _tracking_evidence_pages(
@@ -208,8 +223,16 @@ def load(run_dir: Path, tracks_dir: Path, audit_dir: Path, tracklet_ids,
             tracklets.TrackletContractError) as error:
         message = f"invalid canonical viewer sources: {error}"
         raise SourceContractError(message) from error
-    _validate_run_ancestry(run_dir, audits.tracks_ref,
-                           audits.semantic_audits_ref)
+    inputs_ref = _validate_run_ancestry(
+        run_dir, audits.tracks_ref, audits.semantic_audits_ref)
+    try:
+        calibration = nominal_forward.load(
+            Path(inputs_ref.path) / "nominal_forward.json",
+            expected_dataset=audits.tracks_ref.dataset)
+    except (OSError, ValueError) as error:
+        raise SourceContractError(
+            "cannot load the localization input's nominal-forward "
+            f"calibration: {error}") from error
 
     wanted = set(tracklet_ids)
     by_id = {item.tracklet_id: item for item in accepted}
@@ -263,7 +286,8 @@ def load(run_dir: Path, tracks_dir: Path, audit_dir: Path, tracklet_ids,
             features=tuple(primary["distinctive_features"]),
             unresolved=audit["unresolved"],
             chip_data_uri=chip_uri,
-            evidence_page=evidence_pages.get(track["track_id"]))
+            evidence_page=evidence_pages.get(track["track_id"]),
+            frame_bearings=_frame_bearings(item, calibration))
     if skipped:
         notes.append(
             f"source-chip budget reached: {len(skipped)} tracklet chip(s) "

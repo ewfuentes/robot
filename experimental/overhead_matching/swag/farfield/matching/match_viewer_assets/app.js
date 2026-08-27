@@ -320,6 +320,7 @@ function scalebar(){
 
 function select(key, andFit){
   sel = key;
+  if(window.selectMatchNote) window.selectMatchNote(key);
   document.querySelectorAll('.card').forEach(c =>
     c.classList.toggle('sel', c.dataset.key === key));
   const tk = M.tracklets[key];

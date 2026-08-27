@@ -30,7 +30,9 @@ import dataclasses
 import io
 import json
 import math
+import os
 import re
+import urllib.parse
 from pathlib import Path
 
 import numpy as np
@@ -229,6 +231,7 @@ def _health_payload(data, truth_by_kf) -> list:
             mean_err, map_err, heading_err = errors_by_kf[record.keyframe_idx]
             entry["truthE"] = round(truth.east_m, 1)
             entry["truthN"] = round(truth.north_m, 1)
+            entry["truthH"] = round(truth.course_world_cw_deg, 1)
             entry["err"] = round(mean_err, 1)
             entry["mapErr"] = round(map_err, 1)
             entry["headingErr"] = round(heading_err, 2)
@@ -262,7 +265,27 @@ def _natural_key(value: str) -> tuple:
                  else (0, part.casefold()) for part in parts)
 
 
-def _tracklet_dossiers(data, cache, triage, bundle,
+def _portable_href(viewer_dir: Path, target: Path) -> str:
+    """Link within a copied/served data-root tree, never to this machine."""
+    viewer = Path(os.path.abspath(viewer_dir))
+    target = Path(os.path.abspath(target))
+    return Path(os.path.relpath(target, viewer)).as_posix()
+
+
+def _tracking_evidence_href(viewer_dir: Path, tracks_dir: Path,
+                            evidence_page: str) -> str:
+    return _portable_href(viewer_dir, Path(tracks_dir) / evidence_page)
+
+
+def _review_href(viewer_dir: Path, page: Path, anchor: str) -> str:
+    """Portable link to one exact tracklet section of a review page."""
+    return (_portable_href(viewer_dir, page) + "#"
+            + urllib.parse.quote(anchor, safe=""))
+
+
+def _tracklet_dossiers(data, cache, triage, bundle, viewer_dir: Path,
+                       matcher_page: Path | None = None,
+                       audit_page: Path | None = None,
                        max_table_entries: int = 40) -> list:
     """The §7.4 view-3 payload: one tracklet's whole life in one object."""
     epochs_by_tracklet: dict[str, list] = {}
@@ -347,13 +370,25 @@ def _tracklet_dossiers(data, cache, triage, bundle,
                 "verdict": source.verdict,
                 "confidence": source.confidence,
                 "chip": source.chip_data_uri,
+                "frameBearings": [{
+                    "kf": keyframe,
+                    "bearing": round(bearing, 3),
+                    "width": round(width, 3),
+                } for keyframe, bearing, width in source.frame_bearings],
                 # Resolved from the exact ancestor artifact's manifest, never
                 # by searching old tracking-run filenames.
                 "evidencePage": source.evidence_page,
                 "evidenceHref": (
-                    (Path(bundle.tracks_ref.path) / source.evidence_page)
-                    .resolve().as_uri()
+                    _tracking_evidence_href(
+                        viewer_dir, bundle.tracks_ref.path,
+                        source.evidence_page)
                     if source.evidence_page is not None else None),
+                "matcherHref": (
+                    _review_href(viewer_dir, matcher_page, tracklet_id)
+                    if matcher_page is not None else None),
+                "auditHref": (
+                    _review_href(viewer_dir, audit_page, source.local_id)
+                    if audit_page is not None else None),
             }
         out.append(entry)
     return out
@@ -560,7 +595,10 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
           embed_source_chips: bool = True,
           with_basemap: bool = False,
           basemap_detail: float = 1.0,
-          satellite: Path | None = None) -> dict:
+          satellite: Path | None = None,
+          viewer_dir: Path | None = None,
+          matcher_page: Path | None = None,
+          audit_page: Path | None = None) -> dict:
     """The whole payload. See the module docstring for what is optional.
 
     The catalog visibility radius comes from the run's manifest — required
@@ -568,6 +606,8 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
     the geometry the run was actually built with.
     """
     run_dir = Path(run_dir)
+    viewer_dir = (Path(viewer_dir) if viewer_dir is not None else
+                  run_dir.with_name(run_dir.name + ".viewer"))
     data = run_io.read_run(run_dir)
     manifest = data.manifest
     notes: list[str] = []
@@ -599,6 +639,18 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
 
     if (tracks_dir is None) != (audit_dir is None):
         raise ValueError("tracks_dir and audit_dir must be supplied together")
+    if (tracks_dir is None
+            and (matcher_page is not None or audit_page is not None)):
+        raise ValueError(
+            "matcher_page and audit_page require tracks_dir and audit_dir")
+    for label, review_page in (("matcher_page", matcher_page),
+                               ("audit_page", audit_page)):
+        if review_page is None:
+            continue
+        review_page = Path(review_page)
+        if review_page.is_symlink() or not review_page.is_file():
+            raise ValueError(
+                f"{label} must be a regular non-symlink file: {review_page}")
     bundle = None
     if tracks_dir is not None:
         tracklet_ids = {
@@ -720,7 +772,9 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
         "checkpoints": checkpoints,
         "measurements": measurements,
         "modes": _mode_trajectories(data),
-        "tracklets": _tracklet_dossiers(data, cache, triage, bundle),
+        "tracklets": _tracklet_dossiers(
+            data, cache, triage, bundle, viewer_dir,
+            matcher_page=matcher_page, audit_page=audit_page),
         "attribution": _attribution_payload(cache, data),
         "events": [dataclasses.asdict(e) for e in events],
         "triageSummary": forensics.triage_summary(triage),

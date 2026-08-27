@@ -62,3 +62,25 @@ h2{cursor:pointer}
 h2:hover{color:#fff}
 .mapnote{color:#c93;font-size:12px;margin:4px 0}
 .pin{color:#8fa3b5;font-size:11.5px}
+
+.note-panel{position:sticky;top:0;z-index:4;background:#131a22;
+border:1px solid #34455a;border-radius:6px;padding:9px 10px;margin:0 0 12px;
+box-shadow:0 5px 16px rgba(0,0,0,.35)}
+.note-panel-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+#match-note-heading{font-size:12px;color:#cfe0f0;overflow-wrap:anywhere}
+#match-note-text{display:block;box-sizing:border-box;width:100%;min-height:82px;
+resize:vertical;background:#0e1319;color:#dfe8f0;border:1px solid #34455a;
+border-radius:4px;padding:7px 8px;font:13px/1.4 sans-serif}
+#match-note-text:disabled{color:#718090}
+.note-controls{display:flex;align-items:center;gap:6px;margin-top:6px}
+.note-controls button,.note-select{background:#1b2430;color:#cfe0f0;
+border:1px solid #34455a;border-radius:4px;padding:3px 9px;cursor:pointer;
+font:12px sans-serif}
+.note-controls button:disabled{opacity:.4;cursor:default}
+.note-select{margin-left:6px;white-space:nowrap}
+.note-select.has-note{color:#ffd27a;border-color:#8c6a2c;background:#302718}
+.note-select.unsaved-note{color:#ffb347;border-color:#ffb347}
+.note-status{font-size:11.5px;color:#8fa3b5;margin-left:auto}
+.note-status.connected{color:#70c99a}.note-status.failed{color:#f2777a}
+.note-status.readonly{color:#c99a55}
+#match-note-updated{font-size:11px;color:#718090;margin-left:4px}
