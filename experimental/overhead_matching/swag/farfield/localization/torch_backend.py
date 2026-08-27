@@ -27,11 +27,15 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 
 _TWO_PI = 2.0 * math.pi
-# Bounds the dense particle x landmark working set.  At 50k particles a
-# 4096-landmark float32 block is about 0.8 GiB; the full likelihood expression
-# needs several such tensors concurrently, but remains comfortably inside a
-# 32 GiB accelerator even for catalogs with tens of thousands of landmarks.
-_CANDIDATE_CHUNK_SIZE = 4096
+# Bounds the dense particle x landmark working set by ELEMENTS, not landmark
+# count: the association path holds ~9 such blocks concurrently, so a fixed
+# 4096-landmark chunk OOMs a 32 GiB accelerator once the particle count grows
+# past ~10x the 50k it was sized for.  4096 * 50_000 elements is a ~0.8 GiB
+# float32 block — the empirically comfortable peak — and dividing by the
+# particle count keeps that peak flat as budgets scale.  At 50k particles the
+# chunk is exactly the old 4096, so existing runs reproduce bit-for-bit.
+_CANDIDATE_BLOCK_ELEMENTS = 4096 * 50_000
+_CANDIDATE_CHUNK_MIN = 256
 
 
 class TorchMeasurementEngine:
@@ -78,11 +82,11 @@ class TorchMeasurementEngine:
             tid: torch.as_tensor(mask, dtype=torch.bool, device=self.device)
             for tid, mask in self.surprise_np.items()}
 
-    def _candidate_slices(self):
-        for start in range(0, len(self.landmark_ids),
-                           _CANDIDATE_CHUNK_SIZE):
-            yield start, min(start + _CANDIDATE_CHUNK_SIZE,
-                             len(self.landmark_ids))
+    def _candidate_slices(self, n_particles: int):
+        chunk = max(_CANDIDATE_CHUNK_MIN,
+                    _CANDIDATE_BLOCK_ELEMENTS // max(n_particles, 1))
+        for start in range(0, len(self.landmark_ids), chunk):
+            yield start, min(start + chunk, len(self.landmark_ids))
 
     def _log_terms(self, east, north, heading, meas, start=0, end=None):
         """log[(1-pi0)-less mixture terms]: identity posterior + log vM.
@@ -117,7 +121,7 @@ class TorchMeasurementEngine:
                                  log_scale: float):
         result = torch.full(east.shape, float("-inf"), dtype=self.dtype,
                             device=self.device)
-        for start, end in self._candidate_slices():
+        for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
             result = torch.logaddexp(result, torch.logsumexp(terms, dim=1))
@@ -221,7 +225,7 @@ class TorchMeasurementEngine:
             background_landmark = torch.full_like(
                 log_landmark, float("-inf"))
 
-        for start, end in self._candidate_slices():
+        for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
             log_landmark = torch.logaddexp(
@@ -301,7 +305,7 @@ class TorchMeasurementEngine:
         responsibilities = [{} for _ in groups]
         surprise_shares = torch.zeros(
             len(groups), dtype=self.dtype, device=self.device)
-        for start, end in self._candidate_slices():
+        for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
             avg = group_w @ torch.exp(terms - log_lik[:, None])
