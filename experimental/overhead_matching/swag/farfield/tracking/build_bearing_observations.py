@@ -187,7 +187,7 @@ def load_inputs(args):
     # The opens above already proved each input is the artifact it claims to
     # be at the version this recipe names. Which GENERATION it belongs to is
     # the orchestrator's question, answered by `artifact_identity`.
-    configured_lane.require(
+    tracks_manifest = configured_lane.require(
         tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
     audit_manifest = configured_lane.require(
         audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)

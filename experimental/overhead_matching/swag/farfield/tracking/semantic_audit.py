@@ -763,8 +763,9 @@ be small in the frame; judge only what is visible.
   the names you disbelieve - a later stage resolves names against a map you
   cannot see, so a name you rank low may still win, and one you rank high may
   be geometrically impossible. Weight by how well each name fits what you can
-  SEE (basis="read_from_images" or "both" outranks a name that is merely
-  frequent in the detection text). Never rank a name above one with more
+  SEE (a basis="both" name, corroborated by the chips, outranks a
+  basis="reported_by_detections" name that is merely frequent in the
+  detection text). Never rank a name above one with more
   supporting detections unless the images justify it - say why in unresolved
   if you do. Dense skylines produce confident wrong names at every range, so
   a single track collecting many different building names is expected; report
