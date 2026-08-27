@@ -476,3 +476,54 @@ incidentally on every check, paid for in gigabytes. It is now
 `pipeline verify --build_dir`, which re-hashes each artifact against its
 manifest and reports per kind. A routine status catches strictly less than
 before; the trade is that it can actually be run.
+
+## 2026-08-27 · Resampling survival floor: a hypothesis may die of evidence, not of rounding
+
+**What changed.** `systematic_resample` accepts a survival floor
+(`localization.resample_survival_floor`, with
+`localization.resample_survival_min_mass` as the genuinely-refuted cutoff):
+every mode and proposal-cluster group holding at least the minimum mass keeps
+at least `floor` offspring, and offspring then carry their group's true mass
+(`log(mass/count)`) instead of the uniform post-resample reset — so the
+posterior is unchanged; only representation is guaranteed. At 0 the historical
+uniform-weight behavior reproduces bit-for-bit.
+
+**Why — the seed study that motivated it.** mount_washington leg3 whole-map
+runs are bimodal: 4 seeds at identical code/config/inputs gave 500 m
+time-normalized mass 0.233/0.011/0.258/0.018 (23x spread). The filter is
+bit-deterministic on GPU (a re-run reproduces the archived run byte-for-byte
+at both e6c4825 and 7e898528; an apparent cross-commit "17x improvement" was
+the #683 candidate-chunking change remapping the RNG stream — i.e. a hidden
+reseed). Per-checkpoint particle provenance showed the coin flip is lineage
+survival: every seed carries hundreds of init-injection descendants near truth
+through kf ~190; misleading measurements in kf ~200–235 cull them while every
+proposal event in kf 150–260 fails the evidence gate; winning seeds keep a
+remnant of 61–278 particles of 50k that explodes to 26–36k when decisive
+evidence arrives at kf ~240–260, and the winning mass is 100% event-0
+descendants. Losing seeds go extinct. 10x particles did NOT raise the
+convergence rate (1/4 at 500k vs 2/4 at 50k) — remnant SIZE was never the
+binding constraint.
+
+**Measured, 8 datasets x 4 seeds (runs/260826_washington_iteration; leg3 arms
+under the same experiment):** the floor at 64 never harmed a converging
+dataset and fixed tails. boston_harbor_leg3: 3/4 -> 4/4 converged, all seeds
+175–187 m (baseline seed2 failed at 493 m). charles: 8–9 m final vs 10–11 m
+(best recorded). mount_washington leg3 converged runs: 435/476 m vs 515/2223 m.
+Unconverged tails land km closer (pohang 1.5–2.2 km vs 5–13 km on 3 of 4
+seeds). The one measured cost: boston_harbor_leg1, which never truly
+localizes, dilutes partial mass 0.27 -> 0.21 because more wrong hypotheses
+stay represented when nothing can win. Dead datasets (boston leg2, mtw leg1,
+pohang) are matcher-limited and unchanged — a resampling fix cannot repair
+wrong evidence.
+
+**Tried and rejected in the same study:** (1) gate-side revival of dead
+hypotheses — bit-for-bit a no-op at exact landmark-set matching AND at 250 m
+pose matching, because the proposal generator never re-proposes the truth
+region after the early window (1 of ~1,100 later hypotheses shared any
+landmark with the dead near-truth mode); a workable version must inject from
+the remembered dead pose. (2) a whole-belief per-measurement damage cap —
+3 nats freezes global discrimination entirely (0/4, means 26–193 km out);
+6 nats alone matches the floor (2/4, 479/554 m) but stacked with the floor is
+anti-synergistic (0/4): both protect hypothesis survival and together the
+belief stays permanently fragmented. If damage bounding returns, it must be
+asymmetric (clamp tracked-mode decay, not the diffuse cloud).

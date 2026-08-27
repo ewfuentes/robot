@@ -357,6 +357,49 @@ class ResamplerTest(unittest.TestCase):
         log_w[0] = 0.0
         self.assertAlmostEqual(pf.ess(log_w), 1.0, places=6)
 
+    @staticmethod
+    def _belief_with_tiny_cluster(group_mass=4e-6, n=1000):
+        """A 4-particle proposal cluster holding `group_mass`, the rest
+        diffuse — mass * n far below one offspring, so plain stratified
+        allocation rounds the cluster to extinction."""
+        rng = np.random.default_rng(0)
+        east = np.concatenate([np.zeros(4), rng.normal(5000.0, 100.0, n - 4)])
+        weights = np.concatenate([
+            np.full(4, group_mass / 4),
+            np.full(n - 4, (1.0 - group_mass) / (n - 4))])
+        belief = pf.ParticleBelief(
+            east_m=east, north_m=np.zeros(n), heading_rad=np.zeros(n),
+            log_weight=np.log(weights))
+        belief.proposal_event_id[:4] = 0
+        belief.proposal_hypothesis[:4] = 7
+        return belief
+
+    def test_survival_floor_keeps_hypothesis_group_alive(self):
+        belief = self._belief_with_tiny_cluster()
+        pf.systematic_resample(belief, np.random.default_rng(1),
+                               regularization=0.0, survival_floor=16)
+        survivors = belief.proposal_event_id == 0
+        self.assertGreaterEqual(int(survivors.sum()), 16)
+        # Representation is guaranteed; probability is not: the group's
+        # offspring carry exactly its pre-resample posterior mass.
+        held = float(belief.normalized_weights()[survivors].sum())
+        self.assertAlmostEqual(held, 4e-6, delta=1e-8)
+
+    def test_survival_floor_zero_reproduces_legacy_extinction(self):
+        belief = self._belief_with_tiny_cluster()
+        pf.systematic_resample(belief, np.random.default_rng(1),
+                               regularization=0.0, survival_floor=0)
+        self.assertEqual(int((belief.proposal_event_id == 0).sum()), 0)
+        np.testing.assert_array_equal(belief.log_weight, np.zeros(belief.n))
+
+    def test_survival_floor_respects_min_mass(self):
+        """A genuinely refuted group (mass below the min) may still die."""
+        belief = self._belief_with_tiny_cluster(group_mass=4e-6)
+        pf.systematic_resample(belief, np.random.default_rng(1),
+                               regularization=0.0, survival_floor=16,
+                               survival_min_mass=1e-3)
+        self.assertEqual(int((belief.proposal_event_id == 0).sum()), 0)
+
 
 class ProposalInjectionInvariantTest(unittest.TestCase):
     def test_actual_injection_count_owns_retention_and_mass(self):

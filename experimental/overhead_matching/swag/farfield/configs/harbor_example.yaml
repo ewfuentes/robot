@@ -146,6 +146,10 @@ localization:
   association_outlier_rate: 0.1
   matcher_recall: 0.5
   min_reported_responsibility: 0.000001
+  # Resampling survival floor: guaranteed offspring per represented
+  # hypothesis group (0 = off); groups below the min mass may die.
+  resample_survival_floor: 0
+  resample_survival_min_mass: 1.0e-9
   bearings_enabled: true
   proposal:
     enabled: true
