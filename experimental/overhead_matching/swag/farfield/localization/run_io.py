@@ -68,6 +68,9 @@ class RunData:
     proposal_events: list = dataclasses.field(default_factory=list)
     mode_events: list = dataclasses.field(default_factory=list)
     artifact_ref: artifact.ArtifactRef | None = None
+    # Retrieval observation source (CLD-3): the typed per-keyframe events;
+    # the dense fields sit beside them as retrieval_fields.npz + meta.
+    retrieval_measurements: list = dataclasses.field(default_factory=list)
 
 
 def write_jsonl(path: Path, records) -> None:
@@ -883,9 +886,13 @@ def read_run(run_dir: Path) -> RunData:
                                    structs.ProposalEvent),
         mode_events=read_jsonl(run_dir / "mode_events.jsonl",
                                structs.ModeEvent),
-        artifact_ref=reference)
+        artifact_ref=reference,
+        retrieval_measurements=(
+            read_jsonl(run_dir / "tier1_retrieval.jsonl",
+                       structs.RetrievalMeasurement)
+            if manifest.retrieval_consumed else []))
     _validate_payloads(
         data.manifest, data.truth, data.odometry, data.measurements,
         data.tables, data.health, data.checkpoints, data.proposal_events,
-        data.mode_events)
+        data.mode_events, data.retrieval_measurements)
     return data
