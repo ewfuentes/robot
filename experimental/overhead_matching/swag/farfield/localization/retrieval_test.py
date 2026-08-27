@@ -112,16 +112,26 @@ class EngineMathTest(unittest.TestCase):
                 retrieval.RetrievalEngine(fields, structs.RetrievalConfig(
                     temperature=temperature, outlier_epsilon=epsilon))
 
-    def test_irregular_lattice_rejected(self):
-        fields = _grid_fields(np.zeros((1, 3, 3, 4), dtype=np.float32))
-        east = fields.east_m.copy()
-        east[4] += 40.0  # 40% of spacing off-grid
-        broken = retrieval.ScoreFields(
-            meta=fields.meta, east_m=east, north_m=fields.north_m,
+    def test_rotated_lattice_supported(self):
+        # A metric-CRS lattice arrives rotated in the run's ENU frame by the
+        # meridian convergence; nearest-node lookup must not assume axis
+        # alignment. Peak at the centre node survives a 3-degree rotation.
+        scores = np.zeros((1, 5, 5, 4), dtype=np.float32)
+        scores[0, 2, 2, 0] = 10.0
+        fields = _grid_fields(scores)
+        theta = math.radians(3.0)
+        east = (fields.east_m * math.cos(theta)
+                - fields.north_m * math.sin(theta))
+        north = (fields.east_m * math.sin(theta)
+                 + fields.north_m * math.cos(theta))
+        rotated = retrieval.ScoreFields(
+            meta=fields.meta, east_m=east, north_m=north,
             scores=fields.scores, keyframe_idx=fields.keyframe_idx,
             pano_ids=fields.pano_ids)
-        with self.assertRaises(ValueError):
-            retrieval.RetrievalEngine(broken, _CONFIG)
+        engine = retrieval.RetrievalEngine(rotated, _CONFIG)
+        at_peak = engine.log_likelihood(0, 0.0, 0.0, 0.0)
+        far_node = engine.log_likelihood(0, east[0], north[0], 0.0)
+        self.assertGreater(float(at_peak), float(far_node))
 
     def test_missing_nodes_fall_back_to_floor(self):
         # A lattice with a hole (water mask): the hole's cell reports floor.

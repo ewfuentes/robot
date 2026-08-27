@@ -56,8 +56,15 @@ def main():
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--init", required=True,
                         choices=["uniform", "truth_position"])
+    parser.add_argument("--prior_region", default="retrieval_support",
+                        choices=["retrieval_support", "catalog"],
+                        help="what the uniform prior spans. The retrieval "
+                             "support IS the declared candidate region "
+                             "(plan section 5.1), so it is the default; "
+                             "'catalog' spans the whole landmark extent "
+                             "for parity with bearing runs")
     parser.add_argument("--margin_m", type=float, default=None,
-                        help="uniform prior margin past the catalog extent "
+                        help="uniform prior margin past the chosen region "
                              "(required with --init uniform)")
     parser.add_argument("--prior_sigma_m", type=float, default=None,
                         help="required with --init truth_position "
@@ -99,7 +106,14 @@ def main():
     if args.init == "uniform":
         if args.margin_m is None:
             parser.error("--init uniform requires --margin_m")
-        init = export_ingest.region_box(data, args.margin_m)
+        if args.prior_region == "retrieval_support":
+            init = structs.UniformBoxInit(
+                east_min_m=float(fields.east_m.min()) - args.margin_m,
+                east_max_m=float(fields.east_m.max()) + args.margin_m,
+                north_min_m=float(fields.north_m.min()) - args.margin_m,
+                north_max_m=float(fields.north_m.max()) + args.margin_m)
+        else:
+            init = export_ingest.region_box(data, args.margin_m)
         print(f"prior       : uniform over "
               f"{(init.east_max_m - init.east_min_m) / 1000:.1f} x "
               f"{(init.north_max_m - init.north_min_m) / 1000:.1f} km, "
@@ -114,10 +128,15 @@ def main():
         print(f"prior       : Gaussian at first truth pose, sigma "
               f"{args.prior_sigma_m:.0f} m (DIAGNOSTIC CONTROL)")
 
+    forward_camera_cw_deg = float(
+        data.meta.nominal_forward["bearing_camera_cw_deg"])
+    print(f"heading frame: field bins are camera-forward; particles are "
+          f"nominal-forward (camera {forward_camera_cw_deg:+.1f} deg CW)")
     retrieval_config = structs.RetrievalConfig(
         temperature=args.retrieval_temperature,
         outlier_epsilon=args.retrieval_epsilon,
-        calibration_frozen=args.retrieval_calibration_frozen)
+        calibration_frozen=args.retrieval_calibration_frozen,
+        forward_camera_cw_deg=forward_camera_cw_deg)
     filter_config = structs.FilterConfig(
         n_particles=args.n_particles, seed=args.seed, init=init,
         position_roughening_m=args.position_roughening_m,

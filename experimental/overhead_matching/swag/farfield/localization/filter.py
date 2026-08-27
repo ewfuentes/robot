@@ -904,6 +904,19 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     actual_injection = int(east.size)
     if actual_injection == 0:
         return 0, None
+    return _splice_injected(belief, east, north, heading,
+                            hypothesis.astype(np.int64), result.event_id, rng)
+
+
+def _splice_injected(belief: ParticleBelief, east, north, heading,
+                     hypothesis, event_id: int,
+                     rng: np.random.Generator) -> tuple[int, np.ndarray]:
+    """Replace `east.size` particles of the belief with the given poses,
+    resampling the kept mass so both components are unweighted samples.
+    Shared by the bearing resection proposal and the retrieval-seeded
+    injection; returns (n_injected, kept ancestor indices)."""
+    original_count = belief.n
+    actual_injection = int(east.size)
     if actual_injection > original_count:
         raise RuntimeError(
             f"proposal returned {actual_injection} particles for a belief of "
@@ -928,7 +941,7 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
                                          geo.wrap_rad(heading)])
     belief.proposal_event_id = np.concatenate([
         belief.proposal_event_id,
-        np.full(east.size, result.event_id, dtype=np.int64)])
+        np.full(east.size, event_id, dtype=np.int64)])
     belief.proposal_hypothesis = np.concatenate([
         belief.proposal_hypothesis, hypothesis.astype(np.int64)])
     # Injected particles have no ancestor: they will found new modes, and
@@ -1541,6 +1554,70 @@ def run_filter(
                 current_ess = ess(belief.log_weight)
                 # Injection changed the belief, so the clusters that entered
                 # the update no longer describe it; re-derive them.
+                if config.modes.enabled:
+                    assignment = tracker.update(belief, kf, proposal_events)
+                    belief.mode_id = assignment.mode_id
+                    mode_events = mode_events + assignment.events
+
+        # --- retrieval-seeded injection (CLD-3) -------------------------
+        # The retrieval analogue of the resection proposal: the field is a
+        # global posterior over the declared support, so init and recovery
+        # injections sample it directly. Without this, the epsilon floor
+        # preserves likelihood but nothing re-seeds PARTICLES in a basin the
+        # early resamples emptied.
+        retrieval_meas_here = [m for m in keyframe_measurements
+                               if isinstance(m, structs.RetrievalMeasurement)]
+        if retrieval_engine is not None and retrieval_meas_here:
+            rcfg = config.retrieval
+            r_trigger = None
+            if (rcfg.inject_on_init and not proposal_events
+                    and isinstance(config.init, structs.UniformBoxInit)):
+                r_trigger = "retrieval_init"
+            elif (rcfg.inject_fraction > 0.0
+                  and (last_proposal_kf is None
+                       or kf - last_proposal_kf
+                       >= rcfg.recovery_refractory_keyframes)
+                  and low_ess_run >= rcfg.recovery_ess_floor_keyframes):
+                r_trigger = "retrieval_ess_floor"
+            if r_trigger is not None:
+                n_requested = int(round(rcfg.inject_fraction * belief.n))
+                meas0 = retrieval_meas_here[0]
+                east_i, north_i, heading_i = retrieval_engine.sample_poses(
+                    meas0.field_idx, n_requested, rng)
+                r_event_id = len(proposal_events)
+                n_injected, kept_idx = _splice_injected(
+                    belief, east_i, north_i, geo.wrap_rad(heading_i),
+                    np.zeros(n_requested, dtype=np.int64), r_event_id, rng)
+                proposal_events.append(structs.ProposalEvent(
+                    event_id=r_event_id, keyframe_idx=kf, trigger=r_trigger,
+                    n_hypotheses=1, n_injected=n_injected,
+                    n_tracklets_considered=0, n_combinations_examined=0,
+                    n_combinations_skipped=0))
+                if observer is not None:
+                    observer.injection(kf, proposal_events[-1], n_injected)
+                event_id = r_event_id
+                last_proposal_kf = kf
+                low_ess_run = 0
+                # Restore kept-mass association state and re-apply this
+                # keyframe's measurements to score kept and injected
+                # particles on the same footing (same discipline as the
+                # bearing proposal path).
+                n_kept = belief.n - n_injected
+                for meas in keyframe_measurements:
+                    if not isinstance(meas, structs.TrackletMeasurement):
+                        continue
+                    tid = meas.tracklet_id
+                    if tid not in belief.associations:
+                        continue
+                    previous = assoc_snapshot.get(tid)
+                    if previous is None:
+                        belief.associations[tid][:n_kept] = ASSOC_UNCOMMITTED
+                    else:
+                        belief.associations[tid][:n_kept] = (
+                            previous[kept_idx])
+                associations = apply_block(keyframe_measurements, kf, 1)
+                belief.log_weight -= special.logsumexp(belief.log_weight)
+                current_ess = ess(belief.log_weight)
                 if config.modes.enabled:
                     assignment = tracker.update(belief, kf, proposal_events)
                     belief.mode_id = assignment.mode_id

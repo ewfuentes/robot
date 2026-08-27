@@ -99,6 +99,24 @@ class RetrievalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     temperature: float
     outlier_epsilon: float
     calibration_frozen: bool = False
+    # Camera-frame azimuth of the platform's nominal forward, CW degrees
+    # (the dataset's approved mount offset). Field heading bins index the
+    # CAMERA-forward world bearing (bin k = k * spacing); particle headings
+    # are NOMINAL-forward, so the engine looks up bin(heading - this). A
+    # wrong value here is the classic silent 30/180-degree frame slip --
+    # docs/conventions.md is the authority.
+    forward_camera_cw_deg: float = 0.0
+    # Retrieval-seeded injection (the retrieval analogue of the bearing
+    # resection proposal). The epsilon floor preserves the LIKELIHOOD of
+    # deleted hypotheses but cannot re-seed PARTICLES there; without
+    # injection, whichever basin captures the first resamples is the
+    # incumbent forever (measured on mount_washington leg2: truth beat the
+    # captured mirror mode by ~0.4 nats/keyframe and still lost).
+    inject_on_init: bool = True
+    inject_fraction: float = 0.5
+    recovery_ess_floor_frac: float = 0.02
+    recovery_ess_floor_keyframes: int = 3
+    recovery_refractory_keyframes: int = 10
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

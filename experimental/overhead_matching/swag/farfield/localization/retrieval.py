@@ -106,10 +106,14 @@ def measurements_from_fields(fields: ScoreFields) -> list:
 class RetrievalEngine:
     """Per-particle log-likelihood evaluation over loaded score fields.
 
-    Nearest-node position lookup uses a uniform-bin hash built from the node
-    coordinates; nodes need not form a complete rectangle (water masks and
-    no-data drop cells), only share one spacing.
+    Nearest-node position lookup is a KD-tree query with an upper bound of
+    0.75 * node spacing: nodes need not be axis-aligned in the run's ENU
+    frame (a metric-CRS lattice arrives rotated by the meridian convergence)
+    or complete (water masks and no-data drop cells). A pose farther than
+    the bound from every node is outside the scored support.
     """
+
+    _SUPPORT_RADIUS_SPACINGS = 0.75
 
     def __init__(self, fields: ScoreFields,
                  config: structs.RetrievalConfig):
@@ -125,27 +129,9 @@ class RetrievalEngine:
         if spacing <= 0.0:
             raise ValueError("node_spacing_m must be positive")
         self._spacing = spacing
-        self._east0 = float(fields.east_m.min())
-        self._north0 = float(fields.north_m.min())
-        cols = np.rint((fields.east_m - self._east0) / spacing).astype(int)
-        rows = np.rint((fields.north_m - self._north0) / spacing).astype(int)
-        snapped_e = self._east0 + cols * spacing
-        snapped_n = self._north0 + rows * spacing
-        offset = np.hypot(fields.east_m - snapped_e,
-                          fields.north_m - snapped_n)
-        # The equirectangular ENU conversion of a metric-CRS lattice bends a
-        # perfect grid slightly; tolerate that, refuse an irregular lattice.
-        if offset.max() > 0.25 * spacing:
-            raise ValueError(
-                f"lattice nodes deviate up to {offset.max():.1f} m from a "
-                f"regular {spacing:.0f} m grid; nearest-node lookup would "
-                "be wrong")
-        self._n_rows = int(rows.max()) + 1
-        self._n_cols = int(cols.max()) + 1
-        self._node_of_cell = np.full(self._n_rows * self._n_cols, -1,
-                                     dtype=np.int64)
-        self._node_of_cell[rows * self._n_cols + cols] = np.arange(
-            len(fields.east_m))
+        from scipy import spatial
+        self._tree = spatial.cKDTree(
+            np.column_stack([fields.east_m, fields.north_m]))
 
         n_bins = fields.meta.n_heading_bins
         self._heading_spacing_rad = 2.0 * math.pi / n_bins
@@ -166,15 +152,12 @@ class RetrievalEngine:
 
     def _node_indices(self, east_m, north_m):
         """Nearest-node index per particle; -1 outside the support."""
-        cols = np.rint((np.asarray(east_m) - self._east0)
-                       / self._spacing).astype(int)
-        rows = np.rint((np.asarray(north_m) - self._north0)
-                       / self._spacing).astype(int)
-        inside = ((cols >= 0) & (cols < self._n_cols)
-                  & (rows >= 0) & (rows < self._n_rows))
-        cells = np.where(inside, rows * self._n_cols + cols, 0)
-        nodes = np.where(inside, self._node_of_cell[cells], -1)
-        return nodes
+        points = np.column_stack([np.atleast_1d(np.asarray(east_m, float)),
+                                  np.atleast_1d(np.asarray(north_m, float))])
+        bound = self._SUPPORT_RADIUS_SPACINGS * self._spacing
+        _, nodes = self._tree.query(points, distance_upper_bound=bound)
+        # cKDTree reports "no neighbour within bound" as index n.
+        return np.where(nodes < self._tree.n, nodes, -1)
 
     def log_likelihood(self, field_idx: int, east_m, north_m,
                        heading_rad) -> np.ndarray:
@@ -183,9 +166,14 @@ class RetrievalEngine:
         nodes = self._node_indices(east_m, north_m)
         safe_nodes = np.maximum(nodes, 0)
 
+        # Field bins index the CAMERA-forward world bearing; particle
+        # headings are NOMINAL-forward. Rotate by the approved mount offset
+        # (structs.RetrievalConfig.forward_camera_cw_deg) before lookup.
         # Circular linear interpolation between the two adjacent heading
-        # bins (bin b covers heading b * spacing, compass CW).
-        heading = np.asarray(heading_rad) % (2.0 * math.pi)
+        # bins (bin b covers camera heading b * spacing, compass CW).
+        heading = (np.asarray(heading_rad)
+                   - math.radians(self.config.forward_camera_cw_deg)) \
+            % (2.0 * math.pi)
         position = heading / self._heading_spacing_rad
         lo = np.floor(position).astype(int) % self.fields.meta.n_heading_bins
         hi = (lo + 1) % self.fields.meta.n_heading_bins
@@ -202,6 +190,32 @@ class RetrievalEngine:
         # retrieval never scored those poses, so it cannot endorse them —
         # but it must not delete them either.
         return np.where(nodes >= 0, out, self._log_floor)
+
+    def sample_poses(self, field_idx: int, n: int, rng) -> tuple:
+        """Draw poses from the field's calibrated cell distribution.
+
+        Cells are drawn proportional to the softmax kernel K(x); positions
+        jitter uniformly within the node cell and headings within the bin,
+        then rotate from the camera-forward frame into nominal-forward.
+        Used by the filter's retrieval-seeded injection.
+        """
+        flat = self.fields.scores[field_idx].reshape(-1)
+        kernel = np.exp(
+            (flat - self._score_max[field_idx]) / self.config.temperature)
+        probabilities = kernel / kernel.sum()
+        n_bins = self.fields.meta.n_heading_bins
+        cells = rng.choice(flat.size, size=n, p=probabilities)
+        node = cells // n_bins
+        bins = cells % n_bins
+        half = self._spacing / 2.0
+        east = self.fields.east_m[node] + rng.uniform(-half, half, n)
+        north = self.fields.north_m[node] + rng.uniform(-half, half, n)
+        heading_camera = (bins * self._heading_spacing_rad
+                          + rng.uniform(-self._heading_spacing_rad / 2.0,
+                                        self._heading_spacing_rad / 2.0, n))
+        heading = heading_camera + math.radians(
+            self.config.forward_camera_cw_deg)
+        return east, north, heading
 
     def update(self, belief, meas: "structs.RetrievalMeasurement") -> list:
         """Multiply the field's likelihood into the belief. No associations
