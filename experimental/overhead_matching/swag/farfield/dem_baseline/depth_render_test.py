@@ -7,6 +7,7 @@ import torch
 
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import geometry
 from experimental.overhead_matching.swag.farfield.dem_baseline import (
     depth_render,
     terrain,
@@ -131,7 +132,7 @@ class CurvatureTest(unittest.TestCase):
         expected_flat = obs_h / math.sin(-actual_elev)
         self.assertAlmostEqual(flat_depth / expected_flat, 1.0, delta=0.02)
 
-        r_eff = depth_render.MEAN_EARTH_RADIUS_M / (1.0 - 0.13)
+        r_eff = geometry.MEAN_EARTH_RADIUS_M / (1.0 - 0.13)
         discriminant = math.tan(-actual_elev) ** 2 - 2.0 * obs_h / r_eff
         self.assertLess(discriminant, 0.0)  # the analytic claim itself
         self.assertTrue(math.isinf(curved.depth_m[0, row, center_col].item()))

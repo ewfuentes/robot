@@ -33,6 +33,7 @@ py_library(
         requirement("numpy"),
         requirement("torch"),
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )
 
@@ -190,10 +191,6 @@ py_binary(
     ],
 )
 
-# convert_checkpoint.py is intentionally NOT a bazel target: it needs
-# TensorFlow, which stays out of this repo's dependency set. Run it with
-# `uv run --with tensorflow-cpu` per its docstring.
-
 py_test(
     name = "terrain_test",
     srcs = ["terrain_test.py"],
@@ -209,6 +206,7 @@ py_test(
     deps = [
         ":depth_render",
         ":terrain",
+        "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )
 

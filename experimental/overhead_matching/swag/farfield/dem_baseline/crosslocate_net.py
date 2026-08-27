@@ -24,8 +24,15 @@ padding=1; TF 'SAME' 2x2/2 max-pool == torch ``MaxPool2d(2, 2,
 ceil_mode=True)`` (both pad bottom/right when odd, and padding cannot win a
 max); TF kernels are (kh, kw, cin, cout) -> torch (cout, cin, kh, kw).
 
-Weights load from an .npz produced by ``convert_checkpoint.py`` (TF variable
-names like ``conv1/kernels``); nothing here imports TensorFlow.
+Weights load from a name-keyed .npz dump of the release's TF1 checkpoint (TF
+variable names like ``conv1/kernels``, TF layouts, values verbatim -- the
+torch-side permute lives in ``load_converted_weights``); nothing here imports
+TensorFlow. The dump is a one-time conversion, done and archived alongside
+the weights as ``converted_weights.npz`` plus a ``.manifest.json`` recording
+each variable's shape/dtype and the sha256 of the checkpoint data file; it
+was produced by walking ``tf.train.load_checkpoint(prefix)`` in a throwaway
+``uv run --with tensorflow-cpu`` environment, since TensorFlow deliberately
+stays out of this repo's dependency set.
 """
 
 import common.torch.load_torch_deps  # noqa: F401  (must precede torch)

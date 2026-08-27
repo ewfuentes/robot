@@ -32,9 +32,9 @@ import torch
 
 import numpy as np
 
+from experimental.overhead_matching.swag.farfield import geometry
 from experimental.overhead_matching.swag.farfield.dem_baseline import terrain
 
-MEAN_EARTH_RADIUS_M = 6371000.0  # matches farfield geometry.py
 STANDARD_REFRACTION_K = 0.13
 
 
@@ -201,7 +201,7 @@ def render_ring(tt: TerrainTensor, config: RenderConfig,
     dy = torch.cos(az_flat)[:, None] * s[None, :]
     heights = tt.sample(observer_x + dx, observer_y + dy)
     if config.curvature:
-        r_eff = MEAN_EARTH_RADIUS_M / (1.0 - config.refraction_k)
+        r_eff = geometry.MEAN_EARTH_RADIUS_M / (1.0 - config.refraction_k)
         heights = heights - s[None, :] ** 2 / (2.0 * r_eff)
 
     # Apparent elevation angle of each sample, then its running maximum.

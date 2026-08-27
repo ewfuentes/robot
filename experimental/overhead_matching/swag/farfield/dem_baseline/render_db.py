@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument("--height_field", type=Path, required=True,
                         help="Base path of a saved HeightField (no suffix)")
     parser.add_argument("--weights", type=Path, required=True,
-                        help="converted_weights.npz from convert_checkpoint")
+                        help="converted_weights.npz: name-keyed dump of the release TF1 checkpoint")
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--spacing_m", type=float, required=True)
     parser.add_argument("--bounds_xy", type=float, nargs=4, default=None,
