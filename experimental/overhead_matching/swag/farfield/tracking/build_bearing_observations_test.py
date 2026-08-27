@@ -167,6 +167,44 @@ class BearingObservationInputBindingTest(unittest.TestCase):
             subject.load_inputs(self._args(
                 orchestration_config_digest="0" * 64))
 
+    def test_valid_inputs_load_and_bind_tracks_sources(self):
+        with mock.patch.object(subject.audit_io, "load_audits",
+                               return_value=self.fake_audits):
+            loaded = subject.load_inputs(self._args())
+        self.assertIs(loaded["audits"], self.fake_audits)
+        self.assertEqual(
+            loaded["source_digests"]["dataset_tracking_inputs"],
+            artifact.sha256_json(self.dataset_digests))
+
+    def test_tracks_missing_source_binding_is_rejected(self):
+        stale_tracks = self._publish(
+            self.root / "artifacts" / paths.OBJECT_TRACKS / "ds"
+            / "tracks-stale", paths.OBJECT_TRACKS, "tracks-stale",
+            config={"build_identity": self.build_identity})
+        stale_audits = self._publish(
+            self.root / "artifacts" / paths.SEMANTIC_AUDITS / "ds"
+            / "audits-stale", paths.SEMANTIC_AUDITS, "audits-stale",
+            upstreams=(stale_tracks,),
+            config={"build_identity": self.build_identity})
+        fake_audits = types.SimpleNamespace(
+            tracks_ref=stale_tracks,
+            semantic_audits_ref=stale_audits)
+        document = build_config.load(self.build_path.parent)
+        document["config"]["artifacts"]["object_tracks_version"] = (
+            "tracks-stale")
+        document["config"]["artifacts"]["semantic_audits_version"] = (
+            "audits-stale")
+        with (mock.patch.object(subject.audit_io, "load_audits",
+                                return_value=fake_audits),
+              mock.patch.object(subject.build_config, "load",
+                                return_value=document)):
+            with self.assertRaisesRegex(
+                    subject.BearingObservationError,
+                    "does not bind the current frozen dataset sources"):
+                subject.load_inputs(self._args(
+                    tracks_dir=Path(stale_tracks.path),
+                    audit_dir=Path(stale_audits.path)))
+
 
 if __name__ == "__main__":
     unittest.main()
