@@ -193,6 +193,25 @@ py_binary(
     ],
 )
 
+py_library(
+    name = "framewise_eval_lib",
+    srcs = ["framewise_eval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
 py_binary(
     name = "framewise_eval",
     srcs = ["framewise_eval.py"],
@@ -206,6 +225,23 @@ py_binary(
         requirement("numpy"),
         requirement("pillow"),
         requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
+py_binary(
+    name = "crop_aggregation_eval",
+    srcs = ["crop_aggregation_eval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":framewise_eval_lib",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
         requirement("torch"),
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield:paths",
