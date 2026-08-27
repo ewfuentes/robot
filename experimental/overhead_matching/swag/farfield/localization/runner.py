@@ -67,10 +67,19 @@ def _validate_metadata(manifest: structs.RunManifest, truth: list) -> None:
     if manifest.run_kind == "evaluation":
         if (manifest.ablation_tags
                 or manifest.initialization_kind != "uniform"
-                or not manifest.bearings_consumed):
+                or not (manifest.bearings_consumed
+                        or manifest.retrieval_consumed)):
             raise ValueError(
-                "evaluation runs require uniform initialization, bearings, "
-                "and no ablation tags")
+                "evaluation runs require uniform initialization, a consumed "
+                "observation source (bearings or retrieval), and no ablation "
+                "tags")
+        if (manifest.retrieval_consumed
+                and not manifest.bearings_consumed
+                and manifest.filter_config.retrieval is not None
+                and not manifest.filter_config.retrieval.calibration_frozen):
+            raise ValueError(
+                "a retrieval-only evaluation requires calibration_frozen: "
+                "provisional tau/epsilon runs are diagnostics (tag them)")
     elif manifest.run_kind == "diagnostic_control":
         if not manifest.ablation_tags:
             raise ValueError(
@@ -127,14 +136,31 @@ def execute_localization(
         artifact_config: dict | None = None,
         generator: str = "farfield.localization.runner",
         arguments: tuple[str, ...] = (),
-        extra_outputs: dict[str, bytes] | None = None) -> ExecutionResult:
-    """Run, instrument, finalize, and atomically publish one localization run."""
+        extra_outputs: dict[str, bytes] | None = None,
+        retrieval_fields=None,
+        retrieval_measurements: list = (),
+        retrieval_source_dir: Path | None = None) -> ExecutionResult:
+    """Run, instrument, finalize, and atomically publish one localization run.
+
+    Retrieval runs (CLD-3) pass the loaded `retrieval.ScoreFields`, their
+    typed events, and the source directory; the consumed fields and events
+    are written into the run artifact beside the bearing tier-1 files.
+    """
     _validate_metadata(manifest, truth)
+    if manifest.retrieval_consumed != bool(retrieval_measurements):
+        raise ValueError(
+            "manifest.retrieval_consumed must state what the filter consumed")
+    if retrieval_measurements and retrieval_source_dir is None:
+        raise ValueError(
+            "retrieval runs must name retrieval_source_dir so the consumed "
+            "fields are preserved in the run artifact")
     recorder = (PositionMassRecorder(truth, manifest.position_mass_metric)
                 if truth else None)
     history = pf.run_filter(
         manifest.filter_config, catalog, odometry, measurements, tables,
-        observer=recorder)
+        observer=recorder,
+        retrieval_fields=retrieval_fields,
+        retrieval_measurements=retrieval_measurements)
     if recorder is not None:
         for record in history.health:
             record.position_probability_mass = recorder.by_keyframe[
@@ -171,6 +197,16 @@ def execute_localization(
         raise ValueError(
             f"{BEARING_DIAGNOSTIC_NAME!r} is owned by the shared runner")
     outputs[BEARING_DIAGNOSTIC_NAME] = diagnostic_payload
+    if retrieval_measurements:
+        for name in ("tier1_retrieval.jsonl", "retrieval_meta.json",
+                     "retrieval_fields.npz"):
+            if name in outputs:
+                raise ValueError(f"{name!r} is owned by the shared runner")
+        outputs["tier1_retrieval.jsonl"] = b"".join(
+            msgspec.json.encode(record, enc_hook=msgspec_enc_hook) + b"\n"
+            for record in retrieval_measurements)
+        for name in ("retrieval_meta.json", "retrieval_fields.npz"):
+            outputs[name] = (Path(retrieval_source_dir) / name).read_bytes()
     reference = run_io.write_run(
         run_dir, manifest, truth, odometry, measurements, tables, history,
         dataset=dataset, version=version, upstreams=upstreams,
