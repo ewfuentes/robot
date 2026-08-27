@@ -159,6 +159,27 @@ py_binary(
 )
 
 py_binary(
+    name = "score_localization_inputs",
+    srcs = ["score_localization_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/localization:retrieval",
+        "//experimental/overhead_matching/swag/farfield/localization:structs",
+    ],
+)
+
+py_binary(
     name = "port_verification",
     srcs = ["port_verification.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],

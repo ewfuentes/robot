@@ -17,6 +17,7 @@ py_library(
     deps = [
         requirement("msgspec"),
         requirement("numpy"),
+        requirement("scipy"),
         ":structs",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],

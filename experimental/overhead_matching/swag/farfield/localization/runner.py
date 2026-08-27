@@ -197,21 +197,13 @@ def execute_localization(
         raise ValueError(
             f"{BEARING_DIAGNOSTIC_NAME!r} is owned by the shared runner")
     outputs[BEARING_DIAGNOSTIC_NAME] = diagnostic_payload
-    if retrieval_measurements:
-        for name in ("tier1_retrieval.jsonl", "retrieval_meta.json",
-                     "retrieval_fields.npz"):
-            if name in outputs:
-                raise ValueError(f"{name!r} is owned by the shared runner")
-        outputs["tier1_retrieval.jsonl"] = b"".join(
-            msgspec.json.encode(record, enc_hook=msgspec_enc_hook) + b"\n"
-            for record in retrieval_measurements)
-        for name in ("retrieval_meta.json", "retrieval_fields.npz"):
-            outputs[name] = (Path(retrieval_source_dir) / name).read_bytes()
     reference = run_io.write_run(
         run_dir, manifest, truth, odometry, measurements, tables, history,
         dataset=dataset, version=version, upstreams=upstreams,
         artifact_config=artifact_config, generator=generator,
-        arguments=arguments, extra_outputs=outputs)
+        arguments=arguments, extra_outputs=outputs,
+        retrieval_measurements=retrieval_measurements,
+        retrieval_source_dir=retrieval_source_dir)
     return ExecutionResult(
         manifest=manifest,
         history=history,
