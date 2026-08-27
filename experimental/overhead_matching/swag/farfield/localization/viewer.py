@@ -314,6 +314,21 @@ def main():
                              "standalone document")
     args = parser.parse_args()
 
+    # Auto-discover the run's satellite sibling: satellite_underlay publishes
+    # to `<run>.satellite` by convention, so an explicit flag should only be
+    # needed to point somewhere else. The absence is printed rather than
+    # silent — an imagery-less page kept getting read as "imagery was never
+    # generated" when it was only never wired in.
+    if args.satellite is None:
+        sibling = side_outputs.default_directory(args.run_dir, ".satellite")
+        if (sibling / "satellite.json").is_file():
+            args.satellite = sibling
+            print(f"satellite: using {sibling}")
+        else:
+            print(f"satellite: none at {sibling} — run "
+                  "localization:satellite_underlay --run_dir <run> "
+                  "--date <yyyy-mm> to add imagery")
+
     viewer_dir = (args.output_dir if args.output_dir is not None else
                   side_outputs.default_directory(args.run_dir, ".viewer"))
     satellite = satellite_for_viewer(
