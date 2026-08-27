@@ -111,6 +111,52 @@ py_binary(
     deps = [":terrain"],
 )
 
+py_library(
+    name = "viz",
+    srcs = ["viz.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("matplotlib"),
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_binary(
+    name = "export_render_viewer",
+    srcs = ["export_render_viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":render_db_lib",
+        ":terrain",
+        ":viz",
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_match_viewer",
+    srcs = ["export_match_viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
 py_binary(
     name = "port_verification",
     srcs = ["port_verification.py"],
