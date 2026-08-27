@@ -52,13 +52,18 @@ def _fixture(position_sigma):
 class TorchBackendEquivalenceTest(unittest.TestCase):
 
     def setUp(self):
-        self._chunk_size = torch_backend._CANDIDATE_CHUNK_SIZE
+        self._block_elements = torch_backend._CANDIDATE_BLOCK_ELEMENTS
         # The 700-landmark fixture must cross several Torch blocks so the
-        # equivalence tests cover the bounded-memory production path.
-        torch_backend._CANDIDATE_CHUNK_SIZE = 113
+        # equivalence tests cover the bounded-memory production path. The
+        # chunk is now elements // n_particles; the 300-particle fixture
+        # gets a 113-landmark chunk from 113 * 300 elements.
+        torch_backend._CANDIDATE_BLOCK_ELEMENTS = 113 * 300
+        self._chunk_min = torch_backend._CANDIDATE_CHUNK_MIN
+        torch_backend._CANDIDATE_CHUNK_MIN = 1
 
     def tearDown(self):
-        torch_backend._CANDIDATE_CHUNK_SIZE = self._chunk_size
+        torch_backend._CANDIDATE_BLOCK_ELEMENTS = self._block_elements
+        torch_backend._CANDIDATE_CHUNK_MIN = self._chunk_min
 
     def _run_both(self, position_sigma, dtype):
         catalog, table, belief, meas = _fixture(position_sigma)
