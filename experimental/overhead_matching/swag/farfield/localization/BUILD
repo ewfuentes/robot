@@ -454,6 +454,17 @@ py_binary(
     deps = [":run_retrieval_lib"],
 )
 
+py_binary(
+    name = "mask_retrieval_fields",
+    srcs = ["mask_retrieval_fields.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":retrieval",
+    ],
+)
+
 py_library(
     name = "run_export_lib",
     srcs = ["run_export.py"],

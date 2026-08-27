@@ -84,6 +84,13 @@ def main():
     parser.add_argument("--position_roughening_m", type=float, required=True)
     parser.add_argument("--heading_roughening_deg", type=float,
                         required=True)
+    parser.add_argument("--resample_survival_floor", type=int, default=64,
+                        help="minimum offspring per mode/proposal group at "
+                             "resample (the adopted default from the "
+                             "2026-08-27 survival-floor study; 0 restores "
+                             "the historical behavior)")
+    parser.add_argument("--resample_survival_min_mass", type=float,
+                        default=1e-9)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint_every", type=int, default=5)
     parser.add_argument("--backend", default="numpy",
@@ -141,6 +148,8 @@ def main():
         n_particles=args.n_particles, seed=args.seed, init=init,
         position_roughening_m=args.position_roughening_m,
         heading_roughening_deg=args.heading_roughening_deg,
+        resample_survival_floor=args.resample_survival_floor,
+        resample_survival_min_mass=args.resample_survival_min_mass,
         checkpoint_every=args.checkpoint_every,
         measurement_backend=args.backend,
         proposal=structs.ProposalConfig(enabled=False),
