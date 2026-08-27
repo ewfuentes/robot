@@ -11,6 +11,32 @@ py_library(
 )
 
 py_library(
+    name = "retrieval",
+    srcs = ["retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_test(
+    name = "retrieval_test",
+    size = "large",
+    srcs = ["retrieval_test.py"],
+    deps = [
+        ":filter",
+        ":metrics",
+        ":retrieval",
+        ":scenario",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_library(
     name = "filter_catalog",
     srcs = ["filter_catalog.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -197,6 +223,7 @@ py_library(
         ":filter_catalog",
         ":metrics",
         ":mode_tracker",
+        ":retrieval",
         ":proposal",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -401,6 +428,29 @@ py_test(
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
         "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
     ],
+)
+
+
+py_library(
+    name = "run_retrieval_lib",
+    srcs = ["run_retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":metrics",
+        ":retrieval",
+        ":runner",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "run_retrieval",
+    srcs = ["run_retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":run_retrieval_lib"],
 )
 
 py_library(

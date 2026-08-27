@@ -20,6 +20,9 @@ import msgspec
 
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
 
+# 0.7 plus the additive retrieval observation source (CLD-3): new record
+# types and defaulted manifest fields only, so every existing 0.7 export and
+# run directory still decodes. A shape-changing edit must bump this.
 SCHEMA_VERSION = "0.7"
 
 
@@ -64,6 +67,38 @@ class TrackletMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     anchor_keyframe_idx: int
     bearing_forward_cw_deg: float  # CW from nominal forward, in [0, 360)
     kappa: float  # von Mises concentration of the fused bearing
+
+
+class RetrievalMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """One keyframe's retrieval observation: a pose-scored field (CLD-3).
+
+    The dense (n_nodes, n_heading_bins) score field itself lives in the run's
+    `retrieval_fields.npz` (see localization/retrieval.py — the artifact
+    contract's one home); this record is the typed event that anchors field
+    `field_idx` at a keyframe. At most one per keyframe: the crops of one
+    panorama are already pooled into the field, so a second submission would
+    double-count the same pixels (the retrieval analogue of the
+    information-epoch rule).
+    """
+    keyframe_idx: int
+    field_idx: int
+    pano_id: str
+
+
+class RetrievalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Score -> likelihood calibration for retrieval observations (§5.5).
+
+    L(x) = (1 - outlier_epsilon) * softmax_temperature(S)(x)
+           + outlier_epsilon / |X|
+
+    Both parameters are selected on geographically disjoint validation
+    regions and then frozen. `calibration_frozen` says whether that has
+    happened: until it has, every consuming run is a diagnostic, not an
+    evaluation, and drivers must refuse to present it otherwise.
+    """
+    temperature: float
+    outlier_epsilon: float
+    calibration_frozen: bool = False
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -275,6 +310,9 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     resample_survival_min_mass: float = 1e-9
     proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
     modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
+    # Present iff the run consumes retrieval score fields; the calibration
+    # is part of the filter's model and therefore lives in its config echo.
+    retrieval: RetrievalConfig | None = None
 
 
 class ModeRecord(msgspec.Struct):
@@ -465,3 +503,9 @@ class RunManifest(msgspec.Struct):
     # Resolved truth-centered primary-metric identity/config. None when no
     # truth is present. The default headline radius is 500 m.
     position_mass_metric: PositionMassMetricConfig | None = None
+    # Retrieval observation source (schema 0.8): consumed iff the run's
+    # filter multiplied retrieval score fields into the belief; the source
+    # directory names where the fields came from. The consumed fields are
+    # copied into the run artifact as replay surface.
+    retrieval_consumed: bool = False
+    retrieval_dir: str | None = None

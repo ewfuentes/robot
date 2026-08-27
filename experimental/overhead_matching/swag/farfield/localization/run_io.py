@@ -243,11 +243,18 @@ def validate_manifest(manifest: structs.RunManifest) -> None:
     if (tags != sorted(set(tags))
             or any(not isinstance(tag, str) or not tag for tag in tags)):
         problems.append("ablation_tags must be sorted unique non-empty strings")
-    if not manifest.bearings_consumed and "no_bearings" not in tags:
+    # A run with no consumed observation source at all is an odometry-only
+    # ablation and must say so. A retrieval-only run withheld nothing: the
+    # bearings were never its observation source (CLD-3).
+    if (not manifest.bearings_consumed and not manifest.retrieval_consumed
+            and "no_bearings" not in tags):
         problems.append(
             "a bearings-withheld control must carry ablation tag no_bearings")
     if manifest.bearings_consumed and "no_bearings" in tags:
         problems.append("no_bearings tag disagrees with bearings_consumed")
+    if manifest.retrieval_consumed and not manifest.retrieval_dir:
+        problems.append(
+            "retrieval_consumed requires retrieval_dir to name the source")
     if manifest.initialization_kind == "truth":
         problems.append(
             "initialization_kind 'truth' is ambiguous; use 'truth_position'")
