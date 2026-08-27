@@ -51,6 +51,11 @@ def main() -> None:
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--keyframe_stride", type=int, default=1)
+    parser.add_argument("--crop_top_k", type=int, default=None,
+                        help="robust aggregation: score each (location, "
+                             "shift) by its k best-matching crops instead "
+                             "of all of them (occlusion study; recorded in "
+                             "the scorer string)")
     parser.add_argument("--device",
                         default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -81,7 +86,8 @@ def main() -> None:
                 crosslocate_net.rgb_query_tensor(crop) for crop in ring
             ]).to(args.device)
             joint = panorama_score.joint_scores(model(batch),
-                                                db["descriptors"])
+                                                db["descriptors"],
+                                                crop_top_k=args.crop_top_k)
             scores[i] = joint.scores.cpu().numpy()
             if (i + 1) % 25 == 0:
                 rate = (i + 1) / (time.monotonic() - started)
@@ -106,7 +112,9 @@ def main() -> None:
         node_spacing_m=manifest["lattice"]["spacing_m"],
         db_dir=str(args.db_dir),
         db_manifest_sha256=db_manifest_sha,
-        scorer=f"dem_baseline.crosslocate_vgg16_mac@{weights_sha[:12]}")
+        scorer=f"dem_baseline.crosslocate_vgg16_mac@{weights_sha[:12]}"
+               + (f" crop_top_k={args.crop_top_k}"
+                  if args.crop_top_k is not None else ""))
     retrieval.write_fields(
         args.output_dir, meta, np.asarray(lat_deg), np.asarray(lon_deg),
         scores, np.asarray([f.frame_idx for f in selected]),

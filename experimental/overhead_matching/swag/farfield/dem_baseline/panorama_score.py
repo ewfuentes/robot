@@ -41,7 +41,8 @@ class JointScores:
 
 def joint_scores(query_descriptors: torch.Tensor,
                  database_descriptors: torch.Tensor,
-                 valid_crops: torch.Tensor | None = None) -> JointScores:
+                 valid_crops: torch.Tensor | None = None,
+                 crop_top_k: int | None = None) -> JointScores:
     """Score every (location, shift) pair.
 
     query_descriptors: (M, D) for one panorama's crop ring, unit-norm.
@@ -51,6 +52,13 @@ def joint_scores(query_descriptors: torch.Tensor,
         failed extraction) are excluded from the mean. All-invalid is an error
         -- the caller decides how an unusable frame enters the evaluation
         (applicability accounting, not a silent zero).
+    crop_top_k: if set, S(i, k) is the mean of the k best-matching crops
+        instead of all of them — robust aggregation under partial occlusion
+        (canopy, people): a few clean crops carry the frame rather than being
+        drowned by the occluded majority. Chosen per-cell, so different
+        (location, shift) hypotheses may be supported by different crops.
+        Mutually exclusive with valid_crops (the occlusion studies used
+        exactly one mechanism at a time).
     """
     m, dim = query_descriptors.shape
     n_loc, n_theta, dim_db = database_descriptors.shape
@@ -78,8 +86,17 @@ def joint_scores(query_descriptors: torch.Tensor,
     gather = ((m_idx[:, None] + k_idx[None, :]) % n_theta)  # (M, K)
     aligned = torch.gather(
         cos, 2, gather[None].expand(n_loc, -1, -1))  # (L, M, K)
-    weights = valid.float() / valid.float().sum()
-    scores = torch.einsum("lmk,m->lk", aligned, weights)
+    if crop_top_k is not None:
+        if valid_crops is not None:
+            raise ValueError("crop_top_k and valid_crops are mutually "
+                             "exclusive")
+        if not 1 <= crop_top_k <= m:
+            raise ValueError(f"crop_top_k must be in [1, {m}], "
+                             f"got {crop_top_k}")
+        scores = aligned.topk(crop_top_k, dim=1).values.mean(dim=1)
+    else:
+        weights = valid.float() / valid.float().sum()
+        scores = torch.einsum("lmk,m->lk", aligned, weights)
 
     spacing = 360.0 / n_theta
     return JointScores(scores=scores,
