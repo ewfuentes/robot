@@ -207,6 +207,8 @@ CONFIG_SCHEMA = {
     "localization.association_outlier_rate": _number(maximum=1.0),
     "localization.matcher_recall": _open_probability(),
     "localization.min_reported_responsibility": _number(maximum=1.0),
+    "localization.resample_survival_floor": _integer(minimum=0),
+    "localization.resample_survival_min_mass": _number(maximum=1.0),
     "localization.bearings_enabled": _boolean(),
     "localization.proposal.enabled": _boolean(),
     "localization.proposal.on_init": _boolean(),

@@ -208,6 +208,9 @@ def _filter_config(localization: dict,
         matcher_recall=localization["matcher_recall"],
         min_reported_responsibility=localization[
             "min_reported_responsibility"],
+        resample_survival_floor=localization["resample_survival_floor"],
+        resample_survival_min_mass=localization[
+            "resample_survival_min_mass"],
         proposal=proposal,
         modes=modes)
 

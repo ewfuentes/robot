@@ -260,6 +260,19 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # posteriors (likelihoods are never truncated), bounding dense-catalog
     # run time and artifact size.
     min_reported_responsibility: float = 1e-6
+    # Survival floor for resampling (0 disables, the historical behavior):
+    # every mode and proposal-cluster group whose posterior mass is at least
+    # `resample_survival_min_mass` keeps at least this many offspring, which
+    # then carry their group's TRUE mass (log_weight = log(mass/count)) so
+    # the posterior is unchanged — representation is guaranteed, probability
+    # is not. Resampling is a representational step; a hypothesis may die of
+    # evidence (mass below the min) but not of sampling noise. Motivated by
+    # the mount_washington leg3 seed study, where the correct init lineage
+    # survived to a 61-particle remnant in converging seeds and went extinct
+    # in the others — see docs/farfield/decisions.md, 2026-08-27.
+    resample_survival_floor: int = 0
+    # Mass below which a group is genuinely refuted and allowed to die.
+    resample_survival_min_mass: float = 1e-9
     proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
     modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
 

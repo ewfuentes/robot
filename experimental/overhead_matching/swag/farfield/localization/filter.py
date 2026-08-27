@@ -711,7 +711,9 @@ def _bandwidth_group_index(belief: ParticleBelief) -> np.ndarray:
 def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
                         regularization: float = 1.0,
                         position_roughening_m: float = 0.0,
-                        heading_roughening_rad: float = 0.0) -> None:
+                        heading_roughening_rad: float = 0.0,
+                        survival_floor: int = 0,
+                        survival_min_mass: float = 1e-9) -> None:
     """Low-variance (systematic) resampling with kernel regularization (T-U6).
 
     Plain resampling replaces the posterior with a set of Dirac atoms drawn
@@ -743,6 +745,15 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
       is unchanged, so a unimodal belief behaves identically. An arc-shaped
       proposal cluster receives an isotropic bandwidth from its own elongated
       spread and is re-scored by the next measurement.
+
+    `survival_floor > 0` extends the mixture-tracking construction with
+    guaranteed REPRESENTATION: every mode/proposal group at or above
+    `survival_min_mass` keeps at least that many offspring, and offspring
+    then carry their group's true mass (log(mass/count)) instead of the
+    uniform reset, so the posterior is preserved exactly while no
+    represented hypothesis can round to zero offspring. The diffuse
+    remainder gets no floor — it is not a hypothesis. At 0 the historical
+    uniform-weight behavior is reproduced bit-for-bit.
     """
     n = belief.n
     weights = belief.normalized_weights()
@@ -788,6 +799,39 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
         fraction = np.where(group_mass > 0.0, raw - np.floor(raw), -1.0)
         counts[np.argsort(-fraction)[:shortfall]] += 1
 
+    minimum = np.zeros(n_groups, dtype=np.int64)
+    if survival_floor > 0:
+        # One representative member per group tells us whether the group is
+        # a hypothesis (mode or proposal cluster) or the diffuse remainder.
+        representative = np.zeros(n_groups, dtype=np.int64)
+        representative[group_index[::-1]] = np.arange(n - 1, -1, -1)
+        is_hypothesis = ((belief.mode_id[representative] >= 0)
+                         | (belief.proposal_event_id[representative] >= 0))
+        minimum[is_hypothesis & (group_mass >= survival_min_mass)] = (
+            survival_floor)
+        deficit = np.maximum(minimum - counts, 0)
+        need = int(deficit.sum())
+        if need > 0:
+            counts += deficit
+            available = np.maximum(counts - minimum, 0)
+            total_available = int(available.sum())
+            if need > total_available:
+                raise ValueError(
+                    f"survival_floor {survival_floor} needs {need} extra "
+                    f"offspring but only {total_available} are above their "
+                    "floors; the floor is too large for this particle "
+                    "budget and group count")
+            # Take the surplus back proportionally (largest-remainder), so
+            # unfloored mass keeps its relative allocation.
+            proportional = need * available / total_available
+            reduction = np.floor(proportional).astype(np.int64)
+            remainder = need - int(reduction.sum())
+            if remainder > 0:
+                fraction = np.where(available > 0,
+                                    proportional - reduction, -1.0)
+                reduction[np.argsort(-fraction)[:remainder]] += 1
+            counts -= reduction
+
     idx_parts = []
     for group in range(n_groups):
         if counts[group] <= 0:
@@ -804,6 +848,7 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
     east_scale = east_scale[idx]
     north_scale = north_scale[idx]
     heading_scale = heading_scale[idx]
+    offspring_group = group_index[idx]
     belief.take(idx)
 
     east_sigma = np.hypot(east_scale, position_roughening_m)
@@ -813,7 +858,16 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
     belief.north_m += rng.normal(0.0, 1.0, size=n) * north_sigma
     belief.heading_rad = geo.wrap_rad(
         belief.heading_rad + rng.normal(0.0, 1.0, size=n) * heading_sigma)
-    belief.log_weight = np.zeros(n)
+    if survival_floor > 0:
+        # Offspring carry their group's true mass, so a floored group holds
+        # its (tiny) posterior probability across many guaranteed particles
+        # rather than being rounded up to floor/n of the belief.
+        with np.errstate(divide="ignore"):
+            log_w = (np.log(group_mass[offspring_group])
+                     - np.log(counts[offspring_group]))
+        belief.log_weight = log_w - special.logsumexp(log_w)
+    else:
+        belief.log_weight = np.zeros(n)
 
 
 def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig,
@@ -1428,6 +1482,15 @@ def run_filter(
         map_e, map_n, map_h = metrics.map_pose(
             belief, config.map_cell_size_m)
         modes = _mode_records(belief, tracker) if config.modes.enabled else []
+        if config.modes.enabled and associations:
+            # An injection keyframe re-clusters AFTER the pass-1 update, so a
+            # per-mode association posterior can reference a pre-injection
+            # mode the re-clustering retired. The health record keeps only
+            # entries its own `modes` list can anchor — the diagnostics join
+            # them by mode_id and rightly refuse an orphan.
+            live = {mode.mode_id for mode in modes}
+            associations = [a for a in associations
+                            if a.mode_id is None or a.mode_id in live]
         all_mode_events.extend(mode_events)
         resampled = current_ess < config.ess_resample_frac * config.n_particles
         health.append(structs.HealthRecord(
@@ -1468,7 +1531,10 @@ def run_filter(
                                if observer is not None else None)
             systematic_resample(belief, rng, config.resample_regularization,
                                 config.position_roughening_m,
-                                heading_rough_rad)
+                                heading_rough_rad,
+                                survival_floor=config.resample_survival_floor,
+                                survival_min_mass=(
+                                    config.resample_survival_min_mass))
             if observer is not None:
                 observer.resample(kf, resample_before[0], resample_before[1],
                                   belief)
