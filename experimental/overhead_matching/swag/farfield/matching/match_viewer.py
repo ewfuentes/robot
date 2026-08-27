@@ -45,7 +45,9 @@ import argparse
 import html
 import json
 import math
+import os
 import statistics
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 
@@ -126,22 +128,40 @@ def track_info(tracks: dict, audits: dict, audit_meta: dict) -> dict:
     return info
 
 
-def source_links(info: dict, range_by_track: dict) -> str:
+def _relative_href(output_dir: Path, target: Path,
+                   anchor: str | None = None) -> str:
+    """Portable navigation within a copied/served farfield data tree."""
+    href = Path(os.path.relpath(
+        Path(os.path.abspath(target)),
+        Path(os.path.abspath(output_dir)))).as_posix()
+    if anchor is not None:
+        href += "#" + urllib.parse.quote(anchor, safe="")
+    return href
+
+
+def source_links(info: dict, range_by_track: dict, *, tracks_dir: Path,
+                 audit_dir: Path, output_dir: Path,
+                 audit_review_page: Path | None = None) -> str:
     """Links back to every artifact this tracklet came from."""
     out = []
     for tid in info.get("track_ids", []):
         range_name = range_by_track.get(tid)
         if range_name:
-            out.append(f"<a href='../../track_{range_name}_T{tid}.html'>"
+            track_page = Path(tracks_dir) / f"track_{range_name}_T{tid}.html"
+            out.append(f"<a href='{esc(_relative_href(output_dir, track_page))}'>"
                        f"track T{tid}</a>")
-        out.append(f"<a href='../../semantic_audit/review/index.html"
-                   f"#T{tid}'>audit T{tid}</a>")
+        audit_page = (Path(audit_review_page) if audit_review_page is not None
+                      else Path(audit_dir) / "preview" / "index.html")
+        local_id = info.get("local_id", f"T{tid}")
+        out.append(
+            f"<a href='{esc(_relative_href(output_dir, audit_page, local_id))}'>"
+            f"audit {esc(local_id)}</a>")
     span = info.get("keyframe_span") or []
     if len(span) == 2 and span[0] is not None:
-        out.append(f"<a href='../../keyframes/f{int(span[0]):04d}.html'>"
-                   f"keyframe f{int(span[0]):04d}</a>")
-        out.append(f"<a href='../../keyframes/f{int(span[1]):04d}.html'>"
-                   f"f{int(span[1]):04d}</a>")
+        out.append(f"<span title='first source keyframe'>"
+                   f"keyframe f{int(span[0]):04d}</span>")
+        out.append(f"<span title='last source keyframe'>"
+                   f"f{int(span[1]):04d}</span>")
     return " &middot; ".join(out)
 
 
@@ -302,6 +322,106 @@ def load_log_lrs(match_dir: Path) -> tuple:
     return scores, defaults
 
 
+def _load_viewer_work_snapshot(match_dir: Path):
+    """Load current snapshots plus the last typed stage-reuse bridge.
+
+    Stage reuse was removed when artifact identity became data-lineage-only.
+    A small number of already-published, still-current artifacts carry its
+    fully attested bridge in the preceding v2 matching snapshot. The
+    scientific artifact is content-validated before this helper is called; we
+    additionally verify the bridge against its recorded proof and exact track
+    upstream instead of weakening the current aggregation reader.
+    """
+    snapshot_path = Path(match_dir) / match_landmarks.WORK_SNAPSHOT_NAME
+    snapshot = match_landmarks._load_json_strict(snapshot_path)  # noqa: SLF001
+    bridge = snapshot.get("stage_reuse") if isinstance(snapshot, dict) else None
+    if bridge is None:
+        return match_landmarks.load_work_snapshot(match_dir)
+
+    current = dict(snapshot)
+    del current["stage_reuse"]
+    if current.get("schema") != "farfield.matching_work_snapshot/v2":
+        raise ValueError(
+            f"unsupported bridged matching snapshot {current.get('schema')!r}")
+    request_set = llm_lifecycle.RequestSet.from_dict(current["request_set"])
+    selected = current.get("resolved_stage_config")
+    match_landmarks.validate_selected_config(selected)
+    orchestration = current.get("orchestration")
+    if (not isinstance(orchestration, dict)
+            or orchestration.get("schema") != "farfield_pipeline_stage/v1"
+            or orchestration.get("stage") != "match"
+            or orchestration.get("config_digest")
+            != artifact.sha256_json(selected)
+            or current.get("output_version")
+            != selected["artifacts.landmark_matches_version"]
+            or current.get("score_contract") != match_landmarks.SCORE_CONTRACT
+            or request_set.stage != "landmark_matching"
+            or request_set.model != selected["matching.model"]
+            or request_set.system_prompt != match_landmarks.SYSTEM_PROMPT):
+        raise ValueError("legacy matching snapshot contract is inconsistent")
+    expected_keys = {
+        "schema", "proof_sha256", "source_build_identity",
+        "target_build_identity", "source_git_commit", "target_git_commit",
+        "source_build_path", "target_build_path", "through_stage",
+        "adopted_artifacts",
+    }
+    if not isinstance(bridge, dict) or set(bridge) != expected_keys:
+        raise ValueError("legacy matching stage-reuse bridge has invalid shape")
+    if (bridge["schema"] != "farfield_stage_reuse_bridge/v1"
+            or bridge["through_stage"] != "track"
+            or bridge["target_build_identity"] != current["build_identity"]
+            or bridge["target_git_commit"] != current["target_git_commit"]
+            or bridge["target_build_path"] != current["target_build_path"]):
+        raise ValueError("legacy matching stage-reuse identity is inconsistent")
+    bridge_binding = artifact.sha256_json({
+        "schema": "farfield_matching_stage_reuse_binding/v1",
+        "mode": "authorized_reuse",
+        "bridge": bridge,
+    })
+    expected_digest_keys = {
+        "build_identity", "orchestration_config", "stage_reuse_bridge",
+        paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
+        paths_lib.CATALOGS,
+    }
+    if (set(request_set.input_digests) != expected_digest_keys
+            or request_set.input_digests["build_identity"]
+            != current["build_identity"]
+            or request_set.input_digests["orchestration_config"]
+            != orchestration["config_digest"]
+            or request_set.input_digests["stage_reuse_bridge"]
+            != bridge_binding
+            or tuple(ref.kind for ref in request_set.upstreams) != (
+                paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS,
+                paths_lib.CATALOGS)
+            or any(request_set.input_digests[ref.kind] != ref.content_digest
+                   for ref in request_set.upstreams)):
+        raise ValueError("legacy matching request-set binding is inconsistent")
+    proof = Path(bridge["target_build_path"]) / "stage_reuse.json"
+    if (proof.is_symlink() or not proof.is_file()
+            or artifact.sha256_file(proof) != bridge["proof_sha256"]):
+        raise ValueError("legacy matching stage-reuse proof is unavailable")
+    adopted = bridge["adopted_artifacts"]
+    if (not isinstance(adopted, list) or len(adopted) != 1
+            or adopted[0] != request_set.upstreams[0].to_dict()):
+        raise ValueError(
+            "legacy matching stage-reuse bridge does not name its exact "
+            "tracks upstream")
+    recorded_request_set = llm_lifecycle.load_request_set(
+        Path(match_dir) / llm_lifecycle.REQUEST_SET_NAME)
+    if recorded_request_set.fingerprint != request_set.fingerprint:
+        raise ValueError(
+            "matching semantic snapshot and request_set.json disagree")
+    if ((Path(match_dir) / match_landmarks.SIGNATURES_NAME).read_bytes()
+            != artifact.canonical_json_bytes(current["signatures"]) + b"\n"):
+        raise ValueError(
+            "matching semantic snapshot and signatures.json disagree")
+    if ((Path(match_dir) / llm_lifecycle.REQUESTS_NAME).read_bytes()
+            != llm_lifecycle.transport_requests_bytes(request_set)):
+        raise ValueError(
+            "matching semantic snapshot and requests.jsonl disagree")
+    return snapshot, request_set
+
+
 def load_uniqueness(match_dir: Path) -> dict:
     """Per-tracklet uniqueness scores recorded by canonical aggregation.
 
@@ -314,8 +434,12 @@ def load_uniqueness(match_dir: Path) -> dict:
     try:
         match_ref = artifact.open_artifact(
             match_dir, expected_kind=paths_lib.LANDMARK_MATCHES)
-        _snapshot, request_set = match_landmarks.load_work_snapshot(match_dir)
+        snapshot, request_set = _load_viewer_work_snapshot(match_dir)
         manifest = artifact.load_manifest(match_dir)
+        if (manifest.config.get("semantic_snapshot_sha256")
+                != artifact.sha256_json(snapshot)):
+            raise llm_lifecycle.LlmLifecycleError(
+                "matching manifest does not bind its semantic snapshot")
         expected_upstream_kinds = (
             paths_lib.OBJECT_TRACKS,
             paths_lib.SEMANTIC_AUDITS,
@@ -698,6 +822,8 @@ _STYLE = (_ASSET_DIR / "style.css").read_text(
     encoding="utf-8").rstrip("\n") + "\n"
 _SCRIPT = "\n" + (_ASSET_DIR / "app.js").read_text(
     encoding="utf-8").rstrip("\n") + "\n"
+_NOTES_SCRIPT = "\n" + (_ASSET_DIR / "notes.js").read_text(
+    encoding="utf-8").rstrip("\n") + "\n"
 
 
 def render_page(body_parts: list[str]) -> str:
@@ -725,6 +851,10 @@ def main():
     parser.add_argument("--output_dir", type=Path, required=True,
                         help="Separate review output; published matching "
                              "artifacts are immutable")
+    parser.add_argument(
+        "--audit_review_page", type=Path, default=None,
+        help="Generated semantic-audit review index.html; when omitted, "
+             "links use the exact audit artifact's request preview")
     parser.add_argument("--nominal_forward_calibration", type=Path,
                         required=True,
                         help="Exact human-approved calibration also supplied "
@@ -763,8 +893,12 @@ def main():
             "--min_aggregate_confidence must be finite and in [0, 1]")
 
     match_dir = Path(args.matching_dir)
+    if (args.audit_review_page is not None
+            and (args.audit_review_page.is_symlink()
+                 or not args.audit_review_page.is_file())):
+        parser.error("--audit_review_page must be a regular non-symlink file")
     try:
-        artifact.open_artifact(
+        matching_ref = artifact.open_artifact(
             match_dir, expected_kind=paths_lib.LANDMARK_MATCHES,
             expected_dataset=args.dataset)
         audits = audit_io.load_audits(args.tracks_dir, args.audit_dir)
@@ -915,7 +1049,19 @@ def main():
         "course uncertainty, crab/current, catalog position error, timing "
         "error, and extended landmark geometry can also move a residual.</p>",
         residual_summary,
-        "<div class='wrap'><div class='list'>"]
+        "<div class='wrap'><div class='list'>",
+        "<section id='match-note-panel' class='note-panel'>"
+        "<div class='note-panel-head'><b>Human match note</b>"
+        "<span id='match-note-heading'>Select a tracklet</span>"
+        "<span id='match-note-updated'></span></div>"
+        "<textarea id='match-note-text' maxlength='20000' disabled "
+        "placeholder='Miscellaneous observation about this matcher run and "
+        "tracklet'></textarea>"
+        "<div class='note-controls'><button id='match-note-save' disabled>"
+        "save</button><button id='match-note-clear' disabled>clear</button>"
+        "<span class='pin'>Ctrl/Cmd+Enter saves</span>"
+        "<span id='match-note-status' class='note-status'>connecting…</span>"
+        "</div></section>"]
 
     ordered = sorted(matches.items(),
                      key=lambda kv: -(
@@ -936,14 +1082,22 @@ def main():
         parts.append(f"<div class='q'><b>observed:</b> "
                      f"<code>{esc(entry['query'])}</code><br>"
                      f"<span class='nomatch'>{stats}</span></div>")
-        parts.append(f"<div class='links'>"
-                     f"{source_links(info, range_by_track)}</div>")
+        links = source_links(
+            info, range_by_track,
+            tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
+            output_dir=out, audit_review_page=args.audit_review_page)
+        parts.append(
+            f"<div class='links'>{links}"
+            f"<button type='button' class='note-select' "
+            f"data-note-select='{esc(key)}'>add note</button></div>")
         chips = chips_for(local_id, audit_meta)
         if chips:
             parts.append("<div class='chips'>")
             for chip in chips:
-                parts.append(f"<img src='../../semantic_audit/chips/"
-                             f"{Path(chip).name}' loading='lazy'>")
+                chip_href = _relative_href(
+                    out, Path(args.audit_dir) / chip)
+                parts.append(
+                    f"<img src='{esc(chip_href)}' loading='lazy'>")
             parts.append("</div>")
         if not chips:
             parts.append("<div class='nochips'>no chips: the audit builder "
@@ -995,9 +1149,15 @@ def main():
                       f"class='pin'>bearings on map</a>")
         slices = entry.get("per_call_no_match_confidence") or {}
         scores = uniqueness.get(key) or []
-        parts.append(f"<tr><td>{esc(key)}{onmap}<br>"
-                     f"<span class='links'>"
-                     f"{source_links(info, range_by_track)}</span></td>"
+        links = source_links(
+            info, range_by_track,
+            tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
+            output_dir=out, audit_review_page=args.audit_review_page)
+        parts.append(f"<tr id='{esc(key)}'><td>{esc(key)}{onmap}<br>"
+                     f"<span class='links'>{links}"
+                     f"<button type='button' class='note-select' "
+                     f"data-note-select='{esc(key)}'>add note</button>"
+                     f"</span></td>"
                      f"<td class='conf'>"
                      f"{entry['aggregate_no_match_confidence']}"
                      f" <span class='pin'>uncalibrated</span>"
@@ -1057,6 +1217,19 @@ def main():
         parts.append("</div>")
 
     parts.append("</div>")
+    notes_context = {
+        "matching": {
+            "kind": matching_ref.kind,
+            "dataset": matching_ref.dataset,
+            "version": matching_ref.version,
+            "content_digest": matching_ref.content_digest,
+        },
+    }
+    notes_blob = json.dumps(
+        notes_context, separators=(",", ":"), ensure_ascii=False
+    ).replace("</", "<\\/")
+    parts.append(f"<script>const MATCH_NOTES_CONTEXT={notes_blob};</script>")
+    parts.append(f"<script>{_NOTES_SCRIPT}</script>")
     if payload is not None:
         blob = json.dumps(payload, separators=(",", ":"),
                           ensure_ascii=False).replace("</", "<\\/")
@@ -1072,6 +1245,9 @@ def main():
         inputs={"matching": match_dir,
                 "tracks": args.tracks_dir,
                 "semantic_audits": args.audit_dir,
+                "semantic_audit_review": (
+                    args.audit_review_page
+                    if args.audit_review_page is not None else ""),
                 "catalog": args.catalog_dir,
                 "nominal_forward_calibration":
                     args.nominal_forward_calibration},

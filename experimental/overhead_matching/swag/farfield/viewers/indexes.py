@@ -57,6 +57,8 @@ DATASET_COLLECTIONS = (
 # relative to an experiment index beside the run and its diagnostic siblings.
 RUN_SIBLING_PAGES = (
     (".viewer", "viewer.html", "filter viewer"),
+    (".matcher-review", "index.html", "matcher review"),
+    (".audit-review", "index.html", "semantic audit"),
     (".plots", "map.png", "map"),
 )
 
@@ -65,6 +67,8 @@ RUN_SIBLING_PAGES = (
 # and rows even when the experiment directory contains no typed metadata.
 RUN_SIDE_DIRECTORY_SUFFIXES = (
     ".viewer",
+    ".matcher-review",
+    ".audit-review",
     ".plots",
     ".satellite",
     ".counterfactuals",

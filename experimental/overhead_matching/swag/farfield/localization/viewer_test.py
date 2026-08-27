@@ -120,6 +120,37 @@ def _make_tracking_viewer_artifact(directory: Path) -> Path:
 
 
 class PayloadTest(unittest.TestCase):
+    def test_tracking_evidence_href_is_portable_with_the_data_root(self):
+        root = Path("/mirror/farfield_matching")
+        viewer_dir = root / "runs" / "experiment" / "run.viewer"
+        tracks_dir = (root / "artifacts" / "object_tracks" / "dataset"
+                      / "tracks-v2")
+
+        href = viewer_payload._tracking_evidence_href(  # noqa: SLF001
+            viewer_dir, tracks_dir, "track_full_T2.html")
+
+        self.assertEqual(
+            href,
+            "../../../artifacts/object_tracks/dataset/tracks-v2/"
+            "track_full_T2.html")
+        self.assertNotIn(str(root), href)
+        self.assertFalse(href.startswith("file:"))
+
+    def test_review_href_is_portable_and_targets_the_exact_tracklet(self):
+        root = Path("/mirror/farfield_matching")
+        viewer_dir = root / "runs" / "experiment" / "run.viewer"
+        matcher_page = (root / "runs" / "experiment"
+                        / "run.matcher-review" / "index.html")
+
+        href = viewer_payload._review_href(  # noqa: SLF001
+            viewer_dir, matcher_page, "tracks@sha256:abc#T2")
+
+        self.assertEqual(
+            href,
+            "../run.matcher-review/index.html#"
+            "tracks%40sha256%3Aabc%23T2")
+        self.assertNotIn(str(root), href)
+
     def test_tracklet_ids_sort_naturally(self):
         tracklets = ["LT10", "LT2", "LT1", "LT20", "LT11"]
         self.assertEqual(
@@ -422,6 +453,14 @@ class PageTest(unittest.TestCase):
                 'href="https://www.openstreetmap.org/${m[1]}/${m[2]}"',
                 html)
             self.assertIn('target="_blank" rel="noopener"', html)
+            self.assertIn("const sourceReviewLinks = src =>", html)
+            self.assertIn('src.matcherHref ? `<a href=', html)
+            self.assertIn('src.auditHref ? `<a href=', html)
+            self.assertIn(').join(" ")}</div>`;', html)
+            self.assertIn("selected.source.frameBearings.find(", html)
+            self.assertIn("row => row.kf === t", html)
+            self.assertIn('stroke="var(--privileged)"', html)
+            self.assertIn("truth bearing @ kf ${t}", html)
             for term in ("consistent", "geometry-unexplained", "no-evidence",
                          "matcher-fault", "filter-fault", "anti"):
                 self.assertIn(f"<b>{term}</b>", html)

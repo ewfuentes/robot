@@ -40,6 +40,12 @@ const trackingEvidenceLink = src => {
   return href ? `<a href="${esc(href)}" target="_blank"
     rel="noopener">${label}</a>` : label;
 };
+const sourceReviewLinks = src => [
+  src.matcherHref ? `<a href="${esc(src.matcherHref)}" target="_blank"
+    rel="noopener">matcher</a>` : "",
+  src.auditHref ? `<a href="${esc(src.auditHref)}" target="_blank"
+    rel="noopener">audit</a>` : "",
+].filter(Boolean).join(" · ");
 const ckKeys = Object.keys(D.checkpoints).map(Number).sort((a, b) => a - b);
 const nearestCk = kf => ckKeys.reduce((best, k) =>
   Math.abs(k - kf) < Math.abs(best - kf) ? k : best, ckKeys[0]);
@@ -725,6 +731,32 @@ function drawMap() {
     });
   });
 
+  // A selected tracklet gets one truth-privileged source ray at its actual
+  // per-frame bearing. This is deliberately separate from the filter's fused
+  // epoch rays above: its origin and forward orientation come from GPS truth,
+  // and it exists only while the audited source track has a valid observation
+  // at the current keyframe.
+  let selectedTruthBearing = null;
+  const selected = selTrk === null ? null : TRK.get(selTrk);
+  if (selected && selected.source && h.truthE !== undefined
+      && h.truthH !== undefined) {
+    selectedTruthBearing = selected.source.frameBearings.find(
+      row => row.kf === t) || null;
+    if (selectedTruthBearing) {
+      const world = (h.truthH + selectedTruthBearing.bearing) * Math.PI / 180;
+      const R = 3 * MW;
+      const x1 = px(h.truthE), y1 = py(h.truthN);
+      const x2 = x1 + R * Math.sin(world), y2 = y1 - R * Math.cos(world);
+      out += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}"
+        x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+        stroke="var(--privileged)" stroke-width="2.8" opacity=".95">
+        <title>${esc(trkLabel(selTrk))} source bearing at kf ${t}: ${
+          selectedTruthBearing.bearing.toFixed(1)}° nominal-forward, ${
+          selectedTruthBearing.width.toFixed(1)}° tracked width; projected from
+          GPS truth</title></line>`;
+    }
+  }
+
   // Landmarks on top. Labels only where the filter is putting association
   // mass right now (or everywhere, in a small world): a whole-map run
   // references thousands of tie members and labelling them all is illegible.
@@ -763,6 +795,10 @@ function drawMap() {
   $("mapnote").innerHTML =
     `particles: ${particleDescription} from checkpoint kf ${ck}`
     + `${ck !== t ? ` (nearest to ${t})` : ""}${loading}`
+    + (selTrk ? selectedTruthBearing
+      ? ` · <b style="color:var(--privileged)">${esc(trkLabel(selTrk))} `
+        + `truth bearing @ kf ${t}</b>`
+      : ` · selected ${esc(trkLabel(selTrk))} not present @ kf ${t}` : "")
     + (flags.length ? ` · <b style="color:var(--port)">${flags.length} `
         + `LLR/geometry disagreement${flags.length > 1 ? "s" : ""}: `
         + flags.map(f => `${esc(trkLabel(f.trk))} ${f.deg.toFixed(0)}°`).join(", ")
@@ -1052,6 +1088,8 @@ function drawInspector() {
       alt="audited evidence chip for ${esc(src.localId)}" loading="lazy">`;
     source += `<dl class="kv" style="margin-top:8px">
       <dt>source track</dt><dd>${trackingEvidenceLink(src)}</dd>
+      ${src.matcherHref || src.auditHref
+        ? `<dt>review</dt><dd>${sourceReviewLinks(src)}</dd>` : ""}
       <dt>audit</dt><dd><span class="pill ${
         src.verdict === "drop" ? "bad" : src.verdict === "keep_partial"
           ? "warn" : "ok"}">${esc(src.verdict)}</span>
@@ -1063,7 +1101,7 @@ function drawInspector() {
         segment => `kf ${segment[0]}–${segment[1]}`).join(", ")}</dd></dl>`;
     if (src.tags.length)
       source += `<div style="margin-top:6px">${src.tags.map(
-        tag => `<span class="chip">${esc(tag)}</span>`).join("")}</div>`;
+        tag => `<span class="chip">${esc(tag)}</span>`).join(" ")}</div>`;
     if (src.description)
       source += `<div class="legend">${esc(src.description)}</div>`;
     if (src.features.length)

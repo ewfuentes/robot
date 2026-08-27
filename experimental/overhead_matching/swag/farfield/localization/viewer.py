@@ -147,7 +147,10 @@ heading tick; magenta rays are bearing wedges (&plusmn;2&sigma;) from the
 selected mode; dashed coloured lines are correspondence with opacity &prop;
 association posterior. A <b style="color:var(--port)">red dotted line and
 ring</b> mark an LLR/geometry disagreement: the matcher's best claim lies more
-than 15&deg; off the measured bearing under this mode. Glyphs by type:
+than 15&deg; off the measured bearing under this mode. When a tracklet is
+selected, its thick <b style="color:var(--privileged)">purple ray</b> is the
+per-frame measured bearing projected from GPS truth at the current keyframe
+(truth-privileged debugging only). Glyphs by type:
 &#9651; light &middot; &#9671; navaid &middot; &#9711; tank &middot;
 &#9770; tower/crane &middot; &#8801; bridge &middot; &#8852; pier/dock
 &middot; &#9723; building. Filled and labelled means the filter is putting
@@ -235,6 +238,12 @@ def main():
                         help="exact object_tracks artifact that produced the run")
     parser.add_argument("--audit_dir", type=Path, default=None,
                         help="exact semantic_audits artifact bound to tracks_dir")
+    parser.add_argument("--matcher_page", type=Path, default=None,
+                        help="exact generated matcher review index.html to "
+                             "link from each source tracklet")
+    parser.add_argument("--audit_page", type=Path, default=None,
+                        help="exact generated semantic-audit review index.html "
+                             "to link from each source tracklet")
     parser.add_argument("--no_source_chips", action="store_true",
                         help="validate sources without embedding audit chips")
     parser.add_argument("--feather", type=Path, default=None,
@@ -259,13 +268,18 @@ def main():
                              "standalone document")
     args = parser.parse_args()
 
+    viewer_dir = (args.output_dir if args.output_dir is not None else
+                  side_outputs.default_directory(args.run_dir, ".viewer"))
     payload = viewer_payload.build(
         args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
         feather=args.feather,
         ghost_dirs=args.ghost, max_particles=args.max_particles,
         embed_source_chips=not args.no_source_chips,
         basemap_detail=args.basemap_detail,
-        satellite=args.satellite)
+        satellite=args.satellite,
+        viewer_dir=viewer_dir,
+        matcher_page=args.matcher_page,
+        audit_page=args.audit_page)
     run_ref = artifact.open_artifact(
         args.run_dir, expected_kind="localization_run")
     output = write_viewer(
@@ -286,6 +300,16 @@ def main():
             "audit_manifest_digest": (
                 artifact.open_artifact(args.audit_dir).manifest_digest
                 if args.audit_dir is not None else ""),
+            "matcher_page": (args.matcher_page.resolve()
+                             if args.matcher_page is not None else ""),
+            "matcher_page_sha256": (
+                artifact.sha256_file(args.matcher_page)
+                if args.matcher_page is not None else ""),
+            "audit_page": (args.audit_page.resolve()
+                           if args.audit_page is not None else ""),
+            "audit_page_sha256": (
+                artifact.sha256_file(args.audit_page)
+                if args.audit_page is not None else ""),
             "feather": (args.feather.resolve()
                         if args.feather is not None else ""),
             "feather_sha256": (artifact.sha256_file(args.feather)

@@ -29,6 +29,12 @@ def make_tree(root: Path):
     viewer = run.with_name(run.name + ".viewer")
     viewer.mkdir()
     (viewer / "viewer.html").write_text("<html></html>")
+    matcher_review = run.with_name(run.name + ".matcher-review")
+    matcher_review.mkdir()
+    (matcher_review / "index.html").write_text("<html>matches</html>")
+    audit_review = run.with_name(run.name + ".audit-review")
+    audit_review.mkdir()
+    (audit_review / "index.html").write_text("<html>audits</html>")
     plots = run.with_name(run.name + ".plots")
     plots.mkdir()
     (plots / "map.png").write_bytes(b"png")
@@ -70,6 +76,10 @@ class RefreshTest(unittest.TestCase):
                / "index.html").read_text()
         self.assertIn("Does extent-aware sigma fix pohang?", exp)
         self.assertIn('href="boston_r001.viewer/viewer.html"', exp)
+        self.assertIn(
+            'href="boston_r001.matcher-review/index.html"', exp)
+        self.assertIn(
+            'href="boston_r001.audit-review/index.html"', exp)
         self.assertIn('href="boston_r001.plots/map.png"', exp)
         self.assertEqual(
             [path.name for path in indexes._run_dirs(
