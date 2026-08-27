@@ -147,10 +147,14 @@ VIEWER_STYLE = """
 """
 
 
-def nav_html(index: int, count: int, page_name) -> str:
+def nav_html(index: int, count: int, page_name,
+             home: str = "viewer.html") -> str:
     """Prev/next links + position readout + arrow-key navigation.
 
-    page_name: callable index -> relative filename.
+    page_name: callable index -> relative filename. `home` is the viewer's
+    entry page — `viewer.html` by convention (RUN_SIBLING_PAGES in
+    viewers/indexes.py): viewers live in a `<name>.viewer/` sibling of the
+    immutable run or artifact directory, entered through `viewer.html`.
     """
     prev_href = page_name(index - 1) if index > 0 else None
     next_href = page_name(index + 1) if index < count - 1 else None
@@ -170,7 +174,7 @@ def nav_html(index: int, count: int, page_name) -> str:
     return (f'<div class="nav">{link("&larr; prev", prev_href)}'
             f'<span class="idx">{index + 1} / {count}</span>'
             f'{link("next &rarr;", next_href)}'
-            f'<a href="index.html">index</a></div>{keys}')
+            f'<a href="{home}">index</a></div>{keys}')
 
 
 def thumb_strip(entries: list) -> str:

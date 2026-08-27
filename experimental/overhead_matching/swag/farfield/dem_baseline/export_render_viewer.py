@@ -10,7 +10,9 @@ what you see is bit-identical to what was embedded.
         --db_dir /data/farfield_matching/artifacts/depth_render_db/mount_washington/v1_dev100m \
         --n_locations 24
 
-Output: <db_dir>/viewer/index.html, browsable via the data-root http.server.
+Output: the sibling `<db_dir>.viewer/viewer.html` — the farfield sibling-page
+convention (RUN_SIBLING_PAGES in viewers/indexes.py), so the immutable
+artifact version directory is never written into.
 """
 
 import argparse
@@ -40,7 +42,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db_dir", type=Path, required=True)
     parser.add_argument("--out_dir", type=Path, default=None,
-                        help="default: <db_dir>/viewer")
+                        help="default: the <db_dir>.viewer sibling")
     parser.add_argument("--n_locations", type=int, default=24,
                         help="evenly spread over the lattice")
     parser.add_argument("--indices", type=int, nargs="*", default=None,
@@ -51,7 +53,8 @@ def main() -> None:
 
     db = render_db.load_database(args.db_dir)
     manifest = db["manifest"]
-    out_dir = args.out_dir or (args.db_dir / "viewer")
+    out_dir = args.out_dir or args.db_dir.with_name(
+        args.db_dir.name + ".viewer")
     images = out_dir / "images"
     images.mkdir(parents=True, exist_ok=True)
 
@@ -102,7 +105,7 @@ def main() -> None:
         (out_dir / location_page_name(k)).write_text(page.page(
             f"render {loc} — {args.db_dir.name}", body,
             generator=GENERATOR, extra_style=viz.VIEWER_STYLE,
-            crumbs=[("db", "../index.html"), ("viewer", None)]))
+            crumbs=[("viewer", "viewer.html"), (f"loc {loc}", None)]))
 
     overview_name = "map_overview.png"
     mapper.render(images / overview_name, bounds_xy=bounds, markers=[
@@ -124,10 +127,10 @@ def main() -> None:
         + f"<div class='mapimg'><img src='images/{overview_name}'></div>"
         + page.table(["page", "lattice idx", "easting, northing (m)",
                       "mean coverage"], rows))
-    (out_dir / "index.html").write_text(page.page(
+    (out_dir / "viewer.html").write_text(page.page(
         f"depth render viewer — {args.db_dir.name}", body,
         generator=GENERATOR, extra_style=viz.VIEWER_STYLE))
-    print(f"wrote {out_dir}/index.html ({len(indices)} location pages)")
+    print(f"wrote {out_dir}/viewer.html ({len(indices)} location pages)")
 
 
 if __name__ == "__main__":

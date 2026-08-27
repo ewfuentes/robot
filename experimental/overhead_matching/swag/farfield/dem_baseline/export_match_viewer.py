@@ -12,7 +12,9 @@ re-renders candidate rings from the database's surface + recorded config
         --db_dir /data/farfield_matching/artifacts/depth_render_db/mount_washington/v1_dev100m \
         --dataset mount_washington_20260815_leg2 --n_frames 40
 
-Output: <eval_dir>/viewer/index.html, browsable via the data-root http.server.
+Output: the run-sibling `<eval_dir>.viewer/viewer.html` — the layout
+`viewers/indexes.py` resolves run pages from (RUN_SIBLING_PAGES), keeping the
+run directory itself immutable. Refresh indexes afterwards to surface it.
 """
 
 import argparse
@@ -58,7 +60,7 @@ def main() -> None:
     parser.add_argument("--eval_dir", type=Path, required=True)
     parser.add_argument("--db_dir", type=Path, required=True)
     parser.add_argument("--out_dir", type=Path, default=None,
-                        help="default: <eval_dir>/viewer")
+                        help="default: the <eval_dir>.viewer run sibling")
     parser.add_argument("--n_frames", type=int, default=40,
                         help="evenly spread over the evaluated frames")
     parser.add_argument("--top_k_map", type=int, default=50)
@@ -80,7 +82,8 @@ def main() -> None:
     mapper = viz.MapRenderer(hf)
     bounds = tuple(manifest["lattice"]["bounds_xy"])
 
-    out_dir = args.out_dir or (args.eval_dir / "viewer")
+    out_dir = args.out_dir or args.eval_dir.with_name(
+        args.eval_dir.name + ".viewer")
     images = out_dir / "images"
     images.mkdir(parents=True, exist_ok=True)
     viz.depth_colorbar().save(images / "colorbar.png")
@@ -167,7 +170,8 @@ def main() -> None:
         (out_dir / frame_page_name(k)).write_text(page.page(
             f"{stem} — {args.eval_dir.name}", body, generator=GENERATOR,
             extra_style=viz.VIEWER_STYLE,
-            crumbs=[("run", "../index.html"), ("viewer", None)]))
+            crumbs=[("experiment", "../index.html"),
+                    ("viewer", "viewer.html"), (stem, None)]))
 
     # Index: summary metrics + per-frame table + truth-track overview map.
     mapper.render(images / "map_track.png", bounds_xy=bounds, markers=[
@@ -195,10 +199,11 @@ def main() -> None:
         + "<h2>frames</h2>"
         + page.table(["frame", "top-1 err (m)", "best top-10 err (m)",
                       "entropy (nats)"], frame_rows))
-    (out_dir / "index.html").write_text(page.page(
+    (out_dir / "viewer.html").write_text(page.page(
         f"match viewer — {args.eval_dir.name}", body, generator=GENERATOR,
-        extra_style=viz.VIEWER_STYLE))
-    print(f"wrote {out_dir}/index.html ({len(picks)} frame pages)")
+        extra_style=viz.VIEWER_STYLE,
+        crumbs=[("experiment", "../index.html"), ("viewer", None)]))
+    print(f"wrote {out_dir}/viewer.html ({len(picks)} frame pages)")
 
 
 if __name__ == "__main__":
