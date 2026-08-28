@@ -806,6 +806,15 @@ def build(args) -> artifact.ArtifactRef:
     slow_yaw_sigma_deg = _finite(
         _config(document, "localization_inputs.slow_yaw_sigma_deg"),
         "slow_yaw_sigma_deg", positive=True)
+    course_yaw_drift_sigma_deg = _finite(
+        _config(document, "localization_inputs.course_yaw_drift_sigma_deg"),
+        "course_yaw_drift_sigma_deg", positive=True)
+    imu_translation_noise_frac = _finite(
+        _config(document, "localization_inputs.imu_translation_noise_frac"),
+        "imu_translation_noise_frac", positive=True)
+    imu_yaw_noise_frac = _finite(
+        _config(document, "localization_inputs.imu_yaw_noise_frac"),
+        "imu_yaw_noise_frac", positive=True)
     reverse_ranges = _config(
         document, "localization_inputs.reverse_keyframe_ranges")
     reverse_source = _config(
@@ -826,9 +835,10 @@ def build(args) -> artifact.ArtifactRef:
         displacement_gate_m=displacement_gate_m,
         stationary_sigma_m=stationary_sigma_m,
         slow_yaw_sigma_deg=slow_yaw_sigma_deg,
+        course_yaw_drift_sigma_deg=course_yaw_drift_sigma_deg,
         reverse_keyframe_ranges=reverse_ranges,
-        extra_sigma_m=0.0,
-        extra_yaw_sigma_deg=0.0,
+        imu_translation_noise_frac=imu_translation_noise_frac,
+        imu_yaw_noise_frac=imu_yaw_noise_frac,
         noise_seed=0)
     course_model = heading.gps_course_model_from_positions(
         east, north, times,

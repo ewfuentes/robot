@@ -179,6 +179,9 @@ CONFIG_SCHEMA = {
     "localization_inputs.displacement_gate_m": _positive_number(),
     "localization_inputs.stationary_sigma_m": _positive_number(),
     "localization_inputs.slow_yaw_sigma_deg": _positive_number(),
+    "localization_inputs.course_yaw_drift_sigma_deg": _positive_number(),
+    "localization_inputs.imu_translation_noise_frac": _positive_number(),
+    "localization_inputs.imu_yaw_noise_frac": _positive_number(),
     "localization_inputs.reverse_keyframe_ranges": build_config.ValueSpec(
         (list,)),
     "localization_inputs.reverse_annotation_source": _text(),

@@ -10,26 +10,61 @@ filter consumes, the way §5.2 specifies:
   rotated 180 degrees before yaw differencing, so reversing does not invent a
   platform turn. Crab/current remain declared motion-model uncertainty.
 
-  delta_yaw_cw = differenced usable course proxy. Course is the direction of
-  each step; its noise
-  is geometric — sigma_course ~ atan(sigma_pair / step) — so it is computed
-  per step from the step length rather than declared as a constant. A step
-  below the displacement gate emits zero translation and zero yaw with
-  explicitly inflated uncertainties. This prevents stationary GPS jitter
-  from accumulating as false travel. When usable courses are separated by a
-  gap, the catch-up yaw
-  spans the whole gap (its measurement noise still telescopes to the two
-  endpoint course sigmas); the gapped steps in between already carried the
-  inflated sigma.
+  delta_yaw_cw = differenced usable course proxy. Its measurement noise is
+  ANTI-CORRELATED across steps: consecutive deltas share the middle course,
+  so the increments telescope and the integrated yaw error stays bounded by
+  the two endpoint course sigmas (~atan(sigma_pair / step)) no matter how
+  many steps compose. The filter composes sigma_yaw_rad as independent
+  per-step noise, so emitting the per-chord course noise here overstates
+  heading drift by sqrt(n): on mount_washington_20260815_leg3 that meant a
+  ~26 deg/keyframe modeled random walk against a truly bounded ~26 deg
+  total, which caused whole-map mode death and 20x+ seed variance
+  (tn-mass@500m 0.008-0.061 across seeds; 0.50-0.53 with this fixed —
+  see PR #695's A/B). sigma_yaw_rad on a differenced step is therefore
+  `course_yaw_drift_sigma_deg`, a small per-step budget for genuinely
+  accumulating error (course smoothing, crab, timing) — not the endpoint
+  measurement noise. A step below the displacement gate emits zero
+  translation and zero yaw with explicitly inflated uncertainties,
+  preventing stationary GPS jitter from accumulating as false travel; a
+  catch-up yaw after such a gap spans the whole gap and carries the same
+  drift budget (its measurement noise still telescopes to the endpoints).
 
-  sigma_m is the honest per-fix-pair constant (~1 m: correlated absolute GPS
-  error differences out). No IMU-style step scaling is cosplayed onto real
-  data — emulating worse odometry is an explicit, labelled experiment via
-  the extra-noise parameters, never a default.
+  sigma_m is the honest per-fix-pair chord noise (~1 m: correlated
+  absolute GPS error differences out). Unlike yaw, chord noise is NOT
+  emitted as a small drift budget: the filter re-integrates increments in
+  the heading frame, so consecutive chord errors cancel only where heading
+  is unchanged and the telescoping argument fails on turns. Measured
+  (mtw leg3 whole-map): sigma_m 0.1 m collapses capture (tn-mass@500m
+  0.52 -> 0.05); 0.25/0.5/1.0 m give 0.44/0.47/0.52 — the per-pair value
+  is load-bearing, keep it.
 
-Differenced-course yaw is substantially noisier than a real gyro, which is
-the safe direction for the paper's claims: convergence demonstrated on
-course-grade yaw lower-bounds what an IMU would deliver.
+  THE OBJECTIVE OF DIFFERENCING IS TO APPROXIMATE AN IMU: the deployed
+  platform integrates inertial increments whose noise is genuinely
+  independent per step, while raw GPS-differenced deltas carry the
+  anti-correlated (telescoping, bounded) noise above — strictly friendlier
+  data than an IMU would produce. To make the emitted delta stream an
+  honest IMU surrogate, every production build INJECTS independent
+  per-step Gaussian noise into the delta values and inflates the emitted
+  sigmas to match, so the declared uncertainty describes noise that is
+  actually in the data. The noise is a WIENER PROCESS driven by distance
+  travelled — per step, sigma = coefficient x sqrt(|forward|) — so the
+  injected drift is self-consistent under any keyframe spacing and
+  diffuses on straightaways the way a real gyro does (per-delta
+  proportional noise, as in ReWAG, injects nothing on straight travel and
+  composes inconsistently under step refinement). The coefficients keep
+  ReWAG's values (Downes et al., arXiv:2308.07432: "We add 2% noise to
+  the ground-truth odometry and 1% noise to the ground-truth heading at
+  each time step"): `imu_translation_noise_frac` = 0.02 m/sqrt(m) and
+  `imu_yaw_noise_frac` = 0.01 rad/sqrt(m) — at our ~3 m keyframes that is
+  ~1.0 deg/keyframe of yaw diffusion, the same grade ReWAG's 1% implies on
+  typical turns. The m/sqrt(m) convention matches the histogram filter's
+  OdometryNoiseConfig.sigma_noise_frac. Stationary (gated) steps travel no
+  distance and receive no injected diffusion; their heading hold is
+  covered by slow_yaw_sigma_deg. The injected grade is a recorded
+  build-config decision.
+
+The serialized noise realization is deterministic (fixed noise_seed), so a
+rebuilt export reproduces byte-identical increments.
 
 The serialized motion convention is rotate-then-move and clockwise-positive:
 ``yaw_k = yaw_{k-1} + delta_yaw_cw_rad`` and then translation is rotated by
@@ -86,18 +121,21 @@ def derive_increments(east_m, north_m, *,
                       displacement_gate_m: float,
                       stationary_sigma_m: float,
                       slow_yaw_sigma_deg: float,
+                      course_yaw_drift_sigma_deg: float,
                       reverse_keyframe_ranges,
-                      extra_sigma_m: float = 0.0,
-                      extra_yaw_sigma_deg: float = 0.0,
+                      imu_translation_noise_frac: float = 0.0,
+                      imu_yaw_noise_frac: float = 0.0,
                       noise_seed: int = 0) -> list:
     """ENU fixes (keyframes 0..N) -> OdometryDelta increments (1..N).
 
     Baseline values and reverse annotations are required keywords — callers
     pass immutable build-config values, so the recorded recipe shaped the
-    odometry. The
-    extra-noise parameters inject additional noise AND declare it (an honest
-    producer emulating a worse sensor, not a lying one); they exist for
-    drift-injection experiments and default to off.
+    odometry. The imu_* parameters inject independent per-step noise into
+    the delta values AND declare it in the emitted sigmas (an honest
+    producer emulating the deployed IMU, not a lying one); the pipeline
+    config requires them positive so production exports are always IMU
+    surrogates, while zero remains valid here for exact-geometry tests of
+    the pure derivation.
     """
     east_m = np.asarray(east_m, dtype=np.float64)
     north_m = np.asarray(north_m, dtype=np.float64)
@@ -115,20 +153,23 @@ def derive_increments(east_m, north_m, *,
         raise ValueError("stationary_sigma_m must be >= sigma_pair_m")
     slow_yaw_sigma_deg = _finite_nonnegative(
         slow_yaw_sigma_deg, "slow_yaw_sigma_deg", positive=True)
-    extra_sigma_m = _finite_nonnegative(extra_sigma_m, "extra_sigma_m")
-    extra_yaw_sigma_deg = _finite_nonnegative(
-        extra_yaw_sigma_deg, "extra_yaw_sigma_deg")
+    course_yaw_drift_sigma_deg = _finite_nonnegative(
+        course_yaw_drift_sigma_deg, "course_yaw_drift_sigma_deg",
+        positive=True)
+    imu_translation_noise_frac = _finite_nonnegative(
+        imu_translation_noise_frac, "imu_translation_noise_frac")
+    imu_yaw_noise_frac = _finite_nonnegative(
+        imu_yaw_noise_frac, "imu_yaw_noise_frac")
     if isinstance(noise_seed, bool) or not isinstance(noise_seed, int):
         raise ValueError("noise_seed must be an integer")
     reverse = _reverse_keyframes(reverse_keyframe_ranges, east_m.size - 1)
 
     rng = np.random.default_rng(noise_seed)
     slow_sigma_rad = math.radians(slow_yaw_sigma_deg)
-    extra_yaw_rad = math.radians(extra_yaw_sigma_deg)
-    inject = extra_sigma_m > 0.0 or extra_yaw_rad > 0.0
+    drift_sigma_rad = math.radians(course_yaw_drift_sigma_deg)
+    inject = imu_translation_noise_frac > 0.0 or imu_yaw_noise_frac > 0.0
 
     prev_course_rad = None  # last USABLE course
-    prev_course_sigma_rad = None
     increments = []
     for kf in range(1, east_m.size):
         d_east = float(east_m[kf] - east_m[kf - 1])
@@ -143,13 +184,10 @@ def derive_increments(east_m, north_m, *,
                 # A reverse chord points aft; rotate it to the platform's
                 # nominal-forward proxy before differencing yaw.
                 course_rad = float(geo.wrap_rad(course_rad + math.pi))
-            course_sigma_rad = math.atan(sigma_pair_m / step_m)
             if prev_course_rad is not None:
                 delta_yaw_cw_rad = float(geo.wrap_rad(course_rad - prev_course_rad))
-                sigma_yaw_rad = math.hypot(course_sigma_rad,
-                                           prev_course_sigma_rad)
+                sigma_yaw_rad = drift_sigma_rad
             prev_course_rad = course_rad
-            prev_course_sigma_rad = course_sigma_rad
 
             forward_m = -step_m if kf in reverse else step_m
             sigma_m = sigma_pair_m
@@ -158,12 +196,16 @@ def derive_increments(east_m, north_m, *,
             sigma_m = stationary_sigma_m
         left_m = 0.0
         if inject:
-            forward_m += float(rng.normal(0.0, extra_sigma_m))
-            left_m += float(rng.normal(0.0, extra_sigma_m))
+            sqrt_travel = math.sqrt(abs(forward_m))
+            translation_noise = imu_translation_noise_frac * sqrt_travel
+            yaw_noise = imu_yaw_noise_frac * sqrt_travel
+            forward_m += float(rng.normal(0.0, translation_noise)) \
+                if translation_noise else 0.0
             delta_yaw_cw_rad = float(geo.wrap_rad(
-                delta_yaw_cw_rad + rng.normal(0.0, extra_yaw_rad)))
-            sigma_m = math.hypot(sigma_m, extra_sigma_m)
-            sigma_yaw_rad = math.hypot(sigma_yaw_rad, extra_yaw_rad)
+                delta_yaw_cw_rad + rng.normal(0.0, yaw_noise))) \
+                if yaw_noise else delta_yaw_cw_rad
+            sigma_m = math.hypot(sigma_m, translation_noise)
+            sigma_yaw_rad = math.hypot(sigma_yaw_rad, yaw_noise)
 
         increments.append(structs.OdometryDelta(
             keyframe_idx=kf,

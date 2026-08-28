@@ -13,6 +13,7 @@ def derive(east, north, **kwargs):
     kwargs.setdefault("displacement_gate_m", 2.0)
     kwargs.setdefault("stationary_sigma_m", 3.0)
     kwargs.setdefault("slow_yaw_sigma_deg", 30.0)
+    kwargs.setdefault("course_yaw_drift_sigma_deg", 2.0)
     kwargs.setdefault("reverse_keyframe_ranges", ())
     return gps_to_odometry.derive_increments(east, north, **kwargs)
 
@@ -29,13 +30,14 @@ class DeriveIncrementsTest(unittest.TestCase):
             self.assertEqual(increment.delta_yaw_cw_rad, 0.0)
             self.assertEqual(increment.sigma_m, 1.0)
         # First step has no previous course: slow/gapped sigma. Later steps
-        # carry the honest geometric budget hypot(atan(1/40), atan(1/40)).
+        # carry the per-step drift budget, NOT the per-chord course noise —
+        # differenced-course noise telescopes, so composing it as
+        # independent per-step sigma would overstate heading drift.
         self.assertAlmostEqual(increments[0].sigma_yaw_rad,
                                math.radians(30.0), places=9)
-        expected = math.hypot(math.atan(1.0 / 40.0), math.atan(1.0 / 40.0))
         for increment in increments[1:]:
-            self.assertAlmostEqual(increment.sigma_yaw_rad, expected,
-                                   places=9)
+            self.assertAlmostEqual(increment.sigma_yaw_rad,
+                                   math.radians(2.0), places=9)
 
     def test_turn_dyaw_is_differenced_course(self):
         # Two steps east, then two steps north: one -90 deg course change.
@@ -65,13 +67,12 @@ class DeriveIncrementsTest(unittest.TestCase):
                                places=9)
         self.assertLess(increments[3].sigma_yaw_rad, slow)
 
-    def test_declared_course_sigma_tracks_step_length(self):
+    def test_differenced_yaw_carries_drift_budget_not_chord_noise(self):
         east = np.array([0.0, 50.0, 55.0])
         north = np.zeros(3)
-        increments = derive(east, north)
-        expected = math.hypot(math.atan(1.0 / 50.0), math.atan(1.0 / 5.0))
-        self.assertAlmostEqual(increments[1].sigma_yaw_rad, expected,
-                               places=9)
+        increments = derive(east, north, course_yaw_drift_sigma_deg=1.5)
+        self.assertAlmostEqual(increments[1].sigma_yaw_rad,
+                               math.radians(1.5), places=9)
 
     def test_stationary_jitter_does_not_accumulate_translation(self):
         east = [0.0, 0.4, -0.3, 0.2, -0.1]
@@ -115,22 +116,27 @@ class DeriveIncrementsTest(unittest.TestCase):
         east = np.arange(20) * 40.0
         north = np.zeros(20)
         clean = derive(east, north)
-        noisy = derive(east, north, extra_sigma_m=3.0,
-                       extra_yaw_sigma_deg=2.0, noise_seed=7)
+        noisy = derive(east, north, imu_translation_noise_frac=0.02,
+                       imu_yaw_noise_frac=0.01, noise_seed=7)
         self.assertNotEqual([i.forward_m for i in clean],
                             [i.forward_m for i in noisy])
         for a, b in zip(clean, noisy):
-            self.assertAlmostEqual(b.sigma_m, math.hypot(a.sigma_m, 3.0),
-                                   places=9)
+            # Wiener in distance: sigma = coefficient * sqrt(40 m step).
+            # Yaw diffuses even though the track is straight — a gyro
+            # drifts on straightaways too.
+            self.assertAlmostEqual(
+                b.sigma_m,
+                math.hypot(a.sigma_m, 0.02 * math.sqrt(40.0)), places=9)
             self.assertAlmostEqual(
                 b.sigma_yaw_rad,
-                math.hypot(a.sigma_yaw_rad, math.radians(2.0)), places=9)
+                math.hypot(a.sigma_yaw_rad, 0.01 * math.sqrt(40.0)),
+                places=9)
 
     def test_deterministic(self):
         east = np.arange(10) * 40.0
         north = np.linspace(0.0, 90.0, 10)
-        a = derive(east, north, extra_sigma_m=1.0)
-        b = derive(east, north, extra_sigma_m=1.0)
+        a = derive(east, north, imu_translation_noise_frac=0.02)
+        b = derive(east, north, imu_translation_noise_frac=0.02)
         self.assertEqual(a, b)
 
     def test_rejects_bad_input(self):
