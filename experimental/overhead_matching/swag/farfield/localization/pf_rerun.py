@@ -37,6 +37,10 @@ def main():
                         help="run dir whose run_manifest.json filter_config "
                              "is reused verbatim (seed aside)")
     parser.add_argument("--yaw_sigma_scale", type=float, default=0.0)
+    parser.add_argument("--inject_yaw_sigma_deg", type=float, default=0.0,
+                        help="IMU emulation: add independent per-step noise "
+                             "of this sigma to delta_yaw values and fold it "
+                             "into the emitted sigma (deterministic seed)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--box_from_export", action="store_true",
                         help="replace the template's init box with this "
@@ -57,15 +61,22 @@ def main():
         config = msgspec.structs.replace(
             config, init=export_ingest.region_box(data, 0.0))
 
+    import math
+
+    import numpy as np
+    inject_rad = math.radians(args.inject_yaw_sigma_deg)
+    noise_rng = np.random.default_rng(0)
     odometry = [
         structs.OdometryDelta(
             keyframe_idx=item.keyframe_idx,
             forward_m=item.forward_m,
             left_m=item.left_m,
-            delta_yaw_cw_rad=item.delta_yaw_cw_rad,
+            delta_yaw_cw_rad=item.delta_yaw_cw_rad
+            + (float(noise_rng.normal(0.0, inject_rad)) if inject_rad else 0.0),
             sigma_m=item.sigma_m,
-            sigma_yaw_rad=max(item.sigma_yaw_rad * args.yaw_sigma_scale,
-                              1e-6))
+            sigma_yaw_rad=math.hypot(
+                max(item.sigma_yaw_rad * args.yaw_sigma_scale, 1e-6),
+                inject_rad))
         for item in data.odometry
     ]
 
