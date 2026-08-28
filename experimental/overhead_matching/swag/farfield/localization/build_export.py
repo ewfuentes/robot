@@ -10,6 +10,16 @@ camera calibration source.
 There is deliberately no ``run_dir`` discovery, mount-offset override, or
 sidecar fallback.  Every scientific input is explicit and every published
 output is covered by the localization_inputs artifact manifest.
+
+The bearing/track/audit/match upstreams need not belong to the build
+running this export: localization_inputs is the seam where downstream-only
+config (odometry modeling, reducer, review) legitimately changes without
+paying to regenerate the LLM-priced upstream artifacts. Coherence among the
+upstreams is bound by the recorded ArtifactRef chain — the bearing manifest
+names its exact tracks/audits refs and the matching manifest must name the
+same ones — together with the version pins, configured lanes, and content
+digests. (The published artifacts already span builds this way: tracks from
+one immutable build feed bearings regenerated in a later one.)
 """
 
 from __future__ import annotations
@@ -160,12 +170,13 @@ def _load_observation_records(path: Path) \
 
 def load_observations(observations_dir: Path, *, dataset_name: str,
                       panorama_width: int, expected_versions: dict[str, str],
-                      build_identity: str,
                       target_build_dir: Path | None = None):
     """Load and independently verify a complete lossless bearing artifact.
 
     Coverage and geometry are rebuilt from the bound tracks + audit, rather
-    than trusting a producer-supplied percentage or count.
+    than trusting a producer-supplied percentage or count. Upstream
+    coherence is the recorded ref chain: the bearing manifest names its
+    exact tracks/audits refs, checked here against the configured lanes.
     """
     observations_dir = Path(observations_dir)
     observations_ref = artifact.open_artifact(
@@ -182,9 +193,10 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         kind=paths_lib.BEARING_OBSERVATIONS)
         if target_document is not None
         else artifact.load_manifest(observations_dir))
-    if manifest.config.get("build_identity") != build_identity:
+    recorded = manifest.config.get("build_identity")
+    if not isinstance(recorded, str) or not recorded:
         raise LocalizationInputError(
-            "bearing_observations belongs to a different immutable build")
+            "bearing_observations does not record its producing build")
     expected_upstream_kinds = (
         paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS)
     if tuple(ref.kind for ref in manifest.upstreams) != expected_upstream_kinds:
@@ -201,16 +213,12 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
         tracks_ref, document=target_document, kind=paths_lib.OBJECT_TRACKS)
         if target_document is not None
         else artifact.load_manifest(tracks_ref.path))
-    if tracks_manifest.config.get("build_identity") != build_identity:
-        raise LocalizationInputError(
-            f"{paths_lib.OBJECT_TRACKS} belongs to a different immutable build")
+
     audits_manifest = (configured_lane.require(
         audits_ref, document=target_document, kind=paths_lib.SEMANTIC_AUDITS)
         if target_document is not None
         else artifact.load_manifest(audits_ref.path))
-    if audits_manifest.config.get("build_identity") != build_identity:
-        raise LocalizationInputError(
-            f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
+
     try:
         audits = audit_io.load_audits(
             Path(tracks_ref.path), Path(audits_ref.path))
@@ -346,16 +354,21 @@ def load_matching(matching_dir: Path, *, dataset_name: str,
                   tracks_ref: artifact.ArtifactRef,
                   audits_ref: artifact.ArtifactRef,
                   catalog_ref: artifact.ArtifactRef,
-                  expected_version: str, build_identity: str):
-    """Load only a complete matcher result covering every accepted tracklet."""
+                  expected_version: str):
+    """Load only a complete matcher result covering every accepted tracklet.
+
+    Coherence with the bearing artifact is bound by the upstream refs: the
+    matcher manifest must name the exact tracks/audits/catalog refs the
+    caller resolved, which carry content digests.
+    """
     matching_dir = Path(matching_dir)
     matching_ref = artifact.open_artifact(
         matching_dir, expected_kind=paths_lib.LANDMARK_MATCHES,
         expected_dataset=dataset_name, expected_version=expected_version)
     manifest = artifact.load_manifest(matching_dir)
-    if manifest.config.get("build_identity") != build_identity:
+    if not manifest.config.get("build_identity"):
         raise LocalizationInputError(
-            "landmark_matches belongs to a different immutable build")
+            "landmark_matches does not record its producing build")
     expected_kinds = (paths_lib.OBJECT_TRACKS,
                       paths_lib.SEMANTIC_AUDITS, paths_lib.CATALOGS)
     if tuple(ref.kind for ref in manifest.upstreams) != expected_kinds:
@@ -714,8 +727,7 @@ def build(args) -> artifact.ArtifactRef:
                 for kind in (paths_lib.BEARING_OBSERVATIONS,
                              paths_lib.OBJECT_TRACKS,
                              paths_lib.SEMANTIC_AUDITS)
-            }, build_identity=document["build_identity"],
-            target_build_dir=config_path.parent)
+            }, target_build_dir=config_path.parent)
     for observation in observations:
         if observation.keyframe_idx >= len(frames):
             raise LocalizationInputError(
@@ -750,8 +762,7 @@ def build(args) -> artifact.ArtifactRef:
         audits_ref=audits_ref,
         catalog_ref=catalog_ref,
         expected_version=_config(
-            document, "artifacts.landmark_matches_version"),
-        build_identity=document["build_identity"])
+            document, "artifacts.landmark_matches_version"))
     if matching_ref != matching_candidate:
         raise LocalizationInputError(
             "matching loader did not retain the exact configured lane")

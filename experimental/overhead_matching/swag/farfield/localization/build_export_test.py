@@ -256,7 +256,7 @@ def write_nominal_forward(path: Path):
     return path
 
 
-def build_fixture(root: Path):
+def build_fixture(root: Path, upstream_identity: str = None):
     base = testing.make_dataset(
         root / "datasets" / DATASET, n_frames=4,
         pano_size=(PANO_W, PANO_W // 2))
@@ -311,7 +311,7 @@ def build_fixture(root: Path):
             **dataset_digests,
         })
     document = build_config.load(build_dir)
-    build_identity = document["build_identity"]
+    build_identity = upstream_identity or document["build_identity"]
     tracks_dir, audits_dir = write_tracks_and_audits(
         root, build_identity, artifact.sha256_json(dataset_digests))
     observations_dir, tracklet_id = write_observations(
@@ -336,6 +336,7 @@ def build_fixture(root: Path):
         orchestration_config_digest=(
             build_export.orchestration_contract(document)["config_digest"]),
     )
+    args.build_dir = build_dir
     return args, tracklet_id
 
 
@@ -385,9 +386,22 @@ class EndToEndTest(unittest.TestCase):
                     empty_matching, dataset_name=DATASET,
                     accepted_tracklet_ids={tracklet_id},
                     tracks_ref=tracks_ref, audits_ref=audits_ref,
-                    catalog_ref=catalog_ref, expected_version="v1",
-                    build_identity=manifest.config["build_identity"])
+                    catalog_ref=catalog_ref, expected_version="v1")
 
+
+    def test_upstreams_from_an_older_generation_are_accepted(self):
+        # localization_inputs is the seam where downstream-only config
+        # changes without regenerating the LLM-priced upstreams: the
+        # bearing/track/audit/match artifacts must agree with EACH OTHER
+        # on their producing build, not with the consuming build.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _ = build_fixture(root, upstream_identity="0" * 64)
+            build_export.build(args)
+            published = artifact.load_manifest(args.output_dir)
+            self.assertEqual(
+                published.config["build_identity"],
+                build_config.load(args.build_dir)["build_identity"])
 
     def test_stale_recipe_digest_and_wrong_output_version_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
