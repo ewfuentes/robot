@@ -85,6 +85,33 @@ py_library(
     ],
 )
 
+py_binary(
+    name = "pf_rerun",
+    srcs = ["pf_rerun.py"],
+    deps = [
+        requirement("msgspec"),
+        ":export_ingest",
+        ":filter",
+        ":metrics",
+        ":runner",
+        ":structs",
+        ":torch_backend",
+        "//common/python:serialization",
+    ],
+)
+
+py_binary(
+    name = "grid_filter",
+    srcs = ["grid_filter.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        ":export_ingest",
+        ":filter",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
 py_test(
     name = "export_ingest_test",
     srcs = ["export_ingest_test.py"],
