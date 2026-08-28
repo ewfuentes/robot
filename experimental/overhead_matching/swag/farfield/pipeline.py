@@ -1289,10 +1289,15 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             "feather": str(feather.resolve()),
             "feather_sha256": artifact.sha256_file(feather),
             # `build_viewer_command` passes neither `--ghost` nor
-            # `--satellite`, so these are the viewer's stringified empties.
-            # Overlays are a hand-driven investigation, not a build product.
+            # `--satellite` nor the review-workbench pages, so these are
+            # the viewer's stringified empties. Overlays and workbench
+            # pages are hand-driven investigations, not build products.
             "ghosts": str([]),
             "satellite": "",
+            "matcher_page": "",
+            "matcher_page_sha256": "",
+            "audit_page": "",
+            "audit_page_sha256": "",
         }
     except (artifact.ArtifactError, OSError, ValueError) as error:
         raise StageContractError(
