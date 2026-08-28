@@ -41,6 +41,9 @@ def main():
                         help="IMU emulation: add independent per-step noise "
                              "of this sigma to delta_yaw values and fold it "
                              "into the emitted sigma (deterministic seed)")
+    parser.add_argument("--sigma_m_override", type=float, default=None,
+                        help="replace each delta's sigma_m (emulates the "
+                             "translation drift-budget export scheme)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--box_from_export", action="store_true",
                         help="replace the template's init box with this "
@@ -73,7 +76,8 @@ def main():
             left_m=item.left_m,
             delta_yaw_cw_rad=item.delta_yaw_cw_rad
             + (float(noise_rng.normal(0.0, inject_rad)) if inject_rad else 0.0),
-            sigma_m=item.sigma_m,
+            sigma_m=(args.sigma_m_override if args.sigma_m_override is not None
+                     else item.sigma_m),
             sigma_yaw_rad=math.hypot(
                 max(item.sigma_yaw_rad * args.yaw_sigma_scale, 1e-6),
                 inject_rad))
