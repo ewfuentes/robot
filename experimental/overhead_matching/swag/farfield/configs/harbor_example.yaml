@@ -112,10 +112,28 @@ localization_inputs:
   default_log_compatibility: 0.0
   compatibility_clip: 4.0
   reducer_epoch_keyframes: 5
+  # Per-pair chord noise, emitted per step. Deliberately NOT reduced to a
+  # drift budget like yaw: heading-frame re-integration breaks the
+  # telescoping cancellation on turns, and tightening this measurably
+  # collapses whole-map capture (0.1 m: tn-500 0.52 -> 0.05).
   odometry_sigma_pair_m: 1.0
   displacement_gate_m: 2.0
   stationary_sigma_m: 2.0
   slow_yaw_sigma_deg: 30.0
+  # Per-step drift budget for differenced-course yaw. Its measurement
+  # noise telescopes (bounded by the endpoint course sigmas), so the
+  # per-chord noise must NOT be emitted as independent per-step sigma.
+  course_yaw_drift_sigma_deg: 2.0
+  # IMU emulation grade (required): independent per-step noise INJECTED
+  # into the delta values and declared in the emitted sigmas, so the
+  # odometry stream is an honest surrogate for the deployed platform's
+  # inertial increments rather than telescoping GPS-course deltas.
+  # Wiener process in distance travelled: sigma per step = coefficient x
+  # sqrt(step length), in m/sqrt(m) and rad/sqrt(m). Coefficients keep
+  # ReWAG's values (arXiv:2308.07432, 2% odometry / 1% heading); at ~3 m
+  # keyframes the yaw diffusion is ~1 deg/keyframe.
+  imu_translation_noise_frac: 0.02
+  imu_yaw_noise_frac: 0.01
   reverse_keyframe_ranges: []
   reverse_annotation_source: human_review_no_reverse_segments
   max_visible_range_m: 15000.0
@@ -134,7 +152,10 @@ localization:
   margin_m: 1000.0
   pi0: 0.2
   ess_resample_frac: 0.5
-  heading_random_walk_deg: 1.0
+  # The odometry producer declares its own drift (course_yaw_drift +
+  # injected IMU noise); this filter-side hedge is for UNDECLARED model
+  # error only. Keep 0 so heading drift has one owner.
+  heading_random_walk_deg: 0.0
   resample_regularization: 1.0
   position_roughening_m: 25.0
   heading_roughening_deg: 1.0
