@@ -141,7 +141,7 @@ def execute_localization(
                 record.keyframe_idx]
     mass_summary = (
         metrics.position_mass_summary(
-            history.health, manifest.position_mass_metric)
+            history.health, truth, manifest.position_mass_metric)
         if recorder is not None else None)
 
     diagnostics = tuple(metrics.bearing_residual_diagnostics(

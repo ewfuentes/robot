@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from experimental.overhead_matching.swag.farfield.localization import (
+    metrics as metrics_lib,
+)
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
     DATASET_GROUPS,
     DEFAULT_FARFIELD_ROOT,
@@ -62,27 +65,6 @@ def _localization_seed(manifest: dict, path: Path) -> int:
     return seed
 
 
-def _read_jsonl_objects(path: Path) -> list[dict]:
-    try:
-        lines = path.read_text().splitlines()
-    except OSError as exc:
-        raise ValueError(f"Could not read JSON lines {path}: {exc}") from exc
-    records = []
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-        if not isinstance(record, dict):
-            raise ValueError(f"{path}:{line_number}: expected a JSON object")
-        records.append(record)
-    if not records:
-        raise ValueError(f"{path}: expected at least one record")
-    return records
-
-
 def _finite_float(value: object, *, field: str, path: Path) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{path}: {field} must be numeric")
@@ -92,34 +74,42 @@ def _finite_float(value: object, *, field: str, path: Path) -> float:
     return result
 
 
-def _keyframe_idx(record: dict, *, path: Path) -> int:
-    value = record.get("keyframe_idx")
-    if type(value) is not int or value < 0:
-        raise ValueError(f"{path}: keyframe_idx must be a nonnegative integer")
-    return value
-
-
 def _load_metrics(
     run_dir: Path, radii_m: Sequence[float]
 ) -> tuple[dict[float, float], float]:
-    """Calculate the paper's distance-normalized posterior-mass scores."""
+    """Read the run's recorded distance-normalized posterior-mass scores.
+
+    The metric is defined once, in ``localization/metrics.py``, and recorded
+    by the run itself; this reads it rather than recomputing so the paper and
+    the run artifacts cannot disagree.
+    """
     metrics_path = run_dir / "metrics.json"
     metrics = read_json_object(metrics_path)
-    if metrics.get("schema") != "farfield_position_mass_summary/v1":
-        raise ValueError(f"{metrics_path}: unexpected metrics schema")
+    if metrics.get("schema") != metrics_lib.POSITION_MASS_SUMMARY_SCHEMA:
+        raise ValueError(
+            f"{metrics_path}: expected "
+            f"{metrics_lib.POSITION_MASS_SUMMARY_SCHEMA}, got "
+            f"{metrics.get('schema')!r}. Runs recorded before the metric "
+            "became distance-normalized must be re-scored.")
     if metrics.get("higher_is_better") is not True:
         raise ValueError(f"{metrics_path}: expected a higher-is-better metric")
     if metrics.get("reference_position") != "truth":
         raise ValueError(f"{metrics_path}: expected truth-referenced position mass")
-    source_metric_id = metrics.get("source_metric_id")
-    source_metric_version = metrics.get("source_metric_version")
-    if not isinstance(source_metric_id, str) or not source_metric_id:
-        raise ValueError(f"{metrics_path}: missing source_metric_id")
-    if not isinstance(source_metric_version, str) or not source_metric_version:
-        raise ValueError(f"{metrics_path}: missing source_metric_version")
+    if metrics.get("normalization") != \
+            metrics_lib.POSITION_MASS_DISTANCE_NORMALIZATION:
+        raise ValueError(
+            f"{metrics_path}: expected distance normalization, got "
+            f"{metrics.get('normalization')!r}")
+    trajectory_length_m = _finite_float(
+        metrics.get("trajectory_length_m"), field="trajectory_length_m",
+        path=metrics_path)
+    if trajectory_length_m <= 0.0:
+        raise ValueError(f"{metrics_path}: trajectory length must be positive")
     radii = metrics.get("radii")
     if not isinstance(radii, dict):
         raise ValueError(f"{metrics_path}: radii must be an object")
+
+    values = {}
     for radius_m in radii_m:
         radius_key = f"{radius_m:g}"
         if radius_key not in radii:
@@ -137,90 +127,12 @@ def _load_metrics(
                 f"{metrics_path}: radius {radius_key} entry records "
                 f"{recorded_radius:g} m"
             )
-
-    truth_path = run_dir / "truth.jsonl"
-    truth_records = _read_jsonl_objects(truth_path)
-    truth_keyframes = []
-    cumulative_distance_by_keyframe = {}
-    cumulative_distance_m = 0.0
-    previous_position = None
-    for record in truth_records:
-        keyframe = _keyframe_idx(record, path=truth_path)
-        if truth_keyframes and keyframe <= truth_keyframes[-1]:
-            raise ValueError(f"{truth_path}: keyframes must be strictly increasing")
-        position = (
-            _finite_float(record.get("east_m"), field="east_m", path=truth_path),
-            _finite_float(record.get("north_m"), field="north_m", path=truth_path),
-        )
-        if previous_position is not None:
-            cumulative_distance_m += math.hypot(
-                position[0] - previous_position[0],
-                position[1] - previous_position[1],
-            )
-        truth_keyframes.append(keyframe)
-        cumulative_distance_by_keyframe[keyframe] = cumulative_distance_m
-        previous_position = position
-
-    health_path = run_dir / "tier0_health.jsonl"
-    health_records = _read_jsonl_objects(health_path)
-    health_keyframes = []
-    mass_values = {radius_m: [] for radius_m in radii_m}
-    for record in health_records:
-        keyframe = _keyframe_idx(record, path=health_path)
-        if health_keyframes and keyframe <= health_keyframes[-1]:
-            raise ValueError(f"{health_path}: keyframes must be strictly increasing")
-        if keyframe not in cumulative_distance_by_keyframe:
-            raise ValueError(f"{health_path}: keyframe {keyframe} has no truth pose")
-        position_mass = record.get("position_probability_mass")
-        if not isinstance(position_mass, dict):
-            raise ValueError(
-                f"{health_path}: position_probability_mass must be an object"
-            )
-        for radius_m in radii_m:
-            metric_key = (
-                f"{source_metric_id}@{source_metric_version}:"
-                f"radius_m={radius_m:g}"
-            )
-            value = _finite_float(
-                position_mass.get(metric_key),
-                field=f"position_probability_mass[{metric_key!r}]",
-                path=health_path,
-            )
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(
-                    f"{health_path}: posterior mass must be in [0, 1]"
-                )
-            mass_values[radius_m].append(value)
-        health_keyframes.append(keyframe)
-
-    if (
-        health_keyframes[0] != truth_keyframes[0]
-        or health_keyframes[-1] != truth_keyframes[-1]
-    ):
-        raise ValueError(
-            f"{run_dir}: health records must span the complete truth trajectory"
-        )
-    health_distances = [
-        cumulative_distance_by_keyframe[keyframe] for keyframe in health_keyframes
-    ]
-    trajectory_length_m = health_distances[-1] - health_distances[0]
-    if trajectory_length_m <= 0.0:
-        raise ValueError(f"{truth_path}: trajectory length must be positive")
-
-    values = {}
-    distance_intervals = [
-        end - start
-        for start, end in zip(health_distances, health_distances[1:])
-    ]
-    for radius_m in radii_m:
-        probabilities = mass_values[radius_m]
-        area = sum(
-            0.5 * (start + end) * distance_m
-            for start, end, distance_m in zip(
-                probabilities, probabilities[1:], distance_intervals
-            )
-        )
-        values[radius_m] = min(1.0, max(0.0, area / trajectory_length_m))
+        value = _finite_float(
+            radius_entry.get("distance_normalized_mass"),
+            field="radii[].distance_normalized_mass", path=metrics_path)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{metrics_path}: posterior mass must be in [0, 1]")
+        values[radius_m] = value
     return values, trajectory_length_m
 
 

@@ -135,20 +135,24 @@ class ResultsTableTest(unittest.TestCase):
         _write_json(
             run_dir / "metrics.json",
             {
-                "schema": "farfield_position_mass_summary/v1",
+                "schema": "farfield_position_mass_summary/v2",
                 "higher_is_better": True,
                 "reference_position": "truth",
+                "normalization": (
+                    "trapezoidal_area_over_distance_divided_by_"
+                    "trajectory_length"
+                ),
                 "source_metric_id": metric_id,
                 "source_metric_version": metric_version,
-                "keyframe_span": 2,
+                "trajectory_length_m": float(trajectory_length_m),
                 "radii": {
                     "100": {
                         "radius_m": 100.0,
-                        "time_normalized_mass": value / 2,
+                        "distance_normalized_mass": value / 2,
                     },
                     "500": {
                         "radius_m": 500.0,
-                        "time_normalized_mass": value,
+                        "distance_normalized_mass": value,
                     },
                 },
             },
@@ -222,41 +226,19 @@ class ResultsTableTest(unittest.TestCase):
             self.assertIn("$0.050 \\pm {}$", rendered)
             self.assertIn("$0.100 \\pm {}$", rendered)
 
-    def test_distance_weights_posterior_mass_by_truth_arc_length(self):
+    def test_rejects_time_normalized_metrics_from_older_runs(self):
+        # Runs recorded before the metric became distance-normalized hold a
+        # differently-defined number under the same radii keys; reading them
+        # as if they were comparable is exactly the silent error to avoid.
         with tempfile.TemporaryDirectory() as directory:
             experiment_dir = Path(directory)
             run_dir = self._make_run(experiment_dir, "example", 0.4, 10)
-            metric_id = (
-                "posterior_position_probability_mass_within_true_position_radius"
-            )
-            _write_jsonl(
-                run_dir / "truth.jsonl",
-                [
-                    {"keyframe_idx": 0, "east_m": 0.0, "north_m": 0.0},
-                    {"keyframe_idx": 1, "east_m": 1.0, "north_m": 0.0},
-                    {"keyframe_idx": 2, "east_m": 10.0, "north_m": 0.0},
-                ],
-            )
-            _write_jsonl(
-                run_dir / "tier0_health.jsonl",
-                [
-                    {
-                        "keyframe_idx": keyframe_idx,
-                        "position_probability_mass": {
-                            f"{metric_id}@1:radius_m=100": mass,
-                            f"{metric_id}@1:radius_m=500": mass,
-                        },
-                    }
-                    for keyframe_idx, mass in enumerate((0.0, 0.0, 1.0))
-                ],
-            )
+            superseded = json.loads((run_dir / "metrics.json").read_text())
+            superseded["schema"] = "farfield_position_mass_summary/v1"
+            _write_json(run_dir / "metrics.json", superseded)
 
-            values, trajectory_length_m = results_table._load_metrics(
-                run_dir, (100.0,)
-            )
-
-            self.assertEqual(trajectory_length_m, 10.0)
-            self.assertAlmostEqual(values[100.0], 0.45)
+            with self.assertRaisesRegex(ValueError, "must be re-scored"):
+                results_table._load_metrics(run_dir, (100.0,))
 
     def test_rejects_duplicate_results_for_a_sequence(self):
         with tempfile.TemporaryDirectory() as directory:

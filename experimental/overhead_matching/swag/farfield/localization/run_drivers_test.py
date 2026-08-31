@@ -259,7 +259,7 @@ class RunExportTest(unittest.TestCase):
         self.assertEqual(summary["primary_radius_m"], 500.0)
         self.assertEqual(set(summary["radii"]), {"100", "500"})
         self.assertIn("--- PRIMARY LOCALIZATION METRIC ---", console)
-        self.assertIn("within 500 m of the true position over time", console)
+        self.assertIn("within 500 m of the true position over distance travelled", console)
         self.assertLess(console.index("PRIMARY: normalized posterior mass"),
                         console.index("MAP position error"))
 

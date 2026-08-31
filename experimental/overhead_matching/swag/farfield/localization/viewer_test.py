@@ -248,7 +248,7 @@ class PayloadTest(unittest.TestCase):
             summary = json.loads(
                 (run_dir / metrics.POSITION_MASS_SUMMARY_NAME).read_text())
             self.assertEqual(summary["radii"]["500"][
-                "time_normalized_mass"],
+                "distance_normalized_mass"],
                              aggregate["scores"]["500"])
 
     def test_particles_are_a_weighted_sample(self):

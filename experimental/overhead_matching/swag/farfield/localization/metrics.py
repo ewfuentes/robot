@@ -25,14 +25,14 @@ from experimental.overhead_matching.swag.farfield.localization import structs
 POSITION_MASS_METRIC_ID = (
     "posterior_position_probability_mass_within_true_position_radius")
 POSITION_MASS_METRIC_VERSION = "1"
-TIME_NORMALIZED_POSITION_MASS_METRIC_ID = (
-    "time_normalized_posterior_position_probability_mass_within_"
+DISTANCE_NORMALIZED_POSITION_MASS_METRIC_ID = (
+    "distance_normalized_posterior_position_probability_mass_within_"
     "true_position_radius")
-TIME_NORMALIZED_POSITION_MASS_METRIC_VERSION = "1"
-POSITION_MASS_SUMMARY_SCHEMA = "farfield_position_mass_summary/v1"
+DISTANCE_NORMALIZED_POSITION_MASS_METRIC_VERSION = "1"
+POSITION_MASS_SUMMARY_SCHEMA = "farfield_position_mass_summary/v2"
 POSITION_MASS_SUMMARY_NAME = "metrics.json"
-POSITION_MASS_TIME_NORMALIZATION = (
-    "trapezoidal_area_divided_by_keyframe_span")
+POSITION_MASS_DISTANCE_NORMALIZATION = (
+    "trapezoidal_area_over_distance_divided_by_trajectory_length")
 PRIMARY_POSITION_MASS_RADIUS_M = 500.0
 DEFAULT_POSITION_MASS_RADII_M = (100.0, PRIMARY_POSITION_MASS_RADIUS_M)
 
@@ -88,23 +88,46 @@ def position_mass_radii_in_priority_order(
         radius for radius in config.radii_m if radius != primary]
 
 
-def time_normalized_position_mass(
-        health: list, config: structs.PositionMassMetricConfig,
+def cumulative_distance_m(truth: list) -> dict:
+    """Distance travelled along the true trajectory, per keyframe."""
+    if not truth:
+        raise ValueError("distance normalization requires truth poses")
+    distances = {}
+    travelled = 0.0
+    previous = None
+    last_keyframe = None
+    for record in truth:
+        if last_keyframe is not None and record.keyframe_idx <= last_keyframe:
+            raise ValueError("truth keyframes must be strictly increasing")
+        if previous is not None:
+            travelled += math.hypot(record.east_m - previous[0],
+                                    record.north_m - previous[1])
+        distances[record.keyframe_idx] = travelled
+        previous = (record.east_m, record.north_m)
+        last_keyframe = record.keyframe_idx
+    return distances
+
+
+def distance_normalized_position_mass(
+        health: list, truth: list, config: structs.PositionMassMetricConfig,
         radius_m: float) -> float:
-    """Normalized area under truth-centered posterior mass over keyframe time.
+    """Normalized area under truth-centered posterior mass over DISTANCE.
 
     Each health value was recorded against the true position at that keyframe
     by the evaluation-only observer in ``runner.py``.  Trapezoidal integration
-    followed by division by the keyframe span makes runs of different duration
-    comparable while retaining the whole trajectory.  The result is in [0, 1]
-    and higher is better.  A one-keyframe run has the value at that keyframe.
+    against distance travelled, divided by the trajectory length, makes runs
+    comparable across platforms and keyframe rates: a filter is not rewarded
+    for sitting still, and a slow leg does not outweigh a fast one of the same
+    length.  The result is in [0, 1] and higher is better.  A one-keyframe run
+    has the value at that keyframe.
     """
     key = position_mass_metric_key(config, radius_m)
     if not health:
         raise ValueError("position-mass summary requires at least one keyframe")
-    keyframes = np.asarray(
-        [record.keyframe_idx for record in health], dtype=np.float64)
-    if keyframes.size > 1 and np.any(np.diff(keyframes) <= 0.0):
+    keyframes = [record.keyframe_idx for record in health]
+    if len(keyframes) > 1 and any(
+            later <= earlier
+            for earlier, later in zip(keyframes, keyframes[1:])):
         raise ValueError(
             "position-mass summary keyframes must be strictly increasing")
     try:
@@ -121,39 +144,54 @@ def time_normalized_position_mass(
             "position-mass summary values must be finite probabilities")
     if values.size == 1:
         return float(values[0])
-    intervals = np.diff(keyframes)
+    distances = cumulative_distance_m(truth)
+    missing = [kf for kf in keyframes if kf not in distances]
+    if missing:
+        raise ValueError(
+            f"keyframe {missing[0]} scored without a truth pose to place it")
+    travelled = np.asarray([distances[kf] for kf in keyframes],
+                           dtype=np.float64)
+    trajectory_length_m = float(travelled[-1] - travelled[0])
+    if not trajectory_length_m > 0.0:
+        raise ValueError(
+            "distance normalization requires a positive trajectory length; "
+            "this run's truth never moves")
+    intervals = np.diff(travelled)
     area = float(np.sum(0.5 * (values[:-1] + values[1:]) * intervals))
-    normalized = area / float(keyframes[-1] - keyframes[0])
+    normalized = area / trajectory_length_m
     # The source values are probabilities, but protect the serialized contract
     # from floating-point accumulation a few ulps outside the closed interval.
     return min(1.0, max(0.0, normalized))
 
 
 def position_mass_summary(
-        health: list, config: structs.PositionMassMetricConfig) -> dict:
+        health: list, truth: list,
+        config: structs.PositionMassMetricConfig) -> dict:
     """Machine-readable aggregate of the every-keyframe primary metric."""
     radii = {
         f"{float(radius_m):g}": {
             "radius_m": float(radius_m),
-            "time_normalized_mass": time_normalized_position_mass(
-                health, config, radius_m),
+            "distance_normalized_mass": distance_normalized_position_mass(
+                health, truth, config, radius_m),
         }
         for radius_m in config.radii_m
     }
     primary = PRIMARY_POSITION_MASS_RADIUS_M
+    distances = cumulative_distance_m(truth)
+    scored = [record.keyframe_idx for record in health]
     return {
         "schema": POSITION_MASS_SUMMARY_SCHEMA,
-        "metric_id": TIME_NORMALIZED_POSITION_MASS_METRIC_ID,
-        "metric_version": TIME_NORMALIZED_POSITION_MASS_METRIC_VERSION,
+        "metric_id": DISTANCE_NORMALIZED_POSITION_MASS_METRIC_ID,
+        "metric_version": DISTANCE_NORMALIZED_POSITION_MASS_METRIC_VERSION,
         "source_metric_id": config.metric_id,
         "source_metric_version": config.metric_version,
         "reference_position": "truth",
-        "normalization": POSITION_MASS_TIME_NORMALIZATION,
+        "normalization": POSITION_MASS_DISTANCE_NORMALIZATION,
         "higher_is_better": True,
         "primary_radius_m": primary if primary in config.radii_m else None,
         "n_keyframes": len(health),
-        "keyframe_span": (health[-1].keyframe_idx - health[0].keyframe_idx
-                          if len(health) > 1 else 0),
+        "trajectory_length_m": (distances[scored[-1]] - distances[scored[0]]
+                                if len(scored) > 1 else 0.0),
         "radii": radii,
     }
 
@@ -172,14 +210,14 @@ def describe_position_mass_summary(summary: dict, run_kind: str) -> str:
     ]
     for radius_m in ordered_radii:
         value = summary["radii"][f"{float(radius_m):g}"][
-            "time_normalized_mass"]
+            "distance_normalized_mass"]
         if radius_m == primary_radius:
             label = "PRIMARY" if primary_run else "headline (diagnostic)"
         else:
             label = "secondary"
         lines.append(
             f"{label}: normalized posterior mass within {radius_m:g} m of "
-            f"the true position over time = {value:.4f} "
+            f"the true position over distance travelled = {value:.4f} "
             f"({100.0 * value:.2f}%)")
     lines.append(
         "higher is better; truth is evaluation-only and never initializes "

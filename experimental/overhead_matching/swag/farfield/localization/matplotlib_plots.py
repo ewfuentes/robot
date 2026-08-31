@@ -165,7 +165,10 @@ def _draw_strip(data, axes):
 
     metric_config = data.manifest.position_mass_metric
     if metric_config is not None:
-        summary = metrics.position_mass_summary(data.health, metric_config)
+        # The per-keyframe curves come from the health log; only the headline
+        # score needs truth, to place each keyframe along the trajectory.
+        summary = (metrics.position_mass_summary(
+            data.health, data.truth, metric_config) if data.truth else None)
         primary_run = data.manifest.run_kind == "evaluation"
         for radius_m in metrics.position_mass_radii_in_priority_order(
                 metric_config):
@@ -178,14 +181,15 @@ def _draw_strip(data, axes):
                 label=(f"{'PRIMARY' if primary_run else 'diagnostic'}: "
                        f"within {radius_m:g} m of truth"
                        if primary else f"within {radius_m:g} m of truth"))
-        primary = summary["radii"].get(
+        primary = (summary["radii"].get(
             f"{metrics.PRIMARY_POSITION_MASS_RADIUS_M:g}")
-        if primary is not None:
-            axes[0].set_title(
-                ("PRIMARY METRIC" if primary_run else "DIAGNOSTIC METRIC")
-                + " — time-normalized mass within 500 m of "
-                f"truth: {primary['time_normalized_mass']:.3f}",
-                loc="left", fontsize=9)
+            if summary is not None else None)
+        headline = ("PRIMARY METRIC" if primary_run else "DIAGNOSTIC METRIC")
+        axes[0].set_title(
+            headline + " — distance-normalized mass within 500 m of "
+            + (f"truth: {primary['distance_normalized_mass']:.3f}"
+               if primary is not None else "truth"),
+            loc="left", fontsize=9)
         axes[0].legend(fontsize=7)
     axes[0].set_ylabel("truth-centered\nposterior mass")
     axes[0].set_ylim(-0.02, 1.02)

@@ -711,7 +711,8 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
             landmark_geometry.append(geometry)
     metric_config = manifest.position_mass_metric
     metric_summary = (
-        metrics.position_mass_summary(data.health, metric_config)
+        metrics.position_mass_summary(
+            data.health, data.truth, metric_config)
         if metric_config is not None else None)
 
     return {
@@ -736,7 +737,7 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
                     "higherIsBetter": metric_summary["higher_is_better"],
                     "primaryRadiusM": metric_summary["primary_radius_m"],
                     "scores": {
-                        radius: value["time_normalized_mass"]
+                        radius: value["distance_normalized_mass"]
                         for radius, value in metric_summary["radii"].items()
                     },
                 },
