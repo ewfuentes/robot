@@ -84,6 +84,18 @@ def main():
     parser.add_argument("--position_roughening_m", type=float, required=True)
     parser.add_argument("--heading_roughening_deg", type=float,
                         required=True)
+    parser.add_argument("--retrieval_inject_every", type=int, default=0,
+                        help="mixture-MCL cadence: re-inject from the "
+                             "current field's softmax every N keyframes "
+                             "(0 disables; see RetrievalConfig)")
+    parser.add_argument("--retrieval_periodic_fraction", type=float,
+                        default=0.1)
+    parser.add_argument("--heading_random_walk_deg", type=float, default=0.0,
+                        help="filter-side heading drift hedge. Since #696 "
+                             "the odometry producer declares its own drift "
+                             "(course_yaw_drift + injected IMU noise), so "
+                             "this covers UNDECLARED model error only; "
+                             "0 keeps heading drift with one owner")
     parser.add_argument("--resample_survival_floor", type=int, default=64,
                         help="minimum offspring per mode/proposal group at "
                              "resample (the adopted default from the "
@@ -143,11 +155,14 @@ def main():
         temperature=args.retrieval_temperature,
         outlier_epsilon=args.retrieval_epsilon,
         calibration_frozen=args.retrieval_calibration_frozen,
-        forward_camera_cw_deg=forward_camera_cw_deg)
+        forward_camera_cw_deg=forward_camera_cw_deg,
+        inject_every_keyframes=args.retrieval_inject_every,
+        periodic_inject_fraction=args.retrieval_periodic_fraction)
     filter_config = structs.FilterConfig(
         n_particles=args.n_particles, seed=args.seed, init=init,
         position_roughening_m=args.position_roughening_m,
         heading_roughening_deg=args.heading_roughening_deg,
+        heading_random_walk_deg=args.heading_random_walk_deg,
         resample_survival_floor=args.resample_survival_floor,
         resample_survival_min_mass=args.resample_survival_min_mass,
         checkpoint_every=args.checkpoint_every,

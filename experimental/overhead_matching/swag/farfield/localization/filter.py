@@ -1579,8 +1579,18 @@ def run_filter(
                        >= rcfg.recovery_refractory_keyframes)
                   and low_ess_run >= rcfg.recovery_ess_floor_keyframes):
                 r_trigger = "retrieval_ess_floor"
+            elif (rcfg.inject_every_keyframes > 0
+                  and rcfg.periodic_inject_fraction > 0.0
+                  and kf - (last_proposal_kf if last_proposal_kf is not None
+                            else -rcfg.inject_every_keyframes)
+                  >= rcfg.inject_every_keyframes):
+                # Mixture-MCL: unconditional cadence, not a failure trigger.
+                r_trigger = "retrieval_periodic"
             if r_trigger is not None:
-                n_requested = int(round(rcfg.inject_fraction * belief.n))
+                frac = (rcfg.periodic_inject_fraction
+                        if r_trigger == "retrieval_periodic"
+                        else rcfg.inject_fraction)
+                n_requested = int(round(frac * belief.n))
                 meas0 = retrieval_meas_here[0]
                 east_i, north_i, heading_i = retrieval_engine.sample_poses(
                     meas0.field_idx, n_requested, rng)

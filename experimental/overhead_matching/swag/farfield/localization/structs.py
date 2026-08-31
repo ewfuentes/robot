@@ -117,6 +117,18 @@ class RetrievalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     recovery_ess_floor_frac: float = 0.02
     recovery_ess_floor_keyframes: int = 3
     recovery_refractory_keyframes: int = 10
+    # Mixture-MCL: re-inject `periodic_inject_fraction` of the particles
+    # from the current field's softmax every `inject_every_keyframes`
+    # keyframes (0 disables). The ESS-floor recovery above almost never
+    # fires in practice — ordinary ESS-threshold resampling resets ESS long
+    # before it reaches the floor — so without a periodic term the filter
+    # is plain SIR after the init injection, and a hypothesis whose
+    # posterior mass passes below ~1/n_particles goes extinct even though
+    # the field keeps endorsing it (measured on mount_washington leg2
+    # whole-region: the truth basin's exact-inference mass dips to 2.3e-6
+    # at keyframe 75 and then wins; 50k-500k particles cannot hold that).
+    inject_every_keyframes: int = 0
+    periodic_inject_fraction: float = 0.1
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
