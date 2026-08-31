@@ -639,7 +639,8 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
     extra_outputs = {"counterfactual.json": counterfactual}
     if manifest.position_mass_metric is not None:
         summary = metrics.position_mass_summary(
-            result.history.health, manifest.position_mass_metric)
+            result.history.health, result.inputs.data.truth,
+            manifest.position_mass_metric)
         extra_outputs[metrics.POSITION_MASS_SUMMARY_NAME] = (
             msgspec.json.encode(summary) + b"\n")
     run_io.write_run(output_dir, manifest, result.inputs.data.truth,

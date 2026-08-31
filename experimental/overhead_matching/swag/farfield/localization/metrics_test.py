@@ -70,56 +70,84 @@ class TimeNormalizedPositionMassTest(unittest.TestCase):
                 self.key500: mass500,
             })
 
-    def test_trapezoidal_auc_is_divided_by_keyframe_span(self):
-        # Irregular spacing distinguishes the time-normalized AUC from a plain
-        # sample mean: (0.5 * 1 + 1.0 * 3) / 4 = 0.875.
+    def _truth(self, keyframe_idx, east_m):
+        return SimpleNamespace(keyframe_idx=keyframe_idx, east_m=east_m,
+                               north_m=0.0)
+
+    def test_trapezoidal_auc_is_divided_by_distance_travelled(self):
+        # Uniform keyframe spacing but NON-uniform travel: the second
+        # interval covers 3 m of the 4 m trajectory, so the high-mass stretch
+        # dominates. (0.5*1 + 1.0*3) / 4 = 0.875. Normalizing by keyframe
+        # index instead would give (0.5*1 + 1.0*1) / 2 = 0.75.
         health = [self._record(0, 0.0, 0.0),
                   self._record(1, 0.0, 1.0),
-                  self._record(4, 0.0, 1.0)]
+                  self._record(2, 0.0, 1.0)]
+        truth = [self._truth(0, 0.0), self._truth(1, 1.0),
+                 self._truth(2, 4.0)]
         self.assertAlmostEqual(
-            metrics.time_normalized_position_mass(
-                health, self.config, 500.0),
+            metrics.distance_normalized_position_mass(
+                health, truth, self.config, 500.0),
             0.875)
         self.assertEqual(
-            metrics.time_normalized_position_mass(
-                health, self.config, 100.0),
+            metrics.distance_normalized_position_mass(
+                health, truth, self.config, 100.0),
             0.0)
+
+    def test_standing_still_is_not_scored(self):
+        # A filter parked next to truth used to bank a perfect score for
+        # every keyframe it sat there; with no distance travelled the metric
+        # is undefined and says so.
+        health = [self._record(0, 1.0, 1.0), self._record(1, 1.0, 1.0)]
+        truth = [self._truth(0, 5.0), self._truth(1, 5.0)]
+        with self.assertRaisesRegex(ValueError, "positive trajectory length"):
+            metrics.distance_normalized_position_mass(
+                health, truth, self.config, 500.0)
 
     def test_summary_contract_marks_500_m_primary_and_higher_better(self):
         health = [self._record(7, 0.25, 0.75)]
-        summary = metrics.position_mass_summary(health, self.config)
+        truth = [self._truth(7, 0.0)]
+        summary = metrics.position_mass_summary(health, truth, self.config)
         self.assertEqual(summary["schema"],
                          metrics.POSITION_MASS_SUMMARY_SCHEMA)
         self.assertEqual(summary["reference_position"], "truth")
         self.assertEqual(summary["primary_radius_m"], 500.0)
         self.assertTrue(summary["higher_is_better"])
         self.assertEqual(summary["normalization"],
-                         metrics.POSITION_MASS_TIME_NORMALIZATION)
-        self.assertEqual(summary["radii"]["100"]["time_normalized_mass"],
+                         metrics.POSITION_MASS_DISTANCE_NORMALIZATION)
+        self.assertEqual(summary["radii"]["100"]["distance_normalized_mass"],
                          0.25)
-        self.assertEqual(summary["radii"]["500"]["time_normalized_mass"],
+        self.assertEqual(summary["radii"]["500"]["distance_normalized_mass"],
                          0.75)
         primary = metrics.describe_position_mass_summary(summary, "evaluation")
         diagnostic = metrics.describe_position_mass_summary(
             summary, "diagnostic_control")
         self.assertIn("PRIMARY LOCALIZATION METRIC", primary)
         self.assertIn("PRIMARY: normalized posterior mass within 500 m", primary)
+        self.assertIn("distance travelled", primary)
         self.assertIn("DIAGNOSTIC CONTROL", diagnostic)
         self.assertIn("headline (diagnostic):", diagnostic)
         self.assertNotIn("PRIMARY:", diagnostic)
 
     def test_rejects_incomplete_or_out_of_order_series(self):
+        truth = [self._truth(0, 0.0), self._truth(2, 1.0)]
         incomplete = [SimpleNamespace(
             keyframe_idx=0,
             position_probability_mass={self.key100: 0.5})]
         with self.assertRaisesRegex(ValueError, "missing configured metric"):
-            metrics.time_normalized_position_mass(
-                incomplete, self.config, 500.0)
+            metrics.distance_normalized_position_mass(
+                incomplete, truth, self.config, 500.0)
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
-            metrics.time_normalized_position_mass(
+            metrics.distance_normalized_position_mass(
                 [self._record(2, 0.5, 0.5),
                  self._record(2, 0.5, 0.5)],
-                self.config, 500.0)
+                truth, self.config, 500.0)
+
+    def test_rejects_scored_keyframe_without_a_truth_pose(self):
+        health = [self._record(0, 0.5, 0.5), self._record(9, 0.5, 0.5)]
+        truth = [self._truth(0, 0.0), self._truth(1, 1.0)]
+        with self.assertRaisesRegex(ValueError, "without a truth pose"):
+            metrics.distance_normalized_position_mass(
+                health, truth, self.config, 500.0)
 
 
 class ErrorSeriesTest(unittest.TestCase):

@@ -12,7 +12,10 @@ py_binary(
 py_binary(
     name = "results_table",
     srcs = ["results_table.py"],
-    deps = [":table_common"],
+    deps = [
+        ":table_common",
+        "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    ],
 )
 
 py_test(
