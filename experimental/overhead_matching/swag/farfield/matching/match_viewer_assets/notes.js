@@ -11,6 +11,10 @@
   const status = document.getElementById('match-note-status');
   const updated = document.getElementById('match-note-updated');
   const buttons = [...document.querySelectorAll('[data-note-select]')];
+  const labels = new Map(buttons.map(button => [
+    button.dataset.noteSelect,
+    button.dataset.noteLabel || button.dataset.noteSelect.split('#').pop()
+  ]));
   let notes = {}, drafts = {}, dirty = new Set();
   let selected = null, writable = false;
 
@@ -31,7 +35,8 @@
   }
   function refreshPanel(){
     const active = selected !== null;
-    heading.textContent = active ? selected : 'Select a tracklet';
+    heading.textContent = active ? (labels.get(selected) || selected)
+      : 'Select a tracklet';
     textarea.disabled = !active || !writable;
     save.disabled = !active || !writable || !dirty.has(selected);
     clear.disabled = !active || !writable || !visibleText(selected).trim();
@@ -146,9 +151,11 @@
     event.preventDefault(); event.returnValue = '';
   });
   if(location.hash){
-    const key = decodeURIComponent(location.hash.slice(1));
-    if(buttons.some(button => button.dataset.noteSelect === key))
-      selectNote(key);
+    const anchor = decodeURIComponent(location.hash.slice(1));
+    const button = buttons.find(candidate =>
+      candidate.dataset.noteSelect === anchor
+      || candidate.dataset.noteLabel === anchor);
+    if(button) selectNote(button.dataset.noteSelect);
   }
   refreshButtons(); refreshPanel(); loadNotes();
 })();

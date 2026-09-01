@@ -112,6 +112,35 @@ def replace_payload(run_dir: Path, relative: str, payload: bytes) -> None:
     repair_content_digest(run_dir)
 
 
+def stamp_retired_experiment_fields(
+        run_dir: Path, *, measurement_damage_cap_nats=None,
+        revival_enabled=False, revival_margin_nats=0.0,
+        revival_match_radius_m=None) -> None:
+    def update_filter_config(document):
+        filter_config = document["filter_config"]
+        filter_config["measurement_damage_cap_nats"] = \
+            measurement_damage_cap_nats
+        proposal = filter_config["proposal"]
+        proposal["revival_enabled"] = revival_enabled
+        proposal["revival_margin_nats"] = revival_margin_nats
+        proposal["revival_match_radius_m"] = revival_match_radius_m
+
+    run_manifest_path = run_dir / run_io.RUN_MANIFEST_NAME
+    run_manifest = msgspec.json.decode(run_manifest_path.read_bytes())
+    update_filter_config(run_manifest)
+    artifact.atomic_write_json(run_manifest_path, run_manifest)
+
+    outer = artifact.load_manifest(run_dir)
+    config = dict(outer.config)
+    contract = dict(config[run_io.RUN_CONTRACT_CONFIG_KEY])
+    update_filter_config(contract)
+    config[run_io.RUN_CONTRACT_CONFIG_KEY] = contract
+    artifact.atomic_write_json(
+        run_dir / artifact.MANIFEST_NAME,
+        dataclasses.replace(outer, config=config).to_dict())
+    repair_content_digest(run_dir)
+
+
 class RoundTripTest(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,6 +281,34 @@ class StrictReaderTest(unittest.TestCase):
                         b'"dataset":"synthetic","dataset":"again"', 1)
                     replace_payload(run_dir, run_io.RUN_MANIFEST_NAME, raw)
                 with self.assertRaises(ValueError):
+                    run_io.read_run(run_dir)
+
+    def test_retired_noop_experiment_fields_are_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            manifest, *_ = write_sample(run_dir)
+            stamp_retired_experiment_fields(run_dir)
+
+            loaded = run_io.read_run(run_dir)
+
+        self.assertEqual(loaded.manifest, manifest)
+
+    def test_retired_experiment_fields_reject_active_values(self):
+        cases = (
+            {"measurement_damage_cap_nats": 2.0},
+            {"revival_enabled": True},
+            {"revival_enabled": 0},
+            {"revival_margin_nats": 1.0},
+            {"revival_match_radius_m": 25.0},
+        )
+        for fields in cases:
+            with self.subTest(fields=fields), \
+                    tempfile.TemporaryDirectory() as tmp:
+                run_dir = Path(tmp) / "run"
+                write_sample(run_dir)
+                stamp_retired_experiment_fields(run_dir, **fields)
+
+                with self.assertRaisesRegex(ValueError, "retired non-noop"):
                     run_io.read_run(run_dir)
 
     def test_typed_json_cannot_backfill_defaulted_configuration(self):

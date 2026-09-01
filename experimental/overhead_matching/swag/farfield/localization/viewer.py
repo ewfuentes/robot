@@ -4,7 +4,8 @@
      ribbons whose thickness is their weight, and the §7.3 event index as a
      clickable glyph rail. The entry point: open a run, look at the strip,
      click.
-  2. **Map view** — optional satellite imagery, matcher-referenced landmarks
+  2. **Map view** — automatically resolved satellite imagery,
+     matcher-referenced landmarks
      glyphed by type, the particle cloud at the selected keyframe drawn as a
      *weighted* sample and coloured by mode, per-mode 1-sigma circles with
      heading ticks, bearing wedges from the selected mode, correspondence lines
@@ -49,6 +50,8 @@ from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import artifact, provenance
 from experimental.overhead_matching.swag.farfield.localization import (
+    review_assets,
+    satellite_assets,
     side_outputs,
     viewer_payload,
 )
@@ -122,7 +125,16 @@ scrub, click a mode ribbon to isolate it, click an event glyph to jump</span></h
 <h2>Map <span class="hint">&mdash; &sect;7.4 view 2</span></h2>
 <div class="controls" style="margin-bottom:8px">
 <button id="tgPart" class="on">particles</button>
-<button id="tgFull" disabled>full particles</button>
+<label class="particle-density" for="particlePct">particle density
+<select id="particlePct" disabled
+  title="percentage choices require the localhost viewer server">
+<option value="" selected>sample</option>
+<option value="10">10%</option>
+<option value="20">20%</option>
+<option value="30">30%</option>
+<option value="50">50%</option>
+<option value="100">100%</option>
+</select></label>
 <button id="tgGhost" class="on">ghosts</button>
 <button id="tgSat" class="on">satellite</button>
 <button id="tgFitTrack">fit track</button>
@@ -136,10 +148,13 @@ Opens fitted to the complete truth track (the estimate when truth is absent);
 <b>full extent</b> restores the matched-landmark extent and <b>fit track</b>
 returns.
 Only landmarks used by the matcher are shown; unrelated OSM context is omitted.
-The live server keeps the fast weighted particle sample unless <b>full
-particles</b> is explicitly enabled. The zoom is in the projection, so landmark
-glyphs, labels and flag rings keep a constant size while 1&sigma; circles and the
-scale bar stay true to the ground.</div>
+The default <b>sample</b> is the fast weighted sample embedded in every static
+viewer. On the localhost server, <b>particle density</b> requests 10&ndash;100%
+of the complete checkpoint population without replacement (5,000 distinct
+points at 10% and all 50,000 at 100% for a 50,000-particle run). The zoom is in
+the projection, so
+landmark glyphs, labels and flag rings keep a constant size while 1&sigma;
+circles and the scale bar stay true to the ground.</div>
 <div class="legend">Dashed grey is ground truth, magenta is the MAP trail
 (latest 60 keyframes emphasized, older history faint), dashed blue are
 counterfactual ghosts. Circles are per-mode 1&sigma; with a
@@ -228,6 +243,32 @@ def write_viewer(run_dir: Path, payload: dict, *, output_dir: Path | None,
     return output.destination / "viewer.html"
 
 
+def satellite_for_viewer(run_dir: Path, *, explicit: Path | None,
+                         disabled: bool) -> Path | None:
+    """Resolve the exact underlay used by this viewer invocation."""
+    if disabled:
+        return None
+    if explicit is not None:
+        return explicit
+    return satellite_assets.find_or_generate(run_dir)
+
+
+def review_pages_for_viewer(
+        run_dir: Path, *, tracks_dir: Path | None, audit_dir: Path | None,
+        feather: Path | None, matcher_page: Path | None,
+        audit_page: Path | None) -> review_assets.ReviewPages:
+    """Keep explicit pages and discover any missing exact-input pages."""
+    if tracks_dir is None or audit_dir is None or feather is None:
+        return review_assets.ReviewPages(
+            matcher=matcher_page, audit=audit_page)
+    discovered = review_assets.discover(
+        run_dir, tracks_dir=tracks_dir, audit_dir=audit_dir,
+        catalog_dir=feather.parent)
+    return review_assets.ReviewPages(
+        matcher=matcher_page or discovered.matcher,
+        audit=audit_page or discovered.audit)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
@@ -240,10 +281,12 @@ def main():
                         help="exact semantic_audits artifact bound to tracks_dir")
     parser.add_argument("--matcher_page", type=Path, default=None,
                         help="exact generated matcher review index.html to "
-                             "link from each source tracklet")
+                             "link from each source tracklet. When omitted, "
+                             "an exact-input page is found across runs.")
     parser.add_argument("--audit_page", type=Path, default=None,
                         help="exact generated semantic-audit review index.html "
-                             "to link from each source tracklet")
+                             "to link from each source tracklet. When omitted, "
+                             "the matcher review's companion page is used.")
     parser.add_argument("--no_source_chips", action="store_true",
                         help="validate sources without embedding audit chips")
     parser.add_argument("--feather", type=Path, default=None,
@@ -254,12 +297,15 @@ def main():
                              "(repeatable)")
     parser.add_argument("--max_particles", type=int,
                         default=viewer_payload.MAX_PARTICLES_PER_FRAME)
-    parser.add_argument("--satellite", type=Path, default=None,
-                        help="directory written by satellite_underlay.py: "
-                             "satellite.json naming the mosaic layers "
-                             "(wide.jpg/fine.jpg) and their ENU bounds, "
-                             "embedded as an imagery underlay. This must be "
-                             "a side output separate from the run.")
+    satellite_group = parser.add_mutually_exclusive_group()
+    satellite_group.add_argument(
+        "--satellite", type=Path, default=None,
+        help="exact directory written by satellite_underlay.py. Without this "
+             "flag, compatible imagery is found across runs of the same "
+             "dataset or generated from the dataset capture date.")
+    satellite_group.add_argument(
+        "--no_satellite", action="store_true",
+        help="disable automatic satellite discovery and generation")
     parser.add_argument("--basemap_detail", type=float, default=1.0,
                         help="deprecated compatibility option; unmatched OSM "
                              "context is no longer rendered")
@@ -270,16 +316,32 @@ def main():
 
     viewer_dir = (args.output_dir if args.output_dir is not None else
                   side_outputs.default_directory(args.run_dir, ".viewer"))
+    satellite = satellite_for_viewer(
+        args.run_dir, explicit=args.satellite, disabled=args.no_satellite)
+    if args.satellite is None and not args.no_satellite:
+        if satellite is None:
+            print("  satellite: no compatible imagery and no usable dataset "
+                  "capture date; continuing without an underlay")
+        else:
+            print(f"  satellite: auto-resolved {satellite}")
+    review_pages = review_pages_for_viewer(
+        args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
+        feather=args.feather, matcher_page=args.matcher_page,
+        audit_page=args.audit_page)
+    if args.matcher_page is None and review_pages.matcher is not None:
+        print(f"  matcher review: auto-resolved {review_pages.matcher}")
+    if args.audit_page is None and review_pages.audit is not None:
+        print(f"  semantic audit: auto-resolved {review_pages.audit}")
     payload = viewer_payload.build(
         args.run_dir, tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
         feather=args.feather,
         ghost_dirs=args.ghost, max_particles=args.max_particles,
         embed_source_chips=not args.no_source_chips,
         basemap_detail=args.basemap_detail,
-        satellite=args.satellite,
+        satellite=satellite,
         viewer_dir=viewer_dir,
-        matcher_page=args.matcher_page,
-        audit_page=args.audit_page)
+        matcher_page=review_pages.matcher,
+        audit_page=review_pages.audit)
     run_ref = artifact.open_artifact(
         args.run_dir, expected_kind="localization_run")
     output = write_viewer(
@@ -300,23 +362,23 @@ def main():
             "audit_manifest_digest": (
                 artifact.open_artifact(args.audit_dir).manifest_digest
                 if args.audit_dir is not None else ""),
-            "matcher_page": (args.matcher_page.resolve()
-                             if args.matcher_page is not None else ""),
+            "matcher_page": (review_pages.matcher.resolve()
+                             if review_pages.matcher is not None else ""),
             "matcher_page_sha256": (
-                artifact.sha256_file(args.matcher_page)
-                if args.matcher_page is not None else ""),
-            "audit_page": (args.audit_page.resolve()
-                           if args.audit_page is not None else ""),
+                artifact.sha256_file(review_pages.matcher)
+                if review_pages.matcher is not None else ""),
+            "audit_page": (review_pages.audit.resolve()
+                           if review_pages.audit is not None else ""),
             "audit_page_sha256": (
-                artifact.sha256_file(args.audit_page)
-                if args.audit_page is not None else ""),
+                artifact.sha256_file(review_pages.audit)
+                if review_pages.audit is not None else ""),
             "feather": (args.feather.resolve()
                         if args.feather is not None else ""),
             "feather_sha256": (artifact.sha256_file(args.feather)
                                if args.feather is not None else ""),
             "ghosts": [path.resolve() for path in args.ghost],
-            "satellite": (args.satellite.resolve()
-                          if args.satellite is not None else ""),
+            "satellite": (satellite.resolve()
+                          if satellite is not None else ""),
         },
         config={
             "max_particles": args.max_particles,

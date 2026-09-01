@@ -187,6 +187,14 @@ class ViewerTest(unittest.TestCase):
             key for key in mv.load_uniqueness(self.match_dir)
             if key.endswith("#T2"))
         self.assertIn(f"<tr id='{no_match}'>", page)
+        self.assertIn("<span class='short-anchor' id='T2'></span>T2", page)
+        self.assertNotIn(f"<td>{no_match}", page)
+        self.assertIn("data-note-label='T2'", page)
+        signatures = json.loads(
+            (self.match_dir / ml.SIGNATURES_NAME).read_text())
+        self.assertTrue(signatures)
+        for signature_id in signatures:
+            self.assertNotIn(f">{signature_id}<", page)
         self.assertIn("aggregate confidence", page)
         self.assertNotIn("<th>probability</th>", page)
         self.assertIn("Human match note", page)
@@ -257,6 +265,7 @@ class ViewerTest(unittest.TestCase):
         by_local = {key.rsplit("#", 1)[-1]: value
                     for key, value in payload["tracklets"].items()}
         self.assertIn("T1", by_local)
+        self.assertEqual(by_local["T1"]["label"], "T1")
         self.assertTrue(by_local["T1"]["rays"])
         target_ids = [t[4] for t in by_local["T1"]["targets"]]
         self.assertIn("osm:node:101", target_ids)
@@ -272,6 +281,8 @@ class ViewerTest(unittest.TestCase):
         self.assertLessEqual(payload["bounds"][2], min(hull_n))
         self.assertGreaterEqual(payload["bounds"][3], max(hull_n))
         self.assertIn("const hull = g[10] || []", page)
+        self.assertIn("function trackletLabel(key)", page)
+        self.assertIn("trackletLabel(sel) + ')'", page)
         # Self-contained page: provenance manifest beside it.
         self.assertTrue(
             (self._page("review-map").parent / "manifest.json").exists())

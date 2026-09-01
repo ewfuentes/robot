@@ -3,10 +3,12 @@ import unittest
 from types import SimpleNamespace
 
 import numpy as np
+from PIL import Image
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
     satellite_underlay as su,
+    structs,
 )
 
 
@@ -125,22 +127,54 @@ class TrajectoryExtentTest(unittest.TestCase):
             su.trajectory_enu(SimpleNamespace(truth=[], health=[]))
 
 
-class CatalogExtentTest(unittest.TestCase):
-    def test_exact_hull_vertices_expand_the_wide_extent(self):
-        frame = geo.RegionFrame(42.35, -71.05)
-        manifest = SimpleNamespace(landmarks=[SimpleNamespace(
-            lat_deg=42.35, lon_deg=-71.05,
-            hull_east_m=[-1000.0, 1500.0],
-            hull_north_m=[-500.0, 750.0])])
+class PriorExtentTest(unittest.TestCase):
+    PRIOR = (-1000.0, 1500.0, -500.0, 750.0)
 
-        lat, lon = su.catalog_latlon(manifest, frame)
+    @classmethod
+    def data(cls):
+        return SimpleNamespace(
+            manifest=SimpleNamespace(
+                anchor_lat_deg=42.35,
+                anchor_lon_deg=-71.05,
+                filter_config=SimpleNamespace(
+                    init=structs.UniformBoxInit(*cls.PRIOR))),
+            truth=[
+                SimpleNamespace(east_m=-900.0, north_m=-300.0),
+                SimpleNamespace(east_m=0.0, north_m=600.0),
+            ],
+            health=[])
 
-        self.assertEqual(lat.size, 3)
-        self.assertEqual(lon.size, 3)
-        self.assertLess(lat.min(), 42.35)
-        self.assertGreater(lat.max(), 42.35)
-        self.assertLess(lon.min(), -71.05)
-        self.assertGreater(lon.max(), -71.05)
+    def test_wide_is_exact_prior_and_fine_is_clipped_to_it(self):
+        plans = su.plan_underlay(
+            self.data(), wide_zoom=14, fine_zoom=18,
+            fine_margin_m=400.0, max_tiles=10 ** 6)
+
+        self.assertEqual(plans[0]["name"], "wide")
+        self.assertEqual(plans[0]["bounds_enu"], self.PRIOR)
+        self.assertEqual(plans[1]["name"], "fine")
+        self.assertEqual(
+            plans[1]["bounds_enu"], (-1000.0, 400.0, -500.0, 750.0))
+        for plan in plans:
+            self.assertLessEqual(plan["output_px"][0], plan["px"][0])
+            self.assertLessEqual(plan["output_px"][1], plan["px"][1])
+
+    def test_published_raster_is_resampled_to_the_requested_crop(self):
+        plan = su.plan_underlay(
+            self.data(), wide_zoom=14, fine_zoom=18,
+            fine_margin_m=400.0, max_tiles=10 ** 6)[0]
+        fetched = Image.new("RGB", plan["px"], "red")
+
+        cropped = su.crop_mosaic(fetched, plan)
+
+        self.assertEqual(cropped.size, plan["output_px"])
+        self.assertNotEqual(cropped.size, fetched.size)
+
+    def test_unbounded_gaussian_prior_is_not_silently_truncated(self):
+        data = self.data()
+        data.manifest.filter_config.init = structs.GaussianInit(0.0, 0.0, 100.0)
+
+        with self.assertRaisesRegex(ValueError, "bounded UniformBoxInit"):
+            su.plan_underlay(data)
 
 
 if __name__ == "__main__":

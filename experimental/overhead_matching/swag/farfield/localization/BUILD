@@ -356,8 +356,8 @@ py_library(
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:artifact_recipe",
-        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
@@ -390,8 +390,8 @@ py_test(
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:paths",
@@ -415,8 +415,8 @@ py_library(
         ":runner",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:provenance",
     ],
 )
@@ -471,8 +471,8 @@ py_test(
         ":runner",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:paths",
     ],
@@ -584,6 +584,7 @@ py_library(
         requirement("requests"),
         ":run_io",
         ":side_outputs",
+        ":structs",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -602,9 +603,49 @@ py_test(
     name = "satellite_underlay_test",
     srcs = ["satellite_underlay_test.py"],
     deps = [
+        requirement("pillow"),
         ":satellite_underlay_lib",
+        ":structs",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
+)
+
+py_library(
+    name = "satellite_assets",
+    srcs = ["satellite_assets.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":run_io",
+        ":satellite_underlay_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_test(
+    name = "satellite_assets_test",
+    srcs = ["satellite_assets_test.py"],
+    deps = [
+        ":satellite_assets",
+        ":satellite_underlay_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_library(
+    name = "review_assets",
+    srcs = ["review_assets.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":run_io",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
+py_test(
+    name = "review_assets_test",
+    srcs = ["review_assets_test.py"],
+    deps = [":review_assets"],
 )
 
 py_library(
@@ -675,6 +716,28 @@ py_test(
 )
 
 py_library(
+    name = "particle_sampling",
+    srcs = ["particle_sampling.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":run_io",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_test(
+    name = "particle_sampling_test",
+    srcs = ["particle_sampling_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":particle_sampling",
+        ":run_io",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_library(
     name = "viewer_payload",
     srcs = ["viewer_payload.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -685,6 +748,7 @@ py_library(
         ":basemap_lib",
         ":forensics_lib",
         ":metrics",
+        ":particle_sampling",
         ":replay",
         ":run_io",
         ":sources",
@@ -701,6 +765,8 @@ py_library(
     ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":review_assets",
+        ":satellite_assets",
         ":side_outputs",
         ":viewer_payload",
         "//experimental/overhead_matching/swag/farfield:artifact",
@@ -725,6 +791,7 @@ py_library(
         requirement("flask"),
         requirement("msgspec"),
         requirement("numpy"),
+        ":particle_sampling",
         ":replay",
         ":run_io",
         ":viewer_lib",

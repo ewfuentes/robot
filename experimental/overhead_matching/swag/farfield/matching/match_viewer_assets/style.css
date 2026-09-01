@@ -25,7 +25,12 @@ gap:18px;align-items:start}
    1000px panorama chip then widens the column and slides under the map. This
    plus the scrolling .chips strip keeps wide evidence inside its own pane.
    min-width:0 is the whole fix; the column needs no overflow of its own. */
-.list{min-width:0}
+.list{min-width:0;overflow-wrap:anywhere}
+.short-anchor{display:block;height:0;overflow:hidden;scroll-margin-top:170px}
+.card[id],tr[id]{scroll-margin-top:170px}
+.no-match-table{table-layout:fixed}
+.no-match-table th:nth-child(1){width:120px}
+.no-match-table th:nth-child(2){width:90px}
 .chips{display:flex;gap:5px;overflow-x:auto;padding-bottom:5px;
 scrollbar-width:thin}
 .chips img{flex:0 0 auto;height:120px;width:auto;max-width:none}

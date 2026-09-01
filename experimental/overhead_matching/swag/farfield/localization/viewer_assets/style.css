@@ -110,13 +110,19 @@ tr.click:hover td{background:var(--sunk)}
 .controls{display:flex;gap:10px;align-items:center;margin-bottom:10px;
   flex-wrap:wrap}
 input[type=range]{flex:1;min-width:180px;accent-color:var(--accent);height:20px}
+.particle-density{display:inline-flex;align-items:center;gap:6px;color:var(--ink-soft);
+  font-size:12px;font-weight:550}
+.particle-density select{background:var(--panel);color:var(--ink);
+  border:1px solid var(--rule);border-radius:6px;padding:4px 7px;font:inherit;
+  cursor:pointer}
 button{background:var(--panel);color:var(--ink);border:1px solid var(--rule);
   border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;
   font-size:12.5px;font-weight:550}
 button:hover{border-color:var(--accent);color:var(--accent)}
 button.on{border-color:var(--accent);color:var(--accent);
   background:color-mix(in srgb,var(--accent) 10%,transparent)}
-button:focus-visible,input:focus-visible{outline:2px solid var(--accent);
+button:focus-visible,input:focus-visible,select:focus-visible{
+  outline:2px solid var(--accent);
   outline-offset:2px}
 .tabs{display:flex;gap:5px;border-bottom:1px solid var(--rule);
   margin:-4px -4px 10px;padding:0 4px;flex-wrap:wrap}

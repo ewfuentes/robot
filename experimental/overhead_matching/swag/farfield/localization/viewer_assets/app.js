@@ -3,7 +3,7 @@ const H = D.health, KF = D.run.nKeyframes - 1, RUN = D.run;
 const $ = id => document.getElementById(id);
 let t = 0, selMode = null, selTrk = null, tab = "state";
 let showGhosts = true, showParticles = true;
-let showFullParticles = false;
+let particlePercent = null;
 // Imagery defaults ON when supplied: if someone went to the
 // trouble of fetching a mosaic, they want to see it.
 let showSat = true;
@@ -65,8 +65,8 @@ const wrap180 = a => ((a % 360) + 540) % 360 - 180;
 
 // ---------- optional localhost server ----------
 const LIVE = {
-  features: new Set(), requestedCheckpoint: null,
-  fullCheckpoint: null, health: null
+  features: new Set(), health: null, particleCheckpoint: null,
+  requestedParticle: null, particleTimer: null, particleRequestId: 0
 };
 
 async function apiJson(path, options) {
@@ -85,10 +85,13 @@ async function detectLiveServer() {
     const status = $("liveStatus");
     status.textContent = "live server";
     status.className = "pill ok";
-    const full = $("tgFull");
-    full.disabled = !LIVE.features.has("checkpoint");
-    full.title = full.disabled ? "requires the localhost viewer server"
-      : "explicitly load every particle for the nearest checkpoint";
+    const particleSelect = $("particlePct");
+    const particleAvailable = LIVE.features.has("localization_particles")
+      || LIVE.features.has("particle_percent");
+    particleSelect.disabled = !particleAvailable;
+    particleSelect.title = particleAvailable
+      ? "draw a percentage of the complete checkpoint population"
+      : "this server does not expose localization checkpoint particles";
     drawTiles();
     drawMap();
     if (tab === "whatif") drawWhatIf();
@@ -98,38 +101,63 @@ async function detectLiveServer() {
   }
 }
 
-async function loadFullCheckpoint(keyframe) {
-  if (!showFullParticles || !LIVE.features.has("checkpoint")
-      || (LIVE.fullCheckpoint
-          && LIVE.fullCheckpoint.keyframe === keyframe)
-      || LIVE.requestedCheckpoint === keyframe) return;
-  LIVE.requestedCheckpoint = keyframe;
+function particleEndpoint(keyframe, percent) {
+  if (LIVE.features.has("localization_particles"))
+    return "/api/localization-particles/" + keyframe
+      + "?run=" + encodeURIComponent(RUN.runDir) + "&percent=" + percent;
+  if (LIVE.features.has("particle_percent"))
+    return "/api/checkpoint/" + keyframe
+      + "?view=map&percent=" + percent;
+  return null;
+}
+
+function scheduleParticleCheckpoint(keyframe) {
+  if (particlePercent === null) return;
+  const endpoint = particleEndpoint(keyframe, particlePercent);
+  if (!endpoint) return;
+  const key = keyframe + ":" + particlePercent;
+  if ((LIVE.particleCheckpoint && LIVE.particleCheckpoint.key === key)
+      || LIVE.requestedParticle === key) return;
+  if (LIVE.particleTimer !== null) clearTimeout(LIVE.particleTimer);
+  LIVE.particleTimer = setTimeout(() => {
+    LIVE.particleTimer = null;
+    loadParticleCheckpoint(keyframe, particlePercent, endpoint);
+  }, 75);
+}
+
+async function loadParticleCheckpoint(keyframe, percent, endpoint) {
+  const key = keyframe + ":" + percent;
+  const requestId = ++LIVE.particleRequestId;
+  LIVE.requestedParticle = key;
+  const status = $("liveStatus");
+  status.textContent = `live · loading ${percent}% at kf ${keyframe}`;
+  status.className = "pill info";
   try {
-    const body = await apiJson("/api/checkpoint/" + keyframe + "?view=map");
-    // Keep one full checkpoint at a time and leave the inlined weighted samples
-    // untouched. Scrubbing with full particles off therefore remains cheap, and
-    // turning the option off immediately returns to the bounded representation.
-    if (!showFullParticles || nearestCk(t) !== keyframe) return;
-    LIVE.fullCheckpoint = {
-      keyframe: keyframe,
-      particles: {e: body.e, n: body.n_m, m: body.mode}
+    const body = await apiJson(endpoint);
+    if (requestId !== LIVE.particleRequestId
+        || particlePercent !== percent || nearestCk(t) !== keyframe) return;
+    if (body.percent !== percent || body.total !== RUN.nParticles
+        || body.e.length !== body.n || body.n_m.length !== body.n
+        || body.mode.length !== body.n)
+      throw new Error("particle response disagrees with the recorded run");
+    LIVE.particleCheckpoint = {
+      key: key, keyframe: keyframe, percent: percent,
+      total: body.total, particles: {e: body.e, n: body.n_m, m: body.mode}
     };
-    const status = $("liveStatus");
     status.textContent = "live · " + body.n.toLocaleString()
-      + " particles at kf " + keyframe;
+      + " / " + body.total.toLocaleString() + " particles";
+    status.className = "pill ok";
     drawMap();
   } catch (error) {
-    // A request can finish after the user has scrubbed away or disabled full
-    // particles. In that case it is stale, not a failure of the current view.
-    if (showFullParticles && nearestCk(t) === keyframe) {
-      const status = $("liveStatus");
-      status.textContent = "live checkpoint error";
+    if (requestId === LIVE.particleRequestId
+        && particlePercent === percent && nearestCk(t) === keyframe) {
+      status.textContent = "live particle error";
       status.className = "pill bad";
       status.title = error.message;
     }
   } finally {
-    if (LIVE.requestedCheckpoint === keyframe)
-      LIVE.requestedCheckpoint = null;
+    if (LIVE.requestedParticle === key)
+      LIVE.requestedParticle = null;
   }
 }
 
@@ -612,18 +640,21 @@ function drawStrip() {
 // ---------- view 2: map ----------
 function drawMap() {
   const h = H[t], ck = nearestCk(t);
-  const full = (showFullParticles && LIVE.fullCheckpoint
-                && LIVE.fullCheckpoint.keyframe === ck)
-    ? LIVE.fullCheckpoint.particles : null;
-  const P = full || D.checkpoints[ck];
-  if (showFullParticles) loadFullCheckpoint(ck);
+  const particleKey = ck + ":" + particlePercent;
+  const liveParticles = particlePercent !== null && LIVE.particleCheckpoint
+    && LIVE.particleCheckpoint.key === particleKey
+    ? LIVE.particleCheckpoint : null;
+  const P = liveParticles
+    ? liveParticles.particles : D.checkpoints[ck];
+  const particleCount = P ? P.e.length : 0;
+  scheduleParticleCheckpoint(ck);
   let out = "";
 
   if (showParticles && P) {
     // One path per mode rather than one circle per particle: 900 DOM nodes per
     // frame is what makes scrubbing stutter.
     const byMode = new Map();
-    for (let i = 0; i < P.e.length; i++) {
+    for (let i = 0; i < particleCount; i++) {
       const m = P.m[i];
       if (selMode !== null && m !== selMode) continue;
       let d = byMode.get(m); if (!d) byMode.set(m, d = []);
@@ -786,12 +817,15 @@ function drawMap() {
   RENDERED_VIEW.x = VIEW.x;
   RENDERED_VIEW.y = VIEW.y;
   RENDERED_VIEW.k = VIEW.k;
-  const particleDescription = full
-    ? `all ${P.e.length.toLocaleString()}`
-    : `weighted sample ${P ? P.e.length.toLocaleString() : "0"} of `
+  const particleDescription = liveParticles
+    ? `${particleCount.toLocaleString()} distinct particles of `
+      + `${RUN.nParticles.toLocaleString()} (${particlePercent}%)`
+    : `embedded weighted sample ${particleCount.toLocaleString()} of `
       + RUN.nParticles.toLocaleString();
-  const loading = showFullParticles && !full
-    ? " · loading all particles" : "";
+  const loading = particlePercent !== null && !liveParticles
+    ? ` · loading ${particlePercent}% (`
+      + `${Math.ceil(RUN.nParticles * particlePercent / 100).toLocaleString()})`
+    : "";
   $("mapnote").innerHTML =
     `particles: ${particleDescription} from checkpoint kf ${ck}`
     + `${ck !== t ? ` (nearest to ${t})` : ""}${loading}`
@@ -1453,14 +1487,26 @@ document.querySelectorAll("#tabbar .tab").forEach(b =>
   b.onclick = () => { tab = b.dataset.tab; drawTab(); });
 $("tgPart").onclick = e => { showParticles = !showParticles;
   e.target.classList.toggle("on", showParticles); drawMap(); };
-$("tgFull").onclick = e => {
-  showFullParticles = !showFullParticles;
-  LIVE.fullCheckpoint = null;
-  e.target.classList.toggle("on", showFullParticles);
-  const status = $("liveStatus");
-  status.textContent = showFullParticles ? "live · loading full checkpoint"
-    : "live server";
-  status.className = "pill ok";
+const particleSelect = $("particlePct");
+Array.from(particleSelect.options).forEach(option => {
+  if (option.value)
+    option.textContent = `${option.value}% (`
+      + `${Math.ceil(RUN.nParticles * +option.value / 100).toLocaleString()})`;
+});
+particleSelect.onchange = e => {
+  particlePercent = e.target.value ? +e.target.value : null;
+  LIVE.particleCheckpoint = null;
+  LIVE.requestedParticle = null;
+  LIVE.particleRequestId += 1;
+  if (LIVE.particleTimer !== null) {
+    clearTimeout(LIVE.particleTimer);
+    LIVE.particleTimer = null;
+  }
+  if (particlePercent === null && LIVE.health) {
+    const status = $("liveStatus");
+    status.textContent = "live server";
+    status.className = "pill ok";
+  }
   drawMap();
 };
 $("tgGhost").onclick = e => { showGhosts = !showGhosts;

@@ -128,6 +128,16 @@ def track_info(tracks: dict, audits: dict, audit_meta: dict) -> dict:
     return info
 
 
+def tracklet_label(key: str, info: dict | None = None) -> str:
+    """Short human label for a canonical, digest-bound tracklet key."""
+    local_id = (info or {}).get("local_id")
+    if isinstance(local_id, str) and local_id:
+        return local_id
+    # Canonical keys end in ``#T42``. Keep the complete key in anchors and
+    # data attributes for identity, but never make a digest chain the label.
+    return key.rsplit("#", 1)[-1]
+
+
 def _relative_href(output_dir: Path, target: Path,
                    anchor: str | None = None) -> str:
     """Portable navigation within a copied/served farfield data tree."""
@@ -621,6 +631,9 @@ def build_map_payload(paths, feather: Path, matches: dict,
             paths.panorama_dir / f"{frames[0].pano_stem}.jpg") as probe:
         pano_w = probe.size[0]
     accepted = tracklets.build_accepted_tracklets(tracks, audits)
+    local_id_by_key = {
+        item.tracklet_id: item.local_id for item in accepted
+    }
     observations = tracklets.build_camera_bearing_observations(
         accepted, pano_w, fusion.bearing_sigma_deg)
     measurements = tracklets.epoch_fused_compat_v1(observations, fusion)
@@ -730,6 +743,7 @@ def build_map_payload(paths, feather: Path, matches: dict,
             continue
         far = max((row[1] for row in drawn), default=0.0)
         tracklets_payload[key] = {
+            "label": local_id_by_key.get(key, tracklet_label(key)),
             "rays": my_rays,
             "targets": [row[0] for row in drawn],
             "n_shown": len(drawn), "n_resolved": len(rows),
@@ -1071,12 +1085,15 @@ def main():
         if not entry["matches"]:
             continue
         info = info_by_key.get(key, {})
+        local_id = tracklet_label(key, info)
         parts.append(f"<div class='card' data-key='{esc(key)}' "
                      f"id='{esc(key)}'>")
+        if local_id != key:
+            parts.append(
+                f"<span class='short-anchor' id='{esc(local_id)}'></span>")
         onmap = ("" if payload is None or key not in payload["tracklets"]
                  else f" <a href='#' data-jump='{esc(key)}' "
                       f"class='pin'>[show on map]</a>")
-        local_id = info.get("local_id", key)
         parts.append(f"<h2>{esc(local_id)}{onmap}</h2>")
         stats = stats_line(key, entry, info, uniqueness, log_lr_defaults)
         parts.append(f"<div class='q'><b>observed:</b> "
@@ -1089,7 +1106,8 @@ def main():
         parts.append(
             f"<div class='links'>{links}"
             f"<button type='button' class='note-select' "
-            f"data-note-select='{esc(key)}'>add note</button></div>")
+            f"data-note-select='{esc(key)}' "
+            f"data-note-label='{esc(local_id)}'>add note</button></div>")
         chips = chips_for(local_id, audit_meta)
         if chips:
             parts.append("<div class='chips'>")
@@ -1126,8 +1144,7 @@ def main():
                 f"<td class='{match['match_type']}'>{match['match_type']}</td>"
                 f"{residual_cell(sig_resid.get(key, {}).get(sig), n)}"
                 f"<td{wide}>{n}</td><td><code>"
-                f"{esc(match['signature_display'])}</code><br>"
-                f"<span class='pin'>{esc(sig)}</span></td></tr>")
+                f"{esc(match['signature_display'])}</code></td></tr>")
         parts.append("</table>")
         parts.append(rows_table(key, payload, log_lrs, log_lr_defaults))
         parts.append("</div>")
@@ -1137,13 +1154,15 @@ def main():
                  "that the object is absent from the map. For an unnamed "
                  "<code>building=commercial</code> the right building is "
                  "almost certainly in the catalog; the query simply cannot "
-                 "discriminate it.</p><table><tr><th>tracklet</th>"
+                 "discriminate it.</p><table class='no-match-table'><tr>"
+                 "<th>tracklet</th>"
                  "<th>no-match conf</th><th>observed</th></tr>")
     for key in sorted(
             miss,
             key=lambda k: -matches[k]["aggregate_no_match_confidence"]):
         entry = matches[key]
         info = info_by_key.get(key, {})
+        local_id = tracklet_label(key, info)
         onmap = ("" if payload is None or key not in payload["tracklets"]
                  else f" &middot; <a href='#' data-jump='{esc(key)}' "
                       f"class='pin'>bearings on map</a>")
@@ -1153,10 +1172,15 @@ def main():
             info, range_by_track,
             tracks_dir=args.tracks_dir, audit_dir=args.audit_dir,
             output_dir=out, audit_review_page=args.audit_review_page)
-        parts.append(f"<tr id='{esc(key)}'><td>{esc(key)}{onmap}<br>"
+        short_anchor = ("" if local_id == key else
+                        f"<span class='short-anchor' "
+                        f"id='{esc(local_id)}'></span>")
+        parts.append(f"<tr id='{esc(key)}'><td>{short_anchor}"
+                     f"{esc(local_id)}{onmap}<br>"
                      f"<span class='links'>{links}"
                      f"<button type='button' class='note-select' "
-                     f"data-note-select='{esc(key)}'>add note</button>"
+                     f"data-note-select='{esc(key)}' "
+                     f"data-note-label='{esc(local_id)}'>add note</button>"
                      f"</span></td>"
                      f"<td class='conf'>"
                      f"{entry['aggregate_no_match_confidence']}"

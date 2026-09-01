@@ -43,6 +43,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
+    particle_sampling,
     replay as replay_mod,
     run_io,
     viewer,
@@ -88,7 +89,7 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
         """What the page probes to decide whether to offer live features."""
         return jsonify({
             "ok": True, "run_dir": str(run_dir),
-            "features": ["checkpoint", "replay"],
+            "features": ["checkpoint", "particle_percent", "replay"],
             # The inlined payload already names the sampled checkpoints. Do not
             # reload every full checkpoint merely to answer the feature probe.
             "n_checkpoints": len(payload()["checkpoints"]),
@@ -139,6 +140,13 @@ def create_app(run_dir: Path, *, tracks_dir: Path | None = None,
                                      f"{keyframe_idx}",
                             "available": available}), 404
         if request.args.get("view") == "map":
+            percent = request.args.get("percent", type=int)
+            if percent is not None:
+                try:
+                    return jsonify(particle_sampling.payload_from_arrays(
+                        arrays, keyframe_idx=keyframe_idx, percent=percent))
+                except particle_sampling.ParticleSamplingError as error:
+                    return jsonify({"error": str(error)}), 400
             # The map only consumes position and mode. Avoid serializing three
             # additional 50k-element arrays for an explicitly requested view.
             return jsonify({

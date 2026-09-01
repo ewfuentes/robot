@@ -120,6 +120,27 @@ def _make_tracking_viewer_artifact(directory: Path) -> Path:
 
 
 class PayloadTest(unittest.TestCase):
+    def test_viewer_auto_resolves_satellite_when_not_explicit(self):
+        resolved = Path("/shared/satellite/dataset/version")
+        with mock.patch.object(
+                viewer.satellite_assets, "find_or_generate",
+                return_value=resolved) as find:
+            actual = viewer.satellite_for_viewer(
+                Path("/runs/experiment/run"), explicit=None, disabled=False)
+
+        self.assertEqual(actual, resolved)
+        find.assert_called_once_with(Path("/runs/experiment/run"))
+
+    def test_explicit_or_disabled_satellite_never_auto_fetches(self):
+        explicit = Path("/chosen/satellite")
+        with mock.patch.object(
+                viewer.satellite_assets, "find_or_generate") as find:
+            self.assertEqual(viewer.satellite_for_viewer(
+                Path("/runs/e/r"), explicit=explicit, disabled=False), explicit)
+            self.assertIsNone(viewer.satellite_for_viewer(
+                Path("/runs/e/r"), explicit=None, disabled=True))
+        find.assert_not_called()
+
     def test_tracking_evidence_href_is_portable_with_the_data_root(self):
         root = Path("/mirror/farfield_matching")
         viewer_dir = root / "runs" / "experiment" / "run.viewer"
@@ -136,19 +157,18 @@ class PayloadTest(unittest.TestCase):
         self.assertNotIn(str(root), href)
         self.assertFalse(href.startswith("file:"))
 
-    def test_review_href_is_portable_and_targets_the_exact_tracklet(self):
+    def test_review_href_is_portable_and_uses_the_short_display_anchor(self):
         root = Path("/mirror/farfield_matching")
         viewer_dir = root / "runs" / "experiment" / "run.viewer"
         matcher_page = (root / "runs" / "experiment"
                         / "run.matcher-review" / "index.html")
 
         href = viewer_payload._review_href(  # noqa: SLF001
-            viewer_dir, matcher_page, "tracks@sha256:abc#T2")
+            viewer_dir, matcher_page, "T2")
 
         self.assertEqual(
             href,
-            "../run.matcher-review/index.html#"
-            "tracks%40sha256%3Aabc%23T2")
+            "../run.matcher-review/index.html#T2")
         self.assertNotIn(str(root), href)
 
     def test_tracklet_ids_sort_naturally(self):
@@ -492,19 +512,28 @@ class PageTest(unittest.TestCase):
             self.assertIn("esc(compactTracklets(e.label))", html)
             self.assertIn("esc(compactTracklets(e.detail))", html)
 
-    def test_page_feature_detects_the_live_server_contract(self):
+    def test_particle_density_uses_full_checkpoint_with_static_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             html = viewer.render_html(viewer_payload.build(run_dir))
             self.assertIn('id="liveStatus"', html)
-            self.assertIn('id="tgFull" disabled', html)
+            self.assertNotIn('id="tgFull"', html)
+            self.assertIn('id="particlePct" disabled', html)
+            self.assertIn('<option value="" selected>sample</option>', html)
+            for percent in (10, 20, 30, 50, 100):
+                self.assertIn(f'<option value="{percent}"', html)
+            self.assertIn("let particlePercent = null;", html)
+            self.assertIn(
+                "Math.ceil(RUN.nParticles * particlePercent / 100)", html)
+            self.assertIn("particleSelect.onchange", html)
+            self.assertIn('LIVE.features.has("localization_particles")', html)
+            self.assertIn('LIVE.features.has("particle_percent")', html)
+            self.assertIn('"/api/localization-particles/" + keyframe', html)
+            self.assertIn('"/api/checkpoint/" + keyframe', html)
+            self.assertIn("scheduleParticleCheckpoint(ck);", html)
             self.assertIn('apiJson("/api/health")', html)
-            self.assertIn(
-                'apiJson("/api/checkpoint/" + keyframe + "?view=map")', html)
             self.assertIn('apiJson("/api/replay"', html)
-            self.assertIn(
-                "if (showFullParticles) loadFullCheckpoint(ck);", html)
             self.assertIn("mapLayers().innerHTML = out", html)
 
     def test_fit_track_prefers_truth_and_falls_back_to_the_estimate(self):
@@ -660,7 +689,7 @@ class ServerTest(unittest.TestCase):
         body = response.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(set(body["features"]),
-                         {"checkpoint", "replay"})
+                         {"checkpoint", "particle_percent", "replay"})
         self.assertGreater(body["n_checkpoints"], 0)
 
     def test_index_serves_the_page(self):
@@ -706,6 +735,22 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["n"], n)
         for key in ("e", "n_m", "mode"):
             self.assertEqual(len(body[key]), n, f"{key} is truncated")
+
+    def test_checkpoint_map_percentage_is_sized_from_full_population(self):
+        data = run_io.read_run(self.run_dir)
+        kf = sorted(data.checkpoints)[len(data.checkpoints) // 2]
+
+        response = self.client.get(
+            f"/api/checkpoint/{kf}?view=map&percent=10")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        body = response.get_json()
+        total = data.checkpoints[kf]["east_m"].shape[0]
+        self.assertEqual(body["total"], total)
+        self.assertEqual(body["n"], (total + 9) // 10)
+        self.assertEqual(body["percent"], 10)
+        for key in ("e", "n_m", "mode"):
+            self.assertEqual(len(body[key]), body["n"])
 
     def test_live_server_passes_satellite_to_the_shared_payload(self):
         satellite = Path(self._tmp.name) / "satellite"

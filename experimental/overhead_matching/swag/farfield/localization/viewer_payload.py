@@ -44,6 +44,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     basemap as basemap_mod,
     forensics,
     metrics,
+    particle_sampling,
     replay as replay_mod,
     run_io,
     sources as sources_mod,
@@ -96,20 +97,12 @@ def _weighted_sample(log_weight: np.ndarray, count: int,
     it has lower variance, so the drawn cloud is a more faithful picture of the
     posterior at the small sample sizes a page can carry.
 
-    Kept local rather than imported: `filter.systematic_resample` is the
-    canonical systematic resampler, but it mutates a whole ParticleBelief and
-    applies kernel regularization — this needs only an index draw from raw
-    log-weights loaded off disk. Keep the two in step.
+    The implementation is shared with the on-demand percentage endpoint. This
+    wrapper preserves the payload module's established testing seam; the
+    production filter's resampler mutates a whole belief and regularizes it,
+    while viewer sampling needs only indices from recorded log-weights.
     """
-    n = log_weight.shape[0]
-    if n <= count:
-        return np.arange(n)
-    weights = np.exp(log_weight - log_weight.max())
-    total = weights.sum()
-    if not np.isfinite(total) or total <= 0.0:
-        return rng.choice(n, size=count, replace=False)
-    positions = (rng.random() + np.arange(count)) / count
-    return np.searchsorted(np.cumsum(weights / total), positions)
+    return particle_sampling.weighted_sample(log_weight, count, rng)
 
 
 def _landmark_positions(manifest, frame):
@@ -384,7 +377,10 @@ def _tracklet_dossiers(data, cache, triage, bundle, viewer_dir: Path,
                         source.evidence_page)
                     if source.evidence_page is not None else None),
                 "matcherHref": (
-                    _review_href(viewer_dir, matcher_page, tracklet_id)
+                    # The matcher page retains the canonical digest-bound key
+                    # internally, but publishes a short local-id anchor for
+                    # human-facing URLs and stable two-column layout.
+                    _review_href(viewer_dir, matcher_page, source.local_id)
                     if matcher_page is not None else None),
                 "auditHref": (
                     _review_href(viewer_dir, audit_page, source.local_id)

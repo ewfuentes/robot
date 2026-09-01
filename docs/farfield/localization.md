@@ -103,8 +103,16 @@ instead of disappearing from the record.
 - `localization:viewer` builds the self-contained run viewer; the optional
   server adds live replay/crop endpoints over the same recorded payload.
 - `localization:plot_run` writes maps, strips, and animation products.
-- `localization:satellite_underlay` adds an optional licensed imagery layer;
-  source tiles are not redistributed.
+- Run viewers resolve licensed satellite imagery automatically. An exact
+  run-local underlay wins; otherwise compatible imagery is reused from the
+  shared `reviews/satellite/<dataset>/` cache or from another run of that
+  dataset. If none exists, the dataset's recorded capture date pins an ESRI
+  Wayback fetch: compact plans stay in `<run>.satellite`, while larger plans
+  are generated once in the shared cache. Dataset, capture month, ENU anchor,
+  exact bounded-prior coverage, and fine trajectory coverage are checked before
+  reuse. Whole source tiles may be downloaded, but published rasters are cropped
+  to the initialization prior and no layer may extend outside it. Source tiles
+  are not redistributed, and `--no_satellite` remains the explicit opt-out.
 - `localization:forensics` checks invariants, attributes measurements,
   replays exact inputs, explores explicitly labeled counterfactuals, and
   traces one tracklet or event.
