@@ -113,6 +113,30 @@ py_binary(
 )
 
 py_library(
+    name = "lidar_dsm",
+    srcs = ["lidar_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":terrain",
+        requirement("laspy"),
+        requirement("lazrs"),
+        requirement("numpy"),
+        requirement("pyproj"),
+    ],
+)
+
+py_binary(
+    name = "build_dsm",
+    srcs = ["build_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":lidar_dsm",
+        ":terrain",
+        requirement("numpy"),
+    ],
+)
+
+py_library(
     name = "viz",
     srcs = ["viz.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -253,6 +277,15 @@ py_test(
     srcs = ["terrain_test.py"],
     deps = [
         ":lattice",
+        ":terrain",
+    ],
+)
+
+py_test(
+    name = "lidar_dsm_test",
+    srcs = ["lidar_dsm_test.py"],
+    deps = [
+        ":lidar_dsm",
         ":terrain",
     ],
 )

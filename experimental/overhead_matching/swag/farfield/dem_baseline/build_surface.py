@@ -35,6 +35,14 @@ def main() -> None:
     parser.add_argument("--bounds_xy", type=float, nargs=4, default=None,
                         metavar=("X_MIN", "Y_MIN", "X_MAX", "Y_MAX"))
     parser.add_argument("--resampling", default="bilinear")
+    parser.add_argument("--surface_kind", default="bare_earth_dem",
+                        help="Recorded in the manifest, e.g. bare_earth_dem "
+                             "or dsm (the source rasters decide which one "
+                             "this actually is)")
+    parser.add_argument("--note", action="append", default=[],
+                        help="Free-form provenance notes for the manifest "
+                             "(vertical datum, region definition, ...); "
+                             "repeatable")
     parser.add_argument("--output", type=Path, required=True,
                         help="Base path (no suffix); writes .npz and .json")
     args = parser.parse_args()
@@ -63,15 +71,18 @@ def main() -> None:
         "path": str(p),
         "sha256": hashlib.sha256(Path(p).read_bytes()).hexdigest(),
     } for p in sorted(args.tiles)]
-    hf.save(args.output, extra_manifest={
+    extra = {
         "schema": "dem_baseline_surface/v1",
-        "surface_kind": "bare_earth_dem",
+        "surface_kind": args.surface_kind,
         "recipe": "mosaic first-valid-wins, single reprojection "
                   f"({args.resampling}), no-data filled with min elevation "
                   "and recorded in nodata_mask",
         "sources": sources,
         "bounds_request": list(bounds),
-    })
+    }
+    if args.note:
+        extra["notes"] = args.note
+    hf.save(args.output, extra_manifest=extra)
     print(f"wrote {args.output}.npz / .json")
 
 
