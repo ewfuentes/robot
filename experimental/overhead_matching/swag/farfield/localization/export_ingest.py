@@ -80,6 +80,16 @@ class ExportMeta(msgspec.Struct, forbid_unknown_fields=True):
     nominal_forward: dict
     motion: dict
     reducer: dict
+    # [west, south, east, north] degrees: the catalog's DECLARED fetch
+    # bbox, carried from the catalog artifact's own manifest. This — not
+    # the observed extent of landmark positions — is the candidate region
+    # a uniform prior spans (`region_box`). A landmark outside the fetch
+    # box was never available to match, while whole-way geometry lets a
+    # single kept way place its representative point far outside (Washington:
+    # 69 of 8081 points, 0.9%, tail 37.7 km, inflating the derived region
+    # from ~2,700 to 6,260 km^2). Optional only so exports predating the
+    # field still decode; `region_box` refuses to guess when it is absent.
+    candidate_region_wsen: list | None = None
 
 
 @dataclasses.dataclass
@@ -482,19 +492,53 @@ def validate(data: ExportData) -> None:
 
 
 def region_box(data: ExportData, margin_m: float) -> structs.UniformBoxInit:
-    """A uniform prior spanning everything the catalog could explain."""
+    """A uniform prior spanning the catalog's DECLARED fetch region.
+
+    The region comes from `meta.candidate_region_wsen` — the bbox the
+    catalog stage actually queried — not from the observed spread of
+    landmark positions, which whole-way geometry inflates (see the field's
+    comment). The lat/lon box maps to a curved quad in ENU; the prior takes
+    the axis-aligned hull of its corners, so it covers the declared region.
+    """
     margin_m = _finite(margin_m, "margin_m")
     if margin_m < 0.0:
         raise ValueError("margin_m must be nonnegative")
+    region = data.meta.candidate_region_wsen
+    if region is None:
+        raise ValueError(
+            "export records no candidate_region_wsen: its catalog's declared "
+            "fetch bbox is unknown, and the observed landmark extent is not a "
+            "substitute (whole-way geometry places points far outside the "
+            "queried region). Rebuild the localization_inputs artifact.")
+    if len(region) != 4:
+        raise ValueError(
+            f"candidate_region_wsen must be [west, south, east, north], "
+            f"got {region!r}")
+    west, south, east, north = (float(value) for value in region)
+    if not (west < east and south < north):
+        raise ValueError(
+            f"candidate_region_wsen is not a positive-area box: {region!r}")
+    corner_lat = [south, south, north, north]
+    corner_lon = [west, east, east, west]
+    corner_east, corner_north = data.frame.enu_from_latlon(
+        corner_lat, corner_lon)
     return structs.UniformBoxInit(
-        east_min_m=float(data.catalog.east_m.min()) - margin_m,
-        east_max_m=float(data.catalog.east_m.max()) + margin_m,
-        north_min_m=float(data.catalog.north_m.min()) - margin_m,
-        north_max_m=float(data.catalog.north_m.max()) + margin_m)
+        east_min_m=float(min(corner_east)) - margin_m,
+        east_max_m=float(max(corner_east)) + margin_m,
+        north_min_m=float(min(corner_north)) - margin_m,
+        north_max_m=float(max(corner_north)) + margin_m)
 
 
 def describe(data: ExportData) -> str:
-    box = region_box(data, 0.0)
+    # A summary must not fail on an export that predates the declared
+    # region; it says so instead, and `region_box` still refuses to guess.
+    if data.meta.candidate_region_wsen is None:
+        region = "declared region UNRECORDED (rebuild to localize)"
+    else:
+        box = region_box(data, 0.0)
+        region = (f"declared region "
+                  f"{(box.east_max_m - box.east_min_m) / 1000:.1f} x "
+                  f"{(box.north_max_m - box.north_min_m) / 1000:.1f} km")
     kappas = [item.kappa for item in data.measurements]
     sigmas = [math.degrees(1.0 / math.sqrt(value)) for value in kappas]
     calibration = data.meta.nominal_forward
@@ -508,9 +552,7 @@ def describe(data: ExportData) -> str:
         f"anchor      : {data.meta.anchor_lat_deg:.6f}, "
         f"{data.meta.anchor_lon_deg:.6f}",
         f"keyframes   : {data.n_keyframes}",
-        f"catalog     : {data.catalog.n} landmarks spanning "
-        f"{(box.east_max_m - box.east_min_m) / 1000:.1f} x "
-        f"{(box.north_max_m - box.north_min_m) / 1000:.1f} km; "
+        f"catalog     : {data.catalog.n} landmarks, {region}; "
         f"uniform sigma {data.meta.landmark_position_sigma_m:.1f} m",
         f"measurements: {len(data.measurements)} over "
         f"{len({item.tracklet_id for item in data.measurements})} tracklets"

@@ -102,6 +102,8 @@ def valid_meta(nominal_bytes: bytes, **overrides):
             "input_frame": "camera_cw_deg",
             "output_frame": "nominal_forward_cw_deg",
         },
+        # The catalog's declared fetch bbox, ~11 x 11 km around the anchor.
+        "candidate_region_wsen": [-71.10, 42.30, -70.99, 42.40],
     }
     meta.update(overrides)
     return meta
@@ -303,6 +305,42 @@ class LoadTest(unittest.TestCase):
             data = export_ingest.load(write_export(Path(temporary)))
             with self.assertRaisesRegex(ValueError, "nonnegative"):
                 export_ingest.region_box(data, -1.0)
+
+    def test_region_box_spans_the_declared_bbox_not_the_landmarks(self):
+        # A landmark far outside the fetch box (whole-way geometry) must not
+        # enlarge the prior: the declared region is the authority.
+        with tempfile.TemporaryDirectory() as temporary:
+            export = write_export(
+                Path(temporary),
+                landmarks=[
+                    structs.LandmarkEntry(
+                        "osm:node:1", 42.35, -71.05, "natural=peak", 25.0),
+                    structs.LandmarkEntry(
+                        "osm:node:2", 43.60, -69.50, "natural=peak", 25.0),
+                ])
+            data = export_ingest.load(export)
+            box = export_ingest.region_box(data, 0.0)
+            width_km = (box.east_max_m - box.east_min_m) / 1000.0
+            height_km = (box.north_max_m - box.north_min_m) / 1000.0
+            self.assertLess(width_km, 20.0)
+            self.assertLess(height_km, 20.0)
+            # The leaked landmark sits >100 km away; it is in the catalog...
+            self.assertEqual(data.catalog.n, 2)
+            # ...but outside the prior the declared region defines.
+            self.assertGreater(float(data.catalog.east_m.max()),
+                               box.east_max_m)
+
+    def test_region_box_refuses_an_unrecorded_region(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            export = write_export(
+                Path(temporary),
+                meta_mutator=lambda meta: meta.pop("candidate_region_wsen"))
+            data = export_ingest.load(export)
+            with self.assertRaisesRegex(ValueError,
+                                        "no candidate_region_wsen"):
+                export_ingest.region_box(data, 0.0)
+            # A summary still works, and says the region is missing.
+            self.assertIn("UNRECORDED", export_ingest.describe(data))
 
 
 if __name__ == "__main__":
