@@ -48,6 +48,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     side_outputs,
     structs,
     viewer,
+    particle_sampling,
     viewer_payload,
     viewer_server,
 )
@@ -147,7 +148,7 @@ class PayloadTest(unittest.TestCase):
         tracks_dir = (root / "artifacts" / "object_tracks" / "dataset"
                       / "tracks-v2")
 
-        href = viewer_payload._tracking_evidence_href(  # noqa: SLF001
+        href = viewer_payload._tracking_evidence_href(
             viewer_dir, tracks_dir, "track_full_T2.html")
 
         self.assertEqual(
@@ -163,7 +164,7 @@ class PayloadTest(unittest.TestCase):
         matcher_page = (root / "runs" / "experiment"
                         / "run.matcher-review" / "index.html")
 
-        href = viewer_payload._review_href(  # noqa: SLF001
+        href = viewer_payload._review_href(
             viewer_dir, matcher_page, "T2")
 
         self.assertEqual(
@@ -174,7 +175,7 @@ class PayloadTest(unittest.TestCase):
     def test_tracklet_ids_sort_naturally(self):
         tracklets = ["LT10", "LT2", "LT1", "LT20", "LT11"]
         self.assertEqual(
-            sorted(tracklets, key=viewer_payload._natural_key),  # noqa: SLF001
+            sorted(tracklets, key=viewer_payload._natural_key),
             ["LT1", "LT2", "LT10", "LT11", "LT20"])
 
     def test_bare_run_directory_still_builds(self):
@@ -206,7 +207,7 @@ class PayloadTest(unittest.TestCase):
             _make_satellite(satellite, size=source_size)
             notes = []
 
-            payload = viewer_payload._satellite_payload(  # noqa: SLF001
+            payload = viewer_payload._satellite_payload(
                 satellite, notes)
 
             encoded = payload["layers"][0]["uri"].split(",", 1)[1]
@@ -230,8 +231,8 @@ class PayloadTest(unittest.TestCase):
             hull_east_m=[0.0, 10.0, 10.0, 0.0, 0.0],
             hull_north_m=[0.0, 0.0, 10.0, 10.0, 0.0])
 
-        line_payload = viewer_payload._landmark_geometry(line)  # noqa: SLF001
-        polygon_payload = viewer_payload._landmark_geometry(  # noqa: SLF001
+        line_payload = viewer_payload._landmark_geometry(line)
+        polygon_payload = viewer_payload._landmark_geometry(
             polygon)
         self.assertEqual(line_payload["kind"], "linestring")
         self.assertEqual(line_payload["points"], [
@@ -239,7 +240,7 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(polygon_payload["kind"], "polygon")
         self.assertEqual(len(polygon_payload["points"]), 5)
         self.assertEqual(
-            viewer_payload._catalog_bounds(  # noqa: SLF001
+            viewer_payload._catalog_bounds(
                 np.array([0.0]), np.array([0.0]), [line], margin=0.0),
             (-25.25, 80.75, -4.5, 7.25))
 
@@ -294,7 +295,7 @@ class PayloadTest(unittest.TestCase):
 
             arrays = data.checkpoints[worst_kf]
             rng = np.random.default_rng(0)
-            index = viewer_payload._weighted_sample(  # noqa: SLF001
+            index = particle_sampling.weighted_sample(
                 arrays["log_weight"], 400, rng)
             weights = np.exp(arrays["log_weight"]
                              - arrays["log_weight"].max())
@@ -312,15 +313,15 @@ class PayloadTest(unittest.TestCase):
         # All-equal weights.
         flat = np.zeros(500)
         self.assertEqual(
-            viewer_payload._weighted_sample(flat, 50, rng).shape[0], 50)  # noqa: SLF001
+            particle_sampling.weighted_sample(flat, 50, rng).shape[0], 50)
         # Fewer particles than requested: take them all.
         few = np.zeros(20)
         np.testing.assert_array_equal(
-            viewer_payload._weighted_sample(few, 50, rng), np.arange(20))  # noqa: SLF001
+            particle_sampling.weighted_sample(few, 50, rng), np.arange(20))
         # A single surviving particle.
         spike = np.full(500, -np.inf)
         spike[7] = 0.0
-        index = viewer_payload._weighted_sample(spike, 50, rng)  # noqa: SLF001
+        index = particle_sampling.weighted_sample(spike, 50, rng)
         self.assertTrue((index == 7).all())
 
     def test_map_payload_contains_only_referenced_landmarks(self):
@@ -351,7 +352,7 @@ class PayloadTest(unittest.TestCase):
                 ("building=commercial", "building"),
                 ("", "building"),
                 (None, "building")):
-            self.assertEqual(viewer_payload._glyph_for(type_key), expected)  # noqa: SLF001
+            self.assertEqual(viewer_payload._glyph_for(type_key), expected)
 
     def test_stale_attribution_cache_becomes_a_note(self):
         """T-V4. Silently rendering a waterfall from a different run is the
@@ -528,9 +529,7 @@ class PageTest(unittest.TestCase):
                 "Math.ceil(RUN.nParticles * particlePercent / 100)", html)
             self.assertIn("particleSelect.onchange", html)
             self.assertIn('LIVE.features.has("localization_particles")', html)
-            self.assertIn('LIVE.features.has("particle_percent")', html)
             self.assertIn('"/api/localization-particles/" + keyframe', html)
-            self.assertIn('"/api/checkpoint/" + keyframe', html)
             self.assertIn("scheduleParticleCheckpoint(ck);", html)
             self.assertIn('apiJson("/api/health")', html)
             self.assertIn('apiJson("/api/replay"', html)
@@ -689,7 +688,7 @@ class ServerTest(unittest.TestCase):
         body = response.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(set(body["features"]),
-                         {"checkpoint", "particle_percent", "replay"})
+                         {"checkpoint", "replay"})
         self.assertGreater(body["n_checkpoints"], 0)
 
     def test_index_serves_the_page(self):
@@ -735,22 +734,6 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["n"], n)
         for key in ("e", "n_m", "mode"):
             self.assertEqual(len(body[key]), n, f"{key} is truncated")
-
-    def test_checkpoint_map_percentage_is_sized_from_full_population(self):
-        data = run_io.read_run(self.run_dir)
-        kf = sorted(data.checkpoints)[len(data.checkpoints) // 2]
-
-        response = self.client.get(
-            f"/api/checkpoint/{kf}?view=map&percent=10")
-
-        self.assertEqual(response.status_code, 200, response.data)
-        body = response.get_json()
-        total = data.checkpoints[kf]["east_m"].shape[0]
-        self.assertEqual(body["total"], total)
-        self.assertEqual(body["n"], (total + 9) // 10)
-        self.assertEqual(body["percent"], 10)
-        for key in ("e", "n_m", "mode"):
-            self.assertEqual(len(body[key]), body["n"])
 
     def test_live_server_passes_satellite_to_the_shared_payload(self):
         satellite = Path(self._tmp.name) / "satellite"

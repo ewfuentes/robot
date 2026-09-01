@@ -292,9 +292,10 @@ def _bounded_plan(name: str, bounds: tuple[float, float, float, float],
     return plan
 
 
-def _intersection(first: tuple[float, float, float, float],
-                  second: tuple[float, float, float, float]
-                  ) -> tuple[float, float, float, float] | None:
+def intersection(first: tuple[float, float, float, float],
+                 second: tuple[float, float, float, float]
+                 ) -> tuple[float, float, float, float] | None:
+    """The overlapping ENU box, or None when the two boxes are disjoint."""
     result = (max(first[0], second[0]), min(first[1], second[1]),
               max(first[2], second[2]), min(first[3], second[3]))
     return result if result[0] < result[1] and result[2] < result[3] else None
@@ -320,7 +321,7 @@ def plan_underlay(data, *, wide_zoom: int = 14, fine_zoom: int = 17,
                   float(east.max() + fine_margin_m),
                   float(north.min() - fine_margin_m),
                   float(north.max() + fine_margin_m))
-    fine_bounds = _intersection(prior, trajectory)
+    fine_bounds = intersection(prior, trajectory)
 
     # Wide gets a third of the budget, fine the rest: context is cheap and the
     # sharp layer is the one worth spending tiles on.

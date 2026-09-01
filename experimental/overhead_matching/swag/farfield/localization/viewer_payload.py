@@ -89,22 +89,6 @@ def _glyph_for(type_key: str) -> str:
     return DEFAULT_GLYPH
 
 
-def _weighted_sample(log_weight: np.ndarray, count: int,
-                     rng: np.random.Generator) -> np.ndarray:
-    """A fair draw from the weighted posterior, by systematic resampling.
-
-    Systematic rather than multinomial for the same reason the filter uses it:
-    it has lower variance, so the drawn cloud is a more faithful picture of the
-    posterior at the small sample sizes a page can carry.
-
-    The implementation is shared with the on-demand percentage endpoint. This
-    wrapper preserves the payload module's established testing seam; the
-    production filter's resampler mutates a whole belief and regularizes it,
-    while viewer sampling needs only indices from recorded log-weights.
-    """
-    return particle_sampling.weighted_sample(log_weight, count, rng)
-
-
 def _landmark_positions(manifest, frame):
     return frame.enu_from_latlon(
         np.array([lm.lat_deg for lm in manifest.landmarks]),
@@ -662,7 +646,8 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
     rng = np.random.default_rng(0)
     checkpoints = {}
     for keyframe_idx, arrays in sorted(data.checkpoints.items()):
-        index = _weighted_sample(arrays["log_weight"], max_particles, rng)
+        index = particle_sampling.weighted_sample(
+            arrays["log_weight"], max_particles, rng)
         checkpoints[str(keyframe_idx)] = {
             "e": _round(arrays["east_m"][index], 0),
             "n": _round(arrays["north_m"][index], 0),

@@ -40,6 +40,7 @@ from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
     run_io,
     satellite_underlay,
+    side_outputs,
 )
 
 
@@ -65,17 +66,6 @@ class RunSummary:
     anchor_lon_deg: float
     prior_bounds: tuple[float, float, float, float] | None
     trajectory_bounds: tuple[float, float, float, float] | None
-
-
-def _regular_json(path: Path) -> dict | None:
-    try:
-        metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            return None
-        value = json.loads(path.read_text())
-    except (FileNotFoundError, OSError, UnicodeError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _bounds(east: list[float], north: list[float]
@@ -111,16 +101,15 @@ def _trajectory_bounds(run_dir: Path
             ("truth.jsonl", "east_m", "north_m"),
             ("tier0_health.jsonl", "mean_east_m", "mean_north_m")):
         path = run_dir / name
+        if not side_outputs.regular_file(path):
+            continue
         try:
-            metadata = path.lstat()
-            if not stat.S_ISREG(metadata.st_mode):
-                continue
-            records = [json.loads(line) for line in path.read_text().splitlines()
+            records = [json.loads(line)
+                       for line in path.read_text().splitlines()
                        if line.strip()]
             east = [float(record[east_key]) for record in records]
             north = [float(record[north_key]) for record in records]
-        except (FileNotFoundError, OSError, UnicodeError, ValueError, KeyError,
-                TypeError):
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
             continue
         result = _bounds(east, north)
         if result is not None:
@@ -128,21 +117,24 @@ def _trajectory_bounds(run_dir: Path
     return None
 
 
+def _run_local_destination(summary: RunSummary) -> Path:
+    """The run's own ``<run>.satellite`` sibling."""
+    return summary.run_dir.with_name(summary.run_dir.name + ".satellite")
+
+
 def summarize_run(run_dir: Path) -> RunSummary | None:
     """Read only the small identity/geometry records needed for discovery."""
-    run_dir = Path(os.path.abspath(os.fspath(run_dir)))
-    try:
-        metadata = run_dir.lstat()
-    except OSError:
-        return None
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    run_dir = side_outputs.absolute(run_dir)
+    if not side_outputs.regular_directory(run_dir):
         return None
     # Canonical layout: <root>/runs/<experiment>/<run>.
     if len(run_dir.parents) < 3 or run_dir.parents[1].name != "runs":
         return None
     root = run_dir.parents[2]
-    artifact_document = _regular_json(run_dir / artifact.MANIFEST_NAME)
-    run_document = _regular_json(run_dir / run_io.RUN_MANIFEST_NAME)
+    artifact_document = side_outputs.read_json_dict(
+        run_dir / artifact.MANIFEST_NAME)
+    run_document = side_outputs.read_json_dict(
+        run_dir / run_io.RUN_MANIFEST_NAME)
     if artifact_document is None or run_document is None:
         return None
     if artifact_document.get("kind") != run_io.RUN_KIND:
@@ -163,7 +155,7 @@ def summarize_run(run_dir: Path) -> RunSummary | None:
         return None
 
     capture_date = None
-    dataset_metadata = _regular_json(
+    dataset_metadata = side_outputs.read_json_dict(
         root / "datasets" / dataset / "pipeline_metadata.json")
     if dataset_metadata is not None:
         candidate = dataset_metadata.get("capture_date")
@@ -186,72 +178,46 @@ def _source_dataset(provenance_document: dict) -> str | None:
     run_dir = inputs.get("run_dir") if isinstance(inputs, dict) else None
     if not isinstance(run_dir, str) or not run_dir:
         return None
-    source_manifest = _regular_json(Path(run_dir) / artifact.MANIFEST_NAME)
+    source_manifest = side_outputs.read_json_dict(
+        Path(run_dir) / artifact.MANIFEST_NAME)
     if source_manifest is None:
         return None
     dataset = source_manifest.get("dataset")
     return dataset if isinstance(dataset, str) else None
 
 
-def _covers(entry: dict, bounds: tuple[float, float, float, float] | None
-            ) -> bool:
-    if bounds is None:
-        return True
-    try:
-        e0, e1 = float(entry["east_min"]), float(entry["east_max"])
-        n0, n1 = float(entry["north_min"]), float(entry["north_max"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    wanted_e0, wanted_e1, wanted_n0, wanted_n1 = bounds
-    return (e0 <= wanted_e0 + _COVERAGE_TOLERANCE_M
-            and e1 >= wanted_e1 - _COVERAGE_TOLERANCE_M
-            and n0 <= wanted_n0 + _COVERAGE_TOLERANCE_M
-            and n1 >= wanted_n1 - _COVERAGE_TOLERANCE_M)
-
-
-def _matches(entry: dict, bounds: tuple[float, float, float, float]) -> bool:
-    try:
-        actual = (float(entry["east_min"]), float(entry["east_max"]),
-                  float(entry["north_min"]), float(entry["north_max"]))
-    except (KeyError, TypeError, ValueError):
-        return False
-    return all(abs(value - wanted) <= _COVERAGE_TOLERANCE_M
-               for value, wanted in zip(actual, bounds))
-
-
-def _inside(entry: dict, bounds: tuple[float, float, float, float]) -> bool:
-    try:
-        e0, e1 = float(entry["east_min"]), float(entry["east_max"])
-        n0, n1 = float(entry["north_min"]), float(entry["north_max"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    return (e0 >= bounds[0] - _COVERAGE_TOLERANCE_M
-            and e1 <= bounds[1] + _COVERAGE_TOLERANCE_M
-            and n0 >= bounds[2] - _COVERAGE_TOLERANCE_M
-            and n1 <= bounds[3] + _COVERAGE_TOLERANCE_M)
-
-
-def _intersection(first: tuple[float, float, float, float] | None,
-                  second: tuple[float, float, float, float]
+def _entry_bounds(entry: dict
                   ) -> tuple[float, float, float, float] | None:
-    if first is None:
+    try:
+        return (float(entry["east_min"]), float(entry["east_max"]),
+                float(entry["north_min"]), float(entry["north_max"]))
+    except (KeyError, TypeError, ValueError):
         return None
-    result = (max(first[0], second[0]), min(first[1], second[1]),
-              max(first[2], second[2]), min(first[3], second[3]))
-    return result if result[0] < result[1] and result[2] < result[3] else None
+
+
+def _contains(outer: tuple[float, float, float, float],
+              inner: tuple[float, float, float, float]) -> bool:
+    """Whether ``outer`` spans all of ``inner`` within tolerance."""
+    return (outer[0] <= inner[0] + _COVERAGE_TOLERANCE_M
+            and outer[1] >= inner[1] - _COVERAGE_TOLERANCE_M
+            and outer[2] <= inner[2] + _COVERAGE_TOLERANCE_M
+            and outer[3] >= inner[3] - _COVERAGE_TOLERANCE_M)
+
+
+def _same_extent(actual: tuple[float, float, float, float],
+                 wanted: tuple[float, float, float, float]) -> bool:
+    return all(abs(value - target) <= _COVERAGE_TOLERANCE_M
+               for value, target in zip(actual, wanted))
 
 
 def compatible(candidate: Path, summary: RunSummary) -> bool:
     """Whether an underlay is safe to reuse for ``summary``."""
     candidate = Path(candidate)
-    try:
-        metadata = candidate.lstat()
-    except OSError:
+    if not side_outputs.regular_directory(candidate):
         return False
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        return False
-    spec = _regular_json(candidate / SATELLITE_MANIFEST)
-    provenance_document = _regular_json(candidate / artifact.MANIFEST_NAME)
+    spec = side_outputs.read_json_dict(candidate / SATELLITE_MANIFEST)
+    provenance_document = side_outputs.read_json_dict(
+        candidate / artifact.MANIFEST_NAME)
     if spec is None or provenance_document is None:
         return False
     if (spec.get("wide_extent_kind") != WIDE_EXTENT_KIND
@@ -292,12 +258,8 @@ def compatible(candidate: Path, summary: RunSummary) -> bool:
                 or Path(image_name).name != image_name):
             return False
         image = candidate / image_name
-        try:
-            image_metadata = image.lstat()
-        except OSError:
-            return False
-        if (not stat.S_ISREG(image_metadata.st_mode)
-                or image_metadata.st_size <= 0):
+        if (not side_outputs.regular_file(image)
+                or image.stat().st_size <= 0):
             return False
         try:
             n_tiles = int(entry["n_tiles"])
@@ -306,49 +268,31 @@ def compatible(candidate: Path, summary: RunSummary) -> bool:
             return False
         if n_tiles <= 0 or not 0 <= n_failed < n_tiles:
             return False
-        usable.append(entry)
-    wide = [entry for entry in usable
-            if Path(entry["image"]).stem.casefold().startswith("wide")]
-    fine = [entry for entry in usable
-            if Path(entry["image"]).stem.casefold().startswith("fine")]
-    if (not wide
-            or not any(_matches(entry, summary.prior_bounds) for entry in wide)
-            or not all(_inside(entry, summary.prior_bounds)
-                       for entry in usable)):
+        bounds = _entry_bounds(entry)
+        if bounds is None:
+            return False
+        usable.append((Path(image_name).stem.casefold(), bounds))
+
+    prior = summary.prior_bounds
+    if not all(_contains(prior, bounds) for _, bounds in usable):
         return False
-    wanted_trajectory = _intersection(
-        summary.trajectory_bounds, summary.prior_bounds)
-    return (wanted_trajectory is None
-            or any(_covers(entry, wanted_trajectory) for entry in fine))
+    if not any(_same_extent(bounds, prior)
+               for stem, bounds in usable if stem.startswith("wide")):
+        return False
+    wanted_trajectory = (
+        None if summary.trajectory_bounds is None
+        else satellite_underlay.intersection(
+            summary.trajectory_bounds, prior))
+    return wanted_trajectory is None or any(
+        _contains(bounds, wanted_trajectory)
+        for stem, bounds in usable if stem.startswith("fine"))
 
 
 def _candidate_directories(summary: RunSummary) -> Iterator[Path]:
-    seen = set()
-
-    def emit(path: Path):
-        key = os.path.abspath(os.fspath(path))
-        if key in seen:
-            return None
-        seen.add(key)
-        return Path(key)
-
-    sibling = emit(summary.run_dir.with_name(summary.run_dir.name +
-                                             ".satellite"))
-    if sibling is not None:
-        yield sibling
-    shared = summary.root / SHARED_RELATIVE_ROOT / summary.dataset
-    if shared.is_dir() and not shared.is_symlink():
-        for candidate in sorted(shared.iterdir(), key=lambda path: path.name):
-            emitted = emit(candidate)
-            if emitted is not None:
-                yield emitted
-    runs = summary.root / "runs"
-    if runs.is_dir() and not runs.is_symlink():
-        for candidate in sorted(runs.glob("*/*.satellite"),
-                                key=lambda path: str(path)):
-            emitted = emit(candidate)
-            if emitted is not None:
-                yield emitted
+    return side_outputs.discovery_candidates(
+        _run_local_destination(summary),
+        (summary.root / SHARED_RELATIVE_ROOT / summary.dataset, "*"),
+        (summary.root / "runs", "*/*.satellite"))
 
 
 def discover(run_dir: Path) -> Path | None:
@@ -386,7 +330,7 @@ def automatic_destination(summary: RunSummary, plans: list[dict]) -> Path:
     """Run-local for compact plans; content-keyed shared cache otherwise."""
     total = sum(int(plan["n_tiles"]) for plan in plans)
     if total <= RUN_LOCAL_TILE_LIMIT:
-        return summary.run_dir.with_name(summary.run_dir.name + ".satellite")
+        return _run_local_destination(summary)
     return _shared_destination(summary, plans)
 
 

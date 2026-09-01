@@ -86,8 +86,7 @@ async function detectLiveServer() {
     status.textContent = "live server";
     status.className = "pill ok";
     const particleSelect = $("particlePct");
-    const particleAvailable = LIVE.features.has("localization_particles")
-      || LIVE.features.has("particle_percent");
+    const particleAvailable = LIVE.features.has("localization_particles");
     particleSelect.disabled = !particleAvailable;
     particleSelect.title = particleAvailable
       ? "draw a percentage of the complete checkpoint population"
@@ -102,13 +101,9 @@ async function detectLiveServer() {
 }
 
 function particleEndpoint(keyframe, percent) {
-  if (LIVE.features.has("localization_particles"))
-    return "/api/localization-particles/" + keyframe
-      + "?run=" + encodeURIComponent(RUN.runDir) + "&percent=" + percent;
-  if (LIVE.features.has("particle_percent"))
-    return "/api/checkpoint/" + keyframe
-      + "?view=map&percent=" + percent;
-  return null;
+  if (!LIVE.features.has("localization_particles")) return null;
+  return "/api/localization-particles/" + keyframe
+    + "?run=" + encodeURIComponent(RUN.runDir) + "&percent=" + percent;
 }
 
 function scheduleParticleCheckpoint(keyframe) {

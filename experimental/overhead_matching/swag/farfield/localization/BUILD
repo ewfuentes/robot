@@ -616,6 +616,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":run_io",
+        ":side_outputs",
         ":satellite_underlay_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
     ],
@@ -637,6 +638,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":run_io",
+        ":side_outputs",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:paths",
     ],
@@ -791,7 +793,6 @@ py_library(
         requirement("flask"),
         requirement("msgspec"),
         requirement("numpy"),
-        ":particle_sampling",
         ":replay",
         ":run_io",
         ":viewer_lib",
