@@ -59,10 +59,11 @@ def main():
     parser.add_argument("--prior_region", default="retrieval_support",
                         choices=["retrieval_support", "catalog"],
                         help="what the uniform prior spans. The retrieval "
-                             "support IS the declared candidate region "
-                             "(plan section 5.1), so it is the default; "
-                             "'catalog' spans the whole landmark extent "
-                             "for parity with bearing runs")
+                             "support is the scored lattice, so it is the "
+                             "default; 'catalog' spans the catalog's "
+                             "declared fetch bbox through the same "
+                             "export_ingest.region_box the bearing runs "
+                             "use, which is exact parity with them")
     parser.add_argument("--margin_m", type=float, default=None,
                         help="uniform prior margin past the chosen region "
                              "(required with --init uniform)")
@@ -105,8 +106,11 @@ def main():
                         default=1e-9)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint_every", type=int, default=5)
-    parser.add_argument("--backend", default="numpy",
-                        choices=["numpy", "torch"])
+    parser.add_argument("--backend", default="torch",
+                        choices=["numpy", "torch"],
+                        help="measurement engine; retrieval scoring is CPU "
+                             "array work either way, so this only matters "
+                             "for a run that also consumes bearings")
     parser.add_argument("--position_mass_radii_m", type=float, nargs="+",
                         default=[100.0, 500.0])
     parser.add_argument("--ablation_tags", nargs="*", default=[])

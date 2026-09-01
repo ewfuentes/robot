@@ -304,6 +304,15 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # "numpy" (reference, bit-stable, CPU) or "torch" (GPU, float32; same
     # mixture, reductions differ at fp32 epsilon). Recorded so the manifest
     # states which engine produced a run.
+    #
+    # EVERY RUN DEFAULTS TO TORCH: the drivers and the pipeline config are
+    # where a run's backend comes from (run_retrieval --backend, and
+    # `localization.measurement_backend`, which the pipeline schema requires
+    # a build to state), and both default to torch — the bearing mixture
+    # over a dense catalog is the run's cost centre. This struct-level
+    # default stays numpy so the library is usable, and unit-testable,
+    # without a torch dependency; `filter` imports the torch backend lazily
+    # by config, so a bare FilterConfig must not demand it.
     measurement_backend: str = "numpy"
     # §5.3 association persistence: a tracklet is ONE physical object, so
     # its identity persists across its epochs under a renewal HMM.

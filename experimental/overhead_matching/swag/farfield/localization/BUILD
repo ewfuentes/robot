@@ -451,7 +451,16 @@ py_binary(
     name = "run_retrieval",
     srcs = ["run_retrieval.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":run_retrieval_lib"],
+    deps = [
+        # torch_backend so the default (GPU) measurement backend resolves;
+        # filter imports it lazily by config. A retrieval-only run does its
+        # scoring on CPU arrays either way, but the backend is recorded in
+        # the manifest and a mixed bearings+retrieval run needs it.
+        requirement("torch"),
+        ":run_retrieval_lib",
+        ":torch_backend",
+        "//common/torch:load_torch_deps",
+    ],
 )
 
 py_binary(
