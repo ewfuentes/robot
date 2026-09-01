@@ -106,5 +106,37 @@ class LatticeTest(unittest.TestCase):
                 hf, spacing_m=10.0, bounds_xy=(1e5, 1e5, 2e5, 2e5))
 
 
+class LatticeBackgroundTest(unittest.TestCase):
+    """A candidate is dropped only when no surface has data there."""
+
+    def _field(self, nodata: np.ndarray, res: float) -> terrain.HeightField:
+        return terrain.HeightField(
+            elevation=np.zeros(nodata.shape, dtype=np.float32),
+            x0=0.0, y0=float(nodata.shape[0]) * res, res=res,
+            crs="EPSG:32619", nodata_mask=nodata)
+
+    def test_background_keeps_candidates_over_a_hole(self):
+        nodata = np.zeros((100, 100), dtype=bool)
+        nodata[:, 50:] = True  # right half of the fine surface is empty
+        fine = self._field(nodata, res=10.0)
+        coarse = self._field(np.zeros((10, 10), dtype=bool), res=100.0)
+
+        alone = lattice_lib.build_lattice(fine, spacing_m=100.0)
+        composed = lattice_lib.build_lattice(fine, spacing_m=100.0,
+                                             backgrounds=[coarse])
+        self.assertEqual(alone.n_dropped_nodata, 50)
+        self.assertEqual(composed.n_dropped_nodata, 0)
+        self.assertEqual(len(composed), len(alone) + 50)
+
+    def test_background_that_also_lacks_data_drops_the_candidate(self):
+        nodata = np.ones((100, 100), dtype=bool)
+        fine = self._field(nodata, res=10.0)
+        coarse = self._field(np.ones((10, 10), dtype=bool), res=100.0)
+        result = lattice_lib.build_lattice(
+            fine, spacing_m=100.0, backgrounds=[coarse])
+        self.assertEqual(len(result), 0)
+        self.assertEqual(result.n_dropped_nodata, 100)
+
+
 if __name__ == "__main__":
     unittest.main()
