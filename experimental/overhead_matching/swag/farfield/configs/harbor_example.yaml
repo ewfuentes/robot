@@ -161,7 +161,7 @@ localization:
   heading_roughening_deg: 1.0
   map_cell_size_m: 50.0
   checkpoint_every: 10
-  measurement_backend: numpy
+  measurement_backend: torch
   association_persistence: true
   association_renewal_rate: 0.1
   association_outlier_rate: 0.1
