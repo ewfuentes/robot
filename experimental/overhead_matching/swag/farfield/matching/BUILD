@@ -6,6 +6,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("msgspec"),
+        requirement("shapely"),
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:artifact_recipe",

@@ -63,6 +63,8 @@ tracking:
   min_mask_area_px: 20
   drift_gate_px: 150.0
   drift_patience: 3
+  fragment_min_dominant_cc: 0.6
+  fragment_patience: 3
 
 audit:
   model: gemini-3-flash-preview

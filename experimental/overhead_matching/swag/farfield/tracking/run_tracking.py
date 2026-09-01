@@ -63,7 +63,8 @@ CLASS_COLORS = {
 }
 CLASS_CSS = {k: f"rgb{v}" for k, v in CLASS_COLORS.items()}
 STATUS_CSS = {"alive": "#3c3", "starved": "#fa2", "drift_alarm": "#c7d",
-              "mask_dead": "#e44", "mask_lost_in_window": "#e44"}
+              "mask_dead": "#e44", "mask_fragmented": "#e44",
+              "mask_lost_in_window": "#e44"}
 SUPPORT_SCORE = {"continue_clean": 3, "merge_superset": 2, "split_child": 2,
                  "weak": 1, "context": 0, "none": 0}
 MASK_TINT = (255, 60, 60)
@@ -284,6 +285,10 @@ def explain_close(t, cfg):
         return (f"Mask died: propagated mask area fell below "
                 f"{cfg['min_mask_area_px']} px - the object left the window "
                 "or SAM lost it.")
+    if reason == "mask_fragmented":
+        return (f"Mask fragmented: its largest connected component stayed "
+                f"below {cfg['fragment_min_dominant_cc']:.2f} of total mask "
+                f"area for {cfg['fragment_patience']} consecutive keyframes.")
     if reason == "mask_lost_in_window":
         return "The stored mask fell outside the re-centered window."
     if reason.startswith("birth_"):
