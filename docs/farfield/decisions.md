@@ -527,3 +527,69 @@ the remembered dead pose. (2) a whole-belief per-measurement damage cap —
 anti-synergistic (0/4): both protect hypothesis survival and together the
 belief stays permanently fragmented. If damage bounding returns, it must be
 asymmetric (clamp tracked-mode decay, not the diffuse cloud).
+||||||| parent of c290eee0 (farfield: renders see past their own surface, and the lattice stops deleting candidates)
+## 2026-08-31 · Every region's surface reaches 30 km past its candidate box, via a coarse background
+
+A depth render marches to a declared far range of 30 km, so a surface that
+stops at the candidate region's edge renders everything beyond it as sky. Mt.
+Washington and Pohang were built with a 30 km buffer; the two 1 m Massachusetts
+surfaces were not, because buying that buffer in QL1 LiDAR is roughly another
+200 GB per region, and carrying it at 1 m is worse still -- a 27 km box grown
+by 30 km is 7.7e9 cells, about 31 GB in memory, against 8.5e6 cells for the
+same extent at 30 m.
+
+Truncation looked survivable at first, on a horizon argument. From a 3 m eye
+the sea-level horizon is 6.6 km with `R_eff = R / (1 - 0.13)`, and terrain at
+range `d` beyond it is visible only above `(d - 6.6 km)^2 / (2 R_eff)`. Query
+tracks clear the nearest box edge by 8.24/7.96/7.99 km (Boston Harbor legs) and
+13.43 km (Charles), putting the visibility threshold at ~128 m and ~330 m, and
+eastern Massachusetts has nothing that tall within 30 km outside either box:
+Great Blue Hill (193 m) is *inside* the harbour box and Wachusett (620 m) is
+~50 km out, where the threshold is ~1.4 km.
+
+That argument covers query poses and nothing else. Candidates fill the box, so
+a rim candidate's outward hemisphere is false sky, and a worse problem was
+hiding underneath: `build_lattice` drops candidates whose cell has no source
+data, and the 1 m surfaces have holes -- 16.5% of the Boston Harbor box
+(12,765 of 77,259 candidates at the 100 m working spacing), 4.6% of the
+Charles box (3,645 of 78,945). Not all of
+it offshore, either: the 3DEP delivery is missing tiles *inside* the harbour,
+one of them beside the leg3 track, so navigable water a boat could occupy was
+being deleted from the search. No truth pose landed on a hole (0 of 1,862
+across the four datasets, checked against the provenance rasters), which is
+luck rather than design.
+
+So `TerrainTensor` takes an optional coarse `background`, consulted wherever
+the fine surface has no source data -- outside its box and in interior holes --
+and `build_lattice` drops a candidate only when neither surface has data. The
+background is Copernicus GLO-30, already used for Pohang, built per region over
+the box + 30 km at 30 m: `dem_surfaces/{boston_harbor,charles_river}/
+background_glo30_30m`, 0 no-data cells. Measured: candidates dropped falls from
+12,765 and 3,645 to **zero**, and source-data coverage per render at the leg3
+truth poses rises from 0.77-0.80 to **1.00** -- a fifth of every marched ray
+used to hit nothing. The rendered skyline barely moves, which is the horizon
+argument being right; what changes is that the renders are honest and the
+regions are consistent.
+
+GLO-30 is EGM2008 against the foreground's NAVD88/GEOID18. The sub-metre offset
+is declared, not corrected: at the >=1 km ranges where the background is
+consulted it is under 0.06 deg of elevation angle, well inside a 30 m posting's
+own error.
+
+An inset lattice was considered and rejected on the way here -- shrinking the
+baseline's candidate region by 2 km would have hidden the rim effect while
+leaving the interior holes, and it would have handed the baseline a 27% smaller
+search region than the proposed method, which is not a comparison worth
+reporting.
+
+Each condition gets a background with its own semantics. The DSM surfaces use
+GLO-30; the bare-earth **DEM** surfaces use `background_3dep13_10m` (USGS 3DEP
+1/3", 10 m, NAVD88 -- the foreground's own datum), because a DEM row whose far
+field carries GLO-30 buildings is no longer the bare-earth control the DEM/DSM
+contrast is built on. 3DEP stops at the coastline, so GLO-30 is chained *behind*
+it: bare earth on land, water surface over the sea, and no buildings introduced
+(`TerrainTensor.chain_from_height_fields`, fine to coarse). Backgrounds change
+nothing about which candidates exist: both conditions must be handed the same
+coverage, or they are searching different candidate sets. Measured at the
+100 m working spacing, both conditions keep every candidate in the declared
+box -- 77,259 for Boston Harbor and 78,945 for the Charles, zero dropped.

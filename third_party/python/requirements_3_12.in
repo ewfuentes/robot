@@ -38,6 +38,10 @@ open-clip-torch==2.32.0
 lmdb==1.7.2
 rasterio==1.4.3
 pyproj==3.7.2
+# LAZ point-cloud reading for the dem_baseline DSM recipe (CLD-4).
+# lazrs is laspy's Rust LAZ decompression backend, discovered at runtime.
+laspy==2.6.1
+lazrs==0.8.2
 sentence-transformers==5.1.0
 ollama==0.5.3
 paramiko==4.0.0
