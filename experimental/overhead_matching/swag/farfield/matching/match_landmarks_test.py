@@ -327,6 +327,37 @@ class SignatureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "globally namespaced"):
                 ml.build_map_signatures(path)
 
+    def test_building_inherits_smallest_named_complex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "complex.feather"
+            frame = schema.build_frame(
+                ids=["way:1", "way:2", "way:3", "way:4"],
+                geometries=[
+                    shapely.box(0.0, 0.0, 10.0, 10.0),
+                    shapely.box(2.0, 2.0, 8.0, 8.0),
+                    shapely.box(3.0, 3.0, 4.0, 4.0),
+                    shapely.box(20.0, 20.0, 21.0, 21.0),
+                ],
+                landmark_types=["osm"] * 4,
+                tags=[
+                    {"landuse": "residential", "name": "Outer Complex"},
+                    {"landuse": "residential", "name": "Sejan Berche"},
+                    {"building": "apartments", "name": "101"},
+                    {"building": "apartments", "name": "101"},
+                ],
+            )
+            frame.to_feather(path)
+            table = ml.build_map_signatures(path)
+
+        inherited = ml.signature({
+            "building": "apartments",
+            "complex:name": "Sejan Berche",
+            "name": "101",
+        })
+        bare = ml.signature({"building": "apartments", "name": "101"})
+        self.assertEqual(table[inherited]["landmark_ids"], ["osm:way:3"])
+        self.assertEqual(table[bare]["landmark_ids"], ["osm:way:4"])
+
 
 class ConfidenceMathTest(unittest.TestCase):
     def test_to_log_lr_is_clipped_log_odds(self):

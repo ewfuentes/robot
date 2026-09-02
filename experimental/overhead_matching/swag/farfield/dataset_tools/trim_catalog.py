@@ -166,8 +166,7 @@ HARD_UNOBSERVABLE_TAGS = frozenset({
         "turntable", "traverser", "derail", "phone", "switch_box")],
     ("leisure", "picnic_table"), ("leisure", "firepit"),
     ("leisure", "fitness_station"), ("leisure", "outdoor_seating"),
-    ("tourism", "picnic_site"), ("tourism", "guest_house"),
-    ("tourism", "apartment"), ("tourism", "hostel"), ("tourism", "motel"),
+    ("tourism", "picnic_site"), ("tourism", "apartment"),
     ("barrier", "gate"), ("barrier", "fence"), ("barrier", "bollard"),
     ("barrier", "kerb"), ("barrier", "wall"), ("barrier", "lift_gate"),
     ("barrier", "cycle_barrier"), ("barrier", "block"),
@@ -208,6 +207,12 @@ HARD_UNOBSERVABLE_TAGS = frozenset({
 # industrial=port; name=Paul W. Conley Terminal`.
 SOFT_UNOBSERVABLE_TAGS = frozenset({
     ("tourism", "information"), ("tourism", "artwork"),
+    # Named lodging buildings have the same far-field silhouette and identity
+    # value as tourism=hotel. Pohang's named Navis Motel was hard-dropped,
+    # after which the matcher confidently selected the wrong hotel. An unnamed
+    # lodging row remains unobservable; a proper name is what rescues it.
+    ("tourism", "motel"), ("tourism", "hostel"),
+    ("tourism", "guest_house"),
     ("historic", "memorial"), ("man_made", "flagpole"),
     *[("landuse", v) for v in (
         "residential", "commercial", "retail", "construction", "brownfield",

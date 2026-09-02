@@ -6,9 +6,11 @@ has no canonical semantics and gets no Set 1 entry, and `verdict: drop` is
 excluded. Output is a `CompatibilityTable` per tracklet for the bearing-only filter
 (farfield.localization.structs).
 
-**No spatial information is used anywhere.** Gating candidates with the
-vessel's GPS position would leak the localization answer. Set 2 is the complete
-bound catalog.
+**No observer-position information is used anywhere.** Gating candidates with
+the vessel's GPS position would leak the localization answer. Set 2 is the
+complete bound catalog. Catalog-internal containment may add identity context
+such as an apartment complex's name to one of its buildings, but it never
+selects candidates relative to the observer.
 
 Shape of the work: the map is far larger than a prompt, so it is split into
 signature chunks and the tracklets into small batches, and every batch is
@@ -50,6 +52,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import msgspec
+import shapely
 
 from common.python.serialization import msgspec_enc_hook
 from experimental.overhead_matching.swag.farfield import artifact
@@ -205,6 +208,47 @@ def signature(tags: dict) -> str:
     return f"sha256:{artifact.sha256_json(tags)}"
 
 
+COMPLEX_LANDUSE = frozenset(
+    {"residential", "commercial", "retail", "industrial"})
+
+
+def enclosing_complex_names(frame, records) -> dict[int, str]:
+    """Map building rows to the smallest named complex containing them.
+
+    East Asian apartment mapping commonly puts the complex name on a landuse
+    polygon while individual towers carry only unit labels such as ``101``.
+    The inherited name is matching context, not a persisted catalog mutation.
+    """
+    geometries = list(frame.geometry.values)
+    complex_rows = []
+    for index, (tags, geometry) in enumerate(zip(records, geometries)):
+        if (tags.get("name")
+                and tags.get("landuse") in COMPLEX_LANDUSE
+                and geometry is not None
+                and geometry.geom_type in ("Polygon", "MultiPolygon")):
+            complex_rows.append(index)
+    if not complex_rows:
+        return {}
+
+    tree = shapely.STRtree([geometries[index] for index in complex_rows])
+    result = {}
+    for index, (tags, geometry) in enumerate(zip(records, geometries)):
+        if "building" not in tags or geometry is None:
+            continue
+        centroid = shapely.centroid(geometry)
+        if centroid is None or shapely.is_empty(centroid):
+            continue
+        hits = tree.query(centroid, predicate="within")
+        candidates = [complex_rows[int(hit)] for hit in hits
+                      if complex_rows[int(hit)] != index]
+        if not candidates:
+            continue
+        owner = min(candidates,
+                    key=lambda row: (geometries[row].area, row))
+        result[index] = records[owner]["name"]
+    return result
+
+
 def build_map_signatures(feather_path: Path):
     """Digest -> canonical tags, display label, and unique landmark ids.
 
@@ -218,6 +262,7 @@ def build_map_signatures(feather_path: Path):
     records = schema.tag_dicts(frame)
     ids = frame["id"].values
     sources = frame["landmark_type"].values
+    complex_names = enclosing_complex_names(frame, records)
     table = {}
     seen_landmark_ids = set()
     for i in range(len(frame)):
@@ -233,6 +278,8 @@ def build_map_signatures(feather_path: Path):
         tags = catalog_lib.prune_far_field_tags(records[i])
         if not tags:
             continue
+        if i in complex_names:
+            tags = {**tags, "complex:name": complex_names[i]}
         signature_id = signature(tags)
         entry = table.setdefault(signature_id, {
             "canonical_tags": dict(sorted(tags.items())),

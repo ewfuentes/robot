@@ -406,6 +406,35 @@ class TrackBuilderTest(unittest.TestCase):
         self.assertEqual(builder.tracks[0].status, "closed")
         self.assertEqual(builder.tracks[0].close_reason, "mask_dead")
 
+    def test_sustained_mid_track_fragmentation_closes(self):
+        good = rect_mask(108, 88, 148, 168)
+        # Two equal regions with a full gap: dominant component ~0.5 < 0.6.
+        split = rect_mask(100, 88, 120, 168) | rect_mask(140, 88, 160, 168)
+        _, builder = self._mk([good, split, split, split])
+        obs0 = FakeObs("f0000__lm0__box0")
+        pano_box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(0, [obs0], {obs0.obs_id: pano_box})
+        for keyframe in range(4):
+            det = FakeObs(f"f{keyframe + 1:04d}__lm0__box0")
+            builder.step(keyframe, crops_fn_factory(builder), [det],
+                         {det.obs_id: pano_box})
+        track = builder.tracks[0]
+        self.assertEqual(track.status, "closed")
+        self.assertEqual(track.close_reason, "mask_fragmented")
+
+    def test_brief_fragmentation_is_tolerated(self):
+        good = rect_mask(108, 88, 148, 168)
+        split = rect_mask(100, 88, 120, 168) | rect_mask(140, 88, 160, 168)
+        _, builder = self._mk([good, split, good, split, good])
+        obs0 = FakeObs("f0000__lm0__box0")
+        pano_box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(0, [obs0], {obs0.obs_id: pano_box})
+        for keyframe in range(5):
+            det = FakeObs(f"f{keyframe + 1:04d}__lm0__box0")
+            builder.step(keyframe, crops_fn_factory(builder), [det],
+                         {det.obs_id: pano_box})
+        self.assertEqual(builder.tracks[0].status, "alive")
+
     def test_window_grows_with_object_extent(self):
         # Wide mask centered in whatever window size is requested.
         def wide_mask(size):

@@ -12,10 +12,10 @@ Design:
   prompt frame) plus graceful starvation: every future detection is itself a
   candidate seed, so a landmark whose box is misplaced at one keyframe founds
   its track at the next well-placed one.
-- Stop rules: mask death, detection starvation with a long patience
-  (default 15 keyframes - detections flicker), and a drift alarm for the
-  "semantically matching detection keeps landing next to the mask but never
-  on it" signature of a slid mask.
+- Stop rules: mask death, sustained mid-track fragmentation, detection
+  starvation with a long patience (default 15 keyframes - detections flicker),
+  and a drift alarm for the "semantically matching detection keeps landing
+  next to the mask but never on it" signature of a slid mask.
 """
 
 import math
@@ -93,6 +93,11 @@ class TrackBuilderConfig:
     min_mask_area_px: int = 20
     drift_gate_px: float = 150.0
     drift_patience: int = 3
+    # Birth health is checked once, but a healthy mask can split later as the
+    # perspective changes. Close only after a sustained split so a brief mast,
+    # pole, or other occluder does not kill an otherwise healthy track.
+    fragment_min_dominant_cc: float = 0.6
+    fragment_patience: int = 3
 
 
 SUPPORT_PRIORITY = ["continue_clean", "merge_superset", "split_child", "weak",
@@ -154,15 +159,23 @@ def classify_support(metrics: dict, cfg: TrackBuilderConfig) -> str:
     return "none"
 
 
+def connected_component_stats(mask: np.ndarray) -> tuple[int, float]:
+    """Number of mask components and fraction held by the largest one."""
+    import scipy.ndimage
+    area = float(mask.sum())
+    if not area:
+        return 0, 0.0
+    labels, n = scipy.ndimage.label(mask)
+    largest = max(np.bincount(labels.ravel())[1:]) if n else 0
+    return int(n), float(largest / area)
+
+
 def mask_health(mask: np.ndarray, prompt_box, cfg: TrackBuilderConfig) -> dict:
     """Birth-gate stats of a prompt-frame mask against its founding box."""
-    import scipy.ndimage
     area = float(mask.sum())
     if area < cfg.min_mask_area_px:
         return {"ok": False, "reason": "empty", "area": area}
-    labels, n = scipy.ndimage.label(mask)
-    largest = max(np.bincount(labels.ravel())[1:]) if n else 0
-    dominant = largest / area
+    n, dominant = connected_component_stats(mask)
     metrics = mask_box_metrics(mask, prompt_box)
     spill = 1.0 - metrics["inter_over_mask"]
     coverage = metrics["inter_over_box"]
@@ -197,6 +210,7 @@ class Track:
     window_px: int = 0
     unsupported_streak: int = 0
     drift_streak: int = 0
+    fragment_streak: int = 0
     ever_supported: bool = False  # any support after the founding detection
     tag_votes: Counter = field(default_factory=Counter)
     name_votes: Counter = field(default_factory=Counter)
@@ -371,6 +385,22 @@ class TrackBuilder:
                     with PROFILE.phase("media_on_interval", items=1):
                         self.on_interval(track, keyframe, crops, origins, masks,
                                      frame_previews)
+                continue
+
+            with PROFILE.phase("fragment_check", items=1):
+                _, dominant = connected_component_stats(final)
+            if dominant < cfg.fragment_min_dominant_cc:
+                track.fragment_streak += 1
+            else:
+                track.fragment_streak = 0
+            if track.fragment_streak >= cfg.fragment_patience:
+                self._record_step(track, keyframe + 1, final, origin_last,
+                                  [], "mask_fragmented")
+                self._close(track, keyframe + 1, "mask_fragmented")
+                if self.on_interval:
+                    with PROFILE.phase("media_on_interval", items=1):
+                        self.on_interval(track, keyframe, crops, origins,
+                                         masks, frame_previews)
                 continue
 
             with PROFILE.phase("score_detections", items=len(detections)):

@@ -163,6 +163,25 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(
             drops([{"tourism": "information"}])["unobservable_only"], [True])
 
+    def test_named_lodging_buildings_are_soft_unobservable(self):
+        for value in ("motel", "hostel", "guest_house"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    drops([{"tourism": value}])["unobservable_only"],
+                    [True])
+                self.assertEqual(
+                    drops([{"tourism": value,
+                            "name": "Navis Motel"}])["unobservable_only"],
+                    [False])
+
+    def test_name_does_not_rescue_tourism_apartment(self):
+        # tourism=apartment describes a rentable unit inside a host building,
+        # not the building itself.
+        self.assertEqual(
+            drops([{"tourism": "apartment",
+                    "name": "Harbor Suite 12"}])["unobservable_only"],
+            [True])
+
     def test_name_does_not_rescue_a_hard_unobservable_tag(self):
         """Regression: named bus stops are real names on invisible objects,
         and admitting them put 11,357 roads and stops into the catalog."""
@@ -850,9 +869,9 @@ class RuleFingerprintTest(unittest.TestCase):
             tc.HARD_UNOBSERVABLE_TAGS = original
         self.assertNotEqual(changed, tc.rule_fingerprint(2000.0, 6.0))
 
-    def test_no_clip_fingerprint_remains_compatible(self):
+    def test_current_no_clip_rules_have_stable_fingerprint(self):
         self.assertEqual(tc.rule_fingerprint(2000.0, 6.0),
-                         "074398ff556ba26a")
+                         "4568b3825d1fe2af")
 
     def test_changes_with_exact_spatial_boundary_and_plan(self):
         first = tc.rule_fingerprint(

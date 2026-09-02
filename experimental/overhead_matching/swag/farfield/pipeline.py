@@ -137,6 +137,8 @@ CONFIG_SCHEMA = {
     "tracking.min_mask_area_px": _integer(minimum=1),
     "tracking.drift_gate_px": _number(),
     "tracking.drift_patience": _integer(minimum=1),
+    "tracking.fragment_min_dominant_cc": _number(maximum=1.0),
+    "tracking.fragment_patience": _integer(minimum=1),
     "audit.model": _text(),
     "audit.min_supports": _integer(minimum=1),
     "audit.thinking_level": _text(),
