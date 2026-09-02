@@ -1,6 +1,8 @@
 import argparse
+import contextlib
 import copy
 import dataclasses
+import io
 import json
 import sys
 import tempfile
@@ -919,6 +921,103 @@ class ManifestCompletionTest(unittest.TestCase):
             pipeline.expected_artifact_identity(
                 self.paths, self.config, paths_lib.FRAME_LANDMARKS,
                 build_inputs={"dataset_panorama_sha256": "f" * 64}))
+
+    def _strip_recorded_setting(self, path, key):
+        """Rewrite a published artifact as if `key` did not exist when it was
+        made, keeping it self-describing: recipe, contract digest and identity
+        move together."""
+        manifest_path = path / artifact.MANIFEST_NAME
+        document = json.loads(manifest_path.read_text())
+        del document["recipe"]["stage_config"][key]
+        document["config"]["orchestration"]["config_digest"] = (
+            artifact_recipe.stage_config_digest(document["recipe"]))
+        artifact.atomic_write_json(manifest_path, document)
+        document["artifact_identity"] = artifact_recipe.identity_from_manifest(
+            artifact.load_manifest(path))
+        artifact.atomic_write_json(manifest_path, document)
+
+    def test_an_upstream_that_predates_a_setting_is_plugged_in_with_a_warning(
+            self):
+        """ekf, 2026-09-02: a setting the artifact was made without cannot
+        have shaped it. Warn, do not refuse -- refusing orphaned every
+        pre-#702 track artifact on the data root, filter-only reruns
+        included."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        self.publish_stage("track", build_inputs=inputs)
+        tracks = self.paths.artifact(
+            paths_lib.OBJECT_TRACKS,
+            self.config["artifacts"]["object_tracks_version"])
+        self._strip_recorded_setting(tracks, "tracking.fragment_patience")
+        pipeline._warned.clear()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            refs = pipeline.expected_upstream_refs(
+                self.paths, self.config, "audit", build_inputs=inputs)
+            self.assertTrue(pipeline.stage_done(
+                "track", self.paths, self.config,
+                build_identity=self.build_identity, build_inputs=inputs))
+        self.assertEqual([ref.kind for ref in refs],
+                         [paths_lib.OBJECT_TRACKS, paths_lib.FRAME_LANDMARKS])
+        self.assertIn("WARNING", out.getvalue())
+        self.assertIn("tracking.fragment_patience", out.getvalue())
+        self.assertEqual(out.getvalue().count("WARNING"), 1)
+
+    def test_an_upstream_made_with_a_different_value_is_refused(self):
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        self.publish_stage("track", build_inputs=inputs)
+        changed = copy.deepcopy(self.config)
+        changed["tracking"]["window_px"] = 2048
+        pipeline.validate_pipeline_config(changed)
+        with self.assertRaisesRegex(pipeline.StageDependencyError,
+                                    "tracking.window_px"):
+            pipeline.expected_upstream_refs(
+                self.paths, changed, "audit", build_inputs=inputs)
+        with self.assertRaisesRegex(pipeline.StageContractError,
+                                    "tracking.window_px"):
+            pipeline.stage_done(
+                "track", self.paths, changed,
+                build_identity=self.build_identity, build_inputs=inputs)
+
+    def test_transport_and_cost_never_gate_reuse(self):
+        """The extraction was paid for over batch at one staging prefix. A
+        build that reaches the provider differently for ITS stages is not
+        consuming a different extraction."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        changed = copy.deepcopy(self.config)
+        changed["execution"]["llm_transport"] = "on_demand"
+        changed["execution"]["batch_gcs_prefix"] = None
+        changed["cost"]["limit_usd"] = 1.0
+        pipeline.validate_pipeline_config(changed)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(pipeline.stage_done(
+                "extract", self.paths, changed,
+                build_identity=self.build_identity, build_inputs=inputs))
+            refs = pipeline.expected_upstream_refs(
+                self.paths, changed, "track", build_inputs=inputs)
+        self.assertEqual(len(refs), 2)
+
+    def test_an_upstream_must_bind_the_configured_siblings(self):
+        """Lineage is checked between artifacts, not against config: an audit
+        built from tracks v1 cannot be plugged in beside tracks v2."""
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_stage("extract", build_inputs=inputs)
+        self.publish_stage("track", build_inputs=inputs)
+        self.publish_stage("audit", build_inputs=inputs)
+        changed = copy.deepcopy(self.config)
+        changed["artifacts"]["object_tracks_version"] = "v2"
+        self.config = changed
+        self.paths = paths_lib.FarfieldPaths(
+            dataset="ds", root=self.root,
+            versions=pipeline.versions_from_config(changed),
+            overrides={"dataset_base": self.root / "datasets" / "ds"})
+        self.publish_stage("track", build_inputs=inputs)
+        with self.assertRaisesRegex(pipeline.StageDependencyError,
+                                    "different object_tracks"):
+            pipeline.expected_upstream_refs(
+                self.paths, changed, "bearings", build_inputs=inputs)
 
     def test_post_track_outputs_use_stage_scoped_identity(self):
         self.publish_catalog()

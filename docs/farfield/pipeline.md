@@ -78,11 +78,28 @@ determines it, per stage:
                           its upstreams' manifest digests,
                           the recorded build inputs it reads)
 
-Changing a knob only the last stage reads therefore does not move the identity
-of the paid extraction or the hours of tracking upstream of it, and they are
-reused because they still match — not because a reviewer signed a statement
-saying they should be. The identity is recorded in each artifact's manifest at
-publish time, and the pipeline recomputes it from the recipe and compares.
+The identity is recorded in each artifact's manifest at publish time, beside
+the recipe that produced it. A build that names an existing version of an
+artifact is plugging a prior part in, and the artifact is checked from its
+own manifest:
+
+- it is self-describing: the identity recomputed from its recorded recipe
+  equals the identity it records;
+- the settings this build states for that stage agree with the settings the
+  artifact was made with. A shared setting with a different value is a
+  different artifact and is refused: configure the values it was made with,
+  or name a new version. A setting the artifact predates cannot have shaped
+  it and is reported as unverified, not refused. `execution` and `cost` say
+  how a provider was reached and what it could cost; they never gate;
+- it binds the sibling artifacts this build names: an audit built from one
+  tracks version cannot be plugged in beside another.
+
+Nothing is recomputed from the consuming build's recipe. Changing a knob only
+the last stage reads therefore does not move the identity of the paid
+extraction or the hours of tracking upstream of it, and adding a setting to a
+stage does not orphan every artifact that stage published before the setting
+existed. The producing stage still refuses to publish over a version that was
+made with different settings.
 
 Code is deliberately NOT part of that identity. `code_provenance` records the
 commit and diff that produced every artifact, and `pipeline status` reports
