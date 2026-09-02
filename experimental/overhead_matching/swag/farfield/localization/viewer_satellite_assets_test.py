@@ -7,8 +7,8 @@ from unittest import mock
 
 from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
-    satellite_assets,
     satellite_underlay,
+    viewer_satellite_assets as satellite_assets,
 )
 
 

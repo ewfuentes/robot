@@ -48,7 +48,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     side_outputs,
     structs,
     viewer,
-    particle_sampling,
+    viewer_particle_sampling as particle_sampling,
     viewer_payload,
     viewer_server,
 )

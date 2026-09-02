@@ -32,7 +32,7 @@ py_library(
         requirement("flask"),
         ":match_notes",
         "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield/localization:particle_sampling",
+        "//experimental/overhead_matching/swag/farfield/localization:viewer_particle_sampling",
     ],
 )
 

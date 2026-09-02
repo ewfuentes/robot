@@ -6,8 +6,8 @@ import numpy as np
 
 from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
-    particle_sampling,
     run_io,
+    viewer_particle_sampling as particle_sampling,
 )
 
 
@@ -25,7 +25,7 @@ def publish_run(root: Path, values: dict[str, np.ndarray]) -> Path:
     relative = "checkpoints/kf_00000.npz"
     with artifact.ArtifactDirectoryBuilder(
             run_dir, kind=run_io.RUN_KIND, dataset="dataset", version="run",
-            generator="particle_sampling_test", git_commit="deadbeef",
+            generator="viewer_particle_sampling_test", git_commit="deadbeef",
             arguments=(), config={}, declared_outputs=(relative,)) as builder:
         checkpoint = builder.output_path(relative)
         checkpoint.parent.mkdir(parents=True, exist_ok=True)

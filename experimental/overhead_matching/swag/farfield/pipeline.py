@@ -44,9 +44,9 @@ from experimental.overhead_matching.swag.farfield import (
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.localization import (
-    review_assets,
     run_identity,
-    satellite_assets,
+    viewer_review_assets as review_assets,
+    viewer_satellite_assets as satellite_assets,
 )
 from experimental.overhead_matching.swag.farfield.matching import identity_review
 

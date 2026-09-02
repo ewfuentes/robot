@@ -44,10 +44,10 @@ from experimental.overhead_matching.swag.farfield.localization import (
     basemap as basemap_mod,
     forensics,
     metrics,
-    particle_sampling,
     replay as replay_mod,
     run_io,
     sources as sources_mod,
+    viewer_particle_sampling as particle_sampling,
 )
 
 # Enough particles to read a cloud's shape, few enough to inline for every

@@ -329,9 +329,9 @@ py_library(
         ":nominal_forward",
         ":paths",
         ":provenance",
-        "//experimental/overhead_matching/swag/farfield/localization:review_assets",
         "//experimental/overhead_matching/swag/farfield/localization:run_identity",
-        "//experimental/overhead_matching/swag/farfield/localization:satellite_assets",
+        "//experimental/overhead_matching/swag/farfield/localization:viewer_review_assets",
+        "//experimental/overhead_matching/swag/farfield/localization:viewer_satellite_assets",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
     ],
 )

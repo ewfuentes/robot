@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from experimental.overhead_matching.swag.farfield.localization import (
-    review_assets,
+    viewer_review_assets as review_assets,
 )
 
 

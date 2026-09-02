@@ -24,7 +24,7 @@ from flask import Flask, Response, abort, jsonify, redirect, request, send_file
 
 from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
-    particle_sampling,
+    viewer_particle_sampling as particle_sampling,
 )
 from experimental.overhead_matching.swag.farfield.viewers import match_notes
 

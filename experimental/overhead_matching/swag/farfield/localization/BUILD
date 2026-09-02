@@ -611,30 +611,30 @@ py_test(
 )
 
 py_library(
-    name = "satellite_assets",
-    srcs = ["satellite_assets.py"],
+    name = "viewer_satellite_assets",
+    srcs = ["viewer_satellite_assets.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":run_io",
-        ":side_outputs",
         ":satellite_underlay_lib",
+        ":side_outputs",
         "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
 py_test(
-    name = "satellite_assets_test",
-    srcs = ["satellite_assets_test.py"],
+    name = "viewer_satellite_assets_test",
+    srcs = ["viewer_satellite_assets_test.py"],
     deps = [
-        ":satellite_assets",
         ":satellite_underlay_lib",
+        ":viewer_satellite_assets",
         "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 
 py_library(
-    name = "review_assets",
-    srcs = ["review_assets.py"],
+    name = "viewer_review_assets",
+    srcs = ["viewer_review_assets.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         ":run_io",
@@ -645,9 +645,9 @@ py_library(
 )
 
 py_test(
-    name = "review_assets_test",
-    srcs = ["review_assets_test.py"],
-    deps = [":review_assets"],
+    name = "viewer_review_assets_test",
+    srcs = ["viewer_review_assets_test.py"],
+    deps = [":viewer_review_assets"],
 )
 
 py_library(
@@ -718,8 +718,8 @@ py_test(
 )
 
 py_library(
-    name = "particle_sampling",
-    srcs = ["particle_sampling.py"],
+    name = "viewer_particle_sampling",
+    srcs = ["viewer_particle_sampling.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("numpy"),
@@ -729,12 +729,12 @@ py_library(
 )
 
 py_test(
-    name = "particle_sampling_test",
-    srcs = ["particle_sampling_test.py"],
+    name = "viewer_particle_sampling_test",
+    srcs = ["viewer_particle_sampling_test.py"],
     deps = [
         requirement("numpy"),
-        ":particle_sampling",
         ":run_io",
+        ":viewer_particle_sampling",
         "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
@@ -750,10 +750,10 @@ py_library(
         ":basemap_lib",
         ":forensics_lib",
         ":metrics",
-        ":particle_sampling",
         ":replay",
         ":run_io",
         ":sources",
+        ":viewer_particle_sampling",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )
@@ -767,10 +767,10 @@ py_library(
     ],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
-        ":review_assets",
-        ":satellite_assets",
         ":side_outputs",
         ":viewer_payload",
+        ":viewer_review_assets",
+        ":viewer_satellite_assets",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield:configured_lane",
         "//experimental/overhead_matching/swag/farfield:provenance",

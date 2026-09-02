@@ -50,10 +50,10 @@ from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import artifact, provenance
 from experimental.overhead_matching.swag.farfield.localization import (
-    review_assets,
-    satellite_assets,
     side_outputs,
     viewer_payload,
+    viewer_review_assets as review_assets,
+    viewer_satellite_assets as satellite_assets,
 )
 from experimental.overhead_matching.swag.farfield.viewers import page
 
