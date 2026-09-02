@@ -43,7 +43,11 @@ from experimental.overhead_matching.swag.farfield import (
     paths as paths_lib,
     provenance,
 )
-from experimental.overhead_matching.swag.farfield.localization import run_identity
+from experimental.overhead_matching.swag.farfield.localization import (
+    run_identity,
+    viewer_review_assets as review_assets,
+    viewer_satellite_assets as satellite_assets,
+)
 from experimental.overhead_matching.swag.farfield.matching import identity_review
 
 
@@ -1280,6 +1284,10 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             build_inputs=build_inputs)
         catalog_ref = _configured_ref(paths, config, paths_lib.CATALOGS)
         feather = Path(catalog_ref.path) / "catalog.feather"
+        satellite = satellite_assets.discover(run_dir)
+        review_pages = review_assets.discover(
+            run_dir, tracks_dir=tracks_ref.path, audit_dir=audits_ref.path,
+            catalog_dir=catalog_ref.path)
         manifest = provenance.read(output_dir)
         expected_inputs = {
             "run_dir": str(run_dir.resolve()),
@@ -1288,18 +1296,25 @@ def viewer_completed(paths: paths_lib.FarfieldPaths, config: dict, *,
             "tracks_manifest_digest": tracks_ref.manifest_digest,
             "audit_dir": str(Path(audits_ref.path).resolve()),
             "audit_manifest_digest": audits_ref.manifest_digest,
+            # Like satellite imagery, exact-input review pages are discovered
+            # presentation context rather than scientific build inputs.
+            "matcher_page": (str(review_pages.matcher.resolve())
+                             if review_pages.matcher is not None else ""),
+            "matcher_page_sha256": (
+                artifact.sha256_file(review_pages.matcher)
+                if review_pages.matcher is not None else ""),
+            "audit_page": (str(review_pages.audit.resolve())
+                           if review_pages.audit is not None else ""),
+            "audit_page_sha256": (
+                artifact.sha256_file(review_pages.audit)
+                if review_pages.audit is not None else ""),
             "feather": str(feather.resolve()),
             "feather_sha256": artifact.sha256_file(feather),
-            # `build_viewer_command` passes neither `--ghost` nor
-            # `--satellite` nor the review-workbench pages, so these are
-            # the viewer's stringified empties. Overlays and workbench
-            # pages are hand-driven investigations, not build products.
+            # Ghosts remain hand-driven. Satellite is automatic presentation
+            # context: the viewer resolves the same compatible dataset asset.
             "ghosts": str([]),
-            "satellite": "",
-            "matcher_page": "",
-            "matcher_page_sha256": "",
-            "audit_page": "",
-            "audit_page_sha256": "",
+            "satellite": (str(satellite.resolve())
+                          if satellite is not None else ""),
         }
     except (artifact.ArtifactError, OSError, ValueError) as error:
         raise StageContractError(

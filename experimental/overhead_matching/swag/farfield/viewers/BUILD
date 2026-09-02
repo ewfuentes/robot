@@ -31,6 +31,8 @@ py_library(
     deps = [
         requirement("flask"),
         ":match_notes",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/localization:viewer_particle_sampling",
     ],
 )
 
@@ -46,8 +48,11 @@ py_test(
     srcs = ["server_test.py"],
     deps = [
         requirement("flask"),
+        requirement("numpy"),
         ":match_notes",
         ":server_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/localization:run_io",
     ],
 )
 

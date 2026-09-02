@@ -48,6 +48,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     side_outputs,
     structs,
     viewer,
+    viewer_particle_sampling as particle_sampling,
     viewer_payload,
     viewer_server,
 )
@@ -120,13 +121,34 @@ def _make_tracking_viewer_artifact(directory: Path) -> Path:
 
 
 class PayloadTest(unittest.TestCase):
+    def test_viewer_auto_resolves_satellite_when_not_explicit(self):
+        resolved = Path("/shared/satellite/dataset/version")
+        with mock.patch.object(
+                viewer.satellite_assets, "find_or_generate",
+                return_value=resolved) as find:
+            actual = viewer.satellite_for_viewer(
+                Path("/runs/experiment/run"), explicit=None, disabled=False)
+
+        self.assertEqual(actual, resolved)
+        find.assert_called_once_with(Path("/runs/experiment/run"))
+
+    def test_explicit_or_disabled_satellite_never_auto_fetches(self):
+        explicit = Path("/chosen/satellite")
+        with mock.patch.object(
+                viewer.satellite_assets, "find_or_generate") as find:
+            self.assertEqual(viewer.satellite_for_viewer(
+                Path("/runs/e/r"), explicit=explicit, disabled=False), explicit)
+            self.assertIsNone(viewer.satellite_for_viewer(
+                Path("/runs/e/r"), explicit=None, disabled=True))
+        find.assert_not_called()
+
     def test_tracking_evidence_href_is_portable_with_the_data_root(self):
         root = Path("/mirror/farfield_matching")
         viewer_dir = root / "runs" / "experiment" / "run.viewer"
         tracks_dir = (root / "artifacts" / "object_tracks" / "dataset"
                       / "tracks-v2")
 
-        href = viewer_payload._tracking_evidence_href(  # noqa: SLF001
+        href = viewer_payload._tracking_evidence_href(
             viewer_dir, tracks_dir, "track_full_T2.html")
 
         self.assertEqual(
@@ -136,25 +158,24 @@ class PayloadTest(unittest.TestCase):
         self.assertNotIn(str(root), href)
         self.assertFalse(href.startswith("file:"))
 
-    def test_review_href_is_portable_and_targets_the_exact_tracklet(self):
+    def test_review_href_is_portable_and_uses_the_short_display_anchor(self):
         root = Path("/mirror/farfield_matching")
         viewer_dir = root / "runs" / "experiment" / "run.viewer"
         matcher_page = (root / "runs" / "experiment"
                         / "run.matcher-review" / "index.html")
 
-        href = viewer_payload._review_href(  # noqa: SLF001
-            viewer_dir, matcher_page, "tracks@sha256:abc#T2")
+        href = viewer_payload._review_href(
+            viewer_dir, matcher_page, "T2")
 
         self.assertEqual(
             href,
-            "../run.matcher-review/index.html#"
-            "tracks%40sha256%3Aabc%23T2")
+            "../run.matcher-review/index.html#T2")
         self.assertNotIn(str(root), href)
 
     def test_tracklet_ids_sort_naturally(self):
         tracklets = ["LT10", "LT2", "LT1", "LT20", "LT11"]
         self.assertEqual(
-            sorted(tracklets, key=viewer_payload._natural_key),  # noqa: SLF001
+            sorted(tracklets, key=viewer_payload._natural_key),
             ["LT1", "LT2", "LT10", "LT11", "LT20"])
 
     def test_bare_run_directory_still_builds(self):
@@ -186,7 +207,7 @@ class PayloadTest(unittest.TestCase):
             _make_satellite(satellite, size=source_size)
             notes = []
 
-            payload = viewer_payload._satellite_payload(  # noqa: SLF001
+            payload = viewer_payload._satellite_payload(
                 satellite, notes)
 
             encoded = payload["layers"][0]["uri"].split(",", 1)[1]
@@ -210,8 +231,8 @@ class PayloadTest(unittest.TestCase):
             hull_east_m=[0.0, 10.0, 10.0, 0.0, 0.0],
             hull_north_m=[0.0, 0.0, 10.0, 10.0, 0.0])
 
-        line_payload = viewer_payload._landmark_geometry(line)  # noqa: SLF001
-        polygon_payload = viewer_payload._landmark_geometry(  # noqa: SLF001
+        line_payload = viewer_payload._landmark_geometry(line)
+        polygon_payload = viewer_payload._landmark_geometry(
             polygon)
         self.assertEqual(line_payload["kind"], "linestring")
         self.assertEqual(line_payload["points"], [
@@ -219,7 +240,7 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(polygon_payload["kind"], "polygon")
         self.assertEqual(len(polygon_payload["points"]), 5)
         self.assertEqual(
-            viewer_payload._catalog_bounds(  # noqa: SLF001
+            viewer_payload._catalog_bounds(
                 np.array([0.0]), np.array([0.0]), [line], margin=0.0),
             (-25.25, 80.75, -4.5, 7.25))
 
@@ -274,7 +295,7 @@ class PayloadTest(unittest.TestCase):
 
             arrays = data.checkpoints[worst_kf]
             rng = np.random.default_rng(0)
-            index = viewer_payload._weighted_sample(  # noqa: SLF001
+            index = particle_sampling.weighted_sample(
                 arrays["log_weight"], 400, rng)
             weights = np.exp(arrays["log_weight"]
                              - arrays["log_weight"].max())
@@ -292,15 +313,15 @@ class PayloadTest(unittest.TestCase):
         # All-equal weights.
         flat = np.zeros(500)
         self.assertEqual(
-            viewer_payload._weighted_sample(flat, 50, rng).shape[0], 50)  # noqa: SLF001
+            particle_sampling.weighted_sample(flat, 50, rng).shape[0], 50)
         # Fewer particles than requested: take them all.
         few = np.zeros(20)
         np.testing.assert_array_equal(
-            viewer_payload._weighted_sample(few, 50, rng), np.arange(20))  # noqa: SLF001
+            particle_sampling.weighted_sample(few, 50, rng), np.arange(20))
         # A single surviving particle.
         spike = np.full(500, -np.inf)
         spike[7] = 0.0
-        index = viewer_payload._weighted_sample(spike, 50, rng)  # noqa: SLF001
+        index = particle_sampling.weighted_sample(spike, 50, rng)
         self.assertTrue((index == 7).all())
 
     def test_map_payload_contains_only_referenced_landmarks(self):
@@ -331,7 +352,7 @@ class PayloadTest(unittest.TestCase):
                 ("building=commercial", "building"),
                 ("", "building"),
                 (None, "building")):
-            self.assertEqual(viewer_payload._glyph_for(type_key), expected)  # noqa: SLF001
+            self.assertEqual(viewer_payload._glyph_for(type_key), expected)
 
     def test_stale_attribution_cache_becomes_a_note(self):
         """T-V4. Silently rendering a waterfall from a different run is the
@@ -492,19 +513,26 @@ class PageTest(unittest.TestCase):
             self.assertIn("esc(compactTracklets(e.label))", html)
             self.assertIn("esc(compactTracklets(e.detail))", html)
 
-    def test_page_feature_detects_the_live_server_contract(self):
+    def test_particle_density_uses_full_checkpoint_with_static_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             _make_run(run_dir)
             html = viewer.render_html(viewer_payload.build(run_dir))
             self.assertIn('id="liveStatus"', html)
-            self.assertIn('id="tgFull" disabled', html)
+            self.assertNotIn('id="tgFull"', html)
+            self.assertIn('id="particlePct" disabled', html)
+            self.assertIn('<option value="" selected>sample</option>', html)
+            for percent in (10, 20, 30, 50, 100):
+                self.assertIn(f'<option value="{percent}"', html)
+            self.assertIn("let particlePercent = null;", html)
+            self.assertIn(
+                "Math.ceil(RUN.nParticles * particlePercent / 100)", html)
+            self.assertIn("particleSelect.onchange", html)
+            self.assertIn('LIVE.features.has("localization_particles")', html)
+            self.assertIn('"/api/localization-particles/" + keyframe', html)
+            self.assertIn("scheduleParticleCheckpoint(ck);", html)
             self.assertIn('apiJson("/api/health")', html)
-            self.assertIn(
-                'apiJson("/api/checkpoint/" + keyframe + "?view=map")', html)
             self.assertIn('apiJson("/api/replay"', html)
-            self.assertIn(
-                "if (showFullParticles) loadFullCheckpoint(ck);", html)
             self.assertIn("mapLayers().innerHTML = out", html)
 
     def test_fit_track_prefers_truth_and_falls_back_to_the_estimate(self):

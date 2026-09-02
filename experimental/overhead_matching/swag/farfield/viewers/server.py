@@ -1,9 +1,10 @@
-"""Serve the farfield data tree and centralized human matcher notes.
+"""Serve the farfield data tree, viewer particles, and matcher notes.
 
 This is the writable counterpart to ``python -m http.server``: existing
 indexes and generated viewers are served unchanged, while same-origin viewer
-pages may read and update one fixed notes file.  It binds only to IPv4
-loopback; use SSH local forwarding when the browser is on another machine.
+pages may read and update one fixed notes file or request a bounded weighted
+sample from one localization checkpoint. It binds only to IPv4 loopback; use
+SSH local forwarding when the browser is on another machine.
 
 Run with the standard data root:
 
@@ -21,6 +22,10 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, redirect, request, send_file
 
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield.localization import (
+    viewer_particle_sampling as particle_sampling,
+)
 from experimental.overhead_matching.swag.farfield.viewers import match_notes
 
 
@@ -55,6 +60,20 @@ def _safe_target(data_root: Path, relative: str) -> Path | None:
     except (FileNotFoundError, RuntimeError, ValueError):
         return None
     return target
+
+
+def _safe_localization_run(data_root: Path, value: str) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = data_root / candidate
+    try:
+        target = candidate.resolve(strict=True)
+        target.relative_to(data_root / "runs")
+    except (FileNotFoundError, RuntimeError, ValueError):
+        return None
+    return target if target.is_dir() else None
 
 
 def _directory_page(data_root: Path, directory: Path, request_path: str) -> str:
@@ -122,9 +141,29 @@ def create_app(data_root: Path = DEFAULT_ROOT) -> Flask:
         return jsonify({
             "ok": True,
             "root": str(root),
-            "features": ["match_notes"],
+            "features": ["localization_particles", "match_notes"],
             "notes_file": str(store.notes_path),
         })
+
+    @app.get("/api/localization-particles/<int:keyframe_idx>")
+    def localization_particles(keyframe_idx: int):
+        run_dir = _safe_localization_run(
+            root, request.args.get("run", ""))
+        if run_dir is None:
+            return jsonify({"error": "run must name a directory under runs/"}), 404
+        percent = request.args.get("percent", type=int)
+        if percent is None:
+            return jsonify({"error": "percent is required"}), 400
+        try:
+            payload = particle_sampling.checkpoint_payload(
+                run_dir, keyframe_idx=keyframe_idx, percent=percent)
+        except FileNotFoundError as error:
+            return jsonify({"error": str(error)}), 404
+        except (artifact.ArtifactError,
+                particle_sampling.ParticleSamplingError,
+                OSError) as error:
+            return jsonify({"error": str(error)}), 400
+        return jsonify(payload)
 
     @app.get("/api/match-notes")
     def get_match_notes():

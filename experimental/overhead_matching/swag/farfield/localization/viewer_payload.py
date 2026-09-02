@@ -47,6 +47,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     replay as replay_mod,
     run_io,
     sources as sources_mod,
+    viewer_particle_sampling as particle_sampling,
 )
 
 # Enough particles to read a cloud's shape, few enough to inline for every
@@ -86,30 +87,6 @@ def _glyph_for(type_key: str) -> str:
         if any(needle in lowered for needle in needles):
             return glyph
     return DEFAULT_GLYPH
-
-
-def _weighted_sample(log_weight: np.ndarray, count: int,
-                     rng: np.random.Generator) -> np.ndarray:
-    """A fair draw from the weighted posterior, by systematic resampling.
-
-    Systematic rather than multinomial for the same reason the filter uses it:
-    it has lower variance, so the drawn cloud is a more faithful picture of the
-    posterior at the small sample sizes a page can carry.
-
-    Kept local rather than imported: `filter.systematic_resample` is the
-    canonical systematic resampler, but it mutates a whole ParticleBelief and
-    applies kernel regularization — this needs only an index draw from raw
-    log-weights loaded off disk. Keep the two in step.
-    """
-    n = log_weight.shape[0]
-    if n <= count:
-        return np.arange(n)
-    weights = np.exp(log_weight - log_weight.max())
-    total = weights.sum()
-    if not np.isfinite(total) or total <= 0.0:
-        return rng.choice(n, size=count, replace=False)
-    positions = (rng.random() + np.arange(count)) / count
-    return np.searchsorted(np.cumsum(weights / total), positions)
 
 
 def _landmark_positions(manifest, frame):
@@ -384,7 +361,10 @@ def _tracklet_dossiers(data, cache, triage, bundle, viewer_dir: Path,
                         source.evidence_page)
                     if source.evidence_page is not None else None),
                 "matcherHref": (
-                    _review_href(viewer_dir, matcher_page, tracklet_id)
+                    # The matcher page retains the canonical digest-bound key
+                    # internally, but publishes a short local-id anchor for
+                    # human-facing URLs and stable two-column layout.
+                    _review_href(viewer_dir, matcher_page, source.local_id)
                     if matcher_page is not None else None),
                 "auditHref": (
                     _review_href(viewer_dir, audit_page, source.local_id)
@@ -666,7 +646,8 @@ def build(run_dir: Path, tracks_dir: Path | None = None,
     rng = np.random.default_rng(0)
     checkpoints = {}
     for keyframe_idx, arrays in sorted(data.checkpoints.items()):
-        index = _weighted_sample(arrays["log_weight"], max_particles, rng)
+        index = particle_sampling.weighted_sample(
+            arrays["log_weight"], max_particles, rng)
         checkpoints[str(keyframe_idx)] = {
             "e": _round(arrays["east_m"][index], 0),
             "n": _round(arrays["north_m"][index], 0),

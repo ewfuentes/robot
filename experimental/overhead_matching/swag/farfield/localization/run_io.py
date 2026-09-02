@@ -154,6 +154,66 @@ def _decode_typed_json(payload: bytes, record_type, where: str):
     return value
 
 
+_RETIRED_NOOP_FILTER_FIELDS = {
+    "measurement_damage_cap_nats": None,
+}
+_RETIRED_NOOP_PROPOSAL_FIELDS = {
+    "revival_enabled": False,
+    "revival_margin_nats": 0.0,
+    "revival_match_radius_m": None,
+}
+
+
+def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
+    """Normalize one brief, never-merged experiment out of recorded runs.
+
+    Several 2026-08-27 runs were stamped with damage-cap/revival settings while
+    all four were disabled. The experiment was removed before commit, leaving
+    valid no-op runs that the strict reader could no longer inspect. Accept
+    only the exact inactive spellings; a non-default value shaped a run and is
+    still unknown science, so it remains a hard error.
+    """
+    normalized = dict(document)
+    filter_config = document.get("filter_config")
+    if not isinstance(filter_config, dict):
+        return normalized
+    filter_config = dict(filter_config)
+    for name, expected in _RETIRED_NOOP_FILTER_FIELDS.items():
+        if name not in filter_config:
+            continue
+        actual = filter_config[name]
+        if type(actual) is not type(expected) or actual != expected:
+            raise ValueError(
+                f"{where}.filter_config.{name} used retired non-noop value "
+                f"{actual!r}")
+        filter_config.pop(name)
+    proposal = filter_config.get("proposal")
+    if isinstance(proposal, dict):
+        proposal = dict(proposal)
+        for name, expected in _RETIRED_NOOP_PROPOSAL_FIELDS.items():
+            if name not in proposal:
+                continue
+            actual = proposal[name]
+            if type(actual) is not type(expected) or actual != expected:
+                raise ValueError(
+                    f"{where}.filter_config.proposal.{name} used retired "
+                    f"non-noop value {actual!r}")
+            proposal.pop(name)
+        filter_config["proposal"] = proposal
+    normalized["filter_config"] = filter_config
+    return normalized
+
+
+def _decode_run_manifest(payload: bytes, where: str) -> structs.RunManifest:
+    document = _strict_json_document(payload, where)
+    if not isinstance(document, dict):
+        raise ValueError(f"{where} must be a JSON object")
+    normalized = _without_retired_noop_filter_fields(document, where)
+    return _decode_typed_json(
+        json.dumps(normalized, separators=(",", ":")).encode("utf-8"),
+        structs.RunManifest, where)
+
+
 def _read_regular_file(path: Path) -> bytes:
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -718,9 +778,9 @@ def read_run(run_dir: Path) -> RunData:
     run_dir = Path(run_dir)
     reference = artifact.open_artifact(run_dir, expected_kind=RUN_KIND)
     artifact_manifest = artifact.load_manifest(run_dir)
-    manifest = _decode_typed_json(
+    manifest = _decode_run_manifest(
         _read_regular_file(run_dir / RUN_MANIFEST_NAME),
-        structs.RunManifest, str(run_dir / RUN_MANIFEST_NAME))
+        str(run_dir / RUN_MANIFEST_NAME))
     validate_manifest(manifest)
     if reference.dataset != manifest.dataset:
         raise ValueError(
@@ -729,8 +789,13 @@ def read_run(run_dir: Path) -> RunData:
         raise ValueError(
             "artifact manifest git commit disagrees with RunManifest")
     expected_contract = _manifest_contract(manifest)
-    if artifact_manifest.config.get(RUN_CONTRACT_CONFIG_KEY) != \
-            expected_contract:
+    recorded_contract = artifact_manifest.config.get(RUN_CONTRACT_CONFIG_KEY)
+    if isinstance(recorded_contract, dict):
+        recorded_contract = _without_retired_noop_filter_fields(
+            recorded_contract,
+            f"{run_dir / artifact.MANIFEST_NAME} config "
+            f"{RUN_CONTRACT_CONFIG_KEY}")
+    if recorded_contract != expected_contract:
         raise ValueError(
             "artifact manifest does not contain the exact run contract")
     for key, expected in (

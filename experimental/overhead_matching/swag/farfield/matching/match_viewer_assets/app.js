@@ -25,6 +25,19 @@ function esc(t){
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+function trackletLabel(key){
+  const tk = M.tracklets[key];
+  if(tk && tk.label) return tk.label;
+  const text = String(key), split = text.lastIndexOf('#');
+  return split >= 0 ? text.slice(split + 1) : text;
+}
+
+function canonicalTracklet(label){
+  if(M.tracklets[label]) return label;
+  return Object.keys(M.tracklets).find(key => trackletLabel(key) === label)
+    || label;
+}
+
 // Inverse of the equirectangular ENU the whole page is drawn in; the scale
 // factors come from the payload so this matches geometry.RegionFrame exactly
 // rather than re-deriving a projection in the browser.
@@ -62,7 +75,8 @@ function llUpdate(){
   let e, n, what;
   if(tk && tk.rays.length){
     e = tk.rays[0][1]; n = tk.rays[0][2];
-    what = 'robot at keyframe ' + tk.rays[0][0] + ' (' + sel + ')';
+    what = 'robot at keyframe ' + tk.rays[0][0] + ' ('
+      + trackletLabel(sel) + ')';
   } else {
     e = view.cx; n = view.cy; what = 'view centre';
   }
@@ -220,7 +234,8 @@ function draw(){
           ? 'rgba(62,207,142,.5)' : 'rgba(111,155,255,.38)';
         ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
         hits.push({x, y, r:7, kind:'target', tracklet:k, label:
-          k + ' -> ' + (g[5] || g[4]) + '  aggregate confidence '
+          trackletLabel(k) + ' -> ' + (g[5] || g[4])
+          + '  aggregate confidence '
           + g[2] + ', ' + g[3]
           + ', ' + g[6] + ' map rows' + dtxt(g), lid:g[4],
           e:g[0], n:g[1]});
@@ -325,15 +340,15 @@ function select(key, andFit){
     c.classList.toggle('sel', c.dataset.key === key));
   const tk = M.tracklets[key];
   if(tk){
-    let msg = key + ': ' + tk.rays.length + ' bearing'
+    let msg = trackletLabel(key) + ': ' + tk.rays.length + ' bearing'
       + (tk.rays.length===1?'':'s') + ', ' + tk.n_shown + ' of '
       + tk.n_resolved + ' placed map rows drawn';
     if(tk.n_rows > tk.n_resolved)
       msg += ' (' + tk.n_rows + ' rows before dedup/placement)';
     tip.textContent = msg;
   } else {
-    tip.textContent = key + ': nothing to draw (no bearings and no placed '
-      + 'match)';
+    tip.textContent = trackletLabel(key)
+      + ': nothing to draw (no bearings and no placed match)';
   }
   if(andFit) fitSel(); else draw();
 }
@@ -414,4 +429,5 @@ document.getElementById('b-ctx').onclick = ev => {
 };
 new ResizeObserver(resize).observe(cv);
 resize(); fitAll();
-if(location.hash) select(decodeURIComponent(location.hash.slice(1)), true);
+if(location.hash)
+  select(canonicalTracklet(decodeURIComponent(location.hash.slice(1))), true);

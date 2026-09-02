@@ -3,6 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield.localization import run_io
 from experimental.overhead_matching.swag.farfield.viewers import (
     match_notes,
     server,
@@ -16,6 +20,24 @@ MATCHING = {
     "version": "matcher-v1",
     "content_digest": DIGEST,
 }
+
+
+def publish_localization_run(root: Path, n_particles: int = 50) -> Path:
+    run_dir = root / "runs" / "experiment" / "run"
+    relative = "checkpoints/kf_00000.npz"
+    with artifact.ArtifactDirectoryBuilder(
+            run_dir, kind=run_io.RUN_KIND, dataset="dataset", version="run",
+            generator="viewer_server_test", git_commit="deadbeef",
+            arguments=(), config={}, declared_outputs=(relative,)) as builder:
+        checkpoint = builder.output_path(relative)
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            checkpoint,
+            east_m=np.arange(n_particles, dtype=np.float64),
+            north_m=-np.arange(n_particles, dtype=np.float64),
+            log_weight=np.zeros(n_particles, dtype=np.float64),
+            mode_id=np.arange(n_particles, dtype=np.int64) % 2)
+    return run_dir
 
 
 class ViewerServerTest(unittest.TestCase):
@@ -46,10 +68,38 @@ class ViewerServerTest(unittest.TestCase):
         self.assertEqual(self.client.get("/_annotations/match_notes.json")
                          .status_code, 404)
 
-    def test_health_names_only_match_notes(self):
+    def test_health_names_read_only_viewer_features(self):
         health = self.client.get("/api/health").get_json()
-        self.assertEqual(health["features"], ["match_notes"])
+        self.assertEqual(
+            health["features"], ["localization_particles", "match_notes"])
         self.assertNotIn("replay", json.dumps(health))
+
+    def test_localization_particle_percentage_reads_one_run_checkpoint(self):
+        run_dir = publish_localization_run(self.root)
+
+        response = self.client.get(
+            "/api/localization-particles/0",
+            query_string={"run": str(run_dir), "percent": 10})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        body = response.get_json()
+        self.assertEqual(body["percent"], 10)
+        self.assertEqual(body["n"], 5)
+        self.assertEqual(body["total"], 50)
+        self.assertEqual(len(body["e"]), 5)
+
+    def test_particle_requests_are_confined_and_percentages_are_bounded(self):
+        run_dir = publish_localization_run(self.root)
+        outside = Path(self.tmp.name).parent
+        self.assertEqual(self.client.get(
+            "/api/localization-particles/0",
+            query_string={"run": str(outside), "percent": 10}).status_code,
+                         404)
+        response = self.client.get(
+            "/api/localization-particles/0",
+            query_string={"run": str(run_dir), "percent": 25})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("one of", response.get_json()["error"])
 
     def test_same_origin_put_round_trips(self):
         body = {
