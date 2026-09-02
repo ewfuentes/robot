@@ -109,7 +109,8 @@ class ActiveCatalogsTest(unittest.TestCase):
             "franconia_leg1", "franconia_leg2", "franconia_drive"))
         self.assertEqual(franconia.output_datasets, franconia.bbox_datasets)
         self.assertEqual(franconia.osm_specs, (
-            "north-america/us/new-hampshire-latest.osm.pbf",))
+            "north-america/us/new-hampshire-latest.osm.pbf",
+            "north-america/us/vermont-latest.osm.pbf"))
         self.assertIsNone(franconia.enc_state)
         self.assertEqual(pohang.output_datasets, ("pohang_canal_04",))
         self.assertEqual(subject.BBOX_BUFFER_KM, 25.0)
