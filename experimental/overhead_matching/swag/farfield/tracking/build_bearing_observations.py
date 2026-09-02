@@ -191,9 +191,6 @@ def load_inputs(args):
         tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
     audit_manifest = configured_lane.require(
         audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)
-    if audit_manifest.config.get("build_identity") != document["build_identity"]:
-        raise BearingObservationError(
-            f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
     if sum(ref == tracks_ref
            for ref in audit_manifest.upstreams) != 1:
         raise BearingObservationError(

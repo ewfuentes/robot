@@ -1113,12 +1113,8 @@ def _build_snapshot(args, parser):
             tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
         configured_lane.require(
             catalog_ref, document=document, kind=paths_lib.CATALOGS)
-        audit_manifest = configured_lane.require(
+        configured_lane.require(
             audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)
-        if audit_manifest.config.get("build_identity") != document[
-                "build_identity"]:
-            raise ValueError(
-                "semantic_audits belongs to a different immutable build")
         catalog_digest_keys = {
             "catalog_manifest_digest", "catalog_content_digest"}
         recorded_catalog_keys = catalog_digest_keys & set(document["inputs"])

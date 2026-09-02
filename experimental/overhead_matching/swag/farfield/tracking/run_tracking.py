@@ -668,11 +668,6 @@ def load_tracking_config(args):
         raise TrackingContractError(
             "pinhole artifact does not bind the current frozen dataset sources")
     frame_manifest = artifact_lib.load_manifest(args.frame_landmarks_dir)
-    if frame_manifest.config.get(
-            "build_identity") != document["build_identity"]:
-        raise TrackingContractError(
-            "frame_landmarks artifact belongs to a different immutable "
-            "build identity")
     if frame_manifest.upstreams.count(pinhole_ref) != 1:
         raise TrackingContractError(
             "frame_landmarks does not bind the exact pinhole artifact once")

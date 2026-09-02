@@ -227,14 +227,16 @@ class TrackingConfigTest(unittest.TestCase):
                 rt.TrackingContractError, "exact pinhole artifact"):
             rt.load_tracking_config(self.fixture.args())
 
-    def test_frame_landmarks_must_belong_to_the_immutable_build(self):
+    def test_frame_landmarks_from_another_build_is_accepted(self):
+        """A build may plug in extraction another build paid for. Which
+        generation an input belongs to is the orchestrator's question (see
+        docs/farfield/decisions.md, 2026-09-02); the producer only requires
+        that it binds the configured pinholes."""
         manifest_path = self.fixture.frame_landmarks / artifact.MANIFEST_NAME
         document = json.loads(manifest_path.read_text())
         document["config"]["build_identity"] = "0" * 64
         artifact.atomic_write_json(manifest_path, document)
-        with self.assertRaisesRegex(
-                rt.TrackingContractError, "different immutable build"):
-            rt.load_tracking_config(self.fixture.args())
+        rt.load_tracking_config(self.fixture.args())
 
     def test_upstream_artifact_identity_is_exact(self):
         wrong = write_artifact(

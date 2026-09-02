@@ -561,6 +561,14 @@ Both are the consumer re-deriving settings for stages it does not run. The
 a producer-side hazard, and the producer-side guard ("choose a new output
 version") already covers it.
 
+The producers carried the same check in miniature: match, bearings,
+diagnostics and tracking each refused an input whose `config.build_identity`
+differed from their own build's ("belongs to a different immutable build"),
+so a new build could not run match over an audit another build had published
+even after the orchestrator had accepted it. Those four equalities are gone;
+the lineage checks beside them (an audit binds its tracks exactly once, and
+so on) stay, because those are about the data.
+
 **Rule (ekf).** Builds may name prior parts. When the config for a plugged-in
 stage is given, a differing shared value fails; a key the artifact predates
 warns. Schema growth must not orphan artifacts.
