@@ -646,6 +646,38 @@ py_binary(
   ]
 )
 
+py_test(
+  name="evaluate_histogram_on_paths_test",
+  srcs=["evaluate_histogram_on_paths_test.py"],
+  deps=[
+    ":evaluate_histogram_on_paths",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ],
+)
+
+py_binary(
+  name="summarize_loci_position_mass",
+  srcs=["summarize_loci_position_mass.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/farfield:artifact",
+    "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    requirement("torch"),
+  ],
+)
+
+py_test(
+  name="summarize_loci_position_mass_test",
+  srcs=["summarize_loci_position_mass_test.py"],
+  deps=[
+    ":summarize_loci_position_mass",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    requirement("torch"),
+  ],
+)
+
 py_binary(
   name="visualize_histogram_results",
   srcs=["visualize_histogram_results.py"],
@@ -711,6 +743,16 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
+)
+
+py_test(
+  name="export_similarity_matrix_test",
+  srcs=["export_similarity_matrix_test.py"],
+  deps=[
+    ":export_similarity_matrix",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ],
 )
 
 py_binary(
@@ -928,6 +970,16 @@ py_binary(
   ]
 )
 
+py_test(
+  name="precompute_value_embeddings_test",
+  srcs=["precompute_value_embeddings_test.py"],
+  deps=[
+    ":precompute_value_embeddings",
+    requirement("pandas"),
+    requirement("pyarrow"),
+  ],
+)
+
 py_library(
   name = "correspondence_configs",
   srcs = ["correspondence_configs.py"],
@@ -1014,6 +1066,18 @@ py_binary(
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     ":landmark_pairing_cli_lib",
   ]
+)
+
+py_test(
+  name="export_correspondence_similarity_test",
+  srcs=["export_correspondence_similarity_test.py"],
+  deps=[
+    ":export_correspondence_similarity",
+    "//common/torch:load_torch_deps",
+    requirement("pandas"),
+    requirement("numpy"),
+    requirement("torch"),
+  ],
 )
 
 py_binary(

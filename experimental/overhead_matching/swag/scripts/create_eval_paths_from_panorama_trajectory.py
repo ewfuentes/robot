@@ -13,11 +13,18 @@ Usage:
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
 from common.gps.web_mercator import EARTH_RADIUS_M
 from common.math.haversine import find_d_on_unit_circle
+
+
+def mapping_sha256(dataset_path: Path) -> str:
+    """Return the stable identity of the trajectory-to-panorama mapping."""
+    return hashlib.sha256(
+        (dataset_path / "pano_id_mapping.csv").read_bytes()).hexdigest()
 
 
 def load_trajectory(dataset_path: Path) -> tuple[list[str], list[float]]:
@@ -106,11 +113,24 @@ def generate_paths(
     return paths
 
 
+def generate_full_trajectory_paths(pano_ids: list[str]) -> list[list[str]]:
+    """Return the complete recorded trajectory in both directions."""
+    return [list(pano_ids), list(reversed(pano_ids))]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate fixed-length evaluation paths from trajectory datasets")
     parser.add_argument("--dataset_path", type=Path, required=True)
-    parser.add_argument("--target_distance_m", type=float, required=True, help="Path length in meters")
-    parser.add_argument("--num_paths", type=int, required=True, help="Total paths (half forward, half backward)")
+    distance = parser.add_mutually_exclusive_group(required=True)
+    distance.add_argument("--target_distance_m", type=float, help="Path length in meters")
+    distance.add_argument(
+        "--full_trajectory", action="store_true",
+        help="Emit the complete recorded leg once forward and once backward",
+    )
+    parser.add_argument(
+        "--num_paths", type=int,
+        help="Total fixed-length paths (half forward, half backward)",
+    )
     parser.add_argument("--out", type=Path, required=True, help="Output JSON path")
     args = parser.parse_args()
 
@@ -118,11 +138,20 @@ def main():
     total_dist = cum_dist[-1]
     print(f"Trajectory: {len(pano_ids)} panos, {total_dist:.0f}m")
 
-    paths = generate_paths(pano_ids, cum_dist, args.target_distance_m, args.num_paths)
+    if args.full_trajectory:
+        if args.num_paths is not None:
+            parser.error("--num_paths cannot be used with --full_trajectory")
+        paths = generate_full_trajectory_paths(pano_ids)
+        num_fwd = 1
+    else:
+        if args.num_paths is None:
+            parser.error("--num_paths is required with --target_distance_m")
+        paths = generate_paths(
+            pano_ids, cum_dist, args.target_distance_m, args.num_paths)
+        num_fwd = args.num_paths // 2
 
     # Stats
     lengths = [len(p) for p in paths]
-    num_fwd = args.num_paths // 2
     fwd_lengths = lengths[:num_fwd]
     bwd_lengths = lengths[num_fwd:]
     print(f"Forward:  {num_fwd} paths, {min(fwd_lengths)}-{max(fwd_lengths)} panos")
@@ -132,12 +161,13 @@ def main():
     out_data = {
         "paths": paths,
         "dataset_path": str(args.dataset_path),
-        "dataset_hash": "new",
+        "dataset_hash": mapping_sha256(args.dataset_path),
         "args": {
             "target_distance_m": args.target_distance_m,
-            "num_paths": args.num_paths,
+            "full_trajectory": args.full_trajectory,
+            "num_paths": len(paths),
             "num_forward": num_fwd,
-            "num_backward": args.num_paths - num_fwd,
+            "num_backward": len(paths) - num_fwd,
         },
     }
     with open(args.out, "w") as f:

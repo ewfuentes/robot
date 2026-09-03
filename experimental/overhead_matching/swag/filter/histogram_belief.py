@@ -145,17 +145,20 @@ class GridSpec:
         lat, lon = self.cell_indices_to_latlon(grid_rows.flatten(), grid_cols.flatten())
         return torch.stack([lat, lon], dim=-1)
 
-    def get_all_cell_centers_px(self, device: torch.device) -> torch.Tensor:
+    def get_all_cell_centers_px(
+            self, device: torch.device,
+            dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """Return all cell centers as (num_rows * num_cols, 2) tensor of [row_px, col_px].
 
         Args:
             device: Torch device for the output tensor
+            dtype: Floating-point precision for the output tensor
 
         Returns:
             Tensor of shape (num_rows * num_cols, 2) with [row_px, col_px] for each cell
         """
-        row_indices = torch.arange(self.num_rows, device=device, dtype=torch.float32)
-        col_indices = torch.arange(self.num_cols, device=device, dtype=torch.float32)
+        row_indices = torch.arange(self.num_rows, device=device, dtype=dtype)
+        col_indices = torch.arange(self.num_cols, device=device, dtype=dtype)
         grid_rows, grid_cols = torch.meshgrid(row_indices, col_indices, indexing="ij")
 
         # Cell center in pixels

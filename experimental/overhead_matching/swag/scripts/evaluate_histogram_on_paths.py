@@ -26,13 +26,17 @@ from experimental.overhead_matching.swag.evaluation.odometry_noise import (
 from pathlib import Path
 from common.gps import web_mercator
 from common.math.haversine import find_d_on_unit_circle
+import csv
+import hashlib
 import shutil
 import msgspec
 import json
 import math
+import string
 import common.torch.load_torch_deps
 import torch
 import tqdm
+import warnings
 from dataclasses import dataclass, field
 
 
@@ -71,7 +75,7 @@ class HistogramFilterConfig:
     # When satellite images are resolution-normalized (cropped to source_px and
     # resized to patch_size_px), the ground footprint is source_px, not patch_size_px.
     # Read from satellite_bbox.json; defaults to patch_size_px (no normalization).
-    source_px: int | None = None
+    source_px: int | float | None = None
     odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
     max_chunk_gib: float = 2.0  # Peak GPU memory per chunk for cell-to-patch mapping
 
@@ -172,7 +176,7 @@ def run_histogram_filter_on_path(
         if track_convergence:
             for radius in convergence_radii:
                 prob_mass = compute_probability_mass_within_radius(
-                    belief, true_latlons[step_idx + 1], float(radius)
+                    belief, true_latlons[step_idx], float(radius)
                 )
                 prob_mass_by_radius[radius].append(prob_mass)
 
@@ -212,7 +216,8 @@ def get_distance_error_from_estimate_history(
     vigor_dataset: vd.VigorDataset,
     path: list[str],
     estimate_history: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    true_latlon: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Compute distance error between position estimates and ground truth.
 
     Works for any per-step lat/lon estimate (e.g. weighted mean or argmax
@@ -222,13 +227,15 @@ def get_distance_error_from_estimate_history(
         vigor_dataset: Dataset with panorama positions
         path: List of panorama indices
         estimate_history: (path_len + 1, 2) lat/lon estimates
+        true_latlon: Optional authoritative (path_len, 2) truth positions. If
+            omitted, use the legacy coordinates encoded in panorama filenames.
 
     Returns:
-        error_meters: (path_len + 1,) distance error in meters
-        variance_sq_m: (path_len + 1,) variance in meters squared (placeholder)
+        error_meters: (path_len,) distance error in meters
     """
-    true_latlon = vigor_dataset.get_panorama_positions(path).to(
-        device=estimate_history.device)
+    if true_latlon is None:
+        true_latlon = vigor_dataset.get_panorama_positions(path)
+    true_latlon = true_latlon.to(device=estimate_history.device)
 
     # mean_history has len(path) + 1 entries (initial + after each observation)
     # But we only have len(path) ground truth positions
@@ -251,7 +258,63 @@ def get_distance_error_from_estimate_history(
         d = vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlon[i], estimates[i])
         error_meters.append(d)
 
-    return torch.tensor(error_meters, device=estimate_history.device)
+    return torch.stack(error_meters)
+
+
+def load_authoritative_panorama_positions(
+        mapping_path: Path) -> dict[str, tuple[float, float]]:
+    """Load full-precision evaluation truth keyed by panorama ID."""
+    positions = {}
+    with open(mapping_path, newline="") as source:
+        reader = csv.DictReader(source)
+        required = {"pano_id", "lat", "lon"}
+        missing = required - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(
+                f"{mapping_path} is missing columns: {', '.join(sorted(missing))}")
+        for line_number, row in enumerate(reader, start=2):
+            pano_id = row["pano_id"]
+            if not pano_id:
+                raise ValueError(f"{mapping_path}:{line_number} has an empty pano_id")
+            if pano_id in positions:
+                raise ValueError(
+                    f"{mapping_path}:{line_number} duplicates pano_id {pano_id!r}")
+            try:
+                latlon = (float(row["lat"]), float(row["lon"]))
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"{mapping_path}:{line_number} has invalid lat/lon") from error
+            if (not all(math.isfinite(value) for value in latlon)
+                    or not -90.0 <= latlon[0] <= 90.0
+                    or not -180.0 <= latlon[1] <= 180.0):
+                raise ValueError(
+                    f"{mapping_path}:{line_number} has out-of-range lat/lon")
+            positions[pano_id] = latlon
+    if not positions:
+        raise ValueError(f"{mapping_path} contains no panorama positions")
+    return positions
+
+
+def authoritative_positions_for_path(
+        positions_by_id: dict[str, tuple[float, float]],
+        path: list[str]) -> torch.Tensor:
+    """Return path truth at CSV precision, preserving path order."""
+    try:
+        positions = [positions_by_id[pano_id] for pano_id in path]
+    except KeyError as error:
+        raise ValueError(
+            f"pano_id {error.args[0]!r} is missing from pano_id_mapping.csv") from error
+    return torch.tensor(positions, dtype=torch.float64)
+
+
+def compute_distance_traveled_from_positions(
+        true_latlon: torch.Tensor) -> torch.Tensor:
+    """Cumulative great-circle distance for explicit trajectory truth."""
+    if true_latlon.ndim != 2 or true_latlon.shape[1] != 2 or len(true_latlon) == 0:
+        raise ValueError("true_latlon must have non-empty shape (N, 2)")
+    distance_delta = vd.EARTH_RADIUS_M * find_d_on_unit_circle(
+        true_latlon[:-1], true_latlon[1:])
+    return torch.cat((true_latlon.new_zeros(1), torch.cumsum(distance_delta, 0)))
 
 
 def evaluate_histogram_on_paths(
@@ -264,6 +327,7 @@ def evaluate_histogram_on_paths(
     device: torch.device = "cuda:0",
     save_intermediate_states: bool = False,
     convergence_radii: list[int] | None = None,
+    evaluation_positions_by_id: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     """Evaluate histogram filter on paths.
 
@@ -277,6 +341,9 @@ def evaluate_histogram_on_paths(
         device: Torch device
         save_intermediate_states: Whether to save belief history
         convergence_radii: List of radii in meters for convergence metrics
+        evaluation_positions_by_id: Optional authoritative truth coordinates.
+            These affect scoring only; LOCI motion and odometry continue to use
+            the panorama filename coordinates used by the released baseline.
     """
     all_final_error_meters = []        # using mean estimator
     all_final_mode_error_meters = []   # using argmax-cell (MAP / mode) estimator
@@ -348,11 +415,13 @@ def evaluate_histogram_on_paths(
                     generator=noise_gen,
                 ).to(device)
 
-            # Get ground truth positions for convergence metrics (only if needed)
-            true_latlons = (
-                vigor_dataset.get_panorama_positions(path).to(device)
-                if convergence_radii else None
+            evaluation_truth = (
+                authoritative_positions_for_path(evaluation_positions_by_id, path)
+                if evaluation_positions_by_id is not None
+                else vigor_dataset.get_panorama_positions(path)
             )
+            convergence_truth = (
+                evaluation_truth.to(device) if convergence_radii else None)
 
             # Run filter
             result = run_histogram_filter_on_path(
@@ -362,18 +431,19 @@ def evaluate_histogram_on_paths(
                 log_likelihood_aggregator=log_likelihood_aggregator,
                 mapping=mapping,
                 config=config,
-                true_latlons=true_latlons,
+                true_latlons=convergence_truth,
                 convergence_radii=convergence_radii,
             )
 
             # Compute distance traveled
-            distance_traveled_m = es.compute_distance_traveled(vigor_dataset, path)
+            distance_traveled_m = compute_distance_traveled_from_positions(
+                evaluation_truth)
 
             # Compute error
             error_meters = get_distance_error_from_estimate_history(
-                vigor_dataset, path, result.mean_history)
+                vigor_dataset, path, result.mean_history, evaluation_truth)
             mode_error_meters = get_distance_error_from_estimate_history(
-                vigor_dataset, path, result.mode_history)
+                vigor_dataset, path, result.mode_history, evaluation_truth)
 
             # Variance in meters squared (convert from degrees)
             var_sq_m = result.variance_history[-len(path):].sum(dim=-1) * (web_mercator.METERS_PER_DEG_LAT ** 2)
@@ -424,6 +494,11 @@ def evaluate_histogram_on_paths(
             "grid_rows": grid_spec.num_rows,
             "grid_cols": grid_spec.num_cols,
             "cell_size_px": cell_size_px,
+            "evaluation_truth_source": (
+                "pano_id_mapping.csv:lat,lon:float64"
+                if evaluation_positions_by_id is not None
+                else "panorama_filename:lat,lon:float32"
+            ),
         }
 
         # Add convergence metrics to summary
@@ -453,8 +528,11 @@ def construct_path_eval_inputs_from_args(
         panorama_landmark_radius_px: int,
         device: torch.device,
         landmark_version: str,
+        satellite_dir: str | None = None,
         sat_model_path: str | None = None,
         pano_model_path: str | None = None,
+        allow_legacy_path_identity: bool = False,
+        require_path_identity: bool = False,
 ):
     """Load dataset and optionally models for evaluation.
 
@@ -465,8 +543,12 @@ def construct_path_eval_inputs_from_args(
         panorama_landmark_radius_px: Panorama landmark radius in pixels
         device: Torch device
         landmark_version: Landmark version string
+        satellite_dir: Optional external satellite artifact payload directory
         sat_model_path: Optional path to satellite model (required if pano_model_path is set)
         pano_model_path: Optional path to panorama model (required if sat_model_path is set)
+        allow_legacy_path_identity: Explicitly accept a path file without a
+            cryptographic mapping identity
+        require_path_identity: Fail unless the path file binds the live mapping
 
     Returns:
         Tuple of (vigor_dataset, sat_model, pano_model, paths_data)
@@ -481,10 +563,15 @@ def construct_path_eval_inputs_from_args(
             f"Path file '{paths_path}' uses old index format (integers). "
             "Regenerate with create_evaluation_paths.py to get pano_id format (strings)."
         )
+    dataset_path = Path(dataset_path).expanduser()
+    validate_path_dataset_identity(
+        paths_data,
+        dataset_path,
+        allow_legacy=allow_legacy_path_identity,
+        require_identity=require_path_identity,
+    )
     factor = paths_data.get('args', {}).get('factor', 1.0)
     print(f"Dataset Factor: {factor}")
-
-    dataset_path = Path(dataset_path).expanduser()
 
     # Check that both model paths are provided or neither
     if (sat_model_path is None) != (pano_model_path is None):
@@ -532,11 +619,105 @@ def construct_path_eval_inputs_from_args(
         landmark_version=landmark_version,
         should_load_images=should_load_images,
         should_load_landmarks=should_load_landmarks,
+        satellite_dir=(Path(satellite_dir).expanduser()
+                       if satellite_dir is not None else None),
     )
 
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
 
     return vigor_dataset, sat_model, pano_model, paths_data
+
+
+def validate_path_dataset_identity(
+        paths_data: dict,
+        dataset_path: Path,
+        allow_legacy: bool = False,
+        require_identity: bool = False) -> None:
+    """Bind new path files to the exact live panorama trajectory mapping."""
+    recorded = paths_data.get("dataset_hash")
+    is_sha256 = (
+        isinstance(recorded, str)
+        and len(recorded) == 64
+        and all(character in string.hexdigits for character in recorded)
+    )
+    if is_sha256:
+        mapping_path = Path(dataset_path) / "pano_id_mapping.csv"
+        expected = hashlib.sha256(mapping_path.read_bytes()).hexdigest()
+        if recorded.lower() != expected:
+            raise ValueError(
+                f"Path file dataset_hash does not match live mapping "
+                f"{mapping_path}; the paths belong to a different dataset "
+                "revision or leg.")
+        return
+
+    message = (
+        "Path file has no cryptographic pano_id_mapping.csv identity. "
+        "Regenerate it, or explicitly pass --allow-legacy-path-identity "
+        "for an independently audited legacy artifact."
+    )
+    if require_identity and not allow_legacy:
+        raise ValueError(message)
+    if allow_legacy:
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+
+
+def read_satellite_source_px(
+        dataset_path: Path, satellite_dir: Path | None, *,
+        expected_zoom: int = 20,
+        expected_patch_px: int = 640) -> int | float | None:
+    """Read and validate the rendered patch footprint metadata."""
+    external = satellite_dir is not None
+    sat_bbox_path = (
+        satellite_dir.resolve().parent
+        if external
+        else dataset_path
+    ) / "satellite_bbox.json"
+    if not sat_bbox_path.exists():
+        if external:
+            raise FileNotFoundError(
+                "external satellite directory requires metadata at "
+                f"{sat_bbox_path}")
+        return None
+    sat_bbox = json.loads(sat_bbox_path.read_text())
+    if not isinstance(sat_bbox, dict):
+        raise ValueError(f"{sat_bbox_path} must contain a JSON object")
+    grid = sat_bbox.get("grid", {})
+    if not isinstance(grid, dict):
+        raise ValueError(f"{sat_bbox_path} grid must be a JSON object")
+
+    def read_field(name: str):
+        if name in sat_bbox and name in grid \
+                and sat_bbox[name] != grid[name]:
+            raise ValueError(
+                f"{sat_bbox_path} has conflicting {name} metadata")
+        return sat_bbox[name] if name in sat_bbox else grid.get(name)
+
+    source_px = read_field("source_px")
+    if (isinstance(source_px, bool)
+            or not isinstance(source_px, (int, float))
+            or not math.isfinite(source_px)
+            or source_px <= 0):
+        if source_px is not None or external:
+            raise ValueError(
+                f"{sat_bbox_path} source_px must be a positive number")
+        return None
+
+    for name, expected in (
+            ("zoom", expected_zoom), ("patch_px", expected_patch_px)):
+        actual = read_field(name)
+        if actual is None and not external:
+            continue
+        if type(actual) is not int or actual != expected:
+            raise ValueError(
+                f"{sat_bbox_path} {name} must be {expected}, got {actual!r}")
+    return source_px
+
+
+def copy_aggregator_config(config_path: Path, output_path: Path) -> None:
+    """Preserve the config unless it already lives at the destination."""
+    destination = output_path / "aggregator_config.yaml"
+    if config_path.resolve() != destination.resolve():
+        shutil.copy(config_path, destination)
 
 
 if __name__ == "__main__":
@@ -549,10 +730,19 @@ if __name__ == "__main__":
 
     parser.add_argument("--paths-path", type=str, required=True,
                         help="Path to json file full of evaluation paths")
+    parser.add_argument(
+        "--allow-legacy-path-identity", action="store_true",
+        help="Explicitly use an audited legacy path file whose dataset_hash "
+             "predates the cryptographic mapping identity",
+    )
     parser.add_argument("--output-path", type=str, required=True,
                         help="Path to save the evaluation results")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--dataset-path", type=str, required=True, help="Dataset path")
+    parser.add_argument(
+        "--satellite-dir", type=str, default=None,
+        help="External satellite artifact payload directory",
+    )
     parser.add_argument("--landmark-version", type=str, required=True)
     parser.add_argument("--save-intermediate-filter-states", action='store_true',
                         help="Save intermediate filter states (mean/variance history)")
@@ -587,14 +777,14 @@ if __name__ == "__main__":
     DEVICE = "cuda:0"
     torch.set_deterministic_debug_mode('error')
 
-    Path(args.output_path).mkdir(parents=True, exist_ok=True)
-    with open(Path(args.output_path) / "args.json", "w") as f:
-        json.dump(vars(args), f, indent=4)
-
-    args.output_path = Path(args.output_path).expanduser()
+    output_path = Path(args.output_path).expanduser()
+    output_path.mkdir(parents=True, exist_ok=True)
+    with open(output_path / "args.json", "w") as f:
+        json.dump({**vars(args), "output_path": str(output_path)}, f, indent=4)
+    args.output_path = output_path
 
     # Copy aggregator config to output directory for reproducibility
-    shutil.copy(args.aggregator_config, args.output_path / "aggregator_config.yaml")
+    copy_aggregator_config(Path(args.aggregator_config), args.output_path)
 
     vigor_dataset, sat_model, pano_model, paths_data = construct_path_eval_inputs_from_args(
         dataset_path=args.dataset_path,
@@ -603,6 +793,9 @@ if __name__ == "__main__":
         panorama_landmark_radius_px=args.panorama_landmark_radius_px,
         device=DEVICE,
         landmark_version=args.landmark_version,
+        satellite_dir=args.satellite_dir,
+        allow_legacy_path_identity=args.allow_legacy_path_identity,
+        require_path_identity=True,
     )
 
     # Load aggregator config and create aggregator
@@ -612,7 +805,19 @@ if __name__ == "__main__":
         aggregator_config,
         vigor_dataset,
         DEVICE,
+        require_similarity_identity=True,
     )
+    mapping_path = Path(args.dataset_path).expanduser() / "pano_id_mapping.csv"
+    evaluation_positions_by_id = None
+    if mapping_path.exists():
+        evaluation_positions_by_id = load_authoritative_panorama_positions(
+            mapping_path)
+    else:
+        warnings.warn(
+            f"{mapping_path} is absent; evaluation truth falls back to rounded "
+            "panorama filename coordinates",
+            RuntimeWarning,
+        )
 
     # Build config
     def degrees_from_meters(dist_m):
@@ -629,12 +834,13 @@ if __name__ == "__main__":
         print(f"Odometry noise enabled: sigma_frac={odometry_noise_config.sigma_noise_frac}, seed={odometry_noise_config.seed}")
 
     # Read source_px from satellite_bbox.json if available
-    source_px = None
-    sat_bbox_path = Path(args.dataset_path) / "satellite_bbox.json"
-    if sat_bbox_path.exists():
-        with open(sat_bbox_path) as f:
-            sat_bbox = json.load(f)
-        source_px = sat_bbox.get("source_px")
+    source_px = read_satellite_source_px(
+        Path(args.dataset_path).expanduser(),
+        (Path(args.satellite_dir).expanduser()
+         if args.satellite_dir is not None else None),
+        expected_zoom=HistogramFilterConfig.zoom_level,
+        expected_patch_px=HistogramFilterConfig.patch_size_px,
+    )
     if source_px is not None and source_px != 640:
         print(f"Resolution-normalized dataset: source_px={source_px} (footprint {source_px}px, image 640px)")
 
@@ -676,4 +882,5 @@ if __name__ == "__main__":
         device=DEVICE,
         save_intermediate_states=args.save_intermediate_filter_states,
         convergence_radii=convergence_radii,
+        evaluation_positions_by_id=evaluation_positions_by_id,
     )
