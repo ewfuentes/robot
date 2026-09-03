@@ -445,3 +445,82 @@ py_test(
         FARFIELD + ":paths",
     ],
 )
+
+# ---------------------------------------------------------------------------
+# Overture Places source + catalog augmentation
+# ---------------------------------------------------------------------------
+
+py_library(
+    name = "extract_landmarks_from_overture_lib",
+    srcs = ["extract_landmarks_from_overture.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        requirement("pyarrow"),
+        requirement("shapely"),
+        ":source_publication",
+        FARFIELD + ":artifact",
+        FARFIELD + ":provenance",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_binary(
+    name = "extract_landmarks_from_overture",
+    srcs = ["extract_landmarks_from_overture.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":extract_landmarks_from_overture_lib"],
+)
+
+py_test(
+    name = "extract_landmarks_from_overture_test",
+    srcs = ["extract_landmarks_from_overture_test.py"],
+    deps = [
+        requirement("pyarrow"),
+        requirement("shapely"),
+        ":extract_landmarks_from_overture_lib",
+        ":source_publication",
+        FARFIELD + "/catalog:catalog",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_library(
+    name = "add_catalog_source_lib",
+    srcs = ["add_catalog_source.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        requirement("shapely"),
+        ":feather_utils",
+        ":landmark_positive_set_lib",
+        ":source_publication",
+        FARFIELD + ":artifact",
+        FARFIELD + ":geometry",
+        FARFIELD + ":paths",
+        FARFIELD + ":publication",
+        FARFIELD + ":provenance",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_binary(
+    name = "add_catalog_source",
+    srcs = ["add_catalog_source.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":add_catalog_source_lib"],
+)
+
+py_test(
+    name = "add_catalog_source_test",
+    srcs = ["add_catalog_source_test.py"],
+    deps = [
+        requirement("shapely"),
+        ":add_catalog_source_lib",
+        ":source_publication",
+        FARFIELD + ":artifact",
+        FARFIELD + ":paths",
+        FARFIELD + "/catalog:lineage",
+        FARFIELD + "/catalog:schema",
+    ],
+)

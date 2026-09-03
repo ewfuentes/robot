@@ -283,7 +283,7 @@ def build_map_signatures(feather_path: Path):
     table = {}
     seen_landmark_ids = set()
     for i in range(len(frame)):
-        source = "enc" if sources[i] == "enc" else "osm"
+        source = sources[i]
         text = catalog_lib._id_text(ids[i])
         landmark_id = (text if text.startswith(f"{source}:")
                        else f"{source}:{text}")

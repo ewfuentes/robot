@@ -572,3 +572,46 @@ so on) stay, because those are about the data.
 **Rule (ekf).** Builds may name prior parts. When the config for a plugged-in
 stage is given, a differing shared value fails; a key the artifact predates
 warns. Schema growth must not orphan artifacts.
+
+## 2026-09-03 · A second source enters the catalog as a derived artifact, under the OSM vocabulary
+
+Overture Places (Meta, Microsoft, Foursquare, AllThePlaces; no OSM content)
+names things OSM lacks. On the Pohang review set it holds the marina T199, the
+seafood hall behind T164, the pier T6/T14/T17/T18 point at, and the exact
+name of the canal pavilion T0/T13 missed 14 times. Two ways to bring it in:
+
+1. Rebuild the stage-5 full catalog with Overture as a third input beside OSM
+   and ENC. That reopens the reviewed coverage plan for a source the plan
+   cannot attest (Overture has no clip polygons), and every existing lineage
+   would point at a catalog that no longer exists.
+2. Publish a **derived** catalog: the full catalog plus the source's rows,
+   with the full catalog as its single CATALOGS upstream. Lineage still
+   terminates at the OSM coverage attestation; `trim_catalog` runs on top
+   unchanged.
+
+We do 2 (`dataset_tools:add_catalog_source`). Three rules travel with it:
+
+- **Overture rows speak OSM.** `extract_landmarks_from_overture` maps each
+  place's taxonomy hierarchy onto OSM-style tags (root default, leaf
+  override). The trim then judges an Overture café by the same
+  name-rescue/unobservable rules as an OSM `amenity=cafe` node. There is no
+  Overture-specific keep list; a "far_field=retain" flag computed outside the
+  repo is exactly the kind of untracked selection the artifact contract
+  exists to prevent.
+- **Same name within radius = same thing.** A source row is dropped when any
+  name-like tag equals a catalog row's (NFKC, casefold, letters and digits
+  only) within `--dedupe_name_radius_m` (150 m here, the collision-report
+  radius). Different-name near neighbours are kept: the matcher, not the
+  merge, decides which of two records of one building is right. Every
+  dropped pair is in the manifest config.
+- **Licences stay on the row.** Places is licensed per source record, so the
+  `overture:sources` tag carries each record's dataset, licence and id. It is
+  outside the keep vocabulary and never reaches the matcher.
+
+`landmark_type` gains `overture`; the matcher's landmark ids are namespaced by
+that column (`overture:<gers-id>`) instead of folding every non-ENC source
+into `osm:`.
+
+Fetch box: the catalog manifest's `bbox_wsen` (trajectory + 25 km), not the
+trajectory extent, so range landmarks (POSCO, Yeongildae, the breakwater
+lights) are covered the same way the OSM extract covers them.

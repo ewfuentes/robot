@@ -103,6 +103,12 @@ def _validate_completed_pair(
     return frame, document
 
 
+def validate_completed_pair(
+        feather: Path, sidecar: Path) -> tuple[Any, dict[str, Any]]:
+    """Strictly reopen a completed source: (compact frame, sidecar document)."""
+    return _validate_completed_pair(Path(feather), Path(sidecar))
+
+
 def reuse_completed(
         output: Path,
         expected_factory: Callable[[Any, dict[str, Any]], Mapping[str, Any]],

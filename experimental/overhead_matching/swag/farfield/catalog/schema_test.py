@@ -124,7 +124,7 @@ class InvalidFrameTest(unittest.TestCase):
                 frame.loc[0, "landmark_type"] = source
                 with self.assertRaisesRegex(
                         schema.CatalogSchemaError,
-                        "exactly 'osm' or 'enc'"):
+                        "landmark_type must be one of"):
                     schema.tag_dicts(frame)
 
     def test_rejects_null_empty_and_invalid_geometry(self):
