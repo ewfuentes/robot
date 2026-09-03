@@ -143,6 +143,15 @@ class ExtractLandmarksFromOvertureTest(unittest.TestCase):
                 overture.main(parquet, "2026-08-19.0", BBOX, 0.6,
                               Path(tmp) / "out" / "overture_v1")
 
+    def test_rejects_output_stem_with_a_dot(self):
+        # "overture_2026-08-19.0_v1" would otherwise be written as
+        # "overture_2026-08-19.feather" by Path.with_suffix.
+        with tempfile.TemporaryDirectory() as tmp:
+            parquet = write_parquet(Path(tmp) / "p.parquet", PLACES)
+            with self.assertRaisesRegex(ValueError, "must not contain a dot"):
+                overture.main(parquet, "2026-08-19.0", BBOX, 0.5,
+                              Path(tmp) / "overture_2026-08-19.0_v1")
+
     def test_requires_taxonomy_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             table = pa.Table.from_pylist(PLACES[:1], schema=SCHEMA)
