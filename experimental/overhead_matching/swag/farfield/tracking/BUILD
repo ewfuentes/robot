@@ -347,3 +347,42 @@ py_test(
         "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
     ],
 )
+
+py_library(
+    name = "detections_as_tracks_lib",
+    srcs = ["detections_as_tracks.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("pillow"),
+        ":semantic_audit",
+        ":track_builder",
+        ":tracklets",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield:pipeline_lib",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield:publication",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
+    ],
+)
+
+py_binary(
+    name = "detections_as_tracks",
+    srcs = ["detections_as_tracks.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":detections_as_tracks_lib"],
+)
+
+py_test(
+    name = "detections_as_tracks_test",
+    srcs = ["detections_as_tracks_test.py"],
+    deps = [
+        ":detections_as_tracks_lib",
+        ":tracklets",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:testing",
+    ],
+)

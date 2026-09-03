@@ -17,6 +17,10 @@ from experimental.overhead_matching.swag.farfield.tracking import (
 
 
 META_SCHEMA = "farfield_semantic_audit_meta/v2"
+# Manifest `config.audit_source` of an audit artifact that restates single VLM
+# detections verbatim instead of reviewing tracks (the no-tracking ablation).
+# Matching keys its Set 1 prompt and formatting off this value.
+DETECTION_PASSTHROUGH_SOURCE = "detection_passthrough_v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _META_KEYS = frozenset({"schema", "source_tracks", "requests"})
 _SOURCE_KEYS = frozenset({"artifact_id", "file", "sha256"})

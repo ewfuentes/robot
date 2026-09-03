@@ -176,3 +176,18 @@ After a track artifact publishes, the launcher attempts a separate typed
 A rendering failure is reported without invalidating tracking. This keeps
 viewer code and HTML out of scientific hashes while preserving per-item
 integrity and bidirectional frame/track navigation.
+
+## Ablation producers
+
+`tracking:detections_as_tracks --build_dir <build>` stands in for the
+`track` and `audit` stages: every ingested detection becomes one
+single-record `object_tracks` track (its pano box as the mask box) and one
+deterministic `semantic_audits` record that restates the detection's own
+tags, with no provider call. The artifacts record the identities the
+orchestrator computes for those stages, so `pipeline run --from bearings`
+consumes them unchanged; give them a lane version dedicated to the
+ablation. Matching recognises the audit manifest's
+`audit_source: detection_passthrough_v1` and switches to a single-detection
+Set 1 prompt with one entry per distinct tag bundle. Runs of such a build
+must carry an `ablation_tags` entry; they are diagnostic controls, not
+evaluations.

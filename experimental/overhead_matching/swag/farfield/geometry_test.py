@@ -354,5 +354,15 @@ class HaversineTest(unittest.TestCase):
         self.assertEqual(geo.haversine_m(42.0, -71.0, 42.0, -71.0), 0.0)
 
 
+class PanoColumnWrapTest(unittest.TestCase):
+    def test_column_just_left_of_centre_stays_below_360(self):
+        # (-1e-17) % 360.0 == 360.0 in Python; the helper must not leak it.
+        pano_w = 7680
+        az = geo.azimuth_of_pano_column(pano_w / 2 - 1e-12, pano_w)
+        self.assertGreaterEqual(az, 0.0)
+        self.assertLess(az, 360.0)
+        self.assertAlmostEqual(geo.azimuth_of_pano_column(pano_w / 2, pano_w), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
