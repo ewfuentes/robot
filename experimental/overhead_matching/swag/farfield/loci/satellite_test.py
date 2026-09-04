@@ -319,6 +319,110 @@ class FakeChunkImageServerClient:
 
 
 class SatelliteTest(unittest.TestCase):
+    def test_wms_chunk_reprojects_to_exact_grid_and_resumes(self):
+        layer = "pohang_2022_1225cm"
+        service_url = "https://example.invalid/wms"
+        capabilities = f"""<?xml version="1.0"?>
+<WMT_MS_Capabilities version="1.1.1">
+  <Service><Name>OGC:WMS</Name><Title>Pohang Airmap</Title>
+    <Fees>none</Fees><AccessConstraints>none</AccessConstraints></Service>
+  <Capability><Request><GetMap><Format>image/jpeg</Format></GetMap></Request>
+    <Layer><Title>Pohang Airmap</Title><SRS>EPSG:5186</SRS>
+      <Layer><Name>{layer}</Name><Title>{layer}</Title>
+        <LatLonBoundingBox minx="128.974" miny="35.823"
+                           maxx="129.604" maxy="36.351"/>
+        <BoundingBox SRS="EPSG:5186" minx="377235" miny="360461"
+                     maxx="434901" maxy="419953"/>
+      </Layer>
+    </Layer>
+  </Capability>
+</WMT_MS_Capabilities>""".encode()
+        client = satellite.OgcWmsClient(
+            service_url, layer=layer, srs="EPSG:5186", chunk_tiles=7)
+
+        def response(_url, *, params):
+            if params["REQUEST"] == "GetCapabilities":
+                return SimpleNamespace(
+                    headers={"Content-Type":
+                             "application/vnd.ogc.wms_xml;charset=UTF-8"},
+                    content=capabilities)
+            size = (int(params["WIDTH"]), int(params["HEIGHT"]))
+            encoded = io.BytesIO()
+            Image.new("RGB", size, (17, 83, 141)).save(
+                encoded, format="JPEG", quality=95)
+            return SimpleNamespace(
+                headers={"Content-Type": "image/jpeg;charset=UTF-8"},
+                content=encoded.getvalue())
+
+        client._get = mock.Mock(side_effect=response)
+        metadata = client.get_service_metadata()
+        center_x, center_y = satellite.region.lat_lon_to_pixel(
+            36.03, 129.38, 20)
+        grid = _tiny_grid(shape_xy=(1, 1))
+        grid["min_pixel_xy"] = [center_x, center_y]
+        grid["max_requested_pixel_xy"] = [center_x, center_y]
+        grid["last_center_pixel_xy"] = [center_x, center_y]
+        origin_x = satellite.region.nearest_pixel_origin(center_x, 640)
+        origin_y = satellite.region.nearest_pixel_origin(center_y, 640)
+        source_range = [
+            origin_x // 256, origin_y // 256,
+            (origin_x + 639) // 256, (origin_y + 639) // 256,
+        ]
+        grid["source_tile_range_xyxy"] = source_range
+        grid["n_source_tiles"] = (
+            (source_range[2] - source_range[0] + 1)
+            * (source_range[3] - source_range[1] + 1))
+        grid["footprint_bbox_wsen"] = \
+            satellite._rendered_footprint_bbox_wsen(grid)
+        audit = satellite.audit_coverage(
+            client, {"grid": grid}, metadata,
+            service_url=service_url, source_index_url=None,
+            provider_mode=satellite.WMS_PROVIDER,
+            wms_layer=layer, wms_srs="EPSG:5186", wms_chunk_tiles=7)
+        self.assertEqual(
+            audit["provider"]["capabilities"]["response_sha256"],
+            satellite._sha256_bytes(capabilities))
+        self.assertEqual(
+            audit["provider"]["no_data"]["policy"],
+            "preserve_source_pixels_no_color_key_v1")
+
+        with TemporaryDirectory() as temporary:
+            build_dir = Path(temporary)
+            first = satellite.ensure_source_tiles(
+                build_dir, grid, client, workers=2,
+                source_chunking_contract=satellite._wms_chunk_contract(7))
+            self.assertEqual(first["downloaded"], grid["n_source_tiles"])
+            get_map_calls = [
+                call for call in client._get.call_args_list
+                if call.kwargs["params"]["REQUEST"] == "GetMap"
+            ]
+            self.assertEqual(len(get_map_calls), 1)
+            parameters = get_map_calls[0].kwargs["params"]
+            self.assertEqual(parameters["SRS"], "EPSG:5186")
+            self.assertEqual(parameters["FORMAT"], "image/jpeg")
+            self.assertLessEqual(int(parameters["WIDTH"]), 1792)
+            self.assertLessEqual(int(parameters["HEIGHT"]), 1792)
+            receipt_path, = (build_dir / "source_tile_chunks").rglob(
+                "*.json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["schema"], satellite.WMS_CHUNK_SCHEMA)
+            first_tile = satellite._tile_cache_path(
+                build_dir, 20, source_range[0], source_range[1])
+            with Image.open(first_tile) as image:
+                self.assertEqual(image.format, "PNG")
+                self.assertEqual(image.size, (256, 256))
+                self.assertLess(
+                    max(abs(found - expected) for found, expected in zip(
+                        image.getpixel((128, 128)), (17, 83, 141))), 3)
+
+            resumed = satellite.ensure_source_tiles(
+                build_dir, grid, client, workers=2,
+                source_chunking_contract=satellite._wms_chunk_contract(7))
+            self.assertEqual(resumed["resumed"], grid["n_source_tiles"])
+            self.assertEqual(
+                len([call for call in client._get.call_args_list
+                     if call.kwargs["params"]["REQUEST"] == "GetMap"]), 1)
+
     def test_esri_wayback_release_pins_tile_urls_and_provider_identity(self):
         client = satellite.ArcGisTileClient(
             satellite.ESRI_WORLD_IMAGERY_SERVICE_URL,

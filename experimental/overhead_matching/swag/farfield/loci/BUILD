@@ -59,6 +59,8 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
         requirement("pillow"),
+        requirement("pyproj"),
+        requirement("rasterio"),
         requirement("requests"),
         requirement("shapely"),
     ],

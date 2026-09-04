@@ -2,10 +2,10 @@
 """Build a strict, resumable LOCI satellite-imagery artifact.
 
 The immutable region artifact owns the Web-Mercator grid.  This producer
-audits an ArcGIS cached imagery service against that grid, downloads the
-native source tiles into a persistent build cache, assembles VIGOR-compatible
-overlapping patches, and publishes only after every source tile and patch has
-been decoded and hashed successfully.
+audits an imagery service against that grid, downloads or renders source tiles
+into a persistent build cache, assembles VIGOR-compatible overlapping patches,
+and publishes only after every source tile and patch has been decoded and
+hashed successfully.
 
 Large mutable work lives under ``builds/<dataset>/``.  Downloads and patch
 writes use atomic replacement, and concurrency is deliberately bounded: the
@@ -27,6 +27,8 @@ import shutil
 import tempfile
 import threading
 import time
+import warnings
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
@@ -34,8 +36,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, TypeVar
 
+import pyproj
+import rasterio
+import rasterio.warp
 import requests
 from PIL import Image, ImageDraw, ImageStat
+from rasterio.enums import Resampling
+from rasterio.errors import NotGeoreferencedWarning
+from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
@@ -79,8 +88,9 @@ ARCGIS_BUNDLE_SIZE = 128
 
 CACHED_MAP_PROVIDER = "arcgis_cached_map"
 IMAGE_SERVER_PROVIDER = "arcgis_image_server_export"
+WMS_PROVIDER = "ogc_wms_getmap"
 DEFAULT_PROVIDER_MODE = CACHED_MAP_PROVIDER
-PROVIDER_MODES = (CACHED_MAP_PROVIDER, IMAGE_SERVER_PROVIDER)
+PROVIDER_MODES = (CACHED_MAP_PROVIDER, IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
 
 IMAGE_SERVER_EXPORT_FORMAT = "png"
 IMAGE_SERVER_INTERPOLATION = "RSP_BilinearInterpolation"
@@ -109,6 +119,16 @@ IMAGE_SERVER_CATALOG_FIELDS = (
     "sensor_type",
     "Category",
 )
+
+WMS_VERSION = "1.1.1"
+WMS_FORMAT = "image/jpeg"
+WMS_RESAMPLING = "bilinear"
+WMS_MAX_CHUNK_PX = 2000
+WMS_MAX_CHUNK_TILES = WMS_MAX_CHUNK_PX // region.DEFAULT_TILE_PX
+WMS_CHUNK_SCHEMA = "ogc_wms_source_chunk/v1"
+WMS_CHUNK_ALGORITHM = (
+    "wms_projected_envelope_to_exact_web_mercator_tiles_v1")
+WMS_TRANSFORM_BOUNDS_DENSIFY_POINTS = 21
 
 SATELLITE_DIR = "satellite"
 SOURCE_MANIFEST = "source_tile_manifest.json"
@@ -162,7 +182,7 @@ class ImageServerSourceTile:
 
 @dataclass(frozen=True)
 class ImageServerTileChunk:
-    """A validated ImageServer export and its canonical child tiles."""
+    """A validated chunk response and its canonical child tiles."""
 
     zoom: int
     tile_x: int
@@ -282,7 +302,7 @@ class ArcGisTileClient:
                  retry_backoff_s: float = 0.5) -> None:
         service_url = service_url.rstrip("/")
         if not service_url.startswith("https://"):
-            raise SatelliteError("ArcGIS service URL must use https")
+            raise SatelliteError("imagery service URL must use https")
         if connect_timeout_s <= 0.0 or read_timeout_s <= 0.0:
             raise SatelliteError("HTTP timeouts must be positive")
         if max_retries < 1:
@@ -404,6 +424,260 @@ class ArcGisTileClient:
         response = self._get(
             url, params={"blankTile": "false"}, missing_is_error=True)
         return response.content
+
+
+def _normalize_wms_srs(value: str | None) -> str:
+    value = str(value or "").strip().upper()
+    if not value.startswith("EPSG:") or not value[5:].isdigit():
+        raise SatelliteError("WMS SRS must be an EPSG:<integer> identifier")
+    try:
+        crs = pyproj.CRS.from_user_input(value)
+    except pyproj.exceptions.CRSError as error:
+        raise SatelliteError(f"invalid WMS SRS {value!r}") from error
+    epsg = crs.to_epsg()
+    if epsg is None:
+        raise SatelliteError(f"WMS SRS has no canonical EPSG code: {value!r}")
+    return f"EPSG:{epsg}"
+
+
+def _normalize_wms_chunk_tiles(value: int) -> int:
+    if (type(value) is not int
+            or not 1 <= value <= WMS_MAX_CHUNK_TILES):
+        raise SatelliteError(
+            "WMS chunk tile count must be an integer in "
+            f"1..{WMS_MAX_CHUNK_TILES}")
+    return value
+
+
+def _wms_chunk_contract(chunk_tiles: int) -> dict:
+    chunk_tiles = _normalize_wms_chunk_tiles(chunk_tiles)
+    return {
+        "schema": WMS_CHUNK_SCHEMA,
+        "shape_tiles_xy": [chunk_tiles, chunk_tiles],
+        "maximum_request_size_px": [
+            chunk_tiles * region.DEFAULT_TILE_PX,
+            chunk_tiles * region.DEFAULT_TILE_PX,
+        ],
+        "producer_max_chunk_axis_px": WMS_MAX_CHUNK_PX,
+        "transform_bounds_densify_points": (
+            WMS_TRANSFORM_BOUNDS_DENSIFY_POINTS),
+        "resampling": WMS_RESAMPLING,
+        "algorithm": WMS_CHUNK_ALGORITHM,
+        "child_encoding": IMAGE_SERVER_SOURCE_TILE_ENCODING,
+    }
+
+
+def _wms_capabilities_parameters() -> dict:
+    return {
+        "SERVICE": "WMS",
+        "VERSION": WMS_VERSION,
+        "REQUEST": "GetCapabilities",
+    }
+
+
+def _parse_wms_capabilities(value: bytes, *, layer_name: str) -> dict:
+    if not value:
+        raise SatelliteError("WMS capabilities response is empty")
+    if len(value) > 10 * 1024 * 1024:
+        raise SatelliteError("WMS capabilities response exceeds 10 MiB")
+    if b"<!ENTITY" in value.upper():
+        raise SatelliteError("WMS capabilities contains an XML entity")
+    try:
+        root = ET.fromstring(value)
+    except ET.ParseError as error:
+        raise SatelliteError("WMS capabilities is not valid XML") from error
+    if root.tag != "WMT_MS_Capabilities" \
+            or root.attrib.get("version") != WMS_VERSION:
+        raise SatelliteError(
+            f"WMS service must return capabilities version {WMS_VERSION}")
+    service = root.find("Service")
+    capability = root.find("Capability")
+    root_layer = capability.find("Layer") if capability is not None else None
+    if service is None or capability is None or root_layer is None:
+        raise SatelliteError("WMS capabilities lacks Service/Capability/Layer")
+    matches = [
+        item for item in root_layer.iter("Layer")
+        if item.findtext("Name") == layer_name
+    ]
+    if len(matches) != 1:
+        raise SatelliteError(
+            f"WMS capabilities contains {len(matches)} layers named "
+            f"{layer_name!r}, expected one")
+    selected = matches[0]
+    inherited_srs = {
+        str(item.text).strip().upper()
+        for item in (*root_layer.findall("SRS"), *selected.findall("SRS"))
+        if item.text and str(item.text).strip()
+    }
+
+    bounding_boxes = {}
+    for element in selected.findall("BoundingBox"):
+        srs = str(element.attrib.get("SRS", "")).strip().upper()
+        if not srs:
+            continue
+        try:
+            bounding_boxes[srs] = [
+                float(element.attrib[key])
+                for key in ("minx", "miny", "maxx", "maxy")
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise SatelliteError(
+                f"WMS layer BoundingBox for {srs} is invalid") from error
+    get_map = capability.find("Request/GetMap")
+    formats = sorted({
+        str(item.text).strip().lower()
+        for item in (get_map.findall("Format") if get_map is not None else [])
+        if item.text and str(item.text).strip()
+    })
+    return {
+        "schema": "ogc_wms_capabilities/v1",
+        "version": WMS_VERSION,
+        "response_sha256": _sha256_bytes(value),
+        "service": {
+            "name": service.findtext("Name"),
+            "title": service.findtext("Title"),
+            "fees": service.findtext("Fees"),
+            "access_constraints": service.findtext("AccessConstraints"),
+        },
+        "get_map_formats": formats,
+        "layer": {
+            "name": layer_name,
+            "title": selected.findtext("Title"),
+            "srs": sorted(inherited_srs),
+            "bounding_boxes": bounding_boxes,
+        },
+    }
+
+
+def _decode_wms_response(response, *, expected_size: tuple[int, int],
+                         what: str) -> tuple[Image.Image, ImageInfo]:
+    content_type = str(response.headers.get("Content-Type", "")) \
+        .split(";", 1)[0].strip().lower()
+    value = response.content
+    stripped = value.lstrip()
+    if content_type != WMS_FORMAT or stripped.startswith(b"<"):
+        detail = value[:500].decode("utf-8", errors="replace")
+        raise SatelliteError(
+            f"WMS returned {content_type!r} instead of {WMS_FORMAT} for "
+            f"{what}: {detail}")
+    image, info = _validate_image_bytes(value, expected_size, what)
+    if info.image_format != "JPEG" or info.mode != "RGB":
+        raise SatelliteError(
+            f"WMS response is {info.image_format}/{info.mode}, expected "
+            "JPEG/RGB")
+    return image, info
+
+
+class OgcWmsClient(ArcGisTileClient):
+    """Retrying WMS 1.1.1 client that emits exact Web-Mercator tiles."""
+
+    def __init__(self, service_url: str, *, layer: str, srs: str,
+                 chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+                 connect_timeout_s: float = 10.0,
+                 read_timeout_s: float = 60.0,
+                 max_retries: int = 4,
+                 retry_backoff_s: float = 0.5) -> None:
+        super().__init__(
+            service_url, connect_timeout_s=connect_timeout_s,
+            read_timeout_s=read_timeout_s, max_retries=max_retries,
+            retry_backoff_s=retry_backoff_s)
+        self.layer = str(layer).strip()
+        if not self.layer:
+            raise SatelliteError("WMS provider requires a layer name")
+        self.srs = _normalize_wms_srs(srs)
+        self.chunk_tiles = _normalize_wms_chunk_tiles(chunk_tiles)
+        self._source_from_web_mercator = pyproj.Transformer.from_crs(
+            "EPSG:3857", self.srs, always_xy=True)
+
+    def get_service_metadata(self) -> dict:
+        response = self._get(
+            self.service_url, params=_wms_capabilities_parameters())
+        return _parse_wms_capabilities(
+            response.content, layer_name=self.layer)
+
+    def fetch_tile_chunk(self, zoom: int, tile_x: int, tile_y: int,
+                         width: int, height: int) \
+            -> ImageServerTileChunk:
+        if (not 1 <= width <= self.chunk_tiles
+                or not 1 <= height <= self.chunk_tiles):
+            raise SatelliteError(
+                f"WMS request chunk exceeds configured "
+                f"{self.chunk_tiles}x{self.chunk_tiles} tiles")
+        tile_px = region.DEFAULT_TILE_PX
+        output_size = (width * tile_px, height * tile_px)
+        target_bbox = _web_mercator_tile_range_bbox(
+            zoom, tile_x, tile_y, width=width, height=height)
+        source_bbox = self._source_from_web_mercator.transform_bounds(
+            *target_bbox,
+            densify_pts=WMS_TRANSFORM_BOUNDS_DENSIFY_POINTS)
+        if (not all(math.isfinite(value) for value in source_bbox)
+                or source_bbox[0] >= source_bbox[2]
+                or source_bbox[1] >= source_bbox[3]):
+            raise SatelliteError("transformed WMS request bounds are invalid")
+        parameters = {
+            "SERVICE": "WMS",
+            "VERSION": WMS_VERSION,
+            "REQUEST": "GetMap",
+            "LAYERS": self.layer,
+            "STYLES": "",
+            "SRS": self.srs,
+            "BBOX": ",".join(format(value, ".17g")
+                              for value in source_bbox),
+            "WIDTH": str(output_size[0]),
+            "HEIGHT": str(output_size[1]),
+            "FORMAT": WMS_FORMAT,
+            "TRANSPARENT": "FALSE",
+            "EXCEPTIONS": "application/vnd.ogc.se_xml",
+        }
+        response = self._get(self.service_url, params=parameters)
+        _, response_info = _decode_wms_response(
+            response, expected_size=output_size,
+            what=(f"WMS chunk z{zoom}/{tile_x}/{tile_y} "
+                  f"{width}x{height}"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NotGeoreferencedWarning)
+            with MemoryFile(response.content) as memory_file:
+                with memory_file.open() as source:
+                    if source.count != 3:
+                        raise SatelliteError(
+                            f"WMS JPEG has {source.count} bands, expected "
+                            "three")
+                    source_pixels = source.read((1, 2, 3))
+        target_pixels = source_pixels.copy()
+        target_pixels.fill(0)
+        rasterio.warp.reproject(
+            source=source_pixels,
+            destination=target_pixels,
+            src_transform=from_bounds(*source_bbox, *output_size),
+            src_crs=self.srs,
+            dst_transform=from_bounds(*target_bbox, *output_size),
+            dst_crs="EPSG:3857",
+            resampling=Resampling.bilinear,
+        )
+        if target_pixels.shape != (3, output_size[1], output_size[0]):
+            raise SatelliteError(
+                f"WMS reprojection returned shape {target_pixels.shape}, "
+                f"expected {(3, output_size[1], output_size[0])}")
+        composite = Image.fromarray(target_pixels.transpose(1, 2, 0))
+        if composite.mode != "RGB" or composite.size != output_size:
+            raise SatelliteError("WMS reprojection returned invalid RGB data")
+        tiles = []
+        for offset_y in range(height):
+            for offset_x in range(width):
+                child_x = tile_x + offset_x
+                child_y = tile_y + offset_y
+                left = offset_x * tile_px
+                top = offset_y * tile_px
+                child = composite.crop(
+                    (left, top, left + tile_px, top + tile_px))
+                value, info = _canonical_rgb_png_bytes(child)
+                tiles.append(ImageServerSourceTile(
+                    tile_x=child_x, tile_y=child_y,
+                    value=value, info=info))
+        return ImageServerTileChunk(
+            zoom=zoom, tile_x=tile_x, tile_y=tile_y,
+            width=width, height=height,
+            response_info=response_info, tiles=tuple(tiles))
 
 
 def _normalize_lock_raster_ids(values: Iterable[int]) -> tuple[int, ...]:
@@ -909,6 +1183,77 @@ def _image_server_provider_contract(
     return provider
 
 
+def _wms_provider_contract(service_url: str, metadata: dict, grid: dict, *,
+                           layer: str, srs: str,
+                           wms_chunk_tiles: int) -> dict:
+    srs = _normalize_wms_srs(srs)
+    chunk_tiles = _normalize_wms_chunk_tiles(wms_chunk_tiles)
+    if metadata.get("schema") != "ogc_wms_capabilities/v1" \
+            or metadata.get("version") != WMS_VERSION:
+        raise SatelliteError("WMS capabilities metadata is invalid")
+    if WMS_FORMAT not in metadata.get("get_map_formats", []):
+        raise SatelliteError(
+            f"WMS service does not advertise {WMS_FORMAT} GetMap output")
+    layer_metadata = metadata.get("layer")
+    if not isinstance(layer_metadata, dict) \
+            or layer_metadata.get("name") != layer:
+        raise SatelliteError(
+            f"WMS capabilities does not describe requested layer {layer!r}")
+    if srs not in layer_metadata.get("srs", []):
+        raise SatelliteError(
+            f"WMS layer {layer!r} does not advertise {srs}")
+    source_extent = layer_metadata.get("bounding_boxes", {}).get(srs)
+    if not isinstance(source_extent, list) or len(source_extent) != 4:
+        raise SatelliteError(
+            f"WMS layer {layer!r} has no projected extent for {srs}")
+    rendered_footprint = _rendered_footprint_bbox_wsen(grid)
+    source_footprint = pyproj.Transformer.from_crs(
+        "EPSG:4326", srs, always_xy=True).transform_bounds(
+            *rendered_footprint,
+            densify_pts=WMS_TRANSFORM_BOUNDS_DENSIFY_POINTS)
+    tolerance_m = 1.0
+    if not (source_extent[0] <= source_footprint[0] + tolerance_m
+            and source_extent[1] <= source_footprint[1] + tolerance_m
+            and source_extent[2] >= source_footprint[2] - tolerance_m
+            and source_extent[3] >= source_footprint[3] - tolerance_m):
+        raise SatelliteError(
+            "required rendered footprint lies outside the WMS layer extent")
+    return {
+        "schema": "ogc_wms_getmap_provider/v1",
+        "type": WMS_PROVIDER,
+        "service_url": service_url.rstrip("/"),
+        "service": metadata["service"],
+        "capabilities": {
+            "endpoint": service_url.rstrip("/"),
+            "parameters": _wms_capabilities_parameters(),
+            "response_sha256": metadata["response_sha256"],
+        },
+        "layer": layer_metadata,
+        "get_map": {
+            "endpoint": service_url.rstrip("/"),
+            "version": WMS_VERSION,
+            "layer": layer,
+            "styles": "",
+            "srs": srs,
+            "format": WMS_FORMAT,
+            "transparent": False,
+            "exceptions": "application/vnd.ogc.se_xml",
+            "chunking": _wms_chunk_contract(chunk_tiles),
+            "destination_srs": "EPSG:3857",
+            "resampling": WMS_RESAMPLING,
+        },
+        "rendered_footprint_bbox_wsen": rendered_footprint,
+        "rendered_footprint_bbox_source_srs": list(source_footprint),
+        "no_data": {
+            "policy": "preserve_source_pixels_no_color_key_v1",
+            "fallback": None,
+            "reason": (
+                "JPEG exposes no alpha/nodata mask; legitimate white pixels "
+                "must not be replaced"),
+        },
+    }
+
+
 def _normalize_image_server_chunk_tiles(value: int) -> int:
     if (type(value) is not int
             or not 1 <= value <= IMAGE_SERVER_MAX_CHUNK_TILES):
@@ -944,7 +1289,10 @@ def _provider_request_contract(
         lock_raster_ids: Iterable[int],
         esri_wayback_release: str | None = None,
         require_source_index_coverage: bool = True,
-        image_server_chunk_tiles: int = 1) -> dict:
+        image_server_chunk_tiles: int = 1,
+        wms_layer: str | None = None,
+        wms_srs: str | None = None,
+        wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) -> dict:
     chunk_tiles = _normalize_image_server_chunk_tiles(
         image_server_chunk_tiles)
     if provider_mode not in PROVIDER_MODES:
@@ -952,7 +1300,10 @@ def _provider_request_contract(
             f"unsupported imagery provider mode {provider_mode!r}")
     service_url = str(service_url).rstrip("/")
     if not service_url.startswith("https://"):
-        raise SatelliteError("ArcGIS service URL must use https")
+        raise SatelliteError("imagery service URL must use https")
+    if provider_mode != WMS_PROVIDER and (wms_layer or wms_srs):
+        raise SatelliteError(
+            "WMS layer/SRS options apply only to WMS GetMap mode")
     esri_wayback_release = _normalize_esri_wayback_release(
         esri_wayback_release)
     raster_ids = tuple(lock_raster_ids)
@@ -978,6 +1329,41 @@ def _provider_request_contract(
         if esri_wayback_release is not None:
             request["esri_wayback_release"] = esri_wayback_release
         return request
+    if provider_mode == WMS_PROVIDER:
+        if chunk_tiles != 1:
+            raise SatelliteError(
+                "ImageServer chunking applies only to ImageServer mode")
+        if source_index_url is not None:
+            raise SatelliteError(
+                "WMS mode does not use an ArcGIS source index")
+        if catalog_where is not None or raster_ids:
+            raise SatelliteError(
+                "catalog where/lock raster IDs apply only to ImageServer "
+                "export mode")
+        if esri_wayback_release is not None:
+            raise SatelliteError(
+                "ESRI Wayback release applies only to cached-map mode")
+        if not require_source_index_coverage:
+            raise SatelliteError(
+                "--allow_incomplete_source_index applies only to cached-map "
+                "mode")
+        layer = str(wms_layer or "").strip()
+        if not layer:
+            raise SatelliteError("WMS provider requires --wms_layer")
+        srs = _normalize_wms_srs(wms_srs)
+        wms_chunk_tiles = _normalize_wms_chunk_tiles(wms_chunk_tiles)
+        return {
+            "provider_mode": WMS_PROVIDER,
+            "service_url": service_url,
+            "wms_version": WMS_VERSION,
+            "wms_layer": layer,
+            "wms_srs": srs,
+            "wms_format": WMS_FORMAT,
+            "wms_chunk_tiles": wms_chunk_tiles,
+            "wms_resampling": WMS_RESAMPLING,
+            "wms_transform_bounds_densify_points": (
+                WMS_TRANSFORM_BOUNDS_DENSIFY_POINTS),
+        }
     if esri_wayback_release is not None:
         raise SatelliteError(
             "ESRI Wayback release applies only to cached-map mode")
@@ -1204,7 +1590,10 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
                    catalog_where: str | None = None,
                    lock_raster_ids: Iterable[int] = (),
                    esri_wayback_release: str | None = None,
-                   image_server_chunk_tiles: int = 1) \
+                   image_server_chunk_tiles: int = 1,
+                   wms_layer: str | None = None,
+                   wms_srs: str | None = None,
+                   wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) \
         -> dict:
     """Strictly prove cache and source-index coverage for a region plan."""
     grid = plan.get("grid")
@@ -1215,8 +1604,38 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=wms_layer, wms_srs=wms_srs,
+        wms_chunk_tiles=wms_chunk_tiles)
     esri_wayback_release = request.get("esri_wayback_release")
+    if provider_mode == WMS_PROVIDER:
+        provider = _wms_provider_contract(
+            service_url, service_metadata, grid,
+            layer=request["wms_layer"], srs=request["wms_srs"],
+            wms_chunk_tiles=request["wms_chunk_tiles"])
+        return {
+            "schema": COVERAGE_SCHEMA,
+            "status": "passed",
+            "provider": provider,
+            "provider_request": request,
+            "service_metadata": service_metadata,
+            "footprint_bbox_wsen": grid["footprint_bbox_wsen"],
+            "rendered_footprint_bbox_wsen": (
+                provider["rendered_footprint_bbox_wsen"]),
+            "tilemap": {
+                "status": "not_applicable",
+                "reason": "dynamic WMS GetMap requests have no Tilemap",
+            },
+            "catalog": {
+                "status": "not_applicable",
+                "reason": "WMS advertises only a layer extent",
+            },
+            "source_index": {"status": "not_applicable"},
+            "pixel_coverage": {
+                "status": "not_declared_by_service",
+                "policy": provider["no_data"]["policy"],
+            },
+        }
     if provider_mode == IMAGE_SERVER_PROVIDER:
         rendered_footprint = _rendered_footprint_bbox_wsen(grid)
         catalog = _audit_image_server_catalog(
@@ -1367,12 +1786,14 @@ def _image_info_json(info: ImageInfo) -> dict:
 
 def _source_chunk_descriptor(
         grid: dict, chunk_tiles: int,
-        tile_x: int, tile_y: int, width: int, height: int) -> dict:
+        tile_x: int, tile_y: int, width: int, height: int, *,
+        chunking_contract: dict | None = None) -> dict:
     bbox = _web_mercator_tile_range_bbox(
         grid["zoom"], tile_x, tile_y, width=width, height=height)
+    chunking = chunking_contract or _image_server_chunk_contract(chunk_tiles)
     return {
-        "schema": IMAGE_SERVER_CHUNK_SCHEMA,
-        "chunking": _image_server_chunk_contract(chunk_tiles),
+        "schema": chunking["schema"],
+        "chunking": chunking,
         "zoom": grid["zoom"],
         "tile_x": tile_x,
         "tile_y": tile_y,
@@ -1391,7 +1812,8 @@ def _valid_sha256(value) -> bool:
 
 def _load_valid_source_chunk_receipt(
         build_dir: Path, grid: dict, chunk_tiles: int,
-        tile_x: int, tile_y: int, width: int, height: int) \
+        tile_x: int, tile_y: int, width: int, height: int, *,
+        chunking_contract: dict | None = None) \
         -> dict | None:
     """Return a receipt only if every committed child still matches it."""
     receipt_path = _source_chunk_receipt_path(
@@ -1405,13 +1827,15 @@ def _load_valid_source_chunk_receipt(
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     descriptor = _source_chunk_descriptor(
-        grid, chunk_tiles, tile_x, tile_y, width, height)
+        grid, chunk_tiles, tile_x, tile_y, width, height,
+        chunking_contract=chunking_contract)
+    reject_black_children = descriptor["schema"] != WMS_CHUNK_SCHEMA
     if not isinstance(receipt, dict) or any(
             receipt.get(key) != value for key, value in descriptor.items()):
         return None
     response = receipt.get("response")
     if (not isinstance(response, dict)
-            or response.get("image_format") != "PNG"
+            or response.get("image_format") not in {"JPEG", "PNG"}
             or response.get("mode") != "RGB"
             or response.get("width") != width * grid["tile_px"]
             or response.get("height") != height * grid["tile_px"]
@@ -1444,7 +1868,7 @@ def _load_valid_source_chunk_receipt(
         except (OSError, SatelliteError):
             return None
         if (info.image_format != "PNG" or info.mode != "RGB"
-                or image.getbbox() is None):
+                or (reject_black_children and image.getbbox() is None)):
             return None
         expected_record = {
             "tile_x": child_x,
@@ -1456,14 +1880,22 @@ def _load_valid_source_chunk_receipt(
     return receipt
 
 
-def _ensure_image_server_source_chunks(
+def _ensure_chunked_source_tiles(
         build_dir: Path, grid: dict, client, *, workers: int,
-        progress_every: int, chunk_tiles: int) -> dict:
+        progress_every: int, chunk_tiles: int,
+        chunking_contract: dict | None = None) -> dict:
     fetch_chunk = getattr(client, "fetch_tile_chunk", None)
     if not callable(fetch_chunk):
         raise SatelliteError(
-            "ImageServer chunking requires a client with fetch_tile_chunk")
-    chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
+            "source chunking requires a client with fetch_tile_chunk")
+    if chunking_contract is None:
+        chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
+        chunking_contract = _image_server_chunk_contract(chunk_tiles)
+    elif chunking_contract.get("schema") == WMS_CHUNK_SCHEMA:
+        chunk_tiles = _normalize_wms_chunk_tiles(chunk_tiles)
+    else:
+        raise SatelliteError("unsupported source chunk contract")
+    reject_black_children = chunking_contract["schema"] != WMS_CHUNK_SCHEMA
     chunk_workers = min(workers, IMAGE_SERVER_CHUNK_WORKERS)
     if chunk_workers < 1:
         raise SatelliteError("worker count must be positive")
@@ -1474,7 +1906,8 @@ def _ensure_image_server_source_chunks(
         tile_x, tile_y, width, height = item
         receipt = _load_valid_source_chunk_receipt(
             build_dir, grid, chunk_tiles,
-            tile_x, tile_y, width, height)
+            tile_x, tile_y, width, height,
+            chunking_contract=chunking_contract)
         if receipt is not None:
             return {
                 "total": width * height,
@@ -1502,7 +1935,7 @@ def _ensure_image_server_source_chunks(
                 or [(tile.tile_x, tile.tile_y) for tile in result.tiles]
                 != coordinates):
             raise SatelliteError(
-                "ImageServer chunk client returned a mismatched tile set")
+                "source chunk client returned a mismatched tile set")
 
         records = []
         for tile in result.tiles:
@@ -1510,9 +1943,10 @@ def _ensure_image_server_source_chunks(
                 tile.value, (tile_px, tile_px),
                 f"chunk child z{zoom}/{tile.tile_x}/{tile.tile_y}")
             if (info != tile.info or info.image_format != "PNG"
-                    or info.mode != "RGB" or image.getbbox() is None):
+                    or info.mode != "RGB"
+                    or (reject_black_children and image.getbbox() is None)):
                 raise SatelliteError(
-                    "ImageServer chunk client returned an invalid canonical "
+                    "source chunk client returned an invalid canonical "
                     f"child at z{zoom}/{tile.tile_x}/{tile.tile_y}")
             path = _tile_cache_path(
                 build_dir, zoom, tile.tile_x, tile.tile_y)
@@ -1529,7 +1963,8 @@ def _ensure_image_server_source_chunks(
 
         receipt_document = {
             **_source_chunk_descriptor(
-                grid, chunk_tiles, tile_x, tile_y, width, height),
+                grid, chunk_tiles, tile_x, tile_y, width, height,
+                chunking_contract=chunking_contract),
             "response": _image_info_json(result.response_info),
             "tiles": records,
         }
@@ -1538,7 +1973,8 @@ def _ensure_image_server_source_chunks(
         artifact.atomic_write_json(receipt_path, receipt_document)
         if _load_valid_source_chunk_receipt(
                 build_dir, grid, chunk_tiles,
-                tile_x, tile_y, width, height) is None:
+                tile_x, tile_y, width, height,
+                chunking_contract=chunking_contract) is None:
             raise SatelliteError(
                 f"atomic source chunk receipt did not validate: "
                 f"{receipt_path}")
@@ -1575,15 +2011,19 @@ def _ensure_image_server_source_chunks(
 
 def ensure_source_tiles(build_dir: Path, grid: dict, client, *,
                         workers: int = 32, progress_every: int = 1000,
-                        image_server_chunk_tiles: int = 1) -> dict:
+                        image_server_chunk_tiles: int = 1,
+                        source_chunking_contract: dict | None = None) -> dict:
     """Download/repair every source tile, retaining hash-matched entries."""
     build_dir = Path(build_dir)
     chunk_tiles = _normalize_image_server_chunk_tiles(
         image_server_chunk_tiles)
-    if chunk_tiles > 1:
-        return _ensure_image_server_source_chunks(
+    if chunk_tiles > 1 or source_chunking_contract is not None:
+        return _ensure_chunked_source_tiles(
             build_dir, grid, client, workers=workers,
-            progress_every=progress_every, chunk_tiles=chunk_tiles)
+            progress_every=progress_every, chunk_tiles=(
+                source_chunking_contract["shape_tiles_xy"][0]
+                if source_chunking_contract is not None else chunk_tiles),
+            chunking_contract=source_chunking_contract)
     zoom = grid["zoom"]
     tile_px = grid["tile_px"]
     prior_hashes: dict[tuple[int, int], tuple[str, str]] = {}
@@ -2188,7 +2628,10 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
                        catalog_where: str | None = None,
                        lock_raster_ids: Iterable[int] = (),
                        esri_wayback_release: str | None = None,
-                       image_server_chunk_tiles: int = 1) \
+                       image_server_chunk_tiles: int = 1,
+                       wms_layer: str | None = None,
+                       wms_srs: str | None = None,
+                       wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) \
         -> artifact.ArtifactRef | None:
     if not destination.exists() and not destination.is_symlink():
         return None
@@ -2202,7 +2645,9 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=wms_layer, wms_srs=wms_srs,
+        wms_chunk_tiles=wms_chunk_tiles)
     provider = manifest.config.get("provider", {})
     expected = {
         "region_manifest_digest": region_ref.manifest_digest,
@@ -2213,7 +2658,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
         "provider_type": (
             "arcgis_cached_map_service"
             if provider_mode == CACHED_MAP_PROVIDER
-            else IMAGE_SERVER_PROVIDER),
+            else provider_mode),
         "esri_wayback_release": request.get("esri_wayback_release"),
         "source_index_coverage_required": require_source_index_coverage,
     }
@@ -2229,7 +2674,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
         "source_index_coverage_required": manifest.config.get(
             "source_index_coverage_required", True),
     }
-    if provider_mode == IMAGE_SERVER_PROVIDER:
+    if provider_mode != CACHED_MAP_PROVIDER:
         expected["provider_request"] = request
         actual["provider_request"] = manifest.config.get("provider_request")
     if actual != expected:
@@ -2249,6 +2694,9 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
                 lock_raster_ids: Iterable[int] = (),
                 esri_wayback_release: str | None = None,
                 image_server_chunk_tiles: int = 1,
+                wms_layer: str | None = None,
+                wms_srs: str | None = None,
+                wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
                 jpeg_quality: int = DEFAULT_JPEG_QUALITY,
                 workers: int = 32, patch_workers: int = 8,
                 decoded_tile_cache_entries: int = 1024,
@@ -2267,7 +2715,7 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
     # services while making ImageServer mode self-contained.  ImageServer
     # coverage comes from its own pinned raster catalog, not this unrelated
     # FeatureServer default.
-    if (provider_mode == IMAGE_SERVER_PROVIDER
+    if (provider_mode in (IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
     if (esri_wayback_release is not None
@@ -2278,7 +2726,9 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=wms_layer, wms_srs=wms_srs,
+        wms_chunk_tiles=wms_chunk_tiles)
     destination = (
         farfield_root / "artifacts" / ARTIFACT_KIND / dataset / version)
     existing = _existing_artifact(
@@ -2289,7 +2739,11 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
         esri_wayback_release=request.get("esri_wayback_release"),
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=request.get("wms_layer"),
+        wms_srs=request.get("wms_srs"),
+        wms_chunk_tiles=request.get(
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
     if existing is not None:
         return existing
 
@@ -2298,10 +2752,15 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
             client = ArcGisTileClient(
                 service_url,
                 esri_wayback_release=request.get("esri_wayback_release"))
-        else:
+        elif provider_mode == IMAGE_SERVER_PROVIDER:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
                 lock_raster_ids=request["lock_raster_ids"])
+        else:
+            client = OgcWmsClient(
+                service_url, layer=request["wms_layer"],
+                srs=request["wms_srs"],
+                chunk_tiles=request["wms_chunk_tiles"])
     service_metadata = client.get_service_metadata()
     coverage = audit_coverage(
         client, plan, service_metadata, service_url=service_url,
@@ -2311,7 +2770,11 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
         esri_wayback_release=request.get("esri_wayback_release"),
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=request.get("wms_layer"),
+        wms_srs=request.get("wms_srs"),
+        wms_chunk_tiles=request.get(
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
     coverage_sha256 = artifact.sha256_json(coverage)
     provider = coverage["provider"]
     grid = plan["grid"]
@@ -2330,7 +2793,7 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         "jpeg_quality": jpeg_quality,
         "assembly_version": ASSEMBLY_VERSION,
     }
-    if provider_mode == IMAGE_SERVER_PROVIDER:
+    if provider_mode != CACHED_MAP_PROVIDER:
         build_state["provider_request"] = request
     if not require_source_index_coverage:
         build_state["source_index_coverage_required"] = False
@@ -2340,7 +2803,10 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
 
     source_summary = ensure_source_tiles(
         build_dir, grid, client, workers=workers,
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        source_chunking_contract=(
+            _wms_chunk_contract(request["wms_chunk_tiles"])
+            if provider_mode == WMS_PROVIDER else None))
     source_manifest = write_source_tile_manifest(build_dir, grid, provider)
     patch_summary = ensure_patches(
         build_dir, grid, source_manifest["sha256"],
@@ -2398,7 +2864,7 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         "jpeg_quality": jpeg_quality,
         "assembly_version": ASSEMBLY_VERSION,
     }
-    if provider_mode == IMAGE_SERVER_PROVIDER:
+    if provider_mode != CACHED_MAP_PROVIDER:
         config["provider_request"] = request
     if not require_source_index_coverage:
         config["source_index_coverage_required"] = False
@@ -2465,10 +2931,13 @@ def audit_region(region_dir: Path, *,
                  lock_raster_ids: Iterable[int] = (),
                  esri_wayback_release: str | None = None,
                  image_server_chunk_tiles: int = 1,
+                 wms_layer: str | None = None,
+                 wms_srs: str | None = None,
+                 wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
                  client=None) -> dict:
     """Run the provider coverage proof without creating build state."""
     _, plan = region.load_region(Path(region_dir))
-    if (provider_mode == IMAGE_SERVER_PROVIDER
+    if (provider_mode in (IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
     if (esri_wayback_release is not None
@@ -2479,16 +2948,23 @@ def audit_region(region_dir: Path, *,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=wms_layer, wms_srs=wms_srs,
+        wms_chunk_tiles=wms_chunk_tiles)
     if client is None:
         if provider_mode == CACHED_MAP_PROVIDER:
             client = ArcGisTileClient(
                 service_url,
                 esri_wayback_release=request.get("esri_wayback_release"))
-        else:
+        elif provider_mode == IMAGE_SERVER_PROVIDER:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
                 lock_raster_ids=request["lock_raster_ids"])
+        else:
+            client = OgcWmsClient(
+                service_url, layer=request["wms_layer"],
+                srs=request["wms_srs"],
+                chunk_tiles=request["wms_chunk_tiles"])
     return audit_coverage(
         client, plan, client.get_service_metadata(),
         service_url=service_url, source_index_url=source_index_url,
@@ -2497,7 +2973,11 @@ def audit_region(region_dir: Path, *,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
         esri_wayback_release=request.get("esri_wayback_release"),
-        image_server_chunk_tiles=image_server_chunk_tiles)
+        image_server_chunk_tiles=image_server_chunk_tiles,
+        wms_layer=request.get("wms_layer"),
+        wms_srs=request.get("wms_srs"),
+        wms_chunk_tiles=request.get(
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
 
 
 def parse_args() -> argparse.Namespace:
@@ -2510,7 +2990,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider_mode", choices=PROVIDER_MODES,
         default=DEFAULT_PROVIDER_MODE,
-        help="cached MapServer tiles (default) or pinned ImageServer exports")
+        help=("cached MapServer tiles (default), pinned ImageServer exports, "
+              "or WMS 1.1.1 GetMap"))
     parser.add_argument(
         "--build_cache_version",
         help="reuse the mutable cache belonging to another artifact version; "
@@ -2537,6 +3018,17 @@ def parse_args() -> argparse.Namespace:
         help="fixed ImageServer export chunk width/height in source tiles; "
              "1 preserves legacy single-tile exports, 15 uses 3840px "
              "exports (maximum 15)")
+    parser.add_argument(
+        "--wms_layer",
+        help="required named layer for WMS GetMap mode")
+    parser.add_argument(
+        "--wms_srs",
+        help="required projected EPSG SRS for WMS GetMap mode")
+    parser.add_argument(
+        "--wms_chunk_tiles", type=int, default=WMS_MAX_CHUNK_TILES,
+        help=("WMS request width/height in source tiles "
+              f"(maximum {WMS_MAX_CHUNK_TILES}, or "
+              f"{WMS_MAX_CHUNK_TILES * region.DEFAULT_TILE_PX}px)"))
     parser.add_argument(
         "--allow_incomplete_source_index", action="store_true",
         help="record source-index gaps as informational while still requiring "
@@ -2574,7 +3066,9 @@ def main() -> None:
         esri_wayback_release=args.esri_wayback_release,
         require_source_index_coverage=(
             not args.allow_incomplete_source_index),
-        image_server_chunk_tiles=args.image_server_chunk_tiles)
+        image_server_chunk_tiles=args.image_server_chunk_tiles,
+        wms_layer=args.wms_layer, wms_srs=args.wms_srs,
+        wms_chunk_tiles=args.wms_chunk_tiles)
     client_kwargs = {
         "connect_timeout_s": args.connect_timeout_s,
         "read_timeout_s": args.read_timeout_s,
@@ -2585,10 +3079,15 @@ def main() -> None:
             args.service_url,
             esri_wayback_release=request.get("esri_wayback_release"),
             **client_kwargs)
-    else:
+    elif args.provider_mode == IMAGE_SERVER_PROVIDER:
         client = ArcGisImageServerClient(
             args.service_url, catalog_where=request["catalog_where"],
             lock_raster_ids=request["lock_raster_ids"], **client_kwargs)
+    else:
+        client = OgcWmsClient(
+            args.service_url, layer=request["wms_layer"],
+            srs=request["wms_srs"],
+            chunk_tiles=request["wms_chunk_tiles"], **client_kwargs)
     if args.audit_only:
         coverage = audit_region(
             args.region_dir, service_url=args.service_url,
@@ -2600,6 +3099,10 @@ def main() -> None:
             lock_raster_ids=request.get("lock_raster_ids", ()),
             esri_wayback_release=request.get("esri_wayback_release"),
             image_server_chunk_tiles=args.image_server_chunk_tiles,
+            wms_layer=request.get("wms_layer"),
+            wms_srs=request.get("wms_srs"),
+            wms_chunk_tiles=request.get(
+                "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
             client=client)
         print(json.dumps(coverage, sort_keys=True, indent=2))
         return
@@ -2616,6 +3119,10 @@ def main() -> None:
         lock_raster_ids=request.get("lock_raster_ids", ()),
         esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=args.image_server_chunk_tiles,
+        wms_layer=request.get("wms_layer"),
+        wms_srs=request.get("wms_srs"),
+        wms_chunk_tiles=request.get(
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
         jpeg_quality=args.jpeg_quality, workers=args.workers,
         patch_workers=args.patch_workers,
         decoded_tile_cache_entries=args.decoded_tile_cache_entries,
