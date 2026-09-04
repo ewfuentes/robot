@@ -470,10 +470,6 @@ def _load_inputs(args) -> dict:
     observations_manifest = configured_lane.require(
         observations_ref, document=document,
         kind=paths_lib.BEARING_OBSERVATIONS)
-    if observations_manifest.config.get(
-            "build_identity") != document["build_identity"]:
-        raise AlignmentDiagnosticError(
-            "bearing_observations belongs to a different immutable build")
     if len(observations_manifest.upstreams) != 2:
         raise AlignmentDiagnosticError(
             "bearing_observations must bind object_tracks and semantic_audits")
@@ -507,9 +503,6 @@ def _load_inputs(args) -> dict:
         audits_ref, document=document, kind=paths_lib.SEMANTIC_AUDITS)
     tracks_manifest = configured_lane.require(
         tracks_ref, document=document, kind=paths_lib.OBJECT_TRACKS)
-    if audits_manifest.config.get("build_identity") != document["build_identity"]:
-        raise AlignmentDiagnosticError(
-            f"{paths_lib.SEMANTIC_AUDITS} belongs to a different immutable build")
     if sum(ref == tracks_ref
            for ref in audits_manifest.upstreams) != 1:
         raise AlignmentDiagnosticError(

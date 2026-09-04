@@ -16,7 +16,9 @@ Create and execute a build with::
 
 There is no ``--force`` mode.  Published artifacts are immutable.  A changed
 stage configuration or changed upstream identity requires a new downstream
-artifact version; orchestration refuses to reuse a stale descendant.
+artifact version; orchestration refuses to reuse a stale descendant.  A build
+may name prior artifact versions for stages it does not run; each is checked
+from its own manifest (`_check_plug_in`), never recomputed from this build.
 """
 
 from __future__ import annotations
@@ -590,6 +592,77 @@ class StageDependencyError(ValueError):
     """A stage cannot start because a configured upstream is incomplete."""
 
 
+# Settings that say how a provider was reached and what the operator agreed to
+# pay. They shape a bill, not an artifact, so they stay in the producer's
+# recorded recipe for provenance but never decide whether that artifact can be
+# plugged into another build.
+NON_SCIENTIFIC_PREFIXES = ("execution", "cost")
+
+_warned: set[str] = set()
+
+
+def _warn(message: str) -> None:
+    """Say it once: the reuse checks recurse through the chain on every
+    `run`/`status` call, and one fact repeated eight times is noise."""
+    if message not in _warned:
+        _warned.add(message)
+        print(f"WARNING: {message}")
+
+
+def _is_scientific(key: str) -> bool:
+    return not any(key == prefix or key.startswith(prefix + ".")
+                   for prefix in NON_SCIENTIFIC_PREFIXES)
+
+
+def _require_self_describing(manifest, *, kind: str, error) -> None:
+    """The artifact's identity must recompute from its own manifest."""
+    try:
+        artifact_recipe.verify_self_describing(manifest)
+    except artifact_recipe.ArtifactRecipeError as exc:
+        raise error(str(exc)) from exc
+
+
+def _check_plug_in(manifest, *, kind: str, owner: str, config: dict,
+                   error) -> None:
+    """A published artifact against the settings this build states for its
+    stage.
+
+    A shared setting must hold the value the artifact was made with: another
+    value is another artifact, and reusing it would be silent staleness. A
+    setting the artifact predates cannot have shaped it, so it is reported and
+    not refused -- refusing orphaned every artifact of a stage each time that
+    stage's schema grew (see docs/farfield/decisions.md, 2026-09-02). How the
+    provider was reached and what it was allowed to cost never gate.
+    """
+    if manifest.recipe is None:
+        raise error(
+            f"{kind} artifact {manifest.version!r} records no recipe, so the "
+            "settings it was made with cannot be checked; it was not "
+            "published by this pipeline")
+    recorded = artifact_recipe.validate(manifest.recipe)["stage_config"]
+    current = stage_config_selection(owner, config)
+    differing = [key for key in sorted(set(recorded) & set(current))
+                 if _is_scientific(key) and recorded[key] != current[key]]
+    if differing:
+        detail = "; ".join(
+            f"{key}: configured {current[key]!r}, made with {recorded[key]!r}"
+            for key in differing)
+        raise error(
+            f"{kind} artifact {manifest.version!r} was made with a different "
+            f"{owner} configuration: {detail}. Configure the values it was "
+            "made with, or name a new version and rebuild it")
+    unverified = [key for key in sorted(set(current) - set(recorded))
+                  if _is_scientific(key)]
+    if unverified:
+        _warn(f"{kind} artifact {manifest.version!r} predates {unverified}; "
+              "those settings are not verified against it")
+    retired = [key for key in sorted(set(recorded) - set(current))
+               if _is_scientific(key)]
+    if retired:
+        _warn(f"{kind} artifact {manifest.version!r} was made with "
+              f"{retired}, which the current schema no longer has")
+
+
 def _binds_exact_pinhole_once(
         manifest, expected: artifact.ArtifactRef) -> bool:
     """Whether a build-scoped artifact binds only the configured pinhole ref."""
@@ -700,24 +773,25 @@ def _configured_ref(paths: paths_lib.FarfieldPaths, config: dict,
     manifest = None
     if build_inputs is not None and owner is not None:
         manifest = artifact.load_manifest(path)
-        if manifest.config.get("orchestration") != stage_contract(owner, config):
-            raise StageDependencyError(
-                f"required {kind} artifact has a different resolved "
-                "configuration; publish the configured upstream stage first")
-        # One rule for every stage. Extract and track used to be special:
-        # they carried a whole-build check "because they bind the large
-        # raw/model inputs that begin the chain", and `stage_reuse` existed
-        # solely to grant human-attested exceptions to it. Those inputs are
-        # now IN the artifact identity (see `identity_inputs`), so the
-        # ordinary check covers what the special case reached for, and the
-        # exception mechanism has nothing left to except.
-        if build_inputs is not None:
-            expected = expected_artifact_identity(
-                paths, config, kind, build_inputs=build_inputs)
-            found = artifact_identity.recorded(manifest)
-            if found != expected:
-                raise StageDependencyError(artifact_identity.explain(
-                    expected=expected, manifest=manifest, kind=kind))
+        # An upstream answers for itself. Its identity is checked against its
+        # OWN recipe, its settings against what this build states for its
+        # stage, and its lineage against the sibling artifacts this build
+        # names -- never recomputed from this build's recipe, which made every
+        # consumer re-derive settings for stages it does not run and orphaned
+        # whole lineages when a schema grew. See docs/farfield/decisions.md,
+        # 2026-09-02.
+        _require_self_describing(
+            manifest, kind=kind, error=StageDependencyError)
+        _check_plug_in(manifest, kind=kind, owner=owner, config=config,
+                       error=StageDependencyError)
+        for upstream_kind in STAGE_SPECS[owner].upstreams:
+            upstream = _configured_ref(
+                paths, config, upstream_kind, build_inputs=build_inputs)
+            if manifest.upstreams.count(upstream) != 1:
+                raise StageDependencyError(
+                    f"required {kind} artifact {version!r} was built from a "
+                    f"different {upstream_kind} artifact than the configured "
+                    f"{upstream.version!r}; it cannot be plugged in beside it")
     if kind == paths_lib.FRAME_LANDMARKS:
         if manifest is None:
             manifest = artifact.load_manifest(path)
@@ -767,8 +841,8 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
     """Return validated outputs, ``()`` when absent, or reject stale output.
 
     `build_identity` still names the localization RUN DIRECTORY -- it is a
-    label there, not a gate. What decides whether an artifact may be reused is
-    `build_inputs`, through `artifact_identity`.
+    label there, not a gate. Whether an output stands as done is decided from
+    its own manifest: see `_check_plug_in`.
     """
     descriptors = _output_descriptors(
         paths, config, stage, build_identity=build_identity)
@@ -800,18 +874,18 @@ def completed_stage_refs(paths: paths_lib.FarfieldPaths, config: dict,
                 f"stage {stage!r} output {path} was built from different "
                 "upstream artifact identities; choose a new output version")
         if kind in PIPELINE_ARTIFACT_OWNER:
-            if manifest.config.get("orchestration") != contract:
+            if manifest.recipe is not None:
+                _check_plug_in(manifest, kind=kind, owner=stage,
+                               config=config, error=StageContractError)
+            elif manifest.config.get("orchestration") != contract:
+                # Published before recipes existed: only the digest is there
+                # to compare, so schema growth cannot be told from a change.
                 raise StageContractError(
                     f"stage {stage!r} output {path} has a different resolved "
                     "configuration; choose a new output version")
             if build_inputs is not None:
-                expected = expected_artifact_identity(
-                    paths, config, kind, build_inputs=build_inputs)
-                found = artifact_identity.recorded(manifest)
-                if found != expected:
-                    raise StageContractError(
-                        f"stage {stage!r} output: " + artifact_identity.explain(
-                            expected=expected, manifest=manifest, kind=kind))
+                _require_self_describing(
+                    manifest, kind=kind, error=StageContractError)
         if kind == paths_lib.FRAME_LANDMARKS:
             try:
                 pinhole_ref = _configured_ref(

@@ -527,3 +527,48 @@ the remembered dead pose. (2) a whole-belief per-measurement damage cap —
 anti-synergistic (0/4): both protect hypothesis survival and together the
 belief stays permanently fragmented. If damage bounding returns, it must be
 asymmetric (clamp tracked-mode decay, not the diffuse cloud).
+
+## 2026-09-02 · Reuse is checked from the artifact's manifest, not recomputed from the consumer's recipe
+
+**What changed.** A build that names an existing artifact version no longer
+has that artifact's stage config digest and identity recomputed from the
+consuming build's config and compared for equality. The artifact is checked
+from its own manifest: self-describing (its identity recomputes from its
+recorded recipe), config-compatible (shared settings must match; settings the
+artifact predates are reported as unverified; `execution`/`cost` never gate),
+and lineage-consistent (it binds the sibling versions the build names).
+Producers still refuse to publish over a version made with different settings.
+
+**Why — two measurements on the real root, 2026-09-02.**
+
+1. #702 added `tracking.fragment_min_dominant_cc` and `fragment_patience` as
+   required keys. At HEAD, `pipeline run --only localize` on the untouched
+   260828_imu_baseline Pohang lineage failed with "required object_tracks
+   artifact has a different resolved configuration". The track digest is a
+   hash over the key set, so no HEAD config could equal what
+   `stage3_7b88e81_regen_v2` recorded (`5f6c116c…` vs `04cb0650…`), and the
+   check recursed from localize down to tracks. Every pre-#702 chain on all
+   eight datasets was orphaned for every HEAD build, filter-only reruns
+   included. Nothing about the tracks was stale.
+2. `execution.*` and `cost.*` sit in the extract, audit and match prefixes as
+   one shared block. Switching matching to on-demand transport moved the
+   digest expected of the reused extraction (`0bafa822…` → `179c00ab…`); a
+   new GCS staging prefix alone did too (`af1a13b3…`). Transport was pinned by
+   the oldest reused LLM artifact.
+
+Both are the consumer re-deriving settings for stages it does not run. The
+"stale artifact used in silence" hazard that recomputation guarded against is
+a producer-side hazard, and the producer-side guard ("choose a new output
+version") already covers it.
+
+The producers carried the same check in miniature: match, bearings,
+diagnostics and tracking each refused an input whose `config.build_identity`
+differed from their own build's ("belongs to a different immutable build"),
+so a new build could not run match over an audit another build had published
+even after the orchestrator had accepted it. Those four equalities are gone;
+the lineage checks beside them (an audit binds its tracks exactly once, and
+so on) stay, because those are about the data.
+
+**Rule (ekf).** Builds may name prior parts. When the config for a plugged-in
+stage is given, a differing shared value fails; a key the artifact predates
+warns. Schema growth must not orphan artifacts.
