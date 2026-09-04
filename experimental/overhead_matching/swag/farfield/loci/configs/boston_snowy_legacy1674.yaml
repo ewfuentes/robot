@@ -1,7 +1,0 @@
-kind: SafaPlusNormalizedLandmarkAggregatorConfig
-image_similarity_matrix_path: /data/farfield_matching/artifacts/loci_wag_similarity/boston_snowy_legacy1674/paper_wag_no_hinge_adopted_v1/similarity.pt
-landmark_similarity_matrix_path: /data/farfield_matching/artifacts/loci_correspondence_scores/boston_snowy_legacy1674/simple_v1_v6_hungarian08_adopted_v1/hungarian08_similarity.pt
-image_sigma: 0.1809
-landmark_sigma: 0.4673
-landmark_use_raw_residual: false
-allow_legacy_similarity_identity: true
