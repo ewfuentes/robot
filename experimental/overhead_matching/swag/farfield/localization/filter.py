@@ -330,8 +330,10 @@ def _mixture_block_log_terms(east_m, north_m, heading_rad, observed_rad,
     delta = geo.wrap_rad(
         bearing_world - heading_rad[:, None] - observed_rad)
     kappa_eff = catalog.kappa_eff(kappa_z, range_m, sl)
-    return (log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
-            + range_cap_log_term(range_m, range_max_m, range_softness))
+    terms = log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
+    if range_max_m is not None:
+        terms += range_cap_log_term(range_m, range_max_m, range_softness)
+    return terms
 
 
 def pose_log_likelihood(east_m, north_m, heading_rad,
@@ -607,9 +609,11 @@ def committed_log_density(east_m, north_m, heading_rad, landmark_idx,
     bearing = geo.compass_bearing_rad(d_east, d_north)
     delta = geo.wrap_rad(bearing - heading_rad - observed_rad)
     kappa_eff = catalog.kappa_eff(kappa_z, range_m, landmark_idx)
-    vm = np.exp(von_mises_logpdf(delta, kappa_eff)
-                + range_cap_log_term(range_m, range_max_m, range_softness))
-    return np.log((1.0 - outlier_rate) * vm
+    log_vm = von_mises_logpdf(delta, kappa_eff)
+    if range_max_m is not None:
+        log_vm = log_vm + range_cap_log_term(range_m, range_max_m,
+                                             range_softness)
+    return np.log((1.0 - outlier_rate) * np.exp(log_vm)
                   + outlier_rate / (2.0 * math.pi))
 
 

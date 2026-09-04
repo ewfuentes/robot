@@ -122,14 +122,14 @@ class TorchMeasurementEngine:
         log_norm = math.log(_TWO_PI) + torch.log(
             torch.special.i0e(kappa)) + kappa
         log_vm = kappa * torch.cos(delta) - log_norm
-        return (self.log_weight[meas.tracklet_id][None, start:end]
-                + log_vm + self._range_cap_log_term(d_east, d_north, meas))
+        terms = self.log_weight[meas.tracklet_id][None, start:end] + log_vm
+        if getattr(meas, "range_max_m", None) is not None:
+            terms = terms + self._range_cap_log_term(d_east, d_north, meas)
+        return terms
 
     def _range_cap_log_term(self, d_east, d_north, meas):
         """Mirror of filter.range_cap_log_term on the torch device."""
-        cap = getattr(meas, "range_max_m", None)
-        if cap is None:
-            return 0.0
+        cap = meas.range_max_m
         if not (math.isfinite(cap) and cap > 0.0):
             raise ValueError(f"range_max_m must be finite and positive, got "
                              f"{cap}")
@@ -200,9 +200,10 @@ class TorchMeasurementEngine:
                                           / torch.clamp(rng, min=1.0)))
         log_norm = math.log(_TWO_PI) + torch.log(
             torch.special.i0e(kappa)) + kappa
-        vm = torch.exp(kappa * torch.cos(delta) - log_norm
-                       + self._range_cap_log_term(d_east, d_north, meas))
-        return (1.0 - outlier_rate) * vm + outlier_rate / _TWO_PI
+        log_vm = kappa * torch.cos(delta) - log_norm
+        if getattr(meas, "range_max_m", None) is not None:
+            log_vm = log_vm + self._range_cap_log_term(d_east, d_north, meas)
+        return (1.0 - outlier_rate) * torch.exp(log_vm) + outlier_rate / _TWO_PI
 
     @torch.no_grad()
     def update(self, belief, meas, pi0: float, per_mode: bool,
