@@ -207,10 +207,12 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
     if manifest.declared_outputs != ("observations.jsonl",):
         raise AlignmentDiagnosticError(
             "bearing_observations must declare only observations.jsonl")
-    expected_config_keys = _OBSERVATION_CONFIG_KEYS | (
-        frozenset())
+    # `range_cap` (localization's per-keyframe range cap provenance) is
+    # optional: pre-cap artifacts lack it and diagnostics never read it.
     config = _exact_keys(
-        manifest.config, expected_config_keys,
+        {key: value for key, value in manifest.config.items()
+         if key != "range_cap"},
+        _OBSERVATION_CONFIG_KEYS,
         "bearing_observations manifest config")
     if config["schema"] != "farfield_bearing_observations/v1":
         raise AlignmentDiagnosticError(
