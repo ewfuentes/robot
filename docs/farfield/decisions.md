@@ -680,3 +680,9 @@ bimodality gone (0.21–0.52 → 0.622–0.624) and a 39 m final MAP. Never wors
 helps wherever the filter had near landmarks to bind, neutral where every
 landmark is beyond the 2–10 km buckets (Boston leg3), nothing where the data
 was already dead upstream (Boston leg2, mtw leg1 with 136 observations).
+Second batch the same day: Charles River (IMU-baseline successors) stays at
+its saturated 0.997 with dn100 0.649 → 0.655 and a 21 m final MAP; Boston
+snowy (successors of the 260903 `osmv2_v1` build, a 25 × 25 km OSM box)
+0.387 → 0.854 at 500 m, 0.171 → 0.604 at 100 m, final MAP 580–690 m → 26 m
+on every seed. Each dataset kept the catalog its baseline used, so the
+comparison is only the cap.
