@@ -132,10 +132,11 @@ contracts used for the current datasets.
 | Vertex batch lifecycle | immutable requests and `gemini-3-flash-preview` | complete canonical structured OSM-tag responses |
 | VLM embedding builder | canonical responses | one validated 1,536-D pano-v2 pickle per leg |
 
-The far-field faces are camera-relative because these datasets do not contain
-an authoritative per-frame world camera heading. That is acceptable for the
-tag-only LOCI correspondence branch used here, which does not consume yaw. Do
-not reinterpret it into a compass-bearing annotation contract.
+The far-field faces are camera-relative because the pinhole renderer uses fixed
+panorama-relative yaw offsets and does not apply per-frame heading metadata,
+even when a dataset carries it. That is acceptable for the tag-only LOCI
+correspondence branch used here, which does not consume yaw. Do not reinterpret
+it into a compass-bearing annotation contract.
 
 ## The two embedding contracts
 

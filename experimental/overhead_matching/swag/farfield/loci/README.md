@@ -302,11 +302,11 @@ four byte-identical 2048 px JPEGs per request, per-image
 not name a model; submit it as `gemini-3-flash-preview` as recorded by the
 manifest.
 
-The active far-field panoramas have no authoritative per-frame world camera
-heading.  Their four faces are therefore camera-relative even though the stock
-prompt describes them as compass directions.  These bundles are valid for the
-current LOCI OSM-tag extraction and tag-only correspondence late fusion, which
-does not consume yaw.  Do not use their yaw metadata as world bearings or as a
+The four faces are camera-relative because the pinhole renderer uses fixed
+panorama-relative yaw offsets and does not apply per-frame heading metadata,
+even when the dataset carries it.  These bundles are valid for the current LOCI
+OSM-tag extraction and tag-only correspondence late fusion, which does not
+consume yaw.  Do not use their yaw metadata as world bearings or as a
 compass-faithful full-LOCI annotation contract.
 
 Before a run, exercise that same handoff against the complete published

@@ -238,10 +238,13 @@ def audit(dataset_dir: Path, pinhole_dir: Path, request_dir: Path,
     extractor_path = workspace / extractor_relative
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     world_heading_authority = _world_heading_authority(dataset_dir)
-    if world_heading_authority != "none":
-        raise ValueError(
-            "this camera-relative request contract expects no active world "
-            "heading authority")
+    orientation_reason = (
+        "No authoritative per-frame world heading exists for the active "
+        "panoramas/adopted faces."
+        if world_heading_authority == "none" else
+        "The pinhole renderer uses fixed panorama-relative yaw offsets and "
+        "does not apply the active intrinsics heading fields."
+    )
     return {
         "artifact_version_root": str(artifact_root),
         "complete": True,
@@ -308,9 +311,7 @@ def audit(dataset_dir: Path, pinhole_dir: Path, request_dir: Path,
                 "Do not interpret face yaw labels or returned yaw metadata "
                 "as world bearings."),
             "orientation": "camera_as_captured",
-            "reason": (
-                "No authoritative per-frame world heading exists for the "
-                "active panoramas/adopted faces."),
+            "reason": orientation_reason,
             "scope": "LOCI OSM-tag extraction and late fusion only",
             "world_heading_authority": world_heading_authority,
             "yaw_labels": (
