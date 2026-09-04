@@ -65,6 +65,18 @@ class SummarizeLociPositionMassTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "500 m mass below 100 m"):
                 summarize_loci_position_mass.summarize_path(path_dir)
 
+    def test_tolerates_float32_roundoff_between_cumulative_radii(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path_dir = self._path_dir(Path(temporary_dir))
+            torch.save({
+                100: torch.tensor([0.0, 0.1, 0.3, 1.0]),
+                500: torch.tensor([0.0, 0.2, 0.6, 0.99999994]),
+            }, path_dir / "prob_mass_by_radius.pt")
+
+            summarize_loci_position_mass.summarize_path(path_dir)
+
+            self.assertTrue((path_dir / "metrics.json").is_file())
+
     def test_rejects_invalid_initial_prior_mass(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             path_dir = self._path_dir(Path(temporary_dir))

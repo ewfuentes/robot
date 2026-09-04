@@ -75,7 +75,7 @@ def summarize_path(path_dir: Path) -> dict:
                 or torch.any(series < 0.0) or torch.any(series > 1.0)):
             raise ValueError(
                 f"{mass_path} masses at {radius:g} m must be finite probabilities")
-    if torch.any(masses[500.0] < masses[100.0]):
+    if torch.any(masses[500.0] + 1e-6 < masses[100.0]):
         raise ValueError(
             f"{mass_path} has 500 m mass below 100 m mass at one or more steps")
 
