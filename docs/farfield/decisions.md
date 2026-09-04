@@ -685,4 +685,9 @@ its saturated 0.997 with dn100 0.649 → 0.655 and a 21 m final MAP; Boston
 snowy (successors of the 260903 `osmv2_v1` build, a 25 × 25 km OSM box)
 0.387 → 0.854 at 500 m, 0.171 → 0.604 at 100 m, final MAP 580–690 m → 26 m
 on every seed. Each dataset kept the catalog its baseline used, so the
-comparison is only the cap.
+comparison is only the cap. Franconia leg 1 (successors of the 260903
+`stage3_b847f55_v1` build, 25 × 25 km box with 1,891 rows) is the one dead
+dataset the cap moves: dn500 0.002 → 0.102 and dn1000 0.013 → 0.297 over
+4 seeds, but three of four seeds still end 9–10 km off (one at 991 m). Only
+716 of 1,337 observations carry a cap there; the rest are `over_10km`
+summits, which the cap leaves unconstrained.
