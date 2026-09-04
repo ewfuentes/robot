@@ -48,7 +48,7 @@ may resume only through its explicit lifecycle contract.
 | `extract` | frozen dataset, extraction recipe | `pinhole_images`, `frame_landmarks` |
 | `track` | pinholes, frame detections | `object_tracks` |
 | `audit` | tracks, frame detections | `semantic_audits` |
-| `bearings` | tracks, canonical audit | `bearing_observations` |
+| `bearings` | tracks, canonical audit, the frame_landmarks the tracks bind (per-keyframe `range_max_m` from `distance_estimate`) | `bearing_observations` |
 | `match` | tracks, audit, catalog | `landmark_matches` |
 | `diagnostics` | bearings, approved nominal-forward record | `alignment_diagnostics` |
 | `localization_inputs` | bearings, matches, catalog, motion/calibration inputs | `localization_inputs` |

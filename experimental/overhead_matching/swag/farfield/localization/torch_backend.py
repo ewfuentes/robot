@@ -43,11 +43,19 @@ class TorchMeasurementEngine:
 
     def __init__(self, catalog, log_weight_by_tracklet: dict,
                  device: str = None, dtype=torch.float32, seed: int = 0,
-                 surprise_by_tracklet: dict = None):
+                 surprise_by_tracklet: dict = None,
+                 range_softness: float = 0.25):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
         self.dtype = dtype
+        if not (math.isfinite(range_softness) and range_softness > 0.0):
+            raise ValueError(f"range_softness must be finite and positive, "
+                             f"got {range_softness}")
+        # Width of the one-sided range-cap tail as a fraction of the cap
+        # (filter.range_cap_log_term); the cap itself rides on each
+        # measurement.
+        self.range_softness = float(range_softness)
         # Own generator for association renewal draws (§5.3 persistence):
         # deterministic given the config seed, independent of the numpy
         # stream (the manifest records the backend, so replay is per-engine).
@@ -115,7 +123,19 @@ class TorchMeasurementEngine:
             torch.special.i0e(kappa)) + kappa
         log_vm = kappa * torch.cos(delta) - log_norm
         return (self.log_weight[meas.tracklet_id][None, start:end]
-                + log_vm)
+                + log_vm + self._range_cap_log_term(d_east, d_north, meas))
+
+    def _range_cap_log_term(self, d_east, d_north, meas):
+        """Mirror of filter.range_cap_log_term on the torch device."""
+        cap = getattr(meas, "range_max_m", None)
+        if cap is None:
+            return 0.0
+        if not (math.isfinite(cap) and cap > 0.0):
+            raise ValueError(f"range_max_m must be finite and positive, got "
+                             f"{cap}")
+        rng = torch.sqrt(d_east * d_east + d_north * d_north)
+        excess = torch.clamp(rng - cap, min=0.0)
+        return -0.5 * torch.square(excess / (self.range_softness * cap))
 
     def _landmark_log_likelihood(self, east, north, heading, meas,
                                  log_scale: float):
@@ -180,7 +200,8 @@ class TorchMeasurementEngine:
                                           / torch.clamp(rng, min=1.0)))
         log_norm = math.log(_TWO_PI) + torch.log(
             torch.special.i0e(kappa)) + kappa
-        vm = torch.exp(kappa * torch.cos(delta) - log_norm)
+        vm = torch.exp(kappa * torch.cos(delta) - log_norm
+                       + self._range_cap_log_term(d_east, d_north, meas))
         return (1.0 - outlier_rate) * vm + outlier_rate / _TWO_PI
 
     @torch.no_grad()

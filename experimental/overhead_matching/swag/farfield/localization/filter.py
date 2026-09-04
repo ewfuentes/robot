@@ -30,6 +30,7 @@ import dataclasses
 import hashlib
 import math
 
+import msgspec
 import numpy as np
 from scipy import special
 
@@ -296,17 +297,41 @@ def _clipped_log_lr(table: structs.CompatibilityTable,
     return np.clip(log_lr, table.clip_lo, table.clip_hi)
 
 
+def range_cap_log_term(range_m, range_max_m, softness_frac):
+    """log g(r) = log P(extractor reported "<= cap" | true range r).
+
+    1 inside the cap; a one-sided Gaussian tail beyond it with width
+    softness_frac * cap. Measured on Pohang (2026-09-03): 99.8% of labelled
+    detections lie below their bucket's upper edge, so the cap is a near-hard
+    bound while the bucket's lower edge carries no information. `None`
+    (no cap) is the identity.
+    """
+    if range_max_m is None:
+        return 0.0
+    if not (math.isfinite(range_max_m) and range_max_m > 0.0):
+        raise ValueError(f"range_max_m must be finite and positive, got "
+                         f"{range_max_m}")
+    if not (math.isfinite(softness_frac) and softness_frac > 0.0):
+        raise ValueError(f"range cap softness_frac must be finite and "
+                         f"positive, got {softness_frac}")
+    excess = np.maximum(np.asarray(range_m, dtype=np.float64) - range_max_m,
+                        0.0)
+    return -0.5 * np.square(excess / (softness_frac * range_max_m))
+
+
 def _mixture_block_log_terms(east_m, north_m, heading_rad, observed_rad,
-                             kappa_z, log_weight, catalog, sl):
-    """log[p(j|appearance) * vM(delta_j; kappa_eff)] for one candidate
-    block, from arbitrary pose arrays. `log_weight` is the proper identity
-    posterior (`_identity_log_weights`); the (1-pi0) mixture constant is
-    the caller's."""
+                             kappa_z, log_weight, catalog, sl,
+                             range_max_m=None, range_softness=0.25):
+    """log[p(j|appearance) * vM(delta_j; kappa_eff) * g(r_j)] for one
+    candidate block, from arbitrary pose arrays. `log_weight` is the proper
+    identity posterior (`_identity_log_weights`); the (1-pi0) mixture
+    constant is the caller's. `g` is the range cap (`range_cap_log_term`)."""
     bearing_world, range_m = catalog.bearings_from(east_m, north_m, sl)
     delta = geo.wrap_rad(
         bearing_world - heading_rad[:, None] - observed_rad)
     kappa_eff = catalog.kappa_eff(kappa_z, range_m, sl)
-    return log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
+    return (log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
+            + range_cap_log_term(range_m, range_max_m, range_softness))
 
 
 def pose_log_likelihood(east_m, north_m, heading_rad,
@@ -315,7 +340,8 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
                         catalog: catalog_mod.LandmarkCatalog,
                         pi0: float,
                         log_weight: np.ndarray = None,
-                        matcher_recall: float = 0.5) -> np.ndarray:
+                        matcher_recall: float = 0.5,
+                        range_softness: float = 0.25) -> np.ndarray:
     """p(z | pose) under the §5.3 mixture, for arbitrary pose arrays.
 
     Exactly the density the belief update applies — exposed so proposal
@@ -338,7 +364,9 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
         per_block[:, i + 1] = special.logsumexp(
             log_mix + _mixture_block_log_terms(
                 east_m, north_m, heading_rad, observed_rad, kappa_z,
-                log_weight, catalog, sl), axis=1)
+                log_weight, catalog, sl,
+                range_max_m=meas.range_max_m,
+                range_softness=range_softness), axis=1)
     return special.logsumexp(per_block, axis=1)
 
 
@@ -380,7 +408,8 @@ def measurement_update(
         outlier_rate: float = 0.1,
         rng: np.random.Generator = None,
         surprise: np.ndarray = None,
-        matcher_recall: float = 0.5) -> list:
+        matcher_recall: float = 0.5,
+        range_softness: float = 0.25) -> list:
     """Bearing update (design doc §5.3), in one of two association regimes.
 
     `assoc is None` — per-epoch marginalization:
@@ -436,10 +465,12 @@ def measurement_update(
     log_mix = math.log1p(-pi0)
 
     def block_log_terms(sl):
-        """log[(1-pi0) * p(j|app) * vM(...)] for one candidate block."""
+        """log[(1-pi0) * p(j|app) * vM(...) * g(r)] for one candidate
+        block."""
         return log_mix + _mixture_block_log_terms(
             belief.east_m, belief.north_m, belief.heading_rad,
-            observed_rad, kappa_z, log_weight, catalog, sl)
+            observed_rad, kappa_z, log_weight, catalog, sl,
+            range_max_m=meas.range_max_m, range_softness=range_softness)
 
     blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
               for start in range(0, catalog.n, CANDIDATE_BLOCK)]
@@ -448,7 +479,8 @@ def measurement_update(
         return _persistence_update(
             belief, meas, catalog, block_log_terms, blocks, log_null,
             observed_rad, kappa_z, per_mode, resp_min, assoc,
-            renewal_rate, outlier_rate, rng, surprise)
+            renewal_rate, outlier_rate, rng, surprise,
+            range_softness=range_softness)
 
     # Pass 1: total log-likelihood per particle.
     per_block = np.empty((belief.n, len(blocks) + 1))
@@ -563,16 +595,20 @@ def _surprise_mask(table: structs.CompatibilityTable,
 
 
 def committed_log_density(east_m, north_m, heading_rad, landmark_idx,
-                          observed_rad, kappa_z, outlier_rate, catalog):
+                          observed_rad, kappa_z, outlier_rate, catalog,
+                          range_max_m=None, range_softness=0.25):
     """log p(z | pose, committed to landmark_idx): the persistence-regime
-    per-epoch geometry term, (1-eps) vM(delta; kappa_eff) + eps/(2 pi)."""
+    per-epoch geometry term, (1-eps) vM(delta; kappa_eff) g(r) + eps/(2 pi).
+    The range cap g multiplies the geometric branch only: an outlier bearing
+    says nothing about range either."""
     d_east = catalog.east_m[landmark_idx] - east_m
     d_north = catalog.north_m[landmark_idx] - north_m
     range_m = np.hypot(d_east, d_north)
     bearing = geo.compass_bearing_rad(d_east, d_north)
     delta = geo.wrap_rad(bearing - heading_rad - observed_rad)
     kappa_eff = catalog.kappa_eff(kappa_z, range_m, landmark_idx)
-    vm = np.exp(von_mises_logpdf(delta, kappa_eff))
+    vm = np.exp(von_mises_logpdf(delta, kappa_eff)
+                + range_cap_log_term(range_m, range_max_m, range_softness))
     return np.log((1.0 - outlier_rate) * vm
                   + outlier_rate / (2.0 * math.pi))
 
@@ -580,7 +616,7 @@ def committed_log_density(east_m, north_m, heading_rad, landmark_idx,
 def _persistence_update(belief, meas, catalog, block_log_terms, blocks,
                         log_null, observed_rad, kappa_z, per_mode, resp_min,
                         assoc, renewal_rate, outlier_rate, rng,
-                        surprise_mask) -> list:
+                        surprise_mask, range_softness=0.25) -> list:
     """The persistence regime of `measurement_update` (see its docstring)."""
     if rng is None:
         raise ValueError("the persistence path samples associations and "
@@ -637,7 +673,8 @@ def _persistence_update(belief, meas, catalog, block_log_terms, blocks,
         keep[committed] = np.exp(committed_log_density(
             belief.east_m[committed], belief.north_m[committed],
             belief.heading_rad[committed], assoc[committed],
-            observed_rad, kappa_z, outlier_rate, catalog))
+            observed_rad, kappa_z, outlier_rate, catalog,
+            range_max_m=meas.range_max_m, range_softness=range_softness))
     keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
 
     uncommitted = assoc == ASSOC_UNCOMMITTED
@@ -1022,7 +1059,9 @@ def _belief_window_reference(belief, window_meas,
                 belief.heading_rad[idx][committed], assoc[committed],
                 math.radians(meas.bearing_forward_cw_deg),
                 min(float(meas.kappa), MAX_KAPPA),
-                config.association_outlier_rate, catalog))
+                config.association_outlier_rate, catalog,
+                range_max_m=meas.range_max_m,
+                range_softness=config.range_cap_softness_frac))
         keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
         uncommitted = assoc == ASSOC_UNCOMMITTED
         keep_scale = np.where(uncommitted, 0.0, 1.0 - beta)
@@ -1216,6 +1255,14 @@ def run_filter(
     original run rather than a different run that resembles it.
     """
     _validate(config, catalog, odometry, measurements, tables)
+    if not config.range_cap_enabled:
+        # Disabled means the likelihood is exactly the pre-cap one, whatever
+        # the export recorded: strip the caps here so every kernel below can
+        # read `meas.range_max_m` without consulting the config again.
+        measurements = [
+            msgspec.structs.replace(meas, range_max_m=None)
+            if meas.range_max_m is not None else meas
+            for meas in measurements]
     rng = np.random.default_rng(config.seed)
     belief = init_belief(config, rng)
     tracker = mode_tracker_mod.ModeTracker(config.modes)
@@ -1250,7 +1297,8 @@ def run_filter(
             torch_backend)
         engine = torch_backend.TorchMeasurementEngine(
             catalog, weight_cache, seed=config.seed,
-            surprise_by_tracklet=surprise_cache)
+            surprise_by_tracklet=surprise_cache,
+            range_softness=config.range_cap_softness_frac)
 
         def apply_measurement(meas):
             return engine.update(
@@ -1271,7 +1319,8 @@ def run_filter(
                 outlier_rate=config.association_outlier_rate,
                 rng=np.random.default_rng(
                     measurement_draw_seed(config.seed, meas)),
-                surprise=surprise_cache[meas.tracklet_id])
+                surprise=surprise_cache[meas.tracklet_id],
+                range_softness=config.range_cap_softness_frac)
     else:
         raise ValueError(
             f"unknown measurement_backend {config.measurement_backend!r}; "
@@ -1286,7 +1335,8 @@ def run_filter(
             return pose_log_likelihood(
                 east, north, heading, meas, tables[meas.tracklet_id],
                 catalog, config.pi0,
-                log_weight=weight_cache[meas.tracklet_id])
+                log_weight=weight_cache[meas.tracklet_id],
+                range_softness=config.range_cap_softness_frac)
 
     def apply_block(keyframe_measurements, kf, pass_index):
         """Apply one keyframe's measurement block in order.

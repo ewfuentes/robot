@@ -206,6 +206,8 @@ def _filter_config(localization: dict,
             "association_renewal_rate"],
         association_outlier_rate=localization["association_outlier_rate"],
         matcher_recall=localization["matcher_recall"],
+        range_cap_enabled=localization["range_cap"]["enabled"],
+        range_cap_softness_frac=localization["range_cap"]["softness_frac"],
         min_reported_responsibility=localization[
             "min_reported_responsibility"],
         resample_survival_floor=localization["resample_survival_floor"],

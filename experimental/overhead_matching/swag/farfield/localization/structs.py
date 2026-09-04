@@ -64,6 +64,10 @@ class TrackletMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     anchor_keyframe_idx: int
     bearing_forward_cw_deg: float  # CW from nominal forward, in [0, 360)
     kappa: float  # von Mises concentration of the fused bearing
+    # One-sided range cap (metres) from the extractor's distance_estimate
+    # buckets: the true range lay below this edge for 99.8% of labelled Pohang
+    # detections. None when no detection in the epoch reported a bucket.
+    range_max_m: float | None = None
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -256,6 +260,13 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # (given any exist), used to split a proper identity posterior between
     # endorsed and unendorsed candidates.
     matcher_recall: float = 0.5
+    # Range cap: multiply each landmark component by g(r) = P(extractor said
+    # "<= cap" | true range r) = 1 for r <= cap, one-sided Gaussian tail
+    # beyond with width softness_frac * cap. The null component is untouched,
+    # so "no landmark" stays a competitive explanation. Disabled leaves the
+    # likelihood exactly as before, cap or no cap on the measurement.
+    range_cap_enabled: bool = False
+    range_cap_softness_frac: float = 0.25
     # Responsibilities below this are dropped from reported association
     # posteriors (likelihoods are never truncated), bounding dense-catalog
     # run time and artifact size.

@@ -615,3 +615,45 @@ into `osm:`.
 Fetch box: the catalog manifest's `bbox_wsen` (trajectory + 25 km), not the
 trajectory extent, so range landmarks (POSCO, Yeongildae, the breakwater
 lights) are covered the same way the OSM extract covers them.
+
+## 2026-09-03 · The extractor's distance bucket is a one-sided range cap, carried per keyframe
+
+The extraction prompt asks for a `distance_estimate` bucket per detection
+(<100 m, 100-500 m, 500 m-2 km, 2-10 km, >10 km). Until now it reached only
+the audit dossier text. Measured on Pohang against 44 labelled tracks whose
+bearing rays hit the labelled geometry (1,628 detections):
+
+- rank-correlated with true range (Spearman 0.87 per detection, 0.91 per
+  track), but **biased one bucket far**: exact agreement 13 %, within one
+  bucket 88 %, only 13.5 % of detections beyond their bucket's lower edge;
+- **99.8 % of detections nearer than the predicted bucket's upper edge**;
+- `under_100m` right 124/124 times (median 22 m), and it is what the bridges
+  we pass under carry.
+
+So the bucket enters the filter as a cap, never as a two-sided estimate or a
+lower bound. Three touch points, no new stage:
+
+1. `bearings`: each `CameraBearingObservation` gains `range_max_m`, the
+   tightest finite upper edge among the detections associated at that
+   keyframe (birth plus evidence-class supports, the audit's own set). The
+   stage now re-ingests the frame_landmarks the tracks bind, under the
+   recorded `ingest.*` settings, which therefore join its config prefixes;
+   `over_10km` is no cap. Readers of `observations.jsonl` treat a missing key
+   as no cap, so pre-cap artifacts still load.
+2. `localization_inputs`: the epoch reducer keeps the minimum cap in the
+   epoch (`under_100m` was never wrong here); `TrackletMeasurement.range_max_m`
+   rides into the export.
+3. `localize`: every landmark component is multiplied by
+   g(r) = 1 for r <= cap, exp(-½((r-cap)/(s·cap))²) beyond, in both the numpy
+   and torch kernels and in the committed-landmark density. The null
+   component is untouched, so clutter stays a competitive explanation.
+   `localization.range_cap.enabled` / `.softness_frac` are required keys;
+   disabled strips caps before any kernel, so the likelihood is bit-identical
+   to before whatever the export recorded.
+
+Why not per-keyframe measurements first: measured on the same tracks, the
+5-keyframe epoch reducer gives near landmarks (<100 m) 15 % of the total
+bearing precision and a 22-36° sigma under bridges, because the mask-width/4
+term and the circular mean erase the parallax. That is a separate change
+(ekf: stay with epochs for now); the cap is the cheap test of whether range
+information moves Pohang at all.

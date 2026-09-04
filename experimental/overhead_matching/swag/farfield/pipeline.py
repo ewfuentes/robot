@@ -217,6 +217,8 @@ CONFIG_SCHEMA = {
     "localization.association_renewal_rate": _positive_number(maximum=1.0),
     "localization.association_outlier_rate": _number(maximum=1.0),
     "localization.matcher_recall": _open_probability(),
+    "localization.range_cap.enabled": _boolean(),
+    "localization.range_cap.softness_frac": _positive_number(maximum=10.0),
     "localization.min_reported_responsibility": _number(maximum=1.0),
     "localization.resample_survival_floor": _integer(minimum=0),
     "localization.resample_survival_min_mass": _number(maximum=1.0),
@@ -521,8 +523,10 @@ STAGE_SPECS = {
     "bearings": StageSpec(
         outputs=(paths_lib.BEARING_OBSERVATIONS,),
         upstreams=(paths_lib.OBJECT_TRACKS, paths_lib.SEMANTIC_AUDITS),
+        # `ingest` because the stage re-ingests frame_landmarks detections to
+        # attach each keyframe's distance_estimate range cap.
         config_prefixes=("bearing_observations",
-                         "tracking.reference_pano_width"),
+                         "tracking.reference_pano_width", "ingest"),
         target=f"{FF}/tracking:build_bearing_observations",
         # Camera-frame bearings are geometry over audited tracks. The mount
         # calibration turns them into world bearings LATER, in localization
@@ -1215,6 +1219,7 @@ def build_commands(paths: paths_lib.FarfieldPaths, build_dir: Path,
             "bazel", "run", STAGE_SPECS["bearings"].target, "--",
             "--tracks_dir", outputs[paths_lib.OBJECT_TRACKS],
             "--audit_dir", outputs[paths_lib.SEMANTIC_AUDITS],
+            "--frame_landmarks_dir", outputs[paths_lib.FRAME_LANDMARKS],
             "--output_dir", outputs[paths_lib.BEARING_OBSERVATIONS],
         ] + common + _stage_base(build_dir, config, "bearings"),
         "match": [

@@ -285,8 +285,10 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
         except json.JSONDecodeError as error:
             raise AlignmentDiagnosticError(
                 f"{path}:{line_number}: malformed JSON: {error}") from error
-        _exact_keys(record, _OBSERVATION_KEYS,
-                    f"{path}:{line_number} observation")
+        # range_max_m (a per-keyframe range cap for localization) is optional
+        # here: alignment diagnostics are pure bearing geometry.
+        _exact_keys({k: v for k, v in record.items() if k != "range_max_m"},
+                    _OBSERVATION_KEYS, f"{path}:{line_number} observation")
         tracklet_id = record["tracklet_id"]
         if not isinstance(tracklet_id, str) or not tracklet_id:
             raise AlignmentDiagnosticError(

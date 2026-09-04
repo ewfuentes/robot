@@ -78,6 +78,9 @@ _OBSERVATION_KEYS = frozenset({
     "sigma_deg",
     "correlation_group",
 })
+# Artifacts published before the range cap existed lack this key; a reader
+# treats its absence as "no cap", which is what those artifacts meant.
+_OPTIONAL_OBSERVATION_KEYS = frozenset({"range_max_m"})
 
 # A coarse display type for viewer glyphs.  The localization likelihood uses
 # identity, geometry, and the one explicit positional sigma, not this label.
@@ -146,12 +149,15 @@ def _load_observation_records(path: Path) \
             except json.JSONDecodeError as exc:
                 raise LocalizationInputError(
                     f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(value, dict) or set(value) != _OBSERVATION_KEYS:
-                actual = set(value) if isinstance(value, dict) else set()
+            actual = set(value) if isinstance(value, dict) else set()
+            if (not isinstance(value, dict)
+                    or not _OBSERVATION_KEYS <= actual
+                    or not actual <= _OBSERVATION_KEYS
+                    | _OPTIONAL_OBSERVATION_KEYS):
                 raise LocalizationInputError(
                     f"{path}:{line_number}: observation keys differ; "
                     f"missing={sorted(_OBSERVATION_KEYS - actual)}, "
-                    f"unknown={sorted(actual - _OBSERVATION_KEYS)}")
+                    f"unknown={sorted(actual - _OBSERVATION_KEYS - _OPTIONAL_OBSERVATION_KEYS)}")
             try:
                 records.append(tracklets.CameraBearingObservation(**value))
             except (TypeError, tracklets.TrackletContractError) as exc:
@@ -316,7 +322,8 @@ def forward_frame_measurements(
             anchor_keyframe_idx=measurement.anchor_keyframe_idx,
             bearing_forward_cw_deg=nominal_forward.camera_to_forward_cw_deg(
                 measurement.bearing_camera_cw_deg, calibration),
-            kappa=measurement.kappa))
+            kappa=measurement.kappa,
+            range_max_m=measurement.range_max_m))
     return result
 
 

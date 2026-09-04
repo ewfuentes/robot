@@ -168,6 +168,11 @@ localization:
   association_renewal_rate: 0.1
   association_outlier_rate: 0.1
   matcher_recall: 0.5
+  # Extractor distance_estimate buckets as a one-sided range cap on each
+  # landmark component (see structs.FilterConfig).
+  range_cap:
+    enabled: false
+    softness_frac: 0.25
   min_reported_responsibility: 0.000001
   # Resampling survival floor: guaranteed offspring per represented
   # hypothesis group (0 = off); groups below the min mass may die.

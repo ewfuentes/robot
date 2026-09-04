@@ -343,14 +343,81 @@ class CameraBearingObservationTest(unittest.TestCase):
 
 
 def observation(keyframe, azimuth, width=4.0, group="segment-0",
-                tracklet_id="global#T1", sigma=1.0):
+                tracklet_id="global#T1", sigma=1.0, range_max_m=None):
     return tracklets.CameraBearingObservation(
         tracklet_id=tracklet_id,
         keyframe_idx=keyframe,
         bearing_camera_cw_deg=azimuth,
         angular_width_deg=width,
         sigma_deg=sigma,
-        correlation_group=group)
+        correlation_group=group,
+        range_max_m=range_max_m)
+
+
+class _Detection:
+    def __init__(self, bucket):
+        self.additional_tags = ([] if bucket is None
+                                else [["distance_estimate", bucket]])
+
+
+class RangeCapTest(unittest.TestCase):
+    def _track(self):
+        return {
+            "track_id": 3, "birth_keyframe": 10, "birth_obs_id": "b",
+            "records": [
+                {"keyframe": 10, "action": "birth", "supports": []},
+                {"keyframe": 11, "action": "continue_mask", "supports": [
+                    {"class": "merge_superset", "obs_id": "s1"},
+                    {"class": "none", "obs_id": "ignored"}]},
+                {"keyframe": 12, "action": "continue_mask", "supports": [
+                    {"class": "weak", "obs_id": "s2a"},
+                    {"class": "weak", "obs_id": "s2b"}]},
+                {"keyframe": 13, "action": "continue_mask", "supports": [
+                    {"class": "split_child", "obs_id": "s3"}]},
+                {"keyframe": 14, "action": "unsupported", "supports": []},
+            ]}
+
+    def test_caps_follow_evidence_supports_and_take_the_tightest(self):
+        obs = {"b": _Detection("100m_to_500m"),
+               "s1": _Detection("under_100m"),
+               "ignored": _Detection("under_100m"),
+               "s2a": _Detection("2km_to_10km"),
+               "s2b": _Detection("500m_to_2km"),
+               "s3": _Detection(None)}
+        caps = tracklets.range_caps_by_keyframe(self._track(), obs)
+        # 13 has a detection without a bucket; 14 has no detection at all.
+        self.assertEqual(caps, {10: 500.0, 11: 100.0, 12: 2000.0})
+
+    def test_over_10km_is_no_cap_and_unknown_bucket_is_an_error(self):
+        obs = {"b": _Detection("over_10km"), "s1": _Detection("over_10km"),
+               "s2a": _Detection(None), "s2b": _Detection(None),
+               "s3": _Detection(None)}
+        self.assertEqual(
+            tracklets.range_caps_by_keyframe(self._track(), obs), {})
+        obs["s1"] = _Detection("about_a_mile")
+        with self.assertRaisesRegex(tracklets.TrackletContractError,
+                                    "unknown distance_estimate"):
+            tracklets.range_caps_by_keyframe(self._track(), obs)
+
+    def test_missing_observation_is_an_error(self):
+        with self.assertRaisesRegex(tracklets.TrackletContractError,
+                                    "unknown observation"):
+            tracklets.range_caps_by_keyframe(self._track(), {})
+
+    def test_observation_cap_must_be_null_or_positive(self):
+        observation(0, 1.0, range_max_m=None)
+        observation(0, 1.0, range_max_m=100.0)
+        for bad in (0.0, -5.0, float("nan"), True):
+            with self.assertRaises(tracklets.TrackletContractError):
+                observation(0, 1.0, range_max_m=bad)
+
+    def test_epoch_fusion_keeps_the_tightest_cap(self):
+        fused = tracklets.epoch_fused_compat_v1(
+            [observation(0, 10.0, range_max_m=2000.0),
+             observation(1, 10.0, range_max_m=None),
+             observation(2, 10.0, range_max_m=100.0),
+             observation(5, 10.0), observation(6, 10.0)], PARAMS)
+        self.assertEqual([m.range_max_m for m in fused], [100.0, None])
 
 
 class EpochFusedCompatV1Test(unittest.TestCase):

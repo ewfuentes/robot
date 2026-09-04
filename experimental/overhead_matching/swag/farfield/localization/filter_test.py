@@ -899,5 +899,75 @@ class EvidenceGateTest(unittest.TestCase):
         self.assertGreater(true_ref, wrong_ref + 2.0)
 
 
+class RangeCapTest(unittest.TestCase):
+    """The extractor's distance bucket as a one-sided cap on each landmark
+    component: identity inside the cap, a Gaussian tail beyond it, never a
+    lower bound, and exactly the old likelihood when disabled."""
+
+    def test_log_term_shape(self):
+        r = np.array([10.0, 100.0, 125.0, 200.0])
+        term = pf.range_cap_log_term(r, 100.0, 0.25)
+        np.testing.assert_allclose(term, [0.0, 0.0, -0.5, -8.0])
+        self.assertEqual(pf.range_cap_log_term(r, None, 0.25), 0.0)
+        with self.assertRaises(ValueError):
+            pf.range_cap_log_term(r, 0.0, 0.25)
+        with self.assertRaises(ValueError):
+            pf.range_cap_log_term(r, 100.0, 0.0)
+
+    @staticmethod
+    def _meas(range_max_m, anchor=0):
+        return structs.TrackletMeasurement(
+            tracklet_id="T1", anchor_keyframe_idx=anchor,
+            bearing_forward_cw_deg=0.0,
+            kappa=1.0 / math.radians(2.0) ** 2, range_max_m=range_max_m)
+
+    def test_cap_penalises_only_particles_beyond_it(self):
+        # Two poses heading north, both looking straight at the landmark at
+        # (0, 1000): one 50 m short of it, one 400 m short of it.
+        catalog = _catalog(["L"], [0.0], [1000.0])
+        table = _identity_table("T1", "L")
+        east, north, heading = (np.array([0.0, 0.0]),
+                                np.array([950.0, 600.0]), np.zeros(2))
+        before = pf.pose_log_likelihood(
+            east, north, heading, self._meas(None), table, catalog, 0.2)
+        capped = pf.pose_log_likelihood(
+            east, north, heading, self._meas(100.0), table, catalog, 0.2,
+            range_softness=0.25)
+        # 50 m range: inside the cap, untouched.
+        self.assertAlmostEqual(capped[0], before[0], places=9)
+        # 400 m range against a 100 m cap: the landmark branch pays
+        # 0.5 * (300/25)^2 = 72 nats and collapses onto the null floor.
+        self.assertLess(capped[1], before[1] - 1.0)
+        self.assertAlmostEqual(
+            capped[1], math.log(0.2) - math.log(2.0 * math.pi), places=6)
+
+    def test_disabled_config_strips_caps_before_any_kernel(self):
+        catalog = _catalog(["L"], [0.0], [1000.0])
+        tables = {"T1": _identity_table("T1", "L")}
+        odometry = [structs.OdometryDelta(
+            keyframe_idx=1, forward_m=0.0, left_m=0.0, delta_yaw_cw_rad=0.0,
+            sigma_m=1.0, sigma_yaw_rad=0.01)]
+        base = dict(n_particles=64, seed=1,
+                    init=structs.GaussianInit(0.0, 600.0, 10.0),
+                    measurement_backend="numpy",
+                    proposal=structs.ProposalConfig(enabled=False),
+                    modes=structs.ModeConfig(enabled=False))
+        capped = [self._meas(100.0, anchor=1)]
+        plain = [self._meas(None, anchor=1)]
+        off = pf.run_filter(
+            structs.FilterConfig(range_cap_enabled=False, **base),
+            catalog, odometry, capped, tables)
+        ref = pf.run_filter(
+            structs.FilterConfig(range_cap_enabled=False, **base),
+            catalog, odometry, plain, tables)
+        on = pf.run_filter(
+            structs.FilterConfig(range_cap_enabled=True, **base),
+            catalog, odometry, capped, tables)
+        self.assertEqual(off.particle_history_sha256,
+                         ref.particle_history_sha256)
+        self.assertNotEqual(on.particle_history_sha256,
+                            ref.particle_history_sha256)
+
+
 if __name__ == "__main__":
     unittest.main()
