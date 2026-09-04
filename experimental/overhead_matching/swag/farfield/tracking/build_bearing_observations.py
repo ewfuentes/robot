@@ -52,12 +52,16 @@ def publish_observations(
         artifact_identity: str | None = None,
         recipe: dict | None = None,
         arguments: tuple[str, ...] = (),
-        range_caps: dict | None = None) -> artifact.ArtifactRef:
+        range_caps: dict | None = None,
+        frame_landmarks_digest: str | None = None) -> artifact.ArtifactRef:
     """Build, validate, and atomically publish one observation artifact.
 
     `range_caps` (tracklet_id -> {keyframe: range_max_m}) attaches the
     extractor's distance_estimate cap to each observation; None publishes
     uncapped observations and records that no cap source was consulted.
+    `frame_landmarks_digest` names the detections the caps came from; it is
+    recorded beside the caps, not in `source_digests`, whose exact key set
+    downstream consumers verify.
     """
     observations = tracklets.build_camera_bearing_observations(
         accepted_tracklets, pano_width, bearing_sigma_deg,
@@ -83,11 +87,14 @@ def publish_observations(
         "bearing_sigma_deg": bearing_sigma_deg,
         "n_accepted_tracklets": len(accepted_tracklets),
         "n_observations": len(records),
-        "n_observations_with_range_cap": sum(
-            1 for item in observations if item.range_max_m is not None),
-        "range_cap_source": ("frame_landmarks distance_estimate, tightest "
-                             "bucket upper edge per keyframe"
-                             if range_caps is not None else None),
+        "range_cap": {
+            "source": ("frame_landmarks distance_estimate, tightest bucket "
+                       "upper edge per keyframe"
+                       if range_caps is not None else None),
+            "frame_landmarks_content_digest": frame_landmarks_digest,
+            "n_observations_with_cap": sum(
+                1 for item in observations if item.range_max_m is not None),
+        },
         "coverage": "complete",
         "source_digests": source_digests,
     }
@@ -258,7 +265,6 @@ def load_inputs(args):
             paths_lib.OBJECT_TRACKS: audits.tracks_ref.content_digest,
             paths_lib.SEMANTIC_AUDITS:
                 audits.semantic_audits_ref.content_digest,
-            paths_lib.FRAME_LANDMARKS: frame_ref.content_digest,
         },
     }
 
@@ -314,7 +320,9 @@ def main() -> None:
             recipe=artifact_recipe.load(
                 getattr(args, "artifact_recipe", None)),
             arguments=tuple(sys.argv),
-            range_caps=range_caps)
+            range_caps=range_caps,
+            frame_landmarks_digest=(
+                resolved["frame_landmarks_ref"].content_digest))
     except (artifact.ArtifactError, audit_io.AuditArtifactError,
             BearingObservationError, dataset.ContractViolation,
             tracklets.TrackletContractError, OSError, ValueError) as error:

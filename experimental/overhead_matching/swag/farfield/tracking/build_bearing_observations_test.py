@@ -190,8 +190,12 @@ class BearingObservationInputBindingTest(unittest.TestCase):
         self.assertEqual(
             loaded["source_digests"]["dataset_tracking_inputs"],
             artifact.sha256_json(self.dataset_digests))
-        self.assertEqual(loaded["source_digests"][paths.FRAME_LANDMARKS],
-                         self.frame_ref.content_digest)
+        # Consumers verify the exact source_digests key set, so the
+        # frame_landmarks digest rides beside the caps instead.
+        self.assertEqual(set(loaded["source_digests"]),
+                         {"build_config", "dataset_tracking_inputs",
+                          paths.OBJECT_TRACKS, paths.SEMANTIC_AUDITS})
+        self.assertEqual(loaded["frame_landmarks_ref"], self.frame_ref)
         self.assertEqual(loaded["obs_by_id"], {"obs-1": detection})
         params = run_ingest.call_args.args[2]
         self.assertEqual((params.fov_deg, params.seam_gap_norm,
