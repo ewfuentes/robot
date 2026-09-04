@@ -319,6 +319,50 @@ class FakeChunkImageServerClient:
 
 
 class SatelliteTest(unittest.TestCase):
+    def test_esri_wayback_release_pins_tile_urls_and_provider_identity(self):
+        client = satellite.ArcGisTileClient(
+            satellite.ESRI_WORLD_IMAGERY_SERVICE_URL,
+            esri_wayback_release="32246")
+        client.get_json = mock.Mock(return_value={})
+
+        client.get_service_metadata()
+        client.get_json.assert_called_once_with(
+            satellite.ESRI_WORLD_IMAGERY_SERVICE_URL, params={"f": "json"})
+        client.get_json.reset_mock()
+        client.get_tilemap(20, 540_219, 344_179, 69, 13)
+        client.get_json.assert_called_once_with(
+            satellite.ESRI_WAYBACK_TILE_SERVICE_URL
+            + "/tilemap/32246/20/344179/540219/69/13",
+            params={"f": "json"})
+
+        client._get = mock.Mock(return_value=SimpleNamespace(content=b"tile"))
+        self.assertEqual(client.fetch_tile(20, 540_219, 344_179), b"tile")
+        client._get.assert_called_once_with(
+            satellite.ESRI_WAYBACK_TILE_SERVICE_URL
+            + "/tile/32246/20/344179/540219",
+            params={"blankTile": "false"}, missing_is_error=True)
+
+        request = satellite._provider_request_contract(
+            satellite.CACHED_MAP_PROVIDER,
+            satellite.ESRI_WORLD_IMAGERY_SERVICE_URL,
+            source_index_url=None, catalog_where=None, lock_raster_ids=(),
+            esri_wayback_release="32246")
+        metadata = _service_metadata()
+        for key in ("name", "minLOD", "maxLOD"):
+            metadata.pop(key)
+        provider = satellite._cached_map_provider_contract(
+            satellite.ESRI_WORLD_IMAGERY_SERVICE_URL,
+            metadata, _tiny_grid(),
+            esri_wayback_release=request["esri_wayback_release"])
+        self.assertEqual(request["esri_wayback_release"], "32246")
+        self.assertEqual(provider["esri_wayback_release"], "32246")
+        self.assertEqual(provider["service_name"], "World_Imagery")
+        self.assertEqual(provider["min_lod"], 20)
+        self.assertEqual(provider["max_lod"], 20)
+        self.assertEqual(
+            provider["tile_service_url"],
+            satellite.ESRI_WAYBACK_TILE_SERVICE_URL)
+
     def test_fractional_patch_origin_fills_every_pixel(self):
         grid = _tiny_grid(shape_xy=(1, 1))
         colour = (37, 89, 143)

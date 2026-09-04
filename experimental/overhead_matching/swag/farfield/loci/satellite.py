@@ -68,6 +68,12 @@ DEFAULT_SERVICE_URL = (
 DEFAULT_SOURCE_INDEX_URL = (
     "https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/"
     "Color_2025_Aerial_Imagery_Index/FeatureServer/0")
+ESRI_WORLD_IMAGERY_SERVICE_URL = (
+    "https://services.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Imagery/MapServer")
+ESRI_WAYBACK_TILE_SERVICE_URL = (
+    "https://wayback.maptiles.arcgis.com/arcgis/rest/services/"
+    "World_Imagery/WMTS/1.0.0/default028mm/MapServer")
 DEFAULT_JPEG_QUALITY = 95
 ARCGIS_BUNDLE_SIZE = 128
 
@@ -121,6 +127,15 @@ class SatelliteError(RuntimeError):
 
 class MissingTileError(SatelliteError):
     """The provider explicitly reports that a required tile is absent."""
+
+
+def _normalize_esri_wayback_release(value: str | None) -> str | None:
+    if value is None:
+        return None
+    release = str(value).strip()
+    if not release.isdigit():
+        raise SatelliteError("ESRI Wayback release must contain only digits")
+    return release
 
 
 @dataclass(frozen=True)
@@ -260,6 +275,7 @@ class ArcGisTileClient:
     """Small retrying client for one ArcGIS cached map service."""
 
     def __init__(self, service_url: str = DEFAULT_SERVICE_URL, *,
+                 esri_wayback_release: str | None = None,
                  connect_timeout_s: float = 10.0,
                  read_timeout_s: float = 60.0,
                  max_retries: int = 4,
@@ -272,6 +288,13 @@ class ArcGisTileClient:
         if max_retries < 1:
             raise SatelliteError("max_retries must be at least one")
         self.service_url = service_url
+        self.esri_wayback_release = _normalize_esri_wayback_release(
+            esri_wayback_release)
+        if (self.esri_wayback_release is not None
+                and service_url != ESRI_WORLD_IMAGERY_SERVICE_URL):
+            raise SatelliteError(
+                "ESRI Wayback requires the standard World Imagery "
+                "MapServer metadata URL")
         self.connect_timeout_s = connect_timeout_s
         self.read_timeout_s = read_timeout_s
         self.max_retries = max_retries
@@ -342,7 +365,13 @@ class ArcGisTileClient:
 
     def get_tilemap(self, zoom: int, tile_x: int, tile_y: int,
                     width: int, height: int) -> dict:
-        url = (f"{self.service_url}/tilemap/{zoom}/{tile_y}/{tile_x}/"
+        tile_service_url = (
+            ESRI_WAYBACK_TILE_SERVICE_URL
+            if self.esri_wayback_release is not None else self.service_url)
+        release_path = (f"/{self.esri_wayback_release}"
+                        if self.esri_wayback_release is not None else "")
+        url = (f"{tile_service_url}/tilemap{release_path}/"
+               f"{zoom}/{tile_y}/{tile_x}/"
                f"{width}/{height}")
         return self.get_json(url, params={"f": "json"})
 
@@ -365,7 +394,13 @@ class ArcGisTileClient:
             source_index_url.rstrip("/") + "/query", params=params)
 
     def fetch_tile(self, zoom: int, tile_x: int, tile_y: int) -> bytes:
-        url = f"{self.service_url}/tile/{zoom}/{tile_y}/{tile_x}"
+        tile_service_url = (
+            ESRI_WAYBACK_TILE_SERVICE_URL
+            if self.esri_wayback_release is not None else self.service_url)
+        release_path = (f"/{self.esri_wayback_release}"
+                        if self.esri_wayback_release is not None else "")
+        url = (f"{tile_service_url}/tile{release_path}/"
+               f"{zoom}/{tile_y}/{tile_x}")
         response = self._get(
             url, params={"blankTile": "false"}, missing_is_error=True)
         return response.content
@@ -660,8 +695,11 @@ def _image_server_export_parameters(
 
 
 def _cached_map_provider_contract(
-        service_url: str, metadata: dict, grid: dict) -> dict:
-    required = ["name", "capabilities", "fullExtent", "tileInfo"]
+        service_url: str, metadata: dict, grid: dict, *,
+        esri_wayback_release: str | None = None) -> dict:
+    required = ["capabilities", "fullExtent", "tileInfo"]
+    if esri_wayback_release is None:
+        required.append("name")
     missing = [key for key in required if key not in metadata]
     if missing:
         raise SatelliteError(f"service metadata is missing {missing}")
@@ -685,6 +723,13 @@ def _cached_map_provider_contract(
     zoom = grid["zoom"]
     min_lod = metadata.get("minLOD")
     max_lod = metadata.get("maxLOD")
+    if esri_wayback_release is not None:
+        levels = [entry.get("level") for entry in tile_info.get("lods", [])
+                  if type(entry.get("level")) is int]
+        if min_lod is None and levels:
+            min_lod = min(levels)
+        if max_lod is None and levels:
+            max_lod = max(levels)
     if (type(min_lod) is not int or type(max_lod) is not int
             or not min_lod <= zoom <= max_lod):
         raise SatelliteError(
@@ -718,11 +763,11 @@ def _cached_map_provider_contract(
         raise SatelliteError(
             "required source-tile rectangle lies outside service fullExtent")
 
-    return {
+    provider = {
         "schema": "arcgis_cached_imagery_provider/v1",
         "type": "arcgis_cached_map_service",
         "service_url": service_url.rstrip("/"),
-        "service_name": metadata["name"],
+        "service_name": metadata.get("name") or "World_Imagery",
         "service_item_id": metadata.get("serviceItemId"),
         "service_metadata_sha256": artifact.sha256_json(metadata),
         "capabilities": sorted(capabilities),
@@ -739,6 +784,12 @@ def _cached_map_provider_contract(
         "export_tiles_allowed": metadata.get("exportTilesAllowed"),
         "max_export_tiles_count": metadata.get("maxExportTilesCount"),
     }
+    if esri_wayback_release is not None:
+        provider.update({
+            "esri_wayback_release": esri_wayback_release,
+            "tile_service_url": ESRI_WAYBACK_TILE_SERVICE_URL,
+        })
+    return provider
 
 
 def _image_server_provider_contract(
@@ -891,6 +942,7 @@ def _provider_request_contract(
         source_index_url: str | None,
         catalog_where: str | None,
         lock_raster_ids: Iterable[int],
+        esri_wayback_release: str | None = None,
         require_source_index_coverage: bool = True,
         image_server_chunk_tiles: int = 1) -> dict:
     chunk_tiles = _normalize_image_server_chunk_tiles(
@@ -901,6 +953,8 @@ def _provider_request_contract(
     service_url = str(service_url).rstrip("/")
     if not service_url.startswith("https://"):
         raise SatelliteError("ArcGIS service URL must use https")
+    esri_wayback_release = _normalize_esri_wayback_release(
+        esri_wayback_release)
     raster_ids = tuple(lock_raster_ids)
     if provider_mode == CACHED_MAP_PROVIDER:
         if chunk_tiles != 1:
@@ -911,11 +965,22 @@ def _provider_request_contract(
             raise SatelliteError(
                 "catalog where/lock raster IDs apply only to ImageServer "
                 "export mode")
-        return {
+        if (esri_wayback_release is not None
+                and service_url != ESRI_WORLD_IMAGERY_SERVICE_URL):
+            raise SatelliteError(
+                "ESRI Wayback requires the standard World Imagery "
+                "MapServer metadata URL")
+        request = {
             "provider_mode": provider_mode,
             "service_url": service_url,
             "source_index_url": source_index_url,
         }
+        if esri_wayback_release is not None:
+            request["esri_wayback_release"] = esri_wayback_release
+        return request
+    if esri_wayback_release is not None:
+        raise SatelliteError(
+            "ESRI Wayback release applies only to cached-map mode")
     if source_index_url is not None:
         raise SatelliteError(
             "ImageServer export uses its own catalog; source_index_url must "
@@ -1138,6 +1203,7 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
                    provider_mode: str = DEFAULT_PROVIDER_MODE,
                    catalog_where: str | None = None,
                    lock_raster_ids: Iterable[int] = (),
+                   esri_wayback_release: str | None = None,
                    image_server_chunk_tiles: int = 1) \
         -> dict:
     """Strictly prove cache and source-index coverage for a region plan."""
@@ -1147,8 +1213,10 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles)
+    esri_wayback_release = request.get("esri_wayback_release")
     if provider_mode == IMAGE_SERVER_PROVIDER:
         rendered_footprint = _rendered_footprint_bbox_wsen(grid)
         catalog = _audit_image_server_catalog(
@@ -1177,7 +1245,8 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
         }
 
     provider = _cached_map_provider_contract(
-        service_url, service_metadata, grid)
+        service_url, service_metadata, grid,
+        esri_wayback_release=esri_wayback_release)
     chunks = []
     n_present = 0
     n_missing = 0
@@ -1233,6 +1302,11 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
         source_index = _audit_source_index(
             client, source_index_url, grid["footprint_bbox_wsen"],
             require_complete=require_source_index_coverage)
+    tile_service_url = (
+        ESRI_WAYBACK_TILE_SERVICE_URL
+        if esri_wayback_release is not None else service_url.rstrip("/"))
+    release_path = (f"/{esri_wayback_release}"
+                    if esri_wayback_release is not None else "")
     return {
         "schema": COVERAGE_SCHEMA,
         "status": "passed",
@@ -1242,8 +1316,8 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
         "tilemap": {
             "status": "passed",
             "endpoint_template": (
-                service_url.rstrip("/")
-                + "/tilemap/{zoom}/{tile_y}/{tile_x}/{width}/{height}?f=json"),
+                tile_service_url + "/tilemap" + release_path
+                + "/{zoom}/{tile_y}/{tile_x}/{width}/{height}?f=json"),
             "bundle_size": ARCGIS_BUNDLE_SIZE,
             "n_queries": len(chunks),
             "n_required_tiles": expected_tiles,
@@ -2113,6 +2187,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
                        provider_mode: str = DEFAULT_PROVIDER_MODE,
                        catalog_where: str | None = None,
                        lock_raster_ids: Iterable[int] = (),
+                       esri_wayback_release: str | None = None,
                        image_server_chunk_tiles: int = 1) \
         -> artifact.ArtifactRef | None:
     if not destination.exists() and not destination.is_symlink():
@@ -2125,6 +2200,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles)
     provider = manifest.config.get("provider", {})
@@ -2138,6 +2214,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
             "arcgis_cached_map_service"
             if provider_mode == CACHED_MAP_PROVIDER
             else IMAGE_SERVER_PROVIDER),
+        "esri_wayback_release": request.get("esri_wayback_release"),
         "source_index_coverage_required": require_source_index_coverage,
     }
     actual = {
@@ -2148,6 +2225,7 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
         "jpeg_quality": manifest.config.get("jpeg_quality"),
         "assembly_version": manifest.config.get("assembly_version"),
         "provider_type": provider.get("type"),
+        "esri_wayback_release": provider.get("esri_wayback_release"),
         "source_index_coverage_required": manifest.config.get(
             "source_index_coverage_required", True),
     }
@@ -2169,6 +2247,7 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
                 provider_mode: str = DEFAULT_PROVIDER_MODE,
                 catalog_where: str | None = None,
                 lock_raster_ids: Iterable[int] = (),
+                esri_wayback_release: str | None = None,
                 image_server_chunk_tiles: int = 1,
                 jpeg_quality: int = DEFAULT_JPEG_QUALITY,
                 workers: int = 32, patch_workers: int = 8,
@@ -2191,9 +2270,13 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
     if (provider_mode == IMAGE_SERVER_PROVIDER
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
+    if (esri_wayback_release is not None
+            and source_index_url == DEFAULT_SOURCE_INDEX_URL):
+        source_index_url = None
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles)
     destination = (
@@ -2205,13 +2288,16 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         jpeg_quality=jpeg_quality, provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles)
     if existing is not None:
         return existing
 
     if client is None:
         if provider_mode == CACHED_MAP_PROVIDER:
-            client = ArcGisTileClient(service_url)
+            client = ArcGisTileClient(
+                service_url,
+                esri_wayback_release=request.get("esri_wayback_release"))
         else:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
@@ -2224,6 +2310,7 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles)
     coverage_sha256 = artifact.sha256_json(coverage)
     provider = coverage["provider"]
@@ -2376,6 +2463,7 @@ def audit_region(region_dir: Path, *,
                  provider_mode: str = DEFAULT_PROVIDER_MODE,
                  catalog_where: str | None = None,
                  lock_raster_ids: Iterable[int] = (),
+                 esri_wayback_release: str | None = None,
                  image_server_chunk_tiles: int = 1,
                  client=None) -> dict:
     """Run the provider coverage proof without creating build state."""
@@ -2383,14 +2471,20 @@ def audit_region(region_dir: Path, *,
     if (provider_mode == IMAGE_SERVER_PROVIDER
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
+    if (esri_wayback_release is not None
+            and source_index_url == DEFAULT_SOURCE_INDEX_URL):
+        source_index_url = None
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles)
     if client is None:
         if provider_mode == CACHED_MAP_PROVIDER:
-            client = ArcGisTileClient(service_url)
+            client = ArcGisTileClient(
+                service_url,
+                esri_wayback_release=request.get("esri_wayback_release"))
         else:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
@@ -2402,6 +2496,7 @@ def audit_region(region_dir: Path, *,
         provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles)
 
 
@@ -2421,6 +2516,10 @@ def parse_args() -> argparse.Namespace:
         help="reuse the mutable cache belonging to another artifact version; "
              "source identity remains strict and patch sets are assembler-keyed")
     parser.add_argument("--service_url", default=DEFAULT_SERVICE_URL)
+    parser.add_argument(
+        "--esri_wayback_release",
+        help="pinned numeric ESRI Wayback release; requires the standard "
+             "World Imagery MapServer as --service_url")
     parser.add_argument(
         "--source_index_url",
         help="ArcGIS source-orthophoto index layer for cached-map mode "
@@ -2463,7 +2562,8 @@ def main() -> None:
     if args.source_index_url is None:
         source_index_url = (
             DEFAULT_SOURCE_INDEX_URL
-            if args.provider_mode == CACHED_MAP_PROVIDER else None)
+            if (args.provider_mode == CACHED_MAP_PROVIDER
+                and args.esri_wayback_release is None) else None)
     else:
         source_index_url = args.source_index_url or None
     request = _provider_request_contract(
@@ -2471,6 +2571,7 @@ def main() -> None:
         source_index_url=source_index_url,
         catalog_where=args.catalog_where,
         lock_raster_ids=args.lock_raster_id,
+        esri_wayback_release=args.esri_wayback_release,
         require_source_index_coverage=(
             not args.allow_incomplete_source_index),
         image_server_chunk_tiles=args.image_server_chunk_tiles)
@@ -2480,7 +2581,10 @@ def main() -> None:
         "max_retries": args.max_retries,
     }
     if args.provider_mode == CACHED_MAP_PROVIDER:
-        client = ArcGisTileClient(args.service_url, **client_kwargs)
+        client = ArcGisTileClient(
+            args.service_url,
+            esri_wayback_release=request.get("esri_wayback_release"),
+            **client_kwargs)
     else:
         client = ArcGisImageServerClient(
             args.service_url, catalog_where=request["catalog_where"],
@@ -2494,6 +2598,7 @@ def main() -> None:
             provider_mode=args.provider_mode,
             catalog_where=request.get("catalog_where"),
             lock_raster_ids=request.get("lock_raster_ids", ()),
+            esri_wayback_release=request.get("esri_wayback_release"),
             image_server_chunk_tiles=args.image_server_chunk_tiles,
             client=client)
         print(json.dumps(coverage, sort_keys=True, indent=2))
@@ -2509,6 +2614,7 @@ def main() -> None:
         provider_mode=args.provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=args.image_server_chunk_tiles,
         jpeg_quality=args.jpeg_quality, workers=args.workers,
         patch_workers=args.patch_workers,
