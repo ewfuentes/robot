@@ -657,3 +657,17 @@ bearing precision and a 22-36° sigma under bridges, because the mask-width/4
 term and the circular mean erase the parallax. That is a separate change
 (ekf: stay with epochs for now); the cap is the cheap test of whether range
 information moves Pohang at all.
+
+**Measured 2026-09-04 (Pohang, 4 seeds, distance-normalised mass @500 m).**
+OSM-trim baseline 0.200 → 0.594 with the cap; Overture catalog 0.031 →
+0.612. Mass @100 m 0.024 → 0.18; final MAP 2–4 km → 0.5–0.8 km. Same
+matches, same tracks, no LLM call: one likelihood term. The Overture arm's
+collapse had been a handful of confident instance matches to landmarks 2–23
+km away; under a 100–500 m cap those components vanish, so the cap does not fix
+the association but makes wrong far associations harmless while near caps add
+the range information a bearing lacks. Cross-dataset check:
+`runs/260904_range_cap`. Two reader shims came with it: `run_io` fills
+`range_cap_*` / `range_max_m` with the legacy value for runs and exports
+recorded before the field existed (`_PREDATING_*`), and alignment diagnostics
+ignore the bearings manifest's `range_cap` block, since they verify every other
+key as an exact set.
