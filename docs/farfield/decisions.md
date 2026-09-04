@@ -671,3 +671,12 @@ the range information a bearing lacks. Cross-dataset check:
 recorded before the field existed (`_PREDATING_*`), and alignment diagnostics
 ignore the bearings manifest's `range_cap` block, since they verify every other
 key as an exact set.
+
+**Cross-dataset check (2026-09-04, `runs/260904_range_cap`, successors of the
+260828 IMU baselines, 4 seeds, dn500 baseline → cap).** Boston leg1
+0.342 → 0.779, leg2 0.001 → 0.003, leg3 0.263 → 0.277; Mount Washington leg1
+0.000 → 0.004, leg2 0.940 → 0.947, leg3 0.431 → 0.623 with the seed
+bimodality gone (0.21–0.52 → 0.622–0.624) and a 39 m final MAP. Never worse;
+helps wherever the filter had near landmarks to bind, neutral where every
+landmark is beyond the 2–10 km buckets (Boston leg3), nothing where the data
+was already dead upstream (Boston leg2, mtw leg1 with 136 observations).
