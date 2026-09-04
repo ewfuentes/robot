@@ -293,6 +293,25 @@ class StrictReaderTest(unittest.TestCase):
 
         self.assertEqual(loaded.manifest, manifest)
 
+    def test_measurements_recorded_before_the_range_cap_read_as_uncapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_sample(run_dir)
+            path = run_dir / "tier1_measurements.jsonl"
+            lines = path.read_text().splitlines()
+            stripped = []
+            for line in lines:
+                record = msgspec.json.decode(line)
+                record.pop("range_max_m")
+                stripped.append(msgspec.json.encode(record).decode())
+            replace_payload(run_dir, "tier1_measurements.jsonl",
+                            ("\n".join(stripped) + "\n").encode())
+
+            loaded = run_io.read_run(run_dir)
+
+        self.assertTrue(loaded.measurements)
+        self.assertTrue(all(m.range_max_m is None for m in loaded.measurements))
+
     def test_runs_recorded_before_the_range_cap_read_as_disabled(self):
         def strip_range_cap(document):
             for name in ("range_cap_enabled", "range_cap_softness_frac"):

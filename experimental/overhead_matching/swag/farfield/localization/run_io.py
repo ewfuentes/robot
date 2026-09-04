@@ -140,8 +140,24 @@ def _reject_unknown_shape(source: Any, normalized: Any, where: str) -> None:
         raise ValueError(f"{where} changed type or value while decoding")
 
 
+# Record fields added after artifacts were already written, with the value
+# those records necessarily carried (see _PREDATING_FILTER_FIELDS).
+_PREDATING_RECORD_FIELDS = {
+    structs.TrackletMeasurement: {"range_max_m": None},
+}
+
+
 def _decode_typed_json(payload: bytes, record_type, where: str):
     document = _strict_json_document(payload, where)
+    predating = _PREDATING_RECORD_FIELDS.get(record_type)
+    if predating and isinstance(document, dict):
+        filled = dict(document)
+        for name, legacy_value in predating.items():
+            filled.setdefault(name, legacy_value)
+        if filled != document:
+            document = filled
+            payload = json.dumps(
+                document, separators=(",", ":")).encode("utf-8")
     try:
         value = msgspec.json.decode(
             payload, type=record_type, dec_hook=msgspec_dec_hook)
