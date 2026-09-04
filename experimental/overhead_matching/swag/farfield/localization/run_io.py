@@ -159,25 +159,40 @@ _RETIRED_NOOP_FILTER_FIELDS = {
 }
 _RETIRED_NOOP_PROPOSAL_FIELDS = {
     "revival_enabled": False,
-    "revival_margin_nats": 0.0,
     "revival_match_radius_m": None,
+    "revival_margin_nats": 0.0,
+}
+# Filter settings added after runs were already recorded, with the value that
+# reproduces what those runs did: before 2026-09-04 no range cap existed, so a
+# manifest without these fields ran with the cap disabled. Filling them in is
+# not a default hiding a choice; it is the only value the run can have had.
+_PREDATING_FILTER_FIELDS = {
+    "range_cap_enabled": False,
+    "range_cap_softness_frac": 0.25,
 }
 
 
 def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
-    """Normalize one brief, never-merged experiment out of recorded runs.
+    """Normalize recorded runs across filter-config schema changes.
 
-    Several 2026-08-27 runs were stamped with damage-cap/revival settings while
-    all four were disabled. The experiment was removed before commit, leaving
-    valid no-op runs that the strict reader could no longer inspect. Accept
-    only the exact inactive spellings; a non-default value shaped a run and is
-    still unknown science, so it remains a hard error.
+    Retired fields: several 2026-08-27 runs were stamped with damage-cap/
+    revival settings while all four were disabled. The experiment was removed
+    before commit, leaving valid no-op runs that the strict reader could no
+    longer inspect. Accept only the exact inactive spellings; a non-default
+    value shaped a run and is still unknown science, so it remains a hard
+    error.
+
+    Predating fields (`_PREDATING_FILTER_FIELDS`) are filled with the value
+    the run necessarily had, so every run recorded before a setting existed
+    stays readable without pretending it was configured.
     """
     normalized = dict(document)
     filter_config = document.get("filter_config")
     if not isinstance(filter_config, dict):
         return normalized
     filter_config = dict(filter_config)
+    for name, legacy_value in _PREDATING_FILTER_FIELDS.items():
+        filter_config.setdefault(name, legacy_value)
     for name, expected in _RETIRED_NOOP_FILTER_FIELDS.items():
         if name not in filter_config:
             continue

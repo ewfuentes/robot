@@ -293,6 +293,39 @@ class StrictReaderTest(unittest.TestCase):
 
         self.assertEqual(loaded.manifest, manifest)
 
+    def test_runs_recorded_before_the_range_cap_read_as_disabled(self):
+        def strip_range_cap(document):
+            for name in ("range_cap_enabled", "range_cap_softness_frac"):
+                document["filter_config"].pop(name)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            manifest, *_ = write_sample(run_dir)
+            run_manifest_path = run_dir / run_io.RUN_MANIFEST_NAME
+            run_manifest = msgspec.json.decode(run_manifest_path.read_bytes())
+            strip_range_cap(run_manifest)
+            artifact.atomic_write_json(run_manifest_path, run_manifest)
+            outer = artifact.load_manifest(run_dir)
+            config = dict(outer.config)
+            contract = dict(config[run_io.RUN_CONTRACT_CONFIG_KEY])
+            strip_range_cap(contract)
+            config[run_io.RUN_CONTRACT_CONFIG_KEY] = contract
+            artifact.atomic_write_json(
+                run_dir / artifact.MANIFEST_NAME,
+                dataclasses.replace(outer, config=config).to_dict())
+            repair_content_digest(run_dir)
+
+            loaded = run_io.read_run(run_dir)
+
+        self.assertFalse(loaded.manifest.filter_config.range_cap_enabled)
+        self.assertEqual(loaded.manifest.filter_config.range_cap_softness_frac,
+                         0.25)
+        self.assertEqual(
+            msgspec.structs.replace(loaded.manifest.filter_config,
+                                    range_cap_enabled=manifest.filter_config.range_cap_enabled,
+                                    range_cap_softness_frac=manifest.filter_config.range_cap_softness_frac),
+            manifest.filter_config)
+
     def test_retired_experiment_fields_reject_active_values(self):
         cases = (
             {"measurement_damage_cap_nats": 2.0},
