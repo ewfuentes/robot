@@ -194,7 +194,7 @@ def validate_dataset(dataset_base: Path) -> ValidatedDataset:
     if base.is_symlink() or not base.is_dir():
         raise ReviewError(f"dataset must be a regular, non-symlink directory: {base}")
     base = base.resolve(strict=True)
-    _load_metadata(base)
+    metadata = _load_metadata(base)
     panorama_root = _validate_panorama_root(base)
     frames_path = base / "frames_gps.csv"
     _require_regular_file(frames_path, "frames GPS table")
@@ -283,10 +283,15 @@ def validate_dataset(dataset_base: Path) -> ValidatedDataset:
             raise ReviewError(
                 f"{intrinsics_path}: row {index + 2} dimensions disagree with JPEGs")
         populated = [field for field in _HEADING_FIELDS if row[field].strip()]
-        if populated:
+        if populated and metadata.get("source") != "mapillary":
             raise ReviewError(
                 f"{intrinsics_path}: row {index + 2} contains unapproved "
                 f"heading authority in {populated}")
+        if (metadata.get("source") == "mapillary" and populated
+                and len(populated) != len(_HEADING_FIELDS)):
+            raise ReviewError(
+                f"{intrinsics_path}: row {index + 2} must fully populate or "
+                "fully omit Mapillary orientation diagnostics")
 
     source_digests = {
         "pipeline_metadata.json": _sha256(base / "pipeline_metadata.json"),

@@ -311,6 +311,103 @@ class SequencePositionContractTest(unittest.TestCase):
                              [0, 1])
 
 
+class TrackingVideoManifestTest(unittest.TestCase):
+    def test_binds_video_metadata_inputs_and_quantized_frame_times(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "farfield"
+            sequence = root / "raw_material" / "download" / "test_ds"
+            video_dir = root / "raw_material" / "videos" / "hold_v1"
+            sequence.mkdir(parents=True)
+            video_dir.mkdir(parents=True)
+            (sequence / mtv.extract_stitch.MANIFEST_NAME).write_text("{}\n")
+            video_path = video_dir / "hold.mp4"
+            video_path.write_bytes(b"synthetic video fixture")
+
+            metadata = _synthetic_metadata(n=2)
+            for position, item in enumerate(metadata):
+                item["sequence_position"] = position
+                item["image_path"] = str(sequence / f"frame{position}.jpg")
+            download_manifest = {"expected": [{"id": item["id"]}
+                                               for item in metadata]}
+            input_download = {
+                "path": str(sequence.resolve()),
+                "manifest_sha256": "a" * 64,
+                "content_digest": "b" * 64,
+                "source_manifest": {
+                    "path": "/request.json", "sha256": "c" * 64},
+            }
+            video_sha256 = mtv.artifact.sha256_file(video_path)
+            source_frames = []
+            origin_ms = metadata[0]["captured_at"]
+            for item in metadata:
+                target_index = round((item["captured_at"] - origin_ms) * 2 / 1000)
+                source_frames.append({
+                    "sequence_position": item["sequence_position"],
+                    "source_image_id": item["id"],
+                    "source_filename": Path(item["image_path"]).name,
+                    "captured_at_ms": item["captured_at"],
+                    "target_frame_index": target_index,
+                    "target_time_s": target_index / 2,
+                })
+            manifest_path = video_dir / "manifest.json"
+            manifest_path.write_text(json.dumps({
+                "schema": mtv._TRACKING_VIDEO_SCHEMA,
+                "complete": True,
+                "dataset": "test_ds",
+                "source": {
+                    "kind": "mapillary_stage2_download",
+                    "directory": str(sequence),
+                    "manifest_path": str(
+                        sequence / mtv.extract_stitch.MANIFEST_NAME),
+                    "manifest_sha256": input_download["manifest_sha256"],
+                    "content_digest": input_download["content_digest"],
+                    "source_manifest": input_download["source_manifest"],
+                    "image_count": len(metadata),
+                },
+                "source_frames": source_frames,
+                "timing": {
+                    "origin_captured_at_ms": origin_ms,
+                    "frame_rate": {"numerator": 2, "denominator": 1},
+                    "frame_count": 5,
+                    "duration_s": 2.5,
+                    "timestamp_source": "Mapillary captured_at milliseconds",
+                    "quantization": {"rounding": "nearest"},
+                },
+                "output": {
+                    "path": video_path.name,
+                    "sha256": video_sha256,
+                    "size_bytes": video_path.stat().st_size,
+                    "ffprobe": {"streams": [{
+                        "codec_type": "video", "codec_name": "hevc",
+                        "width": 4096, "height": 2048,
+                        "nb_frames": "5", "duration": "2.5",
+                    }]},
+                },
+            }))
+
+            with mock.patch.object(
+                    mtv.paths_lib, "default_root", return_value=root):
+                tracking = mtv._load_tracking_video_manifest(
+                    manifest_path, dataset_name="test_ds",
+                    download_manifest=download_manifest,
+                    input_download=input_download,
+                    metadata=metadata)
+
+            self.assertEqual(tracking["video_t_s"], {0: 0.0, 1: 1.0})
+            self.assertEqual(
+                tracking["video"]["source_video"],
+                "raw_material/videos/hold_v1/hold.mp4")
+            self.assertEqual(tracking["video"]["video_fps"], 2.0)
+            self.assertEqual(
+                tracking["video"]["privacy_review_status"],
+                "provider_anonymized")
+            inputs = mtv._conversion_inputs(sequence, None, tracking)
+            self.assertEqual(inputs["tracking_video_sha256"], video_sha256)
+            self.assertEqual(
+                _build(tracking_video=tracking["video"])["video"],
+                tracking["video"])
+
+
 class ConversionReuseContractTest(unittest.TestCase):
     def test_manifest_binds_recipe_input_and_all_output_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,13 +425,36 @@ class ConversionReuseContractTest(unittest.TestCase):
             mtv.provenance.write(
                 root, generator=mtv.CONVERSION_GENERATOR, inputs=inputs,
                 config=config,
-                content_digest=mtv.artifact.sha256_directory(root),
-                extra={"input_download": input_download, "complete": True},
+                content_digest=mtv._conversion_content_digest(root),
+                extra={
+                    "input_download": input_download,
+                    "content_digest_excludes": list(
+                        mtv._CONVERSION_CONTENT_DIGEST_EXCLUDES),
+                    "complete": True,
+                },
             )
+            mtv._create_initial_checksums(root)
 
             mtv.validate_completed_conversion(
                 root, input_download=input_download, inputs=inputs,
                 config=config, allow_incomplete=True)
+            self.assertGreater(mtv.checksums.verify(root), 0)
+
+            # Human calibration and derived review material are separately
+            # checksummed or rebuildable; neither changes conversion identity.
+            (root / "nominal_forward.json").write_text("{}\n")
+            (root / "_manifests").mkdir()
+            (root / "_manifests" / "review.txt").write_text("derived")
+            mtv.checksums.regenerate(root)
+            mtv.validate_completed_conversion(
+                root, input_download=input_download, inputs=inputs,
+                config=config, allow_incomplete=True)
+            (root / "nominal_forward.json").write_text("tampered\n")
+            with self.assertRaisesRegex(ValueError, "checksum manifest"):
+                mtv.validate_completed_conversion(
+                    root, input_download=input_download, inputs=inputs,
+                    config=config, allow_incomplete=True)
+            (root / "nominal_forward.json").write_text("{}\n")
             (root / "payload.txt").write_text("tampered")
             with self.assertRaisesRegex(ValueError, "content digest"):
                 mtv.validate_completed_conversion(

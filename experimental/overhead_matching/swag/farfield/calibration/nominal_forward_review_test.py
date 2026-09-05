@@ -170,6 +170,26 @@ class NominalForwardReviewTest(unittest.TestCase):
                                     "dimensions disagree|2:1"):
             subject.validate_dataset(self.dataset)
 
+    def test_mapillary_orientation_diagnostics_are_not_calibration_authority(self):
+        metadata_path = self.dataset / "pipeline_metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["source"] = "mapillary"
+        metadata_path.write_text(json.dumps(metadata) + "\n")
+        path = self.dataset / "intrinsics.csv"
+        with path.open() as stream:
+            rows = list(csv.DictReader(stream))
+        for row in rows:
+            row.update({
+                "computed_compass_angle_true_deg": "10.0",
+                "compass_angle_true_deg": "12.0",
+                "heading_optical_axis_true_deg": "10.0",
+                "heading_column0_true_deg": "190.0",
+                "selected_heading_source": "computed_compass_angle",
+            })
+        self._write_csv(path, list(rows[0]), rows)
+
+        subject.validate_dataset(self.dataset)
+
     def test_finalize_from_bearing_is_explicit_valid_and_no_overwrite(self):
         output = self.dataset / subject.NOMINAL_FORWARD_NAME
         checksum_before = (self.dataset / checksums.CHECKSUM_FILE).read_bytes()

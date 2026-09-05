@@ -38,6 +38,7 @@ from experimental.overhead_matching.swag.farfield import (
     audit_dataset,
     geometry,
     nominal_forward,
+    paths as paths_lib,
     provenance,
 )
 # The camera_type spellings live with the API models; see models.py for the
@@ -46,6 +47,7 @@ from experimental.overhead_matching.swag.farfield.collection.models import (
     EQUIRECT_CAMERA_TYPES,
 )
 from experimental.overhead_matching.swag.farfield.collection import extract_stitch
+from experimental.overhead_matching.swag.farfield.dataset_tools import checksums
 
 try:
     from tqdm import tqdm
@@ -62,8 +64,16 @@ CONVERSION_GENERATOR = (
 )
 _CONVERSION_MANIFEST_KEYS = frozenset({
     "schema", "generator", "git_commit", "argv", "created", "inputs",
-    "config", "notes", "content_digest", "input_download", "complete",
+    "config", "notes", "content_digest", "content_digest_excludes",
+    "input_download", "complete",
 })
+_CONVERSION_CONTENT_DIGEST_EXCLUDES = (
+    provenance.MANIFEST_NAME,
+    checksums.CHECKSUM_FILE,
+    "nominal_forward.json",
+    "_manifests/**",
+)
+_TRACKING_VIDEO_SCHEMA = "farfield.synthetic_hold_video.v1"
 
 
 # ── Metadata loading ──────────────────────────────────────────────────────────
@@ -500,13 +510,174 @@ def _download_identity(sequence_dir: Path, document: dict) -> dict:
     }
 
 
+def _load_tracking_video_manifest(
+        manifest_path: Path, *, dataset_name: str, download_manifest: dict,
+        input_download: dict,
+        metadata: list[dict]) -> dict:
+    """Validate a synthetic hold video and return its bound dataset fields."""
+    manifest_path = Path(manifest_path)
+    document = _strict_json(manifest_path)
+    if (document.get("schema") != _TRACKING_VIDEO_SCHEMA
+            or document.get("complete") is not True
+            or document.get("dataset") != dataset_name):
+        raise ValueError(
+            "tracking video manifest is incomplete, unsupported, or for a "
+            "different dataset")
+
+    source = document.get("source")
+    if (not isinstance(source, dict)
+            or source.get("kind") != "mapillary_stage2_download"
+            or source.get("manifest_sha256")
+            != input_download["manifest_sha256"]
+            or source.get("content_digest") != input_download["content_digest"]):
+        raise ValueError("tracking video source download identity changed")
+
+    expected_count = len(download_manifest["expected"])
+    source_frames = document.get("source_frames")
+    if (source.get("image_count") != expected_count
+            or not isinstance(source_frames, list)
+            or len(source_frames) != expected_count):
+        raise ValueError("tracking video does not cover the completed download")
+    timing = document.get("timing")
+    rate = timing.get("frame_rate") if isinstance(timing, dict) else None
+    try:
+        numerator = int(rate["numerator"])
+        denominator = int(rate["denominator"])
+        origin_ms = int(timing["origin_captured_at_ms"])
+        frame_count = int(timing["frame_count"])
+        duration_s = float(timing["duration_s"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("tracking video timing is invalid") from error
+    if (numerator <= 0 or denominator <= 0 or frame_count <= 0
+            or not math.isfinite(duration_s) or duration_s <= 0
+            or not isinstance(source_frames[0], dict)
+            or source_frames[0].get("captured_at_ms") != origin_ms):
+        raise ValueError("tracking video origin does not match source frame zero")
+
+    video_t_s = {}
+    for meta in metadata:
+        position = meta["sequence_position"]
+        frame = source_frames[position]
+        captured_at_ms = meta["captured_at"]
+        if (not isinstance(frame, dict)
+                or frame.get("sequence_position") != position
+                or frame.get("source_image_id") != str(meta["id"])
+                or frame.get("captured_at_ms") != captured_at_ms):
+            raise ValueError(
+                f"tracking video source frame {position} identity changed")
+        target_index = round(
+            (captured_at_ms - origin_ms) * numerator
+            / (1000 * denominator))
+        target_time = frame.get("target_time_s")
+        if (frame.get("target_frame_index") != target_index
+                or isinstance(target_time, bool)
+                or not isinstance(target_time, (int, float))
+                or not math.isfinite(target_time)
+                or not math.isclose(
+                    target_time, target_index * denominator / numerator,
+                    abs_tol=1e-9)):
+            raise ValueError(
+                f"tracking video source frame {position} timing changed")
+        video_t_s[position] = float(target_time)
+
+    output = document.get("output")
+    if not isinstance(output, dict) or not isinstance(output.get("path"), str):
+        raise ValueError("tracking video output is invalid")
+    declared_video = Path(output["path"])
+    video_path = (declared_video if declared_video.is_absolute()
+                  else manifest_path.parent / declared_video)
+    if video_path.is_symlink() or not video_path.is_file():
+        raise ValueError(f"tracking video is not a regular file: {video_path}")
+    video_path = video_path.resolve()
+    farfield_root = paths_lib.default_root().resolve()
+    try:
+        source_video = video_path.relative_to(farfield_root).as_posix()
+    except ValueError as error:
+        raise ValueError("tracking video is outside the farfield root") from error
+    video_sha256 = artifact.sha256_file(video_path)
+    if (output.get("sha256") != video_sha256
+            or output.get("size_bytes") != video_path.stat().st_size):
+        raise ValueError("tracking video output hash or size changed")
+
+    try:
+        streams = output["ffprobe"]["streams"]
+        stream, = [item for item in streams
+                   if item.get("codec_type") == "video"]
+        width, height = int(stream["width"]), int(stream["height"])
+        probed_frames = int(stream["nb_frames"])
+        probed_duration = float(stream["duration"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("tracking video probe values are invalid") from error
+    if (width <= 0 or height <= 0
+            or probed_frames != frame_count
+            or not math.isclose(probed_duration, duration_s, abs_tol=1e-6)):
+        raise ValueError("tracking video probe disagrees with timing")
+
+    manifest_sha256 = artifact.sha256_file(manifest_path)
+    return {
+        "inputs": {
+            "tracking_video_manifest": str(manifest_path.resolve()),
+            "tracking_video_manifest_sha256": manifest_sha256,
+            "tracking_video": str(video_path),
+            "tracking_video_sha256": video_sha256,
+        },
+        "video": {
+            "source_video": source_video,
+            "source_video_sha256": video_sha256,
+            "video_resolution": f"{width}x{height}",
+            "video_codec": stream.get("codec_name"),
+            "video_fps": numerator / denominator,
+            "video_duration_s": float(duration_s),
+            "video_frames": frame_count,
+            "sync": {
+                "method": "mapillary_synthetic_zero_order_hold",
+                "timestamp_source": timing.get("timestamp_source"),
+                "origin_captured_at_ms": origin_ms,
+                "frame_rate": dict(rate),
+                "quantization": timing.get("quantization"),
+            },
+            "anonymized": True,
+            "provider_anonymized": True,
+            "privacy_review_status": "provider_anonymized",
+            "retained": True,
+        },
+        "video_t_s": video_t_s,
+    }
+
+
 def _conversion_inputs(sequence_dir: Path,
-                       nominal_forward_path: Path | None) -> dict:
+                       nominal_forward_path: Path | None,
+                       tracking_video: dict | None = None) -> dict:
     result = {"sequence_dir": str(sequence_dir.resolve())}
     if nominal_forward_path is not None:
         result["nominal_forward_calibration"] = str(
             nominal_forward_path.resolve())
+    if tracking_video is not None:
+        result.update(tracking_video["inputs"])
     return result
+
+
+def _conversion_content_digest(destination: Path) -> str:
+    """Hash conversion outputs, excluding later integrity/review records."""
+    destination = Path(destination)
+    excluded = {
+        provenance.MANIFEST_NAME,
+        checksums.CHECKSUM_FILE,
+        "nominal_forward.json",
+    }
+    derived = destination / "_manifests"
+    if derived.exists() or derived.is_symlink():
+        excluded.add("_manifests")
+        excluded.update(
+            path.relative_to(destination).as_posix()
+            for path in derived.rglob("*"))
+    return artifact.sha256_directory(destination, exclude=tuple(excluded))
+
+
+def _create_initial_checksums(destination: Path) -> int:
+    target = Path(destination) / checksums.CHECKSUM_FILE
+    artifact.atomic_create_file(target, checksums.manifest_bytes(destination))
+    return checksums.verify(destination)
 
 
 def validate_completed_conversion(
@@ -543,10 +714,13 @@ def validate_completed_conversion(
         raise ValueError("completed conversion inputs changed")
     if document["config"] != config:
         raise ValueError("completed conversion configuration changed")
-    digest = artifact.sha256_directory(
-        destination, exclude=(provenance.MANIFEST_NAME,))
+    if document["content_digest_excludes"] != list(
+            _CONVERSION_CONTENT_DIGEST_EXCLUDES):
+        raise ValueError("completed conversion content-digest exclusions changed")
+    digest = _conversion_content_digest(destination)
     if document["content_digest"] != digest:
         raise ValueError("completed conversion content digest mismatch")
+    checksums.verify(destination)
     return document
 
 
@@ -747,7 +921,8 @@ def build_pipeline_metadata(*, dataset_name: str, metadata: list[dict],
                             num_written: int, resize, min_spacing: float,
                             jpeg_quality: int, max_heading_error_deg: float,
                             max_heading_source_disagreement_deg: float,
-                            max_perspective_offset_std_deg: float) -> dict:
+                            max_perspective_offset_std_deg: float,
+                            tracking_video: dict | None = None) -> dict:
     """Assemble pipeline_metadata.json. Pure — no I/O, unit-testable.
 
     Everything a consumer needs to interpret the images at all lives here:
@@ -832,6 +1007,7 @@ def build_pipeline_metadata(*, dataset_name: str, metadata: list[dict],
             "area_km2": round(stats["area_km2"], 3),
         },
         "trajectory_km": round(stats["trajectory_km"], 3),
+        **({"video": tracking_video} if tracking_video is not None else {}),
     }
 
 
@@ -868,6 +1044,10 @@ def main(argv=None) -> int:
         help="Optional approved dataset-bound nominal-forward record. Without "
              "it, heading/course comparisons remain optical-axis diagnostics "
              "and cannot approve a heading source.")
+    parser.add_argument(
+        "--tracking_video_manifest", type=Path,
+        help="Optional farfield.synthetic_hold_video.v1 manifest for the dense "
+             "Mapillary tracking video.")
     parser.add_argument("--jpeg_quality", type=int, required=True,
                         help="JPEG output quality")
     parser.add_argument("--resize", type=int, required=True,
@@ -936,6 +1116,20 @@ def main(argv=None) -> int:
     if not metadata:
         print("ERROR: No images after filtering")
         sys.exit(1)
+
+    tracking_video = None
+    if args.tracking_video_manifest is not None:
+        try:
+            tracking_video = _load_tracking_video_manifest(
+                args.tracking_video_manifest,
+                dataset_name=args.dataset_name,
+                download_manifest=download_manifest,
+                input_download=input_download,
+                metadata=metadata,
+            )
+        except (artifact.ArtifactError, OSError, ValueError) as error:
+            print(f"ERROR: invalid tracking video manifest: {error}")
+            return 1
 
     sample = metadata[0]
     print(f"  Resolution: {sample['width']}x{sample['height']}")
@@ -1114,7 +1308,7 @@ def main(argv=None) -> int:
     # on mutable filesystem indirection.
     image_dir_name = "panorama"
     conversion_inputs = _conversion_inputs(
-        sequence_dir, args.nominal_forward_calibration)
+        sequence_dir, args.nominal_forward_calibration, tracking_video)
     conversion_config = {
         "dataset_name": args.dataset_name,
         "heading_source": args.heading_source,
@@ -1220,9 +1414,9 @@ def main(argv=None) -> int:
 
     # frames_gps.csv — the per-frame table the farfield pipeline reads
     # (idx, dist_m, video_t_s). Nothing else writes this file; the schema
-    # mirrors the self-collected legs. There is no video here, so video_t_s is
-    # seconds since the first capture, which is what the frame-indexing code
-    # needs it to mean.
+    # mirrors the self-collected legs. Without a tracking-video manifest,
+    # video_t_s remains seconds since the first kept capture. With one, it is
+    # the manifest's exact quantized address in the synthetic hold video.
     gps_path = vigor_dir / "frames_gps.csv"
     kept = [(i, m) for i, m in enumerate(metadata) if i in results]
     t0_ms = kept[0][1]["captured_at"] if kept else 0
@@ -1247,9 +1441,12 @@ def main(argv=None) -> int:
             else:
                 speed = -1.0
             t_s = round((meta["captured_at"] - t0_ms) / 1000.0, 3)
+            video_t_s = (t_s if tracking_video is None else
+                         tracking_video["video_t_s"][
+                             meta["sequence_position"]])
             writer.writerow({
                 "idx": out_idx,
-                "video_t_s": t_s,
+                "video_t_s": video_t_s,
                 "sensor_elapsed_s": t_s,
                 "dist_m": round(cumulative_m, 1),
                 "latitude": f"{meta['lat']:.7f}",
@@ -1380,6 +1577,8 @@ def main(argv=None) -> int:
         max_heading_error_deg=args.max_heading_error_deg,
         max_heading_source_disagreement_deg=args.max_heading_source_disagreement_deg,
         max_perspective_offset_std_deg=args.max_perspective_offset_std_deg,
+        tracking_video=(None if tracking_video is None
+                        else tracking_video["video"]),
     )
     with open(meta_path, "w") as f:
         json.dump(pipeline_meta, f, indent=2)
@@ -1458,11 +1657,21 @@ def main(argv=None) -> int:
             sequence_dir)
         if _download_identity(sequence_dir, download_after) != input_download:
             raise ValueError("completed download identity changed")
+        if args.tracking_video_manifest is not None:
+            tracking_after = _load_tracking_video_manifest(
+                args.tracking_video_manifest,
+                dataset_name=args.dataset_name,
+                download_manifest=download_after,
+                input_download=input_download,
+                metadata=metadata,
+            )
+            if tracking_after["inputs"] != tracking_video["inputs"]:
+                raise ValueError("tracking video identity changed")
     except (artifact.ArtifactError, FileNotFoundError, OSError,
             ValueError) as error:
-        print(f"ERROR: Mapillary download changed during conversion: {error}")
+        print(f"ERROR: source input changed during conversion: {error}")
         return 1
-    content_digest = artifact.sha256_directory(vigor_dir)
+    content_digest = _conversion_content_digest(vigor_dir)
     provenance.write(
         vigor_dir,
         generator=CONVERSION_GENERATOR,
@@ -1471,9 +1680,12 @@ def main(argv=None) -> int:
         content_digest=content_digest,
         extra={
             "input_download": input_download,
+            "content_digest_excludes": list(
+                _CONVERSION_CONTENT_DIGEST_EXCLUDES),
             "complete": True,
         },
     )
+    _create_initial_checksums(vigor_dir)
     try:
         validate_completed_conversion(
             vigor_dir, input_download=input_download,
