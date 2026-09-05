@@ -139,6 +139,22 @@ class ViewerServerTest(unittest.TestCase):
                             headers=hostile).status_code,
             403)
 
+    def test_read_only_mode_serves_files_without_creating_notes(self):
+        root = self.root / "read-only"
+        root.mkdir()
+        (root / "index.html").write_text("read-only index")
+        annotations = root / match_notes.ANNOTATIONS_DIR_NAME
+        app = server.create_app(root, read_only=True)
+        client = app.test_client()
+
+        self.assertEqual(client.get("/").data, b"read-only index")
+        self.assertEqual(
+            client.get("/api/health").get_json()["features"],
+            ["localization_particles"])
+        self.assertEqual(client.get("/api/match-notes").status_code, 404)
+        self.assertEqual(client.put("/api/match-notes", json={}).status_code, 405)
+        self.assertFalse(annotations.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

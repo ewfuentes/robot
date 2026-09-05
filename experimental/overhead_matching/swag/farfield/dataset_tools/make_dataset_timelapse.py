@@ -1,10 +1,18 @@
 """Trajectory plot and GPS-overlay timelapse for collected datasets.
 
-Produces the two review artifacts the self-collected datasets carry, from any
+Produces the review artifacts the self-collected datasets carry, from any
 dataset that has `panorama/` and `frames_gps.csv`:
 
   trajectory.png      the track, frames coloured by time, start/end marked
   gps_timelapse.mp4   each frame with an inset map and a dot at its position
+
+When the dataset also has an approved ``nominal_forward.json``, the same
+transaction includes:
+
+  north_aligned_timelapse.mp4  low-resolution panorama rolled to true north
+
+The north-aligned video is review evidence only.  Stored panoramas remain in
+their original camera frame.
 
 The timelapse is the cheapest way to catch a dataset whose frames and
 positions have come apart — a stitched trajectory that jumps, an ordering that
@@ -35,24 +43,32 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
 
 from experimental.overhead_matching.swag.farfield import (  # noqa: E402
     artifact,
+    geometry,
+    nominal_forward,
     paths as paths_lib,
     publication,
     provenance,
 )
+from experimental.overhead_matching.swag.farfield.calibration import (  # noqa: E402
+    heading,
+)
 
 TRAJECTORY_NAME = "trajectory.png"
 TIMELAPSE_NAME = "gps_timelapse.mp4"
+NORTH_ALIGNED_NAME = "north_aligned_timelapse.mp4"
 REVIEW_DIRECTORY_NAME = "timelapse"
 REVIEW_KIND = "dataset_timelapse"
 REVIEW_VERSION = "v1"
+COURSE_MIN_DISPLACEMENT_M = 3.0
+COURSE_SMOOTH_WINDOW_S = 10.0
 
 
 def view_output_dir(dataset_path: Path) -> Path:
-    """Return the one transactional directory containing both review views."""
+    """Return the transactional directory containing the review views."""
     dataset_path = Path(dataset_path)
     return dataset_path / "_manifests" / REVIEW_DIRECTORY_NAME
 
@@ -206,16 +222,110 @@ def stage_video(paths, lats, lons, out: Path, width: int, fps: int,
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _review_outputs(skip_video: bool) -> tuple[str, ...]:
+def _approved_nominal_forward(dataset: Path):
+    path = dataset / "nominal_forward.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(
+            f"nominal-forward calibration is not a regular file: {path}")
+    return nominal_forward.load(path, expected_dataset=dataset.name)
+
+
+def _course_degrees(dataset: Path, lats, lons, times) -> np.ndarray:
+    with (dataset / "frames_gps.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    recorded = [(row.get("gps_course_deg") or "").strip() for row in rows]
+    if recorded and all(recorded):
+        return np.asarray([float(value) % 360.0 for value in recorded])
+
+    frame = geometry.RegionFrame(float(np.mean(lats)), float(np.mean(lons)))
+    east, north = frame.enu_from_latlon(lats, lons)
+    model = heading.gps_course_model_from_positions(
+        east, north, times,
+        min_displacement_m=COURSE_MIN_DISPLACEMENT_M,
+        smooth_window_s=COURSE_SMOOTH_WINDOW_S)
+    if model is None:
+        raise ValueError(f"{dataset}: cannot derive a north-alignment course")
+    return np.asarray(model.course_world_cw_deg_at(times)) % 360.0
+
+
+def north_aligned_panorama(image: Image.Image,
+                           center_yaw_cw_deg: float) -> Image.Image:
+    """Roll an equirectangular image so output column zero is true north."""
+    array = np.asarray(image.convert("RGB"))
+    col_of_north = int(round(
+        ((-center_yaw_cw_deg / 360.0) + 0.5) * array.shape[1])) \
+        % array.shape[1]
+    return Image.fromarray(np.roll(array, -col_of_north, axis=1))
+
+
+def stage_north_aligned_video(paths, times, courses, calibration, out: Path,
+                              width: int, fps: int,
+                              max_frames: int | None):
+    step = 1
+    if max_frames and len(paths) > max_frames:
+        step = math.ceil(len(paths) / max_frames)
+    indices = list(range(0, len(paths), step))
+    height = width // 2
+    work = Path(tempfile.mkdtemp(prefix="north_aligned_"))
+    try:
+        for position, i in enumerate(indices):
+            with Image.open(paths[i]) as source:
+                source.draft("RGB", (width, height))
+                pano = source.convert("RGB").resize(
+                    (width, height), Image.Resampling.BILINEAR)
+            center_yaw = (
+                courses[i] - calibration.bearing_camera_cw_deg) % 360.0
+            frame = north_aligned_panorama(pano, center_yaw)
+            draw = ImageDraw.Draw(frame, "RGBA")
+            for fraction, label in (
+                    (0.0, "N"), (0.25, "E"), (0.5, "S"), (0.75, "W")):
+                x = min(int(round(fraction * width)), width - 1)
+                draw.line((x, 0, x, height), fill=(255, 255, 255, 150),
+                          width=1)
+                draw.text((x + 4, 4), label, fill=(255, 255, 255, 255))
+            course_x = min(int(round((courses[i] % 360.0) / 360.0 * width)),
+                           width - 1)
+            draw.line((course_x, 0, course_x, height),
+                      fill=(80, 255, 120, 220), width=2)
+            caption = (
+                f"REVIEW ONLY  {paths[i].stem.split(',')[0]}  "
+                f"t={times[i]:.1f}s  course={courses[i]:.1f} deg  "
+                f"nominal-forward={calibration.bearing_camera_cw_deg:.1f} deg")
+            box_height = 24
+            draw.rectangle((0, height - box_height, width, height),
+                           fill=(0, 0, 0, 150))
+            draw.text((6, height - box_height + 5), caption,
+                      fill=(255, 255, 255, 255))
+            frame.save(work / f"c{position:05d}.jpg", quality=85)
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps),
+             "-pattern_type", "glob", "-i", str(work / "c*.jpg"),
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+             str(out)],
+            check=True)
+        print(f"  wrote {out} ({len(indices)} frames @ {fps} fps "
+              f"≈ {len(indices) / fps:.0f}s)")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _review_outputs(skip_video: bool,
+                    include_north_aligned: bool = False) -> tuple[str, ...]:
     names = [TRAJECTORY_NAME]
     if not skip_video:
         names.append(TIMELAPSE_NAME)
+        if include_north_aligned:
+            names.append(NORTH_ALIGNED_NAME)
     return tuple(sorted(names))
 
 
 def _input_digests(dataset: Path) -> tuple[dict[str, str], dict[str, str]]:
     source_digests = paths_lib.dataset_source_digests(dataset)
-    return source_digests, {
+    inputs = {
         "pipeline_metadata": source_digests[
             paths_lib.DATASET_PIPELINE_METADATA_SHA256],
         "frames_gps": source_digests[
@@ -223,6 +333,16 @@ def _input_digests(dataset: Path) -> tuple[dict[str, str], dict[str, str]]:
         "panorama_directory": source_digests[
             paths_lib.DATASET_PANORAMA_SHA256],
     }
+    nominal_path = dataset / "nominal_forward.json"
+    if nominal_path.exists() or nominal_path.is_symlink():
+        if nominal_path.is_symlink() or not nominal_path.is_file():
+            raise ValueError(
+                "nominal-forward calibration is not a regular file: "
+                f"{nominal_path}")
+        digest = artifact.sha256_file(nominal_path)
+        source_digests["nominal_forward_sha256"] = digest
+        inputs["nominal_forward"] = digest
+    return source_digests, inputs
 
 
 def _validate_review_outputs(root: Path, outputs: tuple[str, ...]) -> None:
@@ -239,8 +359,10 @@ def _validate_review_outputs(root: Path, outputs: tuple[str, ...]) -> None:
         raise ValueError(
             f"trajectory output is not a decodable PNG: {trajectory}") from exc
 
-    if TIMELAPSE_NAME in outputs:
-        video = root / TIMELAPSE_NAME
+    for name in (TIMELAPSE_NAME, NORTH_ALIGNED_NAME):
+        if name not in outputs:
+            continue
+        video = root / name
         if video.is_symlink() or not video.is_file():
             raise ValueError(f"timelapse output is not a regular file: {video}")
         with video.open("rb") as stream:
@@ -252,10 +374,10 @@ def _validate_review_outputs(root: Path, outputs: tuple[str, ...]) -> None:
 def reject_legacy_views(dataset: Path) -> None:
     legacy = [
         dataset / name
-        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME)
+        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME, NORTH_ALIGNED_NAME)
     ] + [
         dataset / "_manifests" / name
-        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME)
+        for name in (TRAJECTORY_NAME, TIMELAPSE_NAME, NORTH_ALIGNED_NAME)
     ]
     present = [path for path in legacy if path.exists() or path.is_symlink()]
     if present:
@@ -278,7 +400,9 @@ def validate_completed(
         expected_version=REVIEW_VERSION)
     manifest = artifact.load_manifest(out_dir)
     outputs = manifest.declared_outputs
-    if outputs not in (_review_outputs(False), _review_outputs(True)):
+    if outputs not in (
+            _review_outputs(False), _review_outputs(True),
+            _review_outputs(False, True)):
         raise ValueError(
             f"completed timelapse has invalid outputs: {out_dir}")
     if expected_outputs is not None and outputs != expected_outputs:
@@ -308,12 +432,14 @@ def render(dataset: Path, width: int, fps: int, max_frames: int | None,
     reject_legacy_views(dataset)
     source_digests, input_digests = _input_digests(dataset)
     paths, lats, lons, times, dists = load_frames(dataset)
+    calibration = _approved_nominal_forward(dataset)
     if len(paths) < 2:
         raise ValueError(f"{dataset}: need at least 2 frames, got "
                          f"{len(paths)}")
     print(f"{dataset.name}: {len(paths)} frames, {dists[-1] / 1000:.2f} km")
     out_dir = view_output_dir(dataset)
-    outputs = _review_outputs(skip_video)
+    include_north_aligned = calibration is not None and not skip_video
+    outputs = _review_outputs(skip_video, include_north_aligned)
     config = {
         "input_digests": input_digests,
         "render": {
@@ -322,6 +448,7 @@ def render(dataset: Path, width: int, fps: int, max_frames: int | None,
             "max_frames": max_frames,
             "skip_video": skip_video,
             "n_frames": len(paths),
+            "north_aligned": include_north_aligned,
         },
     }
     if out_dir.exists() or out_dir.is_symlink():
@@ -347,6 +474,11 @@ def render(dataset: Path, width: int, fps: int, max_frames: int | None,
                 paths, lats, lons,
                 builder.output_path(TIMELAPSE_NAME),
                 width, fps, max_frames)
+            if calibration is not None:
+                stage_north_aligned_video(
+                    paths, times, _course_degrees(dataset, lats, lons, times),
+                    calibration, builder.output_path(NORTH_ALIGNED_NAME),
+                    width, fps, max_frames)
         _validate_review_outputs(builder.path, outputs)
         if _input_digests(dataset)[0] != source_digests:
             raise ValueError(
