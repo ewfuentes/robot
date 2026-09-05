@@ -140,24 +140,8 @@ def _reject_unknown_shape(source: Any, normalized: Any, where: str) -> None:
         raise ValueError(f"{where} changed type or value while decoding")
 
 
-# Record fields added after artifacts were already written, with the value
-# those records necessarily carried (see _PREDATING_FILTER_FIELDS).
-_PREDATING_RECORD_FIELDS = {
-    structs.TrackletMeasurement: {"range_max_m": None},
-}
-
-
 def _decode_typed_json(payload: bytes, record_type, where: str):
     document = _strict_json_document(payload, where)
-    predating = _PREDATING_RECORD_FIELDS.get(record_type)
-    if predating and isinstance(document, dict):
-        filled = dict(document)
-        for name, legacy_value in predating.items():
-            filled.setdefault(name, legacy_value)
-        if filled != document:
-            document = filled
-            payload = json.dumps(
-                document, separators=(",", ":")).encode("utf-8")
     try:
         value = msgspec.json.decode(
             payload, type=record_type, dec_hook=msgspec_dec_hook)
@@ -178,16 +162,6 @@ _RETIRED_NOOP_PROPOSAL_FIELDS = {
     "revival_match_radius_m": None,
     "revival_margin_nats": 0.0,
 }
-# Filter settings added after runs were already recorded, with the value that
-# reproduces what those runs did: before 2026-09-04 no range cap existed, so a
-# manifest without these fields ran with the cap disabled. Filling them in is
-# not a default hiding a choice; it is the only value the run can have had.
-_PREDATING_FILTER_FIELDS = {
-    "range_cap_enabled": False,
-    "range_cap_softness_frac": 0.25,
-}
-
-
 def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
     """Normalize recorded runs across filter-config schema changes.
 
@@ -198,17 +172,14 @@ def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
     value shaped a run and is still unknown science, so it remains a hard
     error.
 
-    Predating fields (`_PREDATING_FILTER_FIELDS`) are filled with the value
-    the run necessarily had, so every run recorded before a setting existed
-    stays readable without pretending it was configured.
+    Fields added later are not back-filled: a run recorded before a setting
+    existed fails the strict shape check and has to be re-run.
     """
     normalized = dict(document)
     filter_config = document.get("filter_config")
     if not isinstance(filter_config, dict):
         return normalized
     filter_config = dict(filter_config)
-    for name, legacy_value in _PREDATING_FILTER_FIELDS.items():
-        filter_config.setdefault(name, legacy_value)
     for name, expected in _RETIRED_NOOP_FILTER_FIELDS.items():
         if name not in filter_config:
             continue

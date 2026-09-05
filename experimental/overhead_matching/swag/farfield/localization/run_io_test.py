@@ -293,33 +293,31 @@ class StrictReaderTest(unittest.TestCase):
 
         self.assertEqual(loaded.manifest, manifest)
 
-    def test_measurements_recorded_before_the_range_cap_read_as_uncapped(self):
+    def test_measurements_recorded_before_the_range_cap_are_rejected(self):
+        # Fields added later are never back-filled; the run has to be re-run.
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             write_sample(run_dir)
             path = run_dir / "tier1_measurements.jsonl"
-            lines = path.read_text().splitlines()
             stripped = []
-            for line in lines:
+            for line in path.read_text().splitlines():
                 record = msgspec.json.decode(line)
                 record.pop("range_max_m")
                 stripped.append(msgspec.json.encode(record).decode())
             replace_payload(run_dir, "tier1_measurements.jsonl",
                             ("\n".join(stripped) + "\n").encode())
 
-            loaded = run_io.read_run(run_dir)
+            with self.assertRaisesRegex(ValueError, "missing fields"):
+                run_io.read_run(run_dir)
 
-        self.assertTrue(loaded.measurements)
-        self.assertTrue(all(m.range_max_m is None for m in loaded.measurements))
-
-    def test_runs_recorded_before_the_range_cap_read_as_disabled(self):
+    def test_runs_recorded_before_the_range_cap_are_rejected(self):
         def strip_range_cap(document):
             for name in ("range_cap_enabled", "range_cap_softness_frac"):
                 document["filter_config"].pop(name)
 
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
-            manifest, *_ = write_sample(run_dir)
+            write_sample(run_dir)
             run_manifest_path = run_dir / run_io.RUN_MANIFEST_NAME
             run_manifest = msgspec.json.decode(run_manifest_path.read_bytes())
             strip_range_cap(run_manifest)
@@ -334,16 +332,8 @@ class StrictReaderTest(unittest.TestCase):
                 dataclasses.replace(outer, config=config).to_dict())
             repair_content_digest(run_dir)
 
-            loaded = run_io.read_run(run_dir)
-
-        self.assertFalse(loaded.manifest.filter_config.range_cap_enabled)
-        self.assertEqual(loaded.manifest.filter_config.range_cap_softness_frac,
-                         0.25)
-        self.assertEqual(
-            msgspec.structs.replace(loaded.manifest.filter_config,
-                                    range_cap_enabled=manifest.filter_config.range_cap_enabled,
-                                    range_cap_softness_frac=manifest.filter_config.range_cap_softness_frac),
-            manifest.filter_config)
+            with self.assertRaisesRegex(ValueError, "missing fields"):
+                run_io.read_run(run_dir)
 
     def test_retired_experiment_fields_reject_active_values(self):
         cases = (
