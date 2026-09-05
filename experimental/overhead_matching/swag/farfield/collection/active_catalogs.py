@@ -126,6 +126,24 @@ ACTIVE_SCOPES = (
         enc_state=None,
     ),
     ActiveCatalogScope(
+        name="franconia_20260829",
+        output_datasets=(
+            "franconia_leg1",
+            "franconia_leg2",
+            "franconia_drive",
+        ),
+        bbox_datasets=(
+            "franconia_leg1",
+            "franconia_leg2",
+            "franconia_drive",
+        ),
+        osm_specs=(
+            "north-america/us/new-hampshire-latest.osm.pbf",
+            "north-america/us/vermont-latest.osm.pbf",
+        ),
+        enc_state=None,
+    ),
+    ActiveCatalogScope(
         name="pohang_canal_04",
         output_datasets=("pohang_canal_04",),
         bbox_datasets=("pohang_canal_04",),
