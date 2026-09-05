@@ -230,7 +230,9 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:audit_dataset_lib",
         "//experimental/overhead_matching/swag/farfield:geometry",
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
+        "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
+        "//experimental/overhead_matching/swag/farfield/dataset_tools:checksums",
     ],
 )
 
