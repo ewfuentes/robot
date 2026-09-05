@@ -5,7 +5,7 @@ Stages, per trajectory:
   1 RESOLVE   seed pKey -> stitched manifest             (seed_to_trajectory, in-process)
   2 DOWNLOAD  manifest -> ordered jpg+json staging       (extract_stitch, in-process)
   3 CONVERT   staging -> dataset dir                     (mapillary_to_vigor, in-process)
-  4 TIMELAPSE trajectory.png + gps_timelapse.mp4         (dataset_tools.make_dataset_timelapse)
+  4 TIMELAPSE trajectory + GPS/north-aligned review      (dataset_tools.make_dataset_timelapse)
   5 OSM       publish full typed catalog (+ENC where covered)
   6 PINHOLE   4 yaw faces, equirectangular only          (panorama_to_pinhole via bazel)
   7 TRIM      full catalog -> matchable typed catalog     (trim_catalog)
@@ -255,11 +255,12 @@ def stage_convert(name, cfg, args):
 
 
 def stage_timelapse(name, cfg, args):
-    """trajectory.png + gps_timelapse.mp4, as the self-collected datasets carry.
+    """Trajectory and low-resolution GPS/heading review videos.
 
     The video is the cheapest check that frames and positions have not come
     apart: a mis-stitched trajectory, a non-temporal ordering or a reversed run
-    is obvious on sight and invisible in a summary table.
+    is obvious on sight and invisible in a summary table.  Datasets with an
+    approved nominal-forward record also get a north-aligned review video.
     """
     print(f"\n{'[DRY RUN] ' if args.dry_run else ''}=== [4 TIMELAPSE] {name}")
     if args.dry_run:

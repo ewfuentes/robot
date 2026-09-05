@@ -260,9 +260,12 @@ py_library(
         requirement("numpy"),
         requirement("pillow"),
         FARFIELD + ":artifact",
+        FARFIELD + ":geometry",
+        FARFIELD + ":nominal_forward",
         FARFIELD + ":paths",
         FARFIELD + ":provenance",
         FARFIELD + ":publication",
+        FARFIELD + "/calibration:heading",
     ],
 )
 
@@ -273,6 +276,7 @@ py_test(
         requirement("pillow"),
         ":make_dataset_timelapse_lib",
         FARFIELD + ":artifact",
+        FARFIELD + ":nominal_forward",
     ],
 )
 

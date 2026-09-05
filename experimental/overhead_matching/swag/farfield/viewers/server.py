@@ -9,6 +9,11 @@ SSH local forwarding when the browser is on another machine.
 Run with the standard data root:
 
   bazel run //experimental/overhead_matching/swag/farfield/viewers:server
+
+For a static review bundle, scope the root to that bundle and disable writes:
+
+  bazel run //experimental/overhead_matching/swag/farfield/viewers:server -- \
+    --root /path/to/review --read-only
 """
 
 from __future__ import annotations
@@ -117,10 +122,11 @@ def _require_same_origin_write():
         abort(403)
 
 
-def create_app(data_root: Path = DEFAULT_ROOT) -> Flask:
+def create_app(data_root: Path = DEFAULT_ROOT, *, read_only: bool = False) -> Flask:
     root = _require_root(data_root)
-    store = match_notes.MatchNotesStore(root)
-    store.initialize()
+    store = None if read_only else match_notes.MatchNotesStore(root)
+    if store is not None:
+        store.initialize()
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
@@ -141,8 +147,9 @@ def create_app(data_root: Path = DEFAULT_ROOT) -> Flask:
         return jsonify({
             "ok": True,
             "root": str(root),
-            "features": ["localization_particles", "match_notes"],
-            "notes_file": str(store.notes_path),
+            "features": (["localization_particles"]
+                         + ([] if store is None else ["match_notes"])),
+            "notes_file": None if store is None else str(store.notes_path),
         })
 
     @app.get("/api/localization-particles/<int:keyframe_idx>")
@@ -165,27 +172,28 @@ def create_app(data_root: Path = DEFAULT_ROOT) -> Flask:
             return jsonify({"error": str(error)}), 400
         return jsonify(payload)
 
-    @app.get("/api/match-notes")
-    def get_match_notes():
-        result = store.get(request.args.get("matching_digest", ""))
-        return jsonify({"schema": match_notes.SCHEMA, **result})
+    if store is not None:
+        @app.get("/api/match-notes")
+        def get_match_notes():
+            result = store.get(request.args.get("matching_digest", ""))
+            return jsonify({"schema": match_notes.SCHEMA, **result})
 
-    @app.put("/api/match-notes")
-    def put_match_note():
-        _require_same_origin_write()
-        value = request.get_json(silent=True)
-        if not isinstance(value, dict):
-            return jsonify({"error": "request body must be a JSON object"}), 400
-        expected = {"matching", "tracklet_id", "text"}
-        if set(value) != expected:
-            return jsonify({
-                "error": "request body must have exact keys "
-                         f"{sorted(expected)}",
-            }), 400
-        note = store.put(
-            matching=value["matching"], tracklet_id=value["tracklet_id"],
-            text=value["text"])
-        return jsonify({"ok": True, "note": note})
+        @app.put("/api/match-notes")
+        def put_match_note():
+            _require_same_origin_write()
+            value = request.get_json(silent=True)
+            if not isinstance(value, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+            expected = {"matching", "tracklet_id", "text"}
+            if set(value) != expected:
+                return jsonify({
+                    "error": "request body must have exact keys "
+                             f"{sorted(expected)}",
+                }), 400
+            note = store.put(
+                matching=value["matching"], tracklet_id=value["tracklet_id"],
+                text=value["text"])
+            return jsonify({"ok": True, "note": note})
 
     @app.get("/")
     @app.get("/<path:relative>")
@@ -213,15 +221,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--read-only", action="store_true",
+        help="serve static files without creating or exposing match notes")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be in 1..65535")
     try:
-        app = create_app(args.root)
+        app = create_app(args.root, read_only=args.read_only)
     except (match_notes.MatchNotesError, OSError) as error:
         parser.error(str(error))
     print(f"serving {args.root} at http://{HOST}:{args.port}/")
-    print(f"matcher notes: {args.root / match_notes.ANNOTATIONS_DIR_NAME / match_notes.NOTES_NAME}")
+    if args.read_only:
+        print("read-only static mode; matcher notes disabled")
+    else:
+        print(f"matcher notes: {args.root / match_notes.ANNOTATIONS_DIR_NAME / match_notes.NOTES_NAME}")
     print("loopback only; use SSH -L forwarding from another machine")
     app.run(host=HOST, port=args.port, threaded=True, debug=False,
             use_reloader=False)
