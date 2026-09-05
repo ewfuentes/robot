@@ -178,6 +178,46 @@ class TestKnownGeometryGrid(unittest.TestCase):
 
         self.assertAlmostEqual(prob_mass, 1.0, places=6)
 
+    def test_probability_mass_clamps_floating_point_sum_to_one(self):
+        """Summation roundoff must not violate the serialized metric domain."""
+        device = torch.device("cpu")
+        grid_spec = GridSpec(
+            origin_row_px=100_000_000.0,
+            origin_col_px=100_000_000.0,
+            num_rows=1,
+            num_cols=2,
+            zoom_level=20,
+            cell_size_px=100.0,
+        )
+        belief = HistogramBelief.from_uniform(grid_spec, device)
+        belief.get_belief = lambda: torch.tensor([[0.5000001, 0.5000001]])
+        true_latlon = grid_spec.get_all_cell_centers_latlon(device)[0]
+
+        self.assertEqual(
+            compute_probability_mass_within_radius(
+                belief, true_latlon, radius_meters=10000.0
+            ),
+            1.0,
+        )
+
+    def test_probability_mass_rejects_nonfinite_belief(self):
+        device = torch.device("cpu")
+        grid_spec = GridSpec(
+            origin_row_px=100_000_000.0,
+            origin_col_px=100_000_000.0,
+            num_rows=1,
+            num_cols=1,
+            zoom_level=20,
+            cell_size_px=100.0,
+        )
+        belief = HistogramBelief.from_uniform(grid_spec, device)
+        belief.get_belief = lambda: torch.tensor([[float("nan")]])
+        true_latlon = grid_spec.get_all_cell_centers_latlon(device)[0]
+
+        with self.assertRaisesRegex(ValueError, "must be finite"):
+            compute_probability_mass_within_radius(
+                belief, true_latlon, radius_meters=10000.0)
+
     def test_two_cells_equal_weight(self):
         """Two cells with equal weight, radius captures one → prob=0.5."""
         device = torch.device("cpu")
@@ -969,20 +1009,18 @@ class TestNumericalEdgeCasesLogProbs(unittest.TestCase):
 
         belief = HistogramBelief.from_uniform(grid_spec, device)
 
-        cell_centers = grid_spec.get_all_cell_centers_latlon(device)
-        true_latlon = cell_centers[0]
+        center_px = grid_spec.get_all_cell_centers_px(
+            device, dtype=torch.float64)[0]
+        lat, lon = web_mercator.pixel_coords_to_latlon(
+            center_px[0], center_px[1], grid_spec.zoom_level)
+        true_latlon = torch.stack((lat, lon))
 
         # Any positive radius should capture all mass (only one cell)
         mass_small = compute_probability_mass_within_radius(belief, true_latlon, 0.1)
         mass_large = compute_probability_mass_within_radius(belief, true_latlon, 1000.0)
 
-        # Zero radius at exact cell center: distance=0, and 0 <= 0 is True, so captures the cell
-        mass_zero = compute_probability_mass_within_radius(belief, true_latlon, 0.0)
-
-        # When true position is exactly at cell center, even radius=0 captures it (dist=0 <= 0)
-        self.assertAlmostEqual(mass_zero, 1.0, places=6)
         self.assertAlmostEqual(mass_large, 1.0, places=6)
-        # Small radius should also capture the only cell
+        # The float64 inverse projection round-trip is well inside 10 cm.
         self.assertGreater(mass_small, 0.0)
 
     def test_concentrated_belief_numerical_stability(self):

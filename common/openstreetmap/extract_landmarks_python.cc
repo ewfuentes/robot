@@ -172,7 +172,6 @@ PYBIND11_MODULE(extract_landmarks_python, m) {
             Dictionary mapping region_id to BoundingBox to extract landmarks for
         tag_filters : dict
             Dictionary of OSM tags to filter by (e.g., {"amenity": True, "building": True})
-
         Returns
         -------
         list of tuple[str, LandmarkFeature]

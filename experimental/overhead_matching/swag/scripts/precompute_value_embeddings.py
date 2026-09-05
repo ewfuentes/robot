@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Pre-compute text embeddings for all unique tag values.
 
-Two modes:
+Three input forms:
   1. --data_dir: Scan JSONL batch response files (original mode)
-  2. --feather_dirs + --pano_v2_base: Scan .feather landmark files and pano_v2 pickles
+  2. --feather_dirs + --pano_v2_base: Scan .feather landmark files and one or
+     more pano_v2 bases/versioned artifact directories
+  3. --landmark_path: Scan one direct landmarks.feather file or artifact directory
 
 Use --base_embeddings to incrementally expand an existing embeddings file: all
 base entries are carried forward into the output, and only values not already in
@@ -100,18 +102,52 @@ def collect_unique_text_values(data_dir: Path) -> dict[str, int]:
     return value_counts
 
 
+def _landmark_feather_paths(source: Path) -> list[Path]:
+    """Resolve a direct Feather/artifact path or a legacy VIGOR city path."""
+    if source.suffix == ".feather":
+        return [source]
+    artifact_feather = source / "landmarks.feather"
+    if artifact_feather.exists():
+        return [artifact_feather]
+    landmarks_dir = source / "landmarks"
+    if not landmarks_dir.exists():
+        print(f"  Warning: No landmarks.feather or landmarks/ dir in {source}")
+        return []
+    return sorted(landmarks_dir.glob("*.feather"))
+
+
+def _compact_tag_dicts(df: pd.DataFrame, feather_path: Path) -> list[dict]:
+    """Decode the compact far-field catalog's canonical JSON tags column."""
+    decoded = []
+    for row_index, encoded in df["tags"].items():
+        try:
+            tags = json.loads(encoded)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"{feather_path}: row {row_index!r} has invalid JSON tags"
+            ) from exc
+        if (not isinstance(tags, dict)
+                or any(not isinstance(k, str) or not isinstance(v, str)
+                       for k, v in tags.items())):
+            raise ValueError(
+                f"{feather_path}: row {row_index!r} tags must be a JSON "
+                "object with string keys and values"
+            )
+        decoded.append(tags)
+    return decoded
+
+
 def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
     """Collect text-type tag values from OSM landmark .feather files.
 
-    Scans the pruned_props column (frozenset of (key, value) tuples).
+    Inputs may be direct Feather files, far-field artifact directories that
+    contain landmarks.feather, or legacy VIGOR city directories containing
+    landmarks/*.feather. Compact far-field `tags` JSON and legacy wide tag
+    columns are both supported.
     """
     value_counts: Counter = Counter()
-    for city_dir in feather_dirs:
-        landmarks_dir = city_dir / "landmarks"
-        if not landmarks_dir.exists():
-            print(f"  Warning: No landmarks/ dir in {city_dir}")
-            continue
-        for feather_path in landmarks_dir.glob("*.feather"):
+    for source in feather_dirs:
+        for feather_path in _landmark_feather_paths(source):
             df = pd.read_feather(feather_path)
             if "pruned_props" in df.columns:
                 raise ValueError(
@@ -121,10 +157,12 @@ def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
             from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
                 prune_landmark,
             )
-            df["pruned_props"] = df.apply(
-                lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
+            if {"id", "geometry", "landmark_type", "tags"}.issubset(df.columns):
+                props_rows = _compact_tag_dicts(df, feather_path)
+            else:
+                props_rows = [row.dropna().to_dict() for _, row in df.iterrows()]
             n_lm = 0
-            for props in df["pruned_props"]:
+            for props in map(prune_landmark, props_rows):
                 if not props:
                     continue
                 n_lm += 1
@@ -136,18 +174,22 @@ def collect_text_values_from_feather(feather_dirs: list[Path]) -> Counter:
     return value_counts
 
 
-def collect_text_values_from_pano_v2(pano_v2_base: Path) -> Counter:
-    """Collect tag values from pano_v2 landmark pickles (any key in TAG_KEY_TO_IDX)."""
+def collect_text_values_from_pano_v2(pano_v2_bases: list[Path]) -> Counter:
+    """Collect tag values from explicit pano_v2 bases or artifact directories."""
     value_counts: Counter = Counter()
-    pano_tags = extract_panorama_data_across_cities(
-        pano_v2_base, extract_tags_from_pano_data,
-    )
-    for pano_id, landmarks in pano_tags.items():
-        for lm in landmarks:
-            for k, v in lm["tags"]:
-                if k in TAG_KEY_TO_IDX:
-                    value_counts[v] += 1
-    print(f"  {len(pano_tags)} panoramas, {len(value_counts)} unique values")
+    panorama_count = 0
+    for pano_v2_base in pano_v2_bases:
+        pano_tags = extract_panorama_data_across_cities(
+            pano_v2_base, extract_tags_from_pano_data,
+        )
+        panorama_count += len(pano_tags)
+        for landmarks in pano_tags.values():
+            for lm in landmarks:
+                for k, v in lm["tags"]:
+                    if k in TAG_KEY_TO_IDX:
+                        value_counts[v] += 1
+        print(f"  {pano_v2_base}: {len(pano_tags)} panoramas")
+    print(f"  {panorama_count} panorama records, {len(value_counts)} unique values")
     return value_counts
 
 
@@ -211,8 +253,12 @@ def main():
         help="VIGOR city dirs containing landmarks/*.feather files",
     )
     parser.add_argument(
-        "--pano_v2_base", type=Path, default=None,
-        help="Base path for pano_v2 embeddings (contains city subdirs)",
+        "--landmark_path", type=Path, default=None,
+        help="Direct landmarks.feather file or artifact directory containing it",
+    )
+    parser.add_argument(
+        "--pano_v2_base", type=Path, nargs="+", default=None,
+        help="One or more pano_v2 bases or versioned artifact directories",
     )
     parser.add_argument(
         "--base_embeddings", type=Path, default=None,
@@ -241,8 +287,11 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.data_dir and not args.feather_dirs and not args.pano_v2_base:
-        parser.error("Provide --data_dir (JSONL mode) or --feather_dirs/--pano_v2_base (feather mode)")
+    if (not args.data_dir and not args.feather_dirs and not args.landmark_path
+            and not args.pano_v2_base):
+        parser.error(
+            "Provide --data_dir, --feather_dirs, --landmark_path, or "
+            "--pano_v2_base")
 
     # Collect unique values from all sources
     value_counts: Counter = Counter()
@@ -251,12 +300,15 @@ def main():
         print("Collecting from JSONL responses...")
         value_counts += collect_unique_text_values(args.data_dir)
 
-    if args.feather_dirs:
-        print(f"Collecting from {len(args.feather_dirs)} feather directories...")
-        value_counts += collect_text_values_from_feather(args.feather_dirs)
+    feather_sources = list(args.feather_dirs or [])
+    if args.landmark_path:
+        feather_sources.append(args.landmark_path)
+    if feather_sources:
+        print(f"Collecting from {len(feather_sources)} feather source(s)...")
+        value_counts += collect_text_values_from_feather(feather_sources)
 
     if args.pano_v2_base:
-        print(f"Collecting from pano_v2 at {args.pano_v2_base}...")
+        print(f"Collecting from {len(args.pano_v2_base)} pano_v2 source(s)...")
         value_counts += collect_text_values_from_pano_v2(args.pano_v2_base)
 
     print(f"\nTotal unique text values: {len(value_counts):,}")

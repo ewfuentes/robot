@@ -4,11 +4,15 @@ This module contains shared functions for loading and processing semantic landma
 that are used across multiple extractor modules.
 """
 
+from __future__ import annotations
+
 import base64
 import hashlib
 import json
 import pickle
 from pathlib import Path
+
+import common.torch.load_torch_deps  # noqa: F401 -- must precede torch
 import pandas as pd
 import torch
 
@@ -370,4 +374,3 @@ def custom_id_from_props(props: dict | frozenset) -> str:
         hashlib.sha256(json_props.encode('utf-8')).digest()
     ).decode('utf-8')
     return custom_id
-

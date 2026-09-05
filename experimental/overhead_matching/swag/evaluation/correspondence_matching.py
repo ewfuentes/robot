@@ -460,6 +460,37 @@ class RawCorrespondenceData:
     osm_lm_indices: list[int]  # col_idx → dataset landmark_idx
     osm_lm_tags: list[dict[str, str]]  # tags per OSM landmark column
     cost_matrix_path: Path | None = None  # canonical .npy path when streamed
+    identity: dict | None = None  # source/alignment contract for persisted raw data
+
+
+def load_raw_cost_data(raw_path: Path) -> RawCorrespondenceData:
+    """Load raw correspondence metadata and its embedded or sibling matrix."""
+    print(f"Loading precomputed raw data from {raw_path}")
+    data = torch.load(raw_path, weights_only=False)
+    cost_matrix_path = None
+    if "cost_matrix" in data:
+        cost_matrix = data["cost_matrix"]
+    else:
+        recorded = Path(data["cost_matrix_path"])
+        cost_matrix_path = (
+            recorded if recorded.is_absolute() else raw_path.parent / recorded)
+        if not cost_matrix_path.exists():
+            sibling = raw_path.parent / (raw_path.stem + "_cost_matrix.npy")
+            if sibling.exists():
+                print(f"  Recorded cost-matrix path is stale "
+                      f"({cost_matrix_path}); using sibling {sibling}")
+                cost_matrix_path = sibling
+        print(f"  Memory-mapping cost matrix from {cost_matrix_path}")
+        cost_matrix = np.load(cost_matrix_path, mmap_mode="r")
+    return RawCorrespondenceData(
+        cost_matrix=cost_matrix,
+        pano_id_to_lm_rows=data["pano_id_to_lm_rows"],
+        pano_lm_tags=data["pano_lm_tags"],
+        osm_lm_indices=data["osm_lm_indices"],
+        osm_lm_tags=data["osm_lm_tags"],
+        cost_matrix_path=cost_matrix_path,
+        identity=data.get("identity"),
+    )
 
 
 def precompute_raw_cost_data(

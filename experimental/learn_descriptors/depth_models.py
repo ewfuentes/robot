@@ -117,4 +117,3 @@ class DepthAnythingV2(DepthModel):
         for img_path, out in zip(paths_imgs, outputs):
             depth = out["predicted_depth"].detach().cpu().numpy()
             self._save_depth_for_image(Path(img_path), depth, dir_out_relative)
-
