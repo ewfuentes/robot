@@ -690,4 +690,8 @@ comparison is only the cap. Franconia leg 1 (successors of the 260903
 dataset the cap moves: dn500 0.002 → 0.102 and dn1000 0.013 → 0.297 over
 4 seeds, but three of four seeds still end 9–10 km off (one at 991 m). Only
 716 of 1,337 observations carry a cap there; the rest are `over_10km`
-summits, which the cap leaves unconstrained.
+summits, which the cap leaves unconstrained. Flevoland polder on the Gemini
+3.1 Pro matching pass (`stage3_b847f55_osmv2_pro_v1`, 25.6 × 29.4 km prior
+region) stays at 0.000 with and without the cap: only 4 of 169 tracks have
+an instance match at ≥ 0.8, so nearly every bearing is identity-free and a
+cap on it binds nothing. That is a matching problem, not a filter one.
