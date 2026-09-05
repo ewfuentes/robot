@@ -22,6 +22,7 @@ class LociOsmTest(unittest.TestCase):
         self.region_bbox = (-71.10, 42.34, -71.08, 42.36)
         self.plan = {
             "schema": region.SCHEMA,
+            "source_bbox_wsen": [-71.2, 42.2, -70.9, 42.5],
             "bbox_wsen": list(self.region_bbox),
             "grid": region.build_grid(self.region_bbox),
         }
