@@ -1224,6 +1224,7 @@ def _build_snapshot(args, parser):
         for i in range(0, len(signature_ids), chunk_size)]
     # A passthrough audit says so in its manifest; the Set 1 prompt and format
     # follow the evidence the audit actually holds.
+    audit_manifest = artifact.load_manifest(args.audit_dir)
     detection_mode = (audit_manifest.config.get("audit_source")
                       == audit_io.DETECTION_PASSTHROUGH_SOURCE)
     if detection_mode:
