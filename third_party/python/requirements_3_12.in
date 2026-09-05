@@ -10,6 +10,8 @@ polars==1.27.1
 scikit-learn==1.6.1
 tqdm==4.67.1
 opencv-python==4.11.0.86
+onnxruntime==1.29.0
+ultralytics==8.4.117
 Wand==0.6.11
 torch==2.7.0
 # setuptools==80.3.1
