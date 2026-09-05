@@ -27,6 +27,13 @@ Mapillary data enters through the independently resumable stages under
 Both paths publish the same camera-frame dataset contract before scientific
 processing begins.
 
+Self-collected recordings must first resolve video/GPS timing and pass through
+the no-clobber `person_anonymize_video` scan, policy, render, and human-review
+workflow in [`selfcollect.md`](selfcollect.md). Ingest copies frames from the
+blurred render, never from the retained original video. A completed render
+whose `review_decision.json` is absent remains privacy-review pending even if
+its dataset-contract audit passes.
+
 ## Full catalogs
 
 Map-side OSM/ENC data is derived evidence, not dataset metadata. The active

@@ -11,7 +11,7 @@ Format matches `sha256sum` output with `./`-relative paths sorted as bytes
 (C locale), covering everything except:
 
 - the manifest itself;
-- the `panorama/` symlink tree (it aliases `frames/`, which is covered);
+- symlinks, including the usual `panorama -> frames` compatibility alias;
 - derived per-dataset products (`_manifests/`, `catalog_cache/`,
   `__pycache__/`): these are rebuildable and rewritten whenever a triage tool
   runs, so checksumming them would report every tool run as corruption.
@@ -39,8 +39,7 @@ def file_sha256(path: Path) -> str:
 
 
 def _included(relative: Path) -> bool:
-    return (relative.parts[0] != "panorama"
-            and relative.name != CHECKSUM_FILE
+    return (relative.name != CHECKSUM_FILE
             and not set(relative.parts) & EXCLUDED_DIRS)
 
 
