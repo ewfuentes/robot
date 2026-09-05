@@ -75,7 +75,7 @@ from experimental.overhead_matching.swag.farfield.extraction import (
 from experimental.overhead_matching.swag.farfield.localization import structs
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
-SYSTEM_PROMPT = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
+_PROMPT_HEAD = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
 bundles, identify which landmarks in Set 1 (observed in images) are the same physical object as a
 landmark in Set 2 (a map database). Both use key=value notation.
 
@@ -91,7 +91,9 @@ A Set 1 landmark may match several Set 2 entries when the map holds more than on
 physical object. Several rows for one object is a real multiple match. Several related-but-distinct
 objects is not.
 
-Each Set 1 entry spans several lines. It is the output of a prior review stage that examined every
+"""
+
+_TRACK_EVIDENCE = """Each Set 1 entry spans several lines. It is the output of a prior review stage that examined every
 detection of the object across many frames alongside the images, and reported both what it concluded
 and how sure it was. Every number below is that stage's belief, not a measurement:
   tags        - candidate tags, each with its belief (0-1). A low weight is a possibility that stage
@@ -105,7 +107,17 @@ and how sure it was. Every number below is that stage's belief, not a measuremen
   features    - distinguishing visual details.
   unresolved  - what that stage could not settle. Read it as a warning.
 
-For each match report:
+"""
+
+# The no-tracking ablation: Set 1 entries are single detections, one line each
+# in the same key=value form as Set 2 rows (see audit_io.DETECTION_PASSTHROUGH_SOURCE).
+_DETECTION_EVIDENCE = """Each Set 1 entry is one detection of a landmark by an image-analysis model looking at a single
+camera frame, reported as the OSM-style tags it assigned, primary tag first. A name tag is a name
+the model read off the object or recognised it by; it may be a variant spelling or simply wrong.
+
+"""
+
+_PROMPT_TAIL = """For each match report:
   - match_type:
       "instance" - this exact physical object, identified uniquely by a matching name or by a tag
         combination no other candidate shares.
@@ -124,6 +136,11 @@ Also report, once per Set 1 landmark:
 Not evidence against a match: small numeric differences (height 40 vs 45 - the observer is often
 off); different tag specificity for the same thing (man_made=tower vs man_made=water_tower); one
 name being a longer or shorter variant of another; tags present on one side only."""
+
+SYSTEM_PROMPT = _PROMPT_HEAD + _TRACK_EVIDENCE + _PROMPT_TAIL
+DETECTION_SYSTEM_PROMPT = _PROMPT_HEAD + _DETECTION_EVIDENCE + _PROMPT_TAIL
+SET1_SOURCES = {SYSTEM_PROMPT: "audit_dossier",
+                DETECTION_SYSTEM_PROMPT: "single_detection_tags"}
 
 
 SCHEMA = {
@@ -155,7 +172,7 @@ ATTEMPTS_DIR_NAME = llm_lifecycle.ATTEMPTS_DIR_NAME
 TRANSPORT_RESULTS_NAME = "transport_results.jsonl"
 SIGNATURES_NAME = "signatures.json"
 WORK_SNAPSHOT_NAME = "matching_snapshot.json"
-WORK_SNAPSHOT_SCHEMA = "farfield.matching_work_snapshot/v3"
+WORK_SNAPSHOT_SCHEMA = "farfield.matching_work_snapshot/v4"
 SETTINGS_NAME = "settings.json"
 MATCHES_NAME = "matches.json"
 COMPATIBILITY_NAME = "compatibility.json"
@@ -326,6 +343,21 @@ def format_query(audit) -> str:
     return "\n".join(lines)
 
 
+def format_detection_query(audit) -> str:
+    """One passthrough-audit detection as a Set 2-shaped tag line.
+
+    Primary tag first, then the detection's other identity tags in its own
+    order, then `name=` for each name it reported. No weights, description,
+    or review fields: the detection is the whole evidence.
+    """
+    primary = audit["primary_object"]
+    parts = [item["tag"] for item in primary.get("tags", [])]
+    parts += [f"name={candidate['name']}"
+              for candidate in primary.get("name_candidates", [])
+              if candidate.get("name")]
+    return "; ".join(parts)
+
+
 def query_bundles(tracks: dict, audits: dict) -> dict:
     """Artifact-scoped AcceptedTracklet id -> Set 1 block.
 
@@ -344,6 +376,24 @@ def query_bundles(tracks: dict, audits: dict) -> dict:
     if n_dropped:
         print(f"  excluded {n_dropped} audited tracks with verdict=drop")
     return out
+
+
+def detection_query_bundles(tracks: dict, audits: dict) -> tuple[dict, dict]:
+    """(Set 1 block per distinct detection tag bundle, block key -> tracklets).
+
+    Identical tag bundles are things the matcher cannot tell apart by
+    construction, so they are asked about once and every tracklet carrying
+    the bundle receives that answer -- the same argument the map side makes
+    with signatures.
+    """
+    accepted = tracklets.build_accepted_tracklets(tracks, audits)
+    queries, members = {}, defaultdict(list)
+    for item in accepted:
+        block = format_detection_query(item.audit)
+        key = f"detection:{artifact.sha256_json(block)}"
+        queries[key] = block
+        members[key].append(item.tracklet_id)
+    return queries, {key: sorted(ids) for key, ids in members.items()}
 
 
 def build_requests(queries, sig_chunks, signatures, query_batch, thinking):
@@ -650,7 +700,8 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
 
 
 def make_request_set(records, *, model, thinking_level, build_identity,
-                     orchestration_config_digest, upstreams):
+                     orchestration_config_digest, upstreams,
+                     system_prompt=SYSTEM_PROMPT):
     """Bind the complete matching workload, including ordered unit context."""
     input_digests = {
         "build_identity": build_identity,
@@ -669,7 +720,7 @@ def make_request_set(records, *, model, thinking_level, build_identity,
     return llm_lifecycle.RequestSet.create(
         stage="landmark_matching",
         model=model,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         response_schema=SCHEMA,
         media_settings={
             "response_mime_type": "application/json",
@@ -711,8 +762,9 @@ def _write_once_or_verify(path: Path, data: bytes, label: str) -> None:
 
 
 def make_work_snapshot(*, dataset, output_version, request_set, queries,
-                       signatures, selected, build_identity, orchestration,
-                       catalog_source, target_git_commit, target_build_path):
+                       query_members, signatures, selected, build_identity,
+                       orchestration, catalog_source, target_git_commit,
+                       target_build_path):
     """Freeze every semantic input needed by aggregate-only publication."""
     return {
         "schema": WORK_SNAPSHOT_SCHEMA,
@@ -720,6 +772,7 @@ def make_work_snapshot(*, dataset, output_version, request_set, queries,
         "output_version": output_version,
         "request_set": request_set.to_dict(),
         "queries": queries,
+        "query_members": query_members,
         "signatures": signatures,
         "resolved_stage_config": selected,
         "build_identity": build_identity,
@@ -746,9 +799,9 @@ def validate_work_snapshot(value):
     """Validate and return the RequestSet embedded in a work snapshot."""
     expected = {
         "schema", "dataset", "output_version", "request_set", "queries",
-        "signatures", "resolved_stage_config", "build_identity",
-        "orchestration", "catalog_source", "score_contract",
-        "target_git_commit", "target_build_path",
+        "query_members", "signatures", "resolved_stage_config",
+        "build_identity", "orchestration", "catalog_source",
+        "score_contract", "target_git_commit", "target_build_path",
     }
     _exact_keys(value, expected, "matching work snapshot")
     if value["schema"] != WORK_SNAPSHOT_SCHEMA:
@@ -784,7 +837,7 @@ def validate_work_snapshot(value):
         raise ValueError("matching snapshot has the wrong request-set stage")
     request_document = request_set.to_dict()
     if (request_set.model != selected["matching.model"]
-            or request_set.system_prompt != SYSTEM_PROMPT
+            or request_set.system_prompt not in SET1_SOURCES
             or request_document["response_schema"] != SCHEMA
             or request_document["media_settings"] != {
                 "response_mime_type": "application/json",
@@ -828,6 +881,20 @@ def validate_work_snapshot(value):
         raise ValueError("matching snapshot queries must be a non-empty map")
     if not isinstance(signatures, dict) or not signatures:
         raise ValueError("matching snapshot signatures must be a non-empty map")
+    members = value["query_members"]
+    if not isinstance(members, dict) or set(members) != set(queries):
+        raise ValueError(
+            "matching snapshot query_members must name exactly the queries")
+    all_tracklets = []
+    for key, ids in members.items():
+        if (not isinstance(ids, list) or not ids
+                or not all(isinstance(item, str) and item for item in ids)):
+            raise ValueError(
+                f"matching snapshot query {key!r} has invalid tracklet members")
+        all_tracklets.extend(ids)
+    if len(all_tracklets) != len(set(all_tracklets)):
+        raise ValueError(
+            "matching snapshot assigns one tracklet to more than one query")
     all_landmarks = set()
     for signature_id, entry in signatures.items():
         _exact_keys(entry, {"canonical_tags", "display_label", "landmark_ids"},
@@ -888,7 +955,8 @@ def validate_work_snapshot(value):
         thinking_level=selected["matching.thinking_level"],
         build_identity=value["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
-        upstreams=request_set.upstreams)
+        upstreams=request_set.upstreams,
+        system_prompt=request_set.system_prompt)
     if expected_request_set.fingerprint != request_set.fingerprint:
         raise ValueError(
             "matching request units do not exactly encode the frozen queries, "
@@ -1040,11 +1108,14 @@ def settings_document(*, snapshot, request_set):
         "model": selected["matching.model"],
         "transport": selected["execution.llm_transport"],
         "system_prompt_sha256": hashlib.sha256(
-            SYSTEM_PROMPT.encode()).hexdigest(),
+            request_set.system_prompt.encode()).hexdigest(),
+        "set1_source": SET1_SOURCES[request_set.system_prompt],
         "thinking_level": selected["matching.thinking_level"],
         "support_gate": ("audit membership: a track without a semantic audit "
                          "has no Set 1 entry, and verdict=drop is excluded "
                          "by the canonical accepted-tracklet contract"),
+        "n_tracklets": sum(
+            len(ids) for ids in snapshot["query_members"].values()),
         "query_batch": selected["matching.query_batch"],
         "chunk_size": selected["matching.chunk_size"],
         "confidence_floor": selected["matching.confidence_floor"],
@@ -1151,7 +1222,17 @@ def _build_snapshot(args, parser):
     signature_chunks = [
         signature_ids[i:i + chunk_size]
         for i in range(0, len(signature_ids), chunk_size)]
-    queries = query_bundles(audits.source_tracks, audits)
+    # A passthrough audit says so in its manifest; the Set 1 prompt and format
+    # follow the evidence the audit actually holds.
+    detection_mode = (audit_manifest.config.get("audit_source")
+                      == audit_io.DETECTION_PASSTHROUGH_SOURCE)
+    if detection_mode:
+        queries, members = detection_query_bundles(audits.source_tracks, audits)
+        system_prompt = DETECTION_SYSTEM_PROMPT
+    else:
+        queries = query_bundles(audits.source_tracks, audits)
+        members = {key: [key] for key in queries}
+        system_prompt = SYSTEM_PROMPT
     if not queries:
         raise SystemExit(
             "no matchable tracklet: every audited track was dropped; "
@@ -1165,11 +1246,12 @@ def _build_snapshot(args, parser):
         thinking_level=selected["matching.thinking_level"],
         build_identity=document["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
-        upstreams=upstreams)
+        upstreams=upstreams, system_prompt=system_prompt)
     snapshot = make_work_snapshot(
         dataset=args.dataset,
         output_version=selected["artifacts.landmark_matches_version"],
-        request_set=request_set, queries=queries, signatures=signatures,
+        request_set=request_set, queries=queries, query_members=members,
+        signatures=signatures,
         selected=selected, build_identity=document["build_identity"],
         orchestration=orchestration, catalog_source=catalog_path,
         target_git_commit=document["git_commit"],
@@ -1177,7 +1259,9 @@ def _build_snapshot(args, parser):
     print(f"map: {sum(len(v['landmark_ids']) for v in signatures.values())} "
           f"landmarks -> {len(signatures)} signatures in "
           f"{len(signature_chunks)} chunks")
-    print(f"queries: {len(queries)} tracklets in "
+    print(f"queries: {len(queries)} Set 1 entries "
+          f"({SET1_SOURCES[system_prompt]}) for "
+          f"{sum(len(ids) for ids in members.values())} tracklets in "
           f"{math.ceil(len(queries) / selected['matching.query_batch'])} "
           "batches")
     return snapshot, request_set
@@ -1299,6 +1383,7 @@ def main():
             f"--output_dir must end in recorded version {output_version!r}")
     selected = snapshot["resolved_stage_config"]
     queries = snapshot["queries"]
+    members = snapshot["query_members"]
     signatures = snapshot["signatures"]
     signature_ids = sorted(signatures)
     upstreams = request_set.upstreams
@@ -1403,8 +1488,9 @@ def main():
             kept[lid] = dict(candidate, match_type=kind)
         nm = global_no_match(kept, no_match.get(tid, []))
         slice_values = no_match.get(tid, [])
-        matches[tid] = {
+        record = {
             "query": queries[tid],
+            "query_key": tid,
             "aggregate_no_match_confidence": nm,
             "per_call_no_match_confidence": {
                 "n": len(slice_values),
@@ -1440,16 +1526,21 @@ def main():
                         for lid, v in sorted(kept.items(),
                                              key=lambda kv: -kv[1][
                                                  "aggregate_confidence"])]}
-        scores = {lid: v["aggregate_confidence"]
-                  for lid, v in kept.items()}
-        tables.append(to_compatibility_table(
-            tid, {lid: to_log_lr(c) for lid, c in scores.items()},
-            matcher_version=f"llm_chunked_v2_{thinking_level.lower()}",
-            scale=1.0, offset=0.0,
-            default_log_lr=to_log_lr(
-                max(1e-4, 1.0 - nm) / max(1, len(signature_ids)))))
-    if set(matches) != set(queries) or {table.tracklet_id for table in tables} != set(
-            queries):
+        log_lrs = {lid: to_log_lr(v["aggregate_confidence"])
+                   for lid, v in kept.items()}
+        default_log_lr = to_log_lr(
+            max(1e-4, 1.0 - nm) / max(1, len(signature_ids)))
+        # Every tracklet behind this Set 1 entry receives the same answer.
+        for tracklet_id in members[tid]:
+            matches[tracklet_id] = dict(record)
+            tables.append(to_compatibility_table(
+                tracklet_id, log_lrs,
+                matcher_version=f"llm_chunked_v2_{thinking_level.lower()}",
+                scale=1.0, offset=0.0, default_log_lr=default_log_lr))
+    expected_tracklets = {tracklet_id for ids in members.values()
+                          for tracklet_id in ids}
+    if (set(matches) != expected_tracklets
+            or {table.tracklet_id for table in tables} != expected_tracklets):
         raise llm_lifecycle.IncompleteCoverageError(
             "matching aggregation did not cover every accepted tracklet")
 
@@ -1459,7 +1550,8 @@ def main():
         "coverage": "complete",
         "n_expected": len(request_set.units),
         "n_successful": len(canonical_results),
-        "n_tracklets_expected": len(queries),
+        "n_set1_entries": len(queries),
+        "n_tracklets_expected": len(expected_tracklets),
         "n_tracklets_successful": len(matches),
         "request_set_fingerprint": request_set.fingerprint,
         "build_identity": snapshot["build_identity"],

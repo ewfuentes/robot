@@ -114,6 +114,11 @@ def pano_px_from_direction(az_cw_deg: float, el_up_deg: float,
 def direction_from_pano_px(x: float, y: float, pano_w: int, pano_h: int):
     """(az_cw_deg, el_up_deg) of a pano pixel; inverse of pano_px_from_direction."""
     az_cw_deg = (x / pano_w - 0.5) * 360.0 % 360.0
+    # Python's float modulo returns exactly 360.0 for a tiny negative operand
+    # (e.g. (-1e-17) % 360.0), which is outside [0, 360) and fails every
+    # bearing contract downstream. Columns a hair left of centre hit it.
+    if az_cw_deg >= 360.0:
+        az_cw_deg = 0.0
     el_up_deg = (0.5 - y / pano_h) * 180.0
     return az_cw_deg, el_up_deg
 

@@ -652,5 +652,44 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
         self.assertFalse(self.match_dir.exists())
 
 
+class DetectionModeTest(unittest.TestCase):
+    # The dossier prompt is what every published matching artifact recorded;
+    # splitting it into head/evidence/tail must not have moved a byte.
+    BASELINE_PROMPT_SHA256 = (
+        "da22586bf8567c50de2cbd23bf44f5e5741918ab3444afb20f6217477314cb64")
+
+    def test_dossier_prompt_is_byte_stable(self):
+        import hashlib
+        self.assertEqual(
+            hashlib.sha256(ml.SYSTEM_PROMPT.encode()).hexdigest(),
+            self.BASELINE_PROMPT_SHA256)
+
+    def test_detection_prompt_drops_review_stage_language(self):
+        self.assertNotIn("review stage", ml.DETECTION_SYSTEM_PROMPT)
+        self.assertNotIn("belief", ml.DETECTION_SYSTEM_PROMPT)
+        self.assertIn("one detection of a landmark", ml.DETECTION_SYSTEM_PROMPT)
+        # Everything but the evidence paragraph is shared verbatim.
+        self.assertTrue(ml.DETECTION_SYSTEM_PROMPT.startswith(ml._PROMPT_HEAD))
+        self.assertTrue(ml.DETECTION_SYSTEM_PROMPT.endswith(ml._PROMPT_TAIL))
+        self.assertTrue(ml.SYSTEM_PROMPT.endswith(ml._PROMPT_TAIL))
+
+    def test_detection_query_is_one_tag_line_and_dedupes(self):
+        self.assertEqual(
+            ml.format_detection_query(audit()),
+            "man_made=lighthouse; man_made=tower; name=Graves Light")
+        tracks = {1: track(1, [0, 1, 2]), 2: track(2, [3, 4, 5]),
+                  3: track(3, [5, 6, 7])}
+        audits = {1: audit(), 2: audit(), 3: audit(name="Customs Tower")}
+        queries, members = ml.detection_query_bundles(tracks, audits)
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(sorted(len(ids) for ids in members.values()), [1, 2])
+        self.assertEqual(
+            sorted(tid.rsplit("#", 1)[-1]
+                   for ids in members.values() for tid in ids),
+            ["T1", "T2", "T3"])
+        self.assertTrue(all(key.startswith("detection:")
+                            for key in queries))
+
+
 if __name__ == "__main__":
     unittest.main()
