@@ -23,6 +23,68 @@ paid external work was embedding tag values absent from the released
 correspondence dictionary: 11,687 values in 47 direct Vertex embedding
 batches. That operation used `embed_content` and required no upload to GCS.
 
+## Additional full-leg runs (2026-09-04)
+
+Three later datasets use the same released models and paper sigmas with one
+independent, trajectory-containing 150 km² map per dataset. These runs use the
+current strict path and matrix identities; no legacy-identity flags are
+enabled. `0000000` is the full recorded trajectory and `0000001` is its exact
+reverse. The canonical far-field summaries use the existing 100 m and 500 m
+posterior-mass metric implementation.
+
+| dataset | bbox, west/south/east/north | panoramas | imagery pin | lattice / patches | OSM landmarks |
+|---|---|---:|---|---:|---:|
+| `boston_snowy` | `[-71.1654118558991, 42.31440212017379, -71.01125085410092, 42.42067575382621]` | 622 | MassGIS 2025, z20 | 360 x 336 / 120,960 | 310,281 |
+| `flevoland_polder` | `[5.470187829450321, 52.328945786307386, 5.623467270549679, 52.45835621369262]` | 633 | Esri Wayback release 32246 (`Netherlands2025`), z20 | 358 x 495 / 177,210 | 39,225 |
+| `pohang_canal_04` | `[129.31506721801026, 35.97886146979778, 129.44379578198976, 36.095145530202224]` | 1,450 | Pohang City WMS UI year 2021, internal layer `pohang_2022_1225cm`, EPSG:5186, z20 | 300 x 336 / 100,800 | 20,276 |
+
+The Pohang UI year and internal WMS layer name are both retained because the
+city portal exposes that combination; they are provenance labels for the same
+selected imagery, not two blended sources. Every satellite artifact contains
+640 x 640 patches, complete source coverage, and a passed coverage audit.
+
+All paths below are relative to `/data/farfield_matching/artifacts`:
+
+```text
+loci_text_value_embeddings/boston_snowy_pohang_flevoland/text_embedding_005_768_v1
+
+loci_regions/boston_snowy/area150km2_v1
+loci_satellite/boston_snowy/area150km2_massgis2025_z20_nearestpx_v1
+loci_osm_landmarks/boston_snowy/area150km2_osm260903_v1
+loci_vlm_annotations/boston_snowy/panov2_tuned_prompt_gemini3flash_2048_ultrahigh_v1
+loci_eval_paths/boston_snowy/full_leg_forward_reverse_v1
+loci_wag_similarity/boston_snowy/paper_wag_no_hinge_v1
+loci_correspondence_scores/boston_snowy/simple_v1_v5_text005_768_hungarian08_v1
+loci_runs/boston_snowy/paper_sigmas_full_leg_mass100_500_v1
+
+loci_regions/flevoland_polder/area150km2_v1
+loci_satellite/flevoland_polder/area150km2_esriwayback32246_z20_nearestpx_v1
+loci_osm_landmarks/flevoland_polder/area150km2_osm260903_v1
+loci_vlm_annotations/flevoland_polder/panov2_tuned_prompt_gemini3flash_2048_ultrahigh_v1
+loci_eval_paths/flevoland_polder/full_leg_forward_reverse_v1
+loci_wag_similarity/flevoland_polder/paper_wag_no_hinge_v1
+loci_correspondence_scores/flevoland_polder/simple_v1_v5_text005_768_hungarian08_v1
+loci_runs/flevoland_polder/paper_sigmas_full_leg_mass100_500_v1
+
+loci_regions/pohang_canal_04/area150km2_v1
+loci_satellite/pohang_canal_04/area150km2_pohangcity2021_z20_v1
+loci_osm_landmarks/pohang_canal_04/area150km2_osm260818_v1
+loci_vlm_annotations/pohang_canal_04/panov2_tuned_prompt_gemini3flash_2048_ultrahigh_v1
+loci_eval_paths/pohang_canal_04/full_leg_forward_reverse_v1
+loci_wag_similarity/pohang_canal_04/paper_wag_no_hinge_v1
+loci_correspondence_scores/pohang_canal_04/simple_v1_v5_text005_768_hungarian08_v1
+loci_runs/pohang_canal_04/paper_sigmas_full_leg_mass100_500_v1
+```
+
+The shared dictionary contains 226,650 finite float32 768-D entries and covers
+all 43,034 required values with no missing embeddings. The corresponding
+checked-in aggregator configs are
+`experimental/overhead_matching/swag/farfield/loci/configs/boston_snowy.yaml`,
+`flevoland_polder.yaml`, and `pohang_canal_04.yaml`. Each completed run manifest
+binds its exact WAG, correspondence, path, and satellite manifest/content
+digests; use those typed upstream records rather than copying digests into a
+new command.
+
 ## Pipeline and reuse boundaries
 
 ```text
