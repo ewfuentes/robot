@@ -1,5 +1,6 @@
 import json
 import hashlib
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,236 @@ class _Belief:
 
 
 class EvaluateHistogramOnPathsTest(unittest.TestCase):
+    def test_default_convergence_radii_match_farfield_metrics(self):
+        self.assertEqual(subject.DEFAULT_CONVERGENCE_RADII, (100, 500))
+
+    def test_loads_exact_applied_motion_deltas(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path_dir = Path(temporary)
+            expected = torch.tensor([[1e-5, -2e-5], [3e-5, 4e-5]])
+            torch.save(
+                expected,
+                path_dir / subject.APPLIED_MOTION_DELTAS_FILENAME,
+            )
+
+            actual = subject.load_applied_motion_deltas(path_dir, path_len=3)
+
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    def test_applied_motion_deltas_are_required_and_validated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path_dir = Path(temporary)
+            with self.assertRaisesRegex(
+                    FileNotFoundError, "regenerate.*rather than reconstructing"):
+                subject.load_applied_motion_deltas(path_dir, path_len=2)
+
+            torch.save(
+                torch.zeros(2, 2),
+                path_dir / subject.APPLIED_MOTION_DELTAS_FILENAME,
+            )
+            with self.assertRaisesRegex(ValueError, r"shape \(1, 2\)"):
+                subject.load_applied_motion_deltas(path_dir, path_len=2)
+
+    def test_converts_sharp_turn_and_reverse_from_truth_chords(self):
+        meters_per_degree = subject.web_mercator.METERS_PER_DEG_LAT
+        anchor_lat = 42.0
+        anchor_lon = -71.0
+        meters_per_degree_lon = meters_per_degree * math.cos(
+            math.radians(anchor_lat))
+        truth = [
+            subject.farfield_structs.TruthPose(0, 0.0, 0.0, 45.0),
+            subject.farfield_structs.TruthPose(1, 0.0, 10.0, 45.0),
+            subject.farfield_structs.TruthPose(2, 10.0, 10.0, 45.0),
+        ]
+        odometry = [
+            subject.farfield_structs.OdometryDelta(
+                1, 10.0, 2.0, 0.75, 1.0, 0.1),
+            subject.farfield_structs.OdometryDelta(
+                2, -5.0, 3.0, -0.5, 1.0, 0.1),
+        ]
+        path_latlons = torch.tensor([
+            [anchor_lat, anchor_lon],
+            [anchor_lat + 10.0 / meters_per_degree, anchor_lon],
+            [anchor_lat + 10.0 / meters_per_degree,
+             anchor_lon + 10.0 / meters_per_degree_lon],
+        ], dtype=torch.float64)
+
+        actual = subject.farfield_odometry_to_latlon_deltas(
+            odometry,
+            truth,
+            path_latlons,
+            reverse_keyframe_ranges=[[2, 2]],
+            displacement_gate_m=2.0,
+        )
+
+        expected = torch.tensor([
+            [10.0 / meters_per_degree, -2.0 / meters_per_degree_lon],
+            [-3.0 / meters_per_degree, 5.0 / meters_per_degree_lon],
+        ], dtype=torch.float64)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=1e-18)
+
+    def test_truth_binding_allows_filename_rounding_not_wrong_trajectory(self):
+        meters_per_degree = subject.web_mercator.METERS_PER_DEG_LAT
+        truth = [
+            subject.farfield_structs.TruthPose(0, 0.0, 0.0, 0.0),
+            subject.farfield_structs.TruthPose(1, 0.0, 10.0, 0.0),
+        ]
+        odometry = [subject.farfield_structs.OdometryDelta(
+            1, 10.0, 0.0, 0.0, 1.0, 0.1)]
+        mapping_positions = torch.tensor([
+            [42.00000049, -70.99999951],
+            [42.00000049 + 10.0 / meters_per_degree + 9e-7,
+             -70.99999951 - 9e-7],
+        ], dtype=torch.float64)
+
+        subject.farfield_odometry_to_latlon_deltas(
+            odometry,
+            truth,
+            mapping_positions,
+            reverse_keyframe_ranges=[],
+            displacement_gate_m=2.0,
+        )
+
+        wrong_positions = mapping_positions.clone()
+        wrong_positions[1, 0] += 1e-4
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            subject.farfield_odometry_to_latlon_deltas(
+                odometry,
+                truth,
+                wrong_positions,
+                reverse_keyframe_ranges=[],
+                displacement_gate_m=2.0,
+            )
+
+    def test_farfield_odometry_requires_valid_contiguous_records(self):
+        truth = [
+            subject.farfield_structs.TruthPose(0, 0.0, 0.0, 0.0),
+            subject.farfield_structs.TruthPose(1, 0.0, 1.0, 0.0),
+        ]
+        positions = torch.tensor(
+            [[42.0, -71.0],
+             [42.0 + 1.0 / subject.web_mercator.METERS_PER_DEG_LAT, -71.0]],
+            dtype=torch.float64)
+        with self.assertRaisesRegex(ValueError, "odometry keyframes.*1..N-1"):
+            subject.farfield_odometry_to_latlon_deltas([
+                subject.farfield_structs.OdometryDelta(
+                    2, 1.0, 0.0, 0.0, 1.0, 0.1),
+            ], truth, positions,
+                reverse_keyframe_ranges=[], displacement_gate_m=0.5)
+        with self.assertRaisesRegex(ValueError, "odometry at keyframe 1 is invalid"):
+            subject.farfield_odometry_to_latlon_deltas([
+                subject.farfield_structs.OdometryDelta(
+                    1, float("nan"), 0.0, 0.0, 1.0, 0.1),
+            ], truth, positions,
+                reverse_keyframe_ranges=[], displacement_gate_m=0.5)
+        with self.assertRaisesRegex(ValueError, "stationary odometry.*zero"):
+            subject.farfield_odometry_to_latlon_deltas([
+                subject.farfield_structs.OdometryDelta(
+                    1, 0.1, 0.0, 0.0, 1.0, 0.1),
+            ], truth, positions,
+                reverse_keyframe_ranges=[], displacement_gate_m=2.0)
+        with self.assertRaisesRegex(ValueError, "sorted, non-overlapping"):
+            subject.farfield_odometry_to_latlon_deltas([
+                subject.farfield_structs.OdometryDelta(
+                    1, 1.0, 0.0, 0.0, 1.0, 0.1),
+            ], truth, positions,
+                reverse_keyframe_ranges=[[1, 1], [1, 1]],
+                displacement_gate_m=0.5)
+
+    def test_loads_published_farfield_odometry_for_one_forward_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "dataset_a"
+            dataset.mkdir()
+            meters_per_degree = subject.web_mercator.METERS_PER_DEG_LAT
+            mapping = (
+                "pano_id,lat,lon\n"
+                "f0000,42.0,-71.0\n"
+                f"f0001,{42.0 + 10.0 / meters_per_degree},-71.0\n")
+            (dataset / "pano_id_mapping.csv").write_text(mapping)
+            positions = subject.load_authoritative_panorama_positions(
+                dataset / "pano_id_mapping.csv")
+
+            artifact_dir = root / "odometry"
+            artifact_dir.mkdir()
+            (artifact_dir / "truth.jsonl").write_text(
+                '{"keyframe_idx":0,"east_m":0.0,"north_m":0.0,'
+                '"course_world_cw_deg":0.0}\n'
+                '{"keyframe_idx":1,"east_m":0.0,"north_m":10.0,'
+                '"course_world_cw_deg":0.0}\n')
+            (artifact_dir / "tier1_odometry.jsonl").write_text(
+                '{"kind":"OdometryDelta","keyframe_idx":1,'
+                '"forward_m":9.5,"left_m":0.0,"delta_yaw_cw_rad":0.1,'
+                '"sigma_m":1.0,"sigma_yaw_rad":0.2}\n')
+            manifest = {
+                "schema": subject.farfield_artifact.SCHEMA,
+                "kind": subject.farfield_paths.LOCALIZATION_INPUTS,
+                "dataset": "dataset_a",
+                "version": "v1",
+                "generator": "test",
+                "git_commit": "test",
+                "created": "test",
+                "arguments": [],
+                "content_digest": subject.farfield_artifact.sha256_directory(
+                    artifact_dir),
+                "upstreams": [],
+                "config": {"localization_inputs": {
+                    "displacement_gate_m": 2.0,
+                    "reverse_keyframe_ranges": [],
+                }},
+                "declared_outputs": [
+                    "tier1_odometry.jsonl", "truth.jsonl"],
+                "complete": True,
+            }
+            (artifact_dir / "manifest.json").write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+                + "\n")
+
+            motion, source = subject.load_farfield_motion_deltas(
+                artifact_dir,
+                expected_dataset=dataset.name,
+                paths=[["f0000", "f0001"]],
+                positions_by_id=positions,
+            )
+
+            self.assertEqual(source["artifact"]["dataset"], "dataset_a")
+            self.assertEqual(source["delta_yaw"], "ignored_known_heading")
+            self.assertEqual(
+                source["translation"],
+                "forward_left_rotated_by_truth_chord_body_heading")
+            self.assertEqual(motion.dtype, torch.float64)
+            self.assertAlmostEqual(
+                motion[0, 0].item(), 9.5 / meters_per_degree)
+            self.assertEqual(motion[0, 1].item(), 0.0)
+            with self.assertRaisesRegex(ValueError, "exactly one forward path"):
+                subject.load_farfield_motion_deltas(
+                    artifact_dir,
+                    expected_dataset=dataset.name,
+                    paths=[["f0001", "f0000"]],
+                    positions_by_id=positions,
+                )
+            with self.assertRaisesRegex(ValueError, "artifact dataset mismatch"):
+                subject.load_farfield_motion_deltas(
+                    artifact_dir,
+                    expected_dataset="other_dataset",
+                    paths=[["f0000", "f0001"]],
+                    positions_by_id=positions,
+                )
+
+    def test_shared_farfield_odometry_cannot_be_renoised(self):
+        config = subject.HistogramFilterConfig(
+            odometry_noise=subject.OdometryNoiseConfig(0.02, 0))
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            subject.evaluate_histogram_on_paths(
+                vigor_dataset=None,
+                log_likelihood_aggregator=None,
+                paths=[["f0000", "f0001"]],
+                config=config,
+                seed=0,
+                output_path=Path("unused"),
+                shared_motion_deltas=torch.zeros(1, 2),
+            )
+
     def test_loads_authoritative_truth_at_csv_precision_and_path_order(self):
         with tempfile.TemporaryDirectory() as temporary:
             mapping = Path(temporary) / "pano_id_mapping.csv"

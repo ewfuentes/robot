@@ -84,6 +84,11 @@ def summarize_path(path_dir: Path) -> dict:
         radius: metrics.position_mass_metric_key(config, radius)
         for radius in config.radii_m
     }
+    # LOCI stores an initial-prior mass before the per-panorama posteriors, so
+    # index + 1 deliberately excludes that prior.  The canonical metric API
+    # accepts 2-D truth poses; placing the recorded cumulative distance on one
+    # axis preserves its integration coordinate exactly without inventing a
+    # second LOCI metric implementation.
     health = [
         SimpleNamespace(
             keyframe_idx=index,

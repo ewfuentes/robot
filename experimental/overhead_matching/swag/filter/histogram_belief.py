@@ -150,6 +150,11 @@ class GridSpec:
             dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """Return all cell centers as (num_rows * num_cols, 2) tensor of [row_px, col_px].
 
+        ``dtype`` changes only the coordinate arithmetic used by callers; it
+        does not change the histogram grid or cell resolution.  Evaluation at
+        z20 requests float64 because absolute Web Mercator coordinates are too
+        large for float32 to retain sub-cell distance precision.
+
         Args:
             device: Torch device for the output tensor
             dtype: Floating-point precision for the output tensor

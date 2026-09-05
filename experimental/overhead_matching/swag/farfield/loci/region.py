@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Plan and publish one reusable LOCI search-region artifact.
 
-The far-field full catalogs use trajectory bounding boxes padded by a metric
-distance on every side.  A LOCI region keeps that box's shape and centre by
-insetting every side by the same metric amount until it reaches the requested
-area.  If the requested inset would violate trajectory containment, the inset
-is capped and the larger containment-limited area is recorded explicitly.
+The far-field catalogs are complete within trajectory bounding boxes padded
+by a metric distance on every side. A LOCI region keeps that box's shape and
+centre by insetting every side by the same metric amount until it reaches the
+requested area. If the requested inset would violate trajectory containment,
+the inset is capped and the larger containment-limited area is recorded
+explicitly.
 
 The artifact also owns the exact Web-Mercator patch grid.  Satellite imagery
 and OSM landmarks consume the same grid contract, so their boundaries cannot
@@ -92,6 +93,17 @@ def metric_dimensions(bbox_wsen: Iterable[float]) -> tuple[float, float]:
     metres_lon, metres_lat = _metric_scales((south + north) / 2.0)
     return ((east - west) * metres_lon,
             (north - south) * metres_lat)
+
+
+def _require_footprint_coverage(source_bbox_wsen: Iterable[float],
+                                footprint_bbox_wsen: Iterable[float]) -> None:
+    source = _validate_bbox(source_bbox_wsen, "source bbox")
+    footprint = _validate_bbox(
+        footprint_bbox_wsen, "satellite footprint bbox")
+    if not (source[0] <= footprint[0] <= footprint[2] <= source[2]
+            and source[1] <= footprint[1] <= footprint[3] <= source[3]):
+        raise RegionError(
+            "satellite patch footprint extends outside the source catalog bbox")
 
 
 def lat_lon_to_pixel(lat: float, lon: float, zoom: int) \
@@ -311,6 +323,8 @@ def derive_region(source_bbox_wsen: Iterable[float],
     grid = build_grid(
         bbox, zoom=zoom, patch_px=patch_px, source_px=source_px,
         overlap_fraction=overlap_fraction)
+    _require_footprint_coverage(
+        source, grid["footprint_bbox_wsen"])
     return {
         "schema": SCHEMA,
         "source_bbox_wsen": list(source),
@@ -459,6 +473,8 @@ def load_region(path: Path) -> tuple[artifact.ArtifactRef, dict]:
         overlap_fraction=grid["overlap_fraction"])
     if grid != expected_grid:
         raise RegionError(f"persisted region grid is not reproducible: {path}")
+    _require_footprint_coverage(
+        plan.get("source_bbox_wsen", ()), grid["footprint_bbox_wsen"])
     return reference, plan
 
 

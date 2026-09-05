@@ -30,6 +30,10 @@ from experimental.overhead_matching.swag.evaluation.correspondence_matching impo
     load_raw_cost_data,
     match_and_aggregate,
 )
+from experimental.overhead_matching.swag.scripts.export_correspondence_similarity import (
+    _resolve_landmark_path,
+    validate_raw_identity,
+)
 
 app = Flask(__name__)
 
@@ -40,6 +44,23 @@ PANO_ID_TO_VIGOR_IDX: dict[str, int] = {}
 PANO_ID_LIST: list[str] = []  # ordered pano_ids with cost data
 # sat_idx → list of column positions in cost matrix (prebuilt for speed)
 SAT_TO_COL_POSITIONS: list[list[int]] = []
+
+
+def validate_precomputed_data(
+    raw: RawCorrespondenceData,
+    dataset: vd.VigorDataset,
+    dataset_path: Path,
+    landmark_version: str | None,
+    landmark_path: Path | None,
+) -> None:
+    """Require raw correspondence data to match the live viewer inputs."""
+    validate_raw_identity(
+        raw,
+        dataset,
+        dataset_path,
+        _resolve_landmark_path(dataset_path, landmark_version, landmark_path),
+        require_identity=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1098,6 +1119,9 @@ def main():
         landmark_path=args.landmark_path,
     )
     VIGOR_DATASET = vd.VigorDataset(dataset_path, config)
+    validate_precomputed_data(
+        RAW_DATA, VIGOR_DATASET, dataset_path, landmark_version,
+        args.landmark_path)
     print(f"  {len(VIGOR_DATASET._panorama_metadata)} panos, "
           f"{len(VIGOR_DATASET._satellite_metadata)} sats")
 

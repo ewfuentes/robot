@@ -23,6 +23,15 @@ from experimental.overhead_matching.swag.evaluation.odometry_noise import (
     OdometryNoiseConfig,
     add_noise_to_motion_deltas,
 )
+from experimental.overhead_matching.swag.farfield import (
+    artifact as farfield_artifact,
+    paths as farfield_paths,
+)
+from experimental.overhead_matching.swag.farfield.localization import (
+    metrics as farfield_metrics,
+    run_io as farfield_run_io,
+    structs as farfield_structs,
+)
 from pathlib import Path
 from common.gps import web_mercator
 from common.math.haversine import find_d_on_unit_circle
@@ -38,6 +47,36 @@ import torch
 import tqdm
 import warnings
 from dataclasses import dataclass, field
+
+
+APPLIED_MOTION_DELTAS_FILENAME = "applied_motion_deltas.pt"
+DEFAULT_CONVERGENCE_RADII = tuple(
+    int(radius) for radius in farfield_metrics.DEFAULT_POSITION_MASS_RADII_M)
+# Farfield truth historically came from six-decimal panorama filenames while
+# pano_id_mapping.csv retains fuller GPS precision. Recovering the anchor from
+# one rounded endpoint leaves up to two endpoint-rounding errors in another.
+FARFIELD_TRUTH_MAPPING_TOLERANCE_DEG = 1.1e-6
+
+
+def load_applied_motion_deltas(
+        path_dir: Path, path_len: int) -> torch.Tensor:
+    """Load the exact controls persisted by histogram evaluation."""
+    artifact_path = path_dir / APPLIED_MOTION_DELTAS_FILENAME
+    if not artifact_path.exists():
+        raise FileNotFoundError(
+            f"{artifact_path} is missing; regenerate this evaluation rather "
+            "than reconstructing its odometry from a seed")
+    motion_deltas = torch.load(
+        artifact_path, map_location="cpu", weights_only=True)
+    expected_shape = (max(0, path_len - 1), 2)
+    if (not isinstance(motion_deltas, torch.Tensor)
+            or tuple(motion_deltas.shape) != expected_shape
+            or not torch.is_floating_point(motion_deltas)
+            or not torch.isfinite(motion_deltas).all()):
+        raise ValueError(
+            f"{artifact_path} must be a finite floating-point tensor with "
+            f"shape {expected_shape}")
+    return motion_deltas
 
 
 def load_model(path, device='cuda'):
@@ -237,20 +276,8 @@ def get_distance_error_from_estimate_history(
         true_latlon = vigor_dataset.get_panorama_positions(path)
     true_latlon = true_latlon.to(device=estimate_history.device)
 
-    # mean_history has len(path) + 1 entries (initial + after each observation)
-    # But we only have len(path) ground truth positions
-    # The history is: initial -> obs[0] -> move -> obs[1] -> move -> ... -> obs[-1]
-    # We compare at each step, so we need to align properly
-    # mean_history[0] = before first observation
-    # mean_history[1] = after first observation + first move
-    # ...
-    # mean_history[-1] = after last observation
-
-    # Actually looking at the particle filter code, particle_history has len(path) entries
-    # But our mean_history has path_len + 1 entries because we track before first obs too
-    # Let's match the particle filter: compare estimate at each position
-
-    # For simplicity, use the last N entries to match path length
+    # history[0] is the prior; history[i + 1] is the posterior after
+    # observation i and before the following motion prediction.
     estimates = estimate_history[-len(path):]
 
     error_meters = []
@@ -317,6 +344,162 @@ def compute_distance_traveled_from_positions(
     return torch.cat((true_latlon.new_zeros(1), torch.cumsum(distance_delta, 0)))
 
 
+def farfield_odometry_to_latlon_deltas(
+        odometry: list[farfield_structs.OdometryDelta],
+        truth: list[farfield_structs.TruthPose],
+        path_latlons: torch.Tensor,
+        *,
+        reverse_keyframe_ranges: list,
+        displacement_gate_m: float) -> torch.Tensor:
+    """Convert realized forward/left odometry into LOCI lat/lon controls."""
+    n_keyframes = len(truth)
+    if n_keyframes < 2 or tuple(path_latlons.shape) != (n_keyframes, 2):
+        raise ValueError(
+            "farfield truth and LOCI path must contain the same >=2 keyframes")
+    if [pose.keyframe_idx for pose in truth] != list(range(n_keyframes)):
+        raise ValueError("farfield truth keyframes must be contiguous 0..N-1")
+    if [delta.keyframe_idx for delta in odometry] != list(
+            range(1, n_keyframes)):
+        raise ValueError("farfield odometry keyframes must be contiguous 1..N-1")
+
+    for pose in truth:
+        if (not all(math.isfinite(value) for value in (
+                pose.east_m, pose.north_m, pose.course_world_cw_deg))
+                or not 0.0 <= pose.course_world_cw_deg < 360.0):
+            raise ValueError(
+                f"farfield truth at keyframe {pose.keyframe_idx} is invalid")
+    for delta in odometry:
+        if (not all(math.isfinite(value) for value in (
+                delta.forward_m, delta.left_m, delta.delta_yaw_cw_rad,
+                delta.sigma_m, delta.sigma_yaw_rad))
+                or delta.sigma_m <= 0.0 or delta.sigma_yaw_rad <= 0.0):
+            raise ValueError(
+                f"farfield odometry at keyframe {delta.keyframe_idx} is invalid")
+    if (isinstance(displacement_gate_m, bool)
+            or not isinstance(displacement_gate_m, (int, float))
+            or not math.isfinite(displacement_gate_m)
+            or displacement_gate_m <= 0.0):
+        raise ValueError("farfield displacement_gate_m must be finite and positive")
+    if not isinstance(reverse_keyframe_ranges, list):
+        raise ValueError("farfield reverse_keyframe_ranges must be a list")
+    reverse_keyframes = set()
+    previous_end = 0
+    for index, interval in enumerate(reverse_keyframe_ranges):
+        if (not isinstance(interval, list) or len(interval) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       for value in interval)):
+            raise ValueError(
+                f"farfield reverse_keyframe_ranges[{index}] must be [start, end] ints")
+        start, end = interval
+        if (start < 1 or end < start or end >= n_keyframes
+                or start <= previous_end):
+            raise ValueError(
+                "farfield reverse_keyframe_ranges must be sorted, "
+                "non-overlapping, and within 1..N-1")
+        reverse_keyframes.update(range(start, end + 1))
+        previous_end = end
+
+    path_latlons = path_latlons.to(dtype=torch.float64, device="cpu")
+    if (not torch.isfinite(path_latlons).all()
+            or not torch.all(path_latlons[:, 0].abs() <= 90.0)
+            or not torch.all(path_latlons[:, 1].abs() <= 180.0)):
+        raise ValueError("LOCI path lat/lon coordinates are invalid")
+
+    # Farfield truth is expressed in a fixed-anchor ENU frame. Recover that
+    # anchor from the first shared position so the conversion uses the exact
+    # same longitude scale, then verify that both artifacts describe one path.
+    meters_per_degree = web_mercator.METERS_PER_DEG_LAT
+    anchor_lat = path_latlons[0, 0].item() - truth[0].north_m / meters_per_degree
+    meters_per_degree_lon = meters_per_degree * math.cos(math.radians(anchor_lat))
+    if not math.isfinite(meters_per_degree_lon) or abs(meters_per_degree_lon) < 1e-9:
+        raise ValueError("farfield truth implies an invalid ENU anchor latitude")
+    anchor_lon = path_latlons[0, 1].item() - truth[0].east_m / meters_per_degree_lon
+    for pose, latlon in zip(truth, path_latlons.tolist()):
+        expected = (
+            anchor_lat + pose.north_m / meters_per_degree,
+            anchor_lon + pose.east_m / meters_per_degree_lon,
+        )
+        if max(abs(actual - wanted) for actual, wanted in zip(
+                latlon, expected)) > FARFIELD_TRUTH_MAPPING_TOLERANCE_DEG:
+            raise ValueError(
+                "farfield truth positions do not match the LOCI trajectory")
+
+    result = []
+    for delta in odometry:
+        previous = truth[delta.keyframe_idx - 1]
+        current = truth[delta.keyframe_idx]
+        travel_east_m = current.east_m - previous.east_m
+        travel_north_m = current.north_m - previous.north_m
+        travel_m = math.hypot(travel_east_m, travel_north_m)
+        if travel_m < displacement_gate_m:
+            if delta.forward_m != 0.0 or delta.left_m != 0.0:
+                raise ValueError(
+                    "farfield stationary odometry must have zero realized "
+                    f"translation at keyframe {delta.keyframe_idx}")
+            result.append((0.0, 0.0))
+            continue
+
+        # The serialized producer uses each raw truth chord as the body frame;
+        # truth.course_world_cw_deg is smoothed diagnostic course. A reviewed
+        # reverse step points body-forward opposite travel. LOCI assumes that
+        # heading is known, so delta_yaw remains deliberately unused.
+        course = math.atan2(travel_east_m, travel_north_m)
+        if delta.keyframe_idx in reverse_keyframes:
+            course += math.pi
+        east_m = (delta.forward_m * math.sin(course)
+                  - delta.left_m * math.cos(course))
+        north_m = (delta.forward_m * math.cos(course)
+                   + delta.left_m * math.sin(course))
+        result.append((
+            north_m / meters_per_degree,
+            east_m / meters_per_degree_lon,
+        ))
+    return torch.tensor(result, dtype=torch.float64)
+
+
+def load_farfield_motion_deltas(
+        artifact_dir: Path,
+        *,
+        expected_dataset: str,
+        paths: list[list[str]],
+        positions_by_id: dict[str, tuple[float, float]],
+) -> tuple[torch.Tensor, dict]:
+    """Load one published farfield odometry realization for one forward path."""
+    if len(paths) != 1 or paths[0] != list(positions_by_id):
+        raise ValueError(
+            "farfield odometry requires exactly one forward path in "
+            "pano_id_mapping.csv order")
+    reference = farfield_artifact.open_artifact(
+        artifact_dir,
+        expected_kind=farfield_paths.LOCALIZATION_INPUTS,
+        expected_dataset=expected_dataset,
+    )
+    manifest = farfield_artifact.load_manifest(artifact_dir)
+    config = manifest.config.get("localization_inputs")
+    if not isinstance(config, dict):
+        raise ValueError(
+            "farfield manifest must record localization_inputs config")
+    truth = farfield_run_io.read_jsonl(
+        Path(artifact_dir) / "truth.jsonl", farfield_structs.TruthPose)
+    odometry = farfield_run_io.read_jsonl(
+        Path(artifact_dir) / "tier1_odometry.jsonl",
+        farfield_structs.OdometryDelta,
+    )
+    path_latlons = authoritative_positions_for_path(positions_by_id, paths[0])
+    motion_deltas = farfield_odometry_to_latlon_deltas(
+        odometry,
+        truth,
+        path_latlons,
+        reverse_keyframe_ranges=config.get("reverse_keyframe_ranges"),
+        displacement_gate_m=config.get("displacement_gate_m"),
+    )
+    return motion_deltas, {
+        "artifact": reference.to_dict(),
+        "translation": "forward_left_rotated_by_truth_chord_body_heading",
+        "delta_yaw": "ignored_known_heading",
+    }
+
+
 def evaluate_histogram_on_paths(
     vigor_dataset: vd.VigorDataset,
     log_likelihood_aggregator: ObservationLogLikelihoodAggregator,
@@ -328,6 +511,7 @@ def evaluate_histogram_on_paths(
     save_intermediate_states: bool = False,
     convergence_radii: list[int] | None = None,
     evaluation_positions_by_id: dict[str, tuple[float, float]] | None = None,
+    shared_motion_deltas: torch.Tensor | None = None,
 ) -> None:
     """Evaluate histogram filter on paths.
 
@@ -344,7 +528,22 @@ def evaluate_histogram_on_paths(
         evaluation_positions_by_id: Optional authoritative truth coordinates.
             These affect scoring only; LOCI motion and odometry continue to use
             the panorama filename coordinates used by the released baseline.
+        shared_motion_deltas: Optional exact realized controls from a farfield
+            localization_inputs artifact. Only valid for one forward path.
     """
+    if shared_motion_deltas is not None:
+        if config.odometry_noise is not None:
+            raise ValueError(
+                "shared farfield odometry cannot be combined with LOCI "
+                "odometry noise")
+        if (len(paths) != 1
+                or tuple(shared_motion_deltas.shape)
+                != (len(paths[0]) - 1, 2)
+                or not torch.is_floating_point(shared_motion_deltas)
+                or not torch.isfinite(shared_motion_deltas).all()):
+            raise ValueError(
+                "shared farfield odometry must be a finite floating-point "
+                "(path_len - 1, 2) tensor for exactly one path")
     all_final_error_meters = []        # using mean estimator
     all_final_mode_error_meters = []   # using argmax-cell (MAP / mode) estimator
     # Track convergence costs per radius
@@ -402,8 +601,12 @@ def evaluate_histogram_on_paths(
                 device=device,
             )
 
-            # Get motion deltas for this path
-            motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path).to(device)
+            # Get motion deltas for this path.
+            motion_deltas = (
+                shared_motion_deltas.to(device)
+                if shared_motion_deltas is not None
+                else es.get_motion_deltas_from_path(vigor_dataset, path).to(device)
+            )
 
             # Apply odometry noise if configured
             if config.odometry_noise is not None:
@@ -460,6 +663,10 @@ def evaluate_histogram_on_paths(
             torch.save(var_sq_m, save_path / "var.pt")
             torch.save(path, save_path / "path.pt")
             torch.save(distance_traveled_m, save_path / "distance_traveled_m.pt")
+            torch.save(
+                motion_deltas.detach().cpu(),
+                save_path / APPLIED_MOTION_DELTAS_FILENAME,
+            )
 
             if save_intermediate_states:
                 torch.save(result.mean_history.cpu(), save_path / "mean_history.pt")
@@ -758,7 +965,9 @@ if __name__ == "__main__":
                              "filter sets them equal.")
     parser.add_argument("--subdivision-factor", type=int, default=4,
                         help="Grid subdivision factor (4 = 160px cells)")
-    parser.add_argument("--convergence-radii", type=str, default="25,50,100",
+    parser.add_argument(
+        "--convergence-radii", type=str,
+        default=",".join(str(radius) for radius in DEFAULT_CONVERGENCE_RADII),
                         help="Comma-separated list of radii (meters) for convergence metrics")
     parser.add_argument("--max-chunk-gib", type=float, default=2.0,
                         help="Peak GPU memory per chunk in GiB for cell-to-patch mapping (default: 2)")
@@ -768,8 +977,18 @@ if __name__ == "__main__":
                         help="Noise std as fraction of step distance (isotropic north/east)")
     parser.add_argument("--odometry-noise-seed", type=int, default=7919,
                         help="Seed for odometry noise generation")
+    parser.add_argument(
+        "--farfield-localization-inputs", type=str, default=None,
+        help="Published farfield localization_inputs artifact whose exact "
+             "realized translation odometry should drive one forward path",
+    )
 
     args = parser.parse_args()
+    if (args.farfield_localization_inputs is not None
+            and args.odometry_noise_frac is not None):
+        parser.error(
+            "--farfield-localization-inputs cannot be combined with "
+            "--odometry-noise-frac")
 
     # Parse convergence radii
     convergence_radii = [int(r.strip()) for r in args.convergence_radii.split(",")]
@@ -779,8 +998,6 @@ if __name__ == "__main__":
 
     output_path = Path(args.output_path).expanduser()
     output_path.mkdir(parents=True, exist_ok=True)
-    with open(output_path / "args.json", "w") as f:
-        json.dump({**vars(args), "output_path": str(output_path)}, f, indent=4)
     args.output_path = output_path
 
     # Copy aggregator config to output directory for reproducibility
@@ -818,6 +1035,29 @@ if __name__ == "__main__":
             "panorama filename coordinates",
             RuntimeWarning,
         )
+    shared_motion_deltas = None
+    farfield_odometry_source = None
+    if args.farfield_localization_inputs is not None:
+        if evaluation_positions_by_id is None:
+            raise ValueError(
+                "shared farfield odometry requires pano_id_mapping.csv")
+        shared_motion_deltas, farfield_odometry_source = \
+            load_farfield_motion_deltas(
+                Path(args.farfield_localization_inputs).expanduser(),
+                expected_dataset=Path(args.dataset_path).expanduser().name,
+                paths=paths_data["paths"],
+                positions_by_id=evaluation_positions_by_id,
+            )
+        print(
+            "Using realized translation odometry from "
+            f"{farfield_odometry_source['artifact']['version']}; "
+            "delta_yaw is ignored because LOCI assumes known heading")
+
+    with open(output_path / "args.json", "w") as f:
+        args_record = {**vars(args), "output_path": str(output_path)}
+        if farfield_odometry_source is not None:
+            args_record["farfield_odometry_source"] = farfield_odometry_source
+        json.dump(args_record, f, indent=4)
 
     # Build config
     def degrees_from_meters(dist_m):
@@ -868,6 +1108,9 @@ if __name__ == "__main__":
             "sigma_noise_frac": odometry_noise_config.sigma_noise_frac,
             "seed": odometry_noise_config.seed,
         }
+    if farfield_odometry_source is not None:
+        histogram_config_dict[
+            "farfield_odometry_source"] = farfield_odometry_source
 
     with open(Path(args.output_path) / "histogram_config.json", "w") as f:
         json.dump(histogram_config_dict, f, indent=4)
@@ -883,4 +1126,5 @@ if __name__ == "__main__":
         save_intermediate_states=args.save_intermediate_filter_states,
         convergence_radii=convergence_radii,
         evaluation_positions_by_id=evaluation_positions_by_id,
+        shared_motion_deltas=shared_motion_deltas,
     )

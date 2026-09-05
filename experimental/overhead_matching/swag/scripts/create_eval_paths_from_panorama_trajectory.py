@@ -113,9 +113,14 @@ def generate_paths(
     return paths
 
 
-def generate_full_trajectory_paths(pano_ids: list[str]) -> list[list[str]]:
-    """Return the complete recorded trajectory in both directions."""
-    return [list(pano_ids), list(reversed(pano_ids))]
+def generate_full_trajectory_paths(
+    pano_ids: list[str], *, forward_only: bool = False,
+) -> list[list[str]]:
+    """Return the complete recorded trajectory, optionally only forward."""
+    paths = [list(pano_ids)]
+    if not forward_only:
+        paths.append(list(reversed(pano_ids)))
+    return paths
 
 
 def main():
@@ -126,6 +131,10 @@ def main():
     distance.add_argument(
         "--full_trajectory", action="store_true",
         help="Emit the complete recorded leg once forward and once backward",
+    )
+    parser.add_argument(
+        "--forward-only", action="store_true",
+        help="With --full_trajectory, omit the reversed path",
     )
     parser.add_argument(
         "--num_paths", type=int,
@@ -141,9 +150,12 @@ def main():
     if args.full_trajectory:
         if args.num_paths is not None:
             parser.error("--num_paths cannot be used with --full_trajectory")
-        paths = generate_full_trajectory_paths(pano_ids)
+        paths = generate_full_trajectory_paths(
+            pano_ids, forward_only=args.forward_only)
         num_fwd = 1
     else:
+        if args.forward_only:
+            parser.error("--forward-only requires --full_trajectory")
         if args.num_paths is None:
             parser.error("--num_paths is required with --target_distance_m")
         paths = generate_paths(
@@ -155,7 +167,10 @@ def main():
     fwd_lengths = lengths[:num_fwd]
     bwd_lengths = lengths[num_fwd:]
     print(f"Forward:  {num_fwd} paths, {min(fwd_lengths)}-{max(fwd_lengths)} panos")
-    print(f"Backward: {len(bwd_lengths)} paths, {min(bwd_lengths)}-{max(bwd_lengths)} panos")
+    if bwd_lengths:
+        print(f"Backward: {len(bwd_lengths)} paths, {min(bwd_lengths)}-{max(bwd_lengths)} panos")
+    else:
+        print("Backward: 0 paths")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     out_data = {
@@ -165,6 +180,7 @@ def main():
         "args": {
             "target_distance_m": args.target_distance_m,
             "full_trajectory": args.full_trajectory,
+            "forward_only": args.forward_only,
             "num_paths": len(paths),
             "num_forward": num_fwd,
             "num_backward": len(paths) - num_fwd,

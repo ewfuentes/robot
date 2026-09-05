@@ -19,7 +19,6 @@ from PIL import Image
 
 SCHEMA = "farfield.loci_vlm_request_manifest.v1"
 YAWS = (0, 90, 180, 270)
-MODEL = "gemini-3-flash-preview"
 MEDIA_RESOLUTION = "MEDIA_RESOLUTION_ULTRA_HIGH"
 THINKING_LEVEL = "HIGH"
 
@@ -103,9 +102,11 @@ def _world_heading_authority(dataset_dir: Path) -> str:
     return "none"
 
 
-def audit(dataset_dir: Path, pinhole_dir: Path, request_dir: Path,
-          *, generator_disable_tqdm: bool = False) -> dict:
+def audit(dataset_dir: Path, pinhole_dir: Path, request_dir: Path, *,
+          model: str, generator_disable_tqdm: bool = False) -> dict:
     """Fully validate source faces and all serialized requests."""
+    if not isinstance(model, str) or not model.strip() or model != model.strip():
+        raise ValueError("model must be a non-empty string without outer whitespace")
     dataset_dir = dataset_dir.resolve()
     pinhole_dir = pinhole_dir.resolve()
     request_dir = request_dir.resolve()
@@ -285,7 +286,7 @@ def audit(dataset_dir: Path, pinhole_dir: Path, request_dir: Path,
             "global_media_resolution_present": False,
             "media_resolution": MEDIA_RESOLUTION,
             "media_resolution_placement": "per_image_part",
-            "model": MODEL,
+            "model": model,
             "prompt_type": "osm_tags",
             "provider_interface": "Vertex AI Gemini batch",
             "response_mime_type": "application/json",
@@ -374,11 +375,16 @@ def main() -> None:
     parser.add_argument("--dataset_dir", type=Path, required=True)
     parser.add_argument("--pinhole_dir", type=Path, required=True)
     parser.add_argument("--request_dir", type=Path, required=True)
+    parser.add_argument(
+        "--model", required=True,
+        help="Exact model ID intended for the external batch submission",
+    )
     parser.add_argument("--output_manifest", type=Path)
     parser.add_argument("--generator_disable_tqdm", action="store_true")
     args = parser.parse_args()
     result = audit(
         args.dataset_dir, args.pinhole_dir, args.request_dir,
+        model=args.model,
         generator_disable_tqdm=args.generator_disable_tqdm)
     if args.output_manifest is not None:
         _atomic_write_json(args.output_manifest, result)

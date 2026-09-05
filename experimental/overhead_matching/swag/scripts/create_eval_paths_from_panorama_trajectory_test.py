@@ -152,6 +152,13 @@ class GeneratePathsTest(unittest.TestCase):
             [pano_ids, list(reversed(pano_ids))],
         )
 
+    def test_full_trajectory_can_be_forward_only(self):
+        pano_ids = ["f0000", "f0001", "f0002"]
+        self.assertEqual(
+            generate_full_trajectory_paths(pano_ids, forward_only=True),
+            [pano_ids],
+        )
+
     # Uniform synthetic trajectory: 10001 points spaced ~1m apart ⇒ ~10 km.
     N_POINTS = 10001
     STEP_M = 1.0

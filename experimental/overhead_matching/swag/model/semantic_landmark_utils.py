@@ -11,7 +11,10 @@ import hashlib
 import json
 import pickle
 from pathlib import Path
+
+import common.torch.load_torch_deps  # noqa: F401 -- must precede torch
 import pandas as pd
+import torch
 
 
 def load_all_jsonl_from_folder(folder: Path) -> list:
@@ -63,11 +66,6 @@ def convert_embeddings_to_tensors(embedding_dict: dict[str, list[float]]):
     Returns:
         Dictionary mapping custom_id to embedding tensor
     """
-    # Tag pruning is also used by CPU-only data producers.  Keep torch local
-    # to the embedding helpers so importing this module for prune_landmark()
-    # does not require packaging or loading the entire ML runtime.
-    import torch
-
     return {
         custom_id: torch.tensor(embedding, dtype=torch.float32)
         for custom_id, embedding in embedding_dict.items()
@@ -298,8 +296,6 @@ def load_embeddings_from_pickle(embedding_path: Path) -> tuple[torch.Tensor, dic
         embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
         landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
     """
-    import torch  # noqa: F401  # required by torch tensor pickle payloads
-
     with open(embedding_path, 'rb') as f:
         embeddings_tensor, landmark_id_to_idx = pickle.load(f)
     return embeddings_tensor, landmark_id_to_idx
@@ -315,8 +311,6 @@ def load_embeddings_from_jsonl(embedding_directory: Path) -> tuple[torch.Tensor,
         embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
         landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
     """
-    import torch
-
     embeddings = convert_embeddings_to_tensors(
         make_embedding_dict_from_json(
             load_all_jsonl_from_folder(embedding_directory)))
@@ -349,8 +343,6 @@ def load_embeddings(
         embeddings_tensor: (num_landmarks, embedding_dim) tensor of embeddings
         landmark_id_to_idx: Dict mapping landmark custom_id to tensor row index
     """
-    import torch
-
     pickle_path = embedding_directory / "embeddings.pkl"
     if pickle_path.exists():
         embeddings, landmark_id_to_idx = load_embeddings_from_pickle(pickle_path)

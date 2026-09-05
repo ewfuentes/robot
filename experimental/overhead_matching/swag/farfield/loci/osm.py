@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Publish the OSM landmarks needed by one LOCI region.
 
-The source is the immutable, complete far-field catalog.  LOCI deliberately
-uses a different semantic vocabulary from the far-field bearing matcher, so
-this producer derives a separate typed artifact rather than reusing a
-far-field semantic trim.  Geometry is selected with ``intersects`` against
-the union envelope of the exact satellite patch footprints.  In particular,
+The source is the immutable far-field catalog, complete within its recorded
+bounding box. LOCI deliberately uses a different semantic vocabulary from
+the far-field bearing matcher, so this producer derives a separate typed
+artifact rather than reusing a far-field semantic trim. Geometry is selected
+with ``intersects`` against the union envelope of the exact satellite patch
+footprints. In particular,
 lines and polygons crossing the region boundary are retained whole; a
 representative-point clip would incorrectly discard them.
 """

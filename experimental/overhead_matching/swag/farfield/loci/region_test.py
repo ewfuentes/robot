@@ -1,4 +1,6 @@
+import json
 import math
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +62,33 @@ class RegionTest(unittest.TestCase):
             region.derive_region(
                 (-71.1, 42.35, -71.07, 42.37), self.trajectory,
                 target_area_km2=150.0)
+
+    def test_patch_footprint_must_fit_inside_source_catalog(self):
+        source = (-0.01, -0.01, 0.01, 0.01)
+        width_m, height_m = region.metric_dimensions(source)
+        track = region.TrajectoryExtent(
+            datasets=("tiny",), n_points=2,
+            bbox_wsen=(-0.001, -0.001, 0.001, 0.001),
+            dataset_tables={})
+        with self.assertRaisesRegex(
+                region.RegionError, "footprint extends outside"):
+            region.derive_region(
+                source, track,
+                target_area_km2=width_m * height_m / 1e6 * 0.99999,
+                minimum_trajectory_margin_m=0.0)
+
+    def test_persisted_region_rechecks_patch_footprint_coverage(self):
+        plan = region.derive_region(
+            self.source_bbox, self.trajectory, target_area_km2=150.0)
+        plan["source_bbox_wsen"] = plan["bbox_wsen"]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path / region.REGION_OUTPUT).write_text(json.dumps(plan))
+            with mock.patch.object(
+                    region.artifact, "open_artifact", return_value=object()):
+                with self.assertRaisesRegex(
+                        region.RegionError, "footprint extends outside"):
+                    region.load_region(path)
 
     def test_grid_iteration_matches_recorded_count_and_last_center(self):
         grid = region.build_grid(

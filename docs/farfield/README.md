@@ -35,8 +35,7 @@ Read in pipeline order:
 4. [`localization.md`](localization.md) — the bearing seam, machine matching,
    filter backends, evaluation rules, and derived viewers.
 5. [`loci_pipeline.md`](loci_pipeline.md) — the separate released-LOCI
-   late-fusion baseline, from prepared inputs through the seven completed
-   histogram-filter runs.
+   late-fusion baseline, from prepared inputs through evaluation.
 
 ## Ground rules
 
