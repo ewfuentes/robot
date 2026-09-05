@@ -76,13 +76,13 @@ class DetectionsAsTracksTest(unittest.TestCase):
             self.assertLess(
                 abs(item.angular_width_deg - obs.angular_width_deg), 3.0)
 
-    def test_landmark_kind_rules(self):
-        self.assertEqual(dat.landmark_kind("seamark:type", "buoy_lateral"),
-                         "navigation_aid")
-        self.assertEqual(dat.landmark_kind("natural", "peak"), "terrain")
-        self.assertEqual(dat.landmark_kind("natural", "wood"), "vegetation")
-        self.assertEqual(dat.landmark_kind("building", "yes"),
-                         "fixed_structure")
+    def test_landmark_kind_is_not_guessed(self):
+        # The field is required by the schema; the detection never judged it.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ingest(Path(tmp))
+        for obs in result.observations:
+            self.assertEqual(
+                dat.passthrough_audit(obs)["landmark_kind"], "mixed_or_unclear")
 
 
 if __name__ == "__main__":

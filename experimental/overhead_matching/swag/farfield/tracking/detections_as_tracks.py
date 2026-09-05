@@ -55,19 +55,18 @@ RANGE_NAME = "full"
 CLOSE_REASON = "single_detection"
 AUDIT_OUTPUTS = ("audit_meta.json", "results.jsonl", "settings.json")
 
-_VEGETATION = frozenset({"wood", "tree", "tree_row", "scrub", "heath"})
+# `TrackAudit.landmark_kind` is required and has no default, so a passthrough
+# audit has to emit one. It is a judgment the real audit makes from evidence
+# across a whole track, and it is coupled to the decision contract there
+# (movable or transient things must be dropped). A detection carries no such
+# judgment, and nothing this ablation runs reads the field -- the detection
+# Set 1 block omits it and no review pages are built for this lane. So say
+# what is true rather than guessing a plausible value from the primary tag.
+LANDMARK_KIND = "mixed_or_unclear"
 
 
 class DetectionTrackError(ValueError):
     """The build cannot be represented as detections-only tracks."""
-
-
-def landmark_kind(primary_key: str, primary_value: str) -> str:
-    if primary_key.startswith("seamark:"):
-        return "navigation_aid"
-    if primary_key == "natural":
-        return "vegetation" if primary_value in _VEGETATION else "terrain"
-    return "fixed_structure"
 
 
 def detection_tags(obs) -> tuple[list[str], list[str]]:
@@ -89,8 +88,7 @@ def passthrough_audit(obs) -> dict:
     """A canonical TrackAudit that restates one detection and decides nothing."""
     tags, names = detection_tags(obs)
     audit = {
-        "landmark_kind": landmark_kind(
-            obs.primary_tag_key, obs.primary_tag_value),
+        "landmark_kind": LANDMARK_KIND,
         "single_object": True,
         "valid_segments": [{"start_t": 0, "end_t": 0}],
         "verdict": "keep",
