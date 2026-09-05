@@ -3,10 +3,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from experimental.overhead_matching.swag.farfield import dataset as ds_lib
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.dataset_tools import (
+    checksums,
     ingest_selfcollect as ingest,
 )
 
@@ -85,6 +87,7 @@ class MetadataContractTest(unittest.TestCase):
         out, meta = self.run_ingest()
         # north_aligned recorded false: the gate dataset.py enforces.
         self.assertIs(meta["north_aligned"], False)
+        self.assertEqual(meta["intrinsics_csv"], "intrinsics.csv")
         ds_lib.require_camera_frame_panoramas(meta, out)
         self.assertEqual(meta["azimuth_convention"]["camera_frame"],
                          geo.CAMERA_FRAME)
@@ -151,6 +154,22 @@ class MetadataContractTest(unittest.TestCase):
         self.run_ingest()
         after = sorted(path.read_bytes() for path in self.frames.glob("*.jpg"))
         self.assertEqual(after, before)
+
+    def test_checksum_manifest_is_complete_before_publish(self):
+        real_publish = ingest.publish_dataset
+
+        def verify_then_publish(staging, output):
+            self.assertFalse(output.exists())
+            self.assertGreater(checksums.verify(staging), 0)
+            self.assertNotIn(
+                checksums.CHECKSUM_FILE,
+                (staging / checksums.CHECKSUM_FILE).read_text())
+            real_publish(staging, output)
+
+        with mock.patch.object(
+                ingest, "publish_dataset", side_effect=verify_then_publish):
+            out, _ = self.run_ingest()
+        self.assertGreater(checksums.verify(out), 0)
 
     def test_existing_output_is_rejected_without_clobber(self):
         out = self.root / "existing"

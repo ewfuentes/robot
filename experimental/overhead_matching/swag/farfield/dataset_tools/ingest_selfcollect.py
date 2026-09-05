@@ -44,6 +44,7 @@ from pathlib import Path
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield import provenance
+from experimental.overhead_matching.swag.farfield.dataset_tools import checksums
 
 # frames_gps.csv contract columns (audit_dataset checks idx/video_t_s/dist_m;
 # ingest joins on idx). Everything else from the source CSV goes to
@@ -368,6 +369,7 @@ def main(argv=None) -> int:
         },
         "camera_type": "equirectangular",
         "image_dir": "frames",
+        "intrinsics_csv": "intrinsics.csv",
         "num_images": len(kept),
         "resolution": f"{args.width}x{args.height}",
         "gps_course_diagnostic": {
@@ -396,6 +398,8 @@ def main(argv=None) -> int:
         meta.update(extra_metadata)
     (work / "pipeline_metadata.json").write_text(
         json.dumps(meta, indent=2) + "\n")
+    (work / checksums.CHECKSUM_FILE).write_bytes(
+        checksums.manifest_bytes(work))
 
     publish_dataset(staging, out)
 

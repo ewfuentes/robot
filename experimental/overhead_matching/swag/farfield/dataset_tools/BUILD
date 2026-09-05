@@ -54,6 +54,7 @@ py_library(
     srcs = ["ingest_selfcollect.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        ":checksums",
         FARFIELD + ":geometry",
         FARFIELD + ":provenance",
     ],
@@ -71,10 +72,23 @@ py_test(
     srcs = ["ingest_selfcollect_test.py"],
     deps = [
         requirement("pillow"),
+        ":checksums",
         ":ingest_selfcollect_lib",
         FARFIELD + ":dataset",
         FARFIELD + ":geometry",
     ],
+)
+
+py_library(
+    name = "fit_decoder",
+    srcs = ["fit_decoder.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_test(
+    name = "fit_decoder_test",
+    srcs = ["fit_decoder_test.py"],
+    deps = [":fit_decoder"],
 )
 
 py_library(
@@ -171,6 +185,30 @@ py_test(
         requirement("numpy"),
         ":person_anonymize_video_lib",
     ],
+)
+
+py_library(
+    name = "prepare_selfcollect_lib",
+    srcs = ["prepare_selfcollect.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":anonymize_video_lib",
+        ":fit_decoder",
+    ],
+)
+
+py_binary(
+    name = "prepare_selfcollect",
+    srcs = ["prepare_selfcollect.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":prepare_selfcollect_lib"],
+)
+
+py_test(
+    name = "prepare_selfcollect_test",
+    srcs = ["prepare_selfcollect_test.py"],
+    deps = [":prepare_selfcollect_lib"],
 )
 
 py_binary(

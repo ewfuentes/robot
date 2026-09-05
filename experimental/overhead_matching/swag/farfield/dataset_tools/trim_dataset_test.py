@@ -530,6 +530,19 @@ class ChecksumTest(unittest.TestCase):
         self.assertNotIn(checksums.CHECKSUM_FILE, text)
         self.assertIn("./frames/", text)
 
+    def test_manifest_includes_real_panorama_files(self):
+        root = Path(self.tmp.name) / "mapillary"
+        panorama = root / "panorama"
+        panorama.mkdir(parents=True)
+        (panorama / "frame.jpg").write_bytes(b"mapillary image")
+        (root / checksums.CHECKSUM_FILE).write_text("")
+
+        checksums.regenerate(root)
+
+        self.assertIn(
+            "./panorama/frame.jpg",
+            (root / checksums.CHECKSUM_FILE).read_text())
+
     def test_manifest_excludes_derived_caches_and_manifests_dir(self):
         cache = self.ds / "landmarks" / "catalog_cache"
         cache.mkdir(parents=True)

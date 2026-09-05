@@ -30,9 +30,11 @@ Read in pipeline order:
    incidents that make the rules non-negotiable. **Read first.**
 2. [`datasets.md`](datasets.md) — frozen datasets, catalog construction, and
    the data-root layout.
-3. [`pipeline.md`](pipeline.md) — immutable builds, typed artifacts, the eight
+3. [`selfcollect.md`](selfcollect.md) — GPS/video synchronization,
+   anonymization, and the human privacy-review gate for collected video.
+4. [`pipeline.md`](pipeline.md) — immutable builds, typed artifacts, the eight
    scientific stages, provider recovery, and safe prefix reuse.
-4. [`localization.md`](localization.md) — the bearing seam, machine matching,
+5. [`localization.md`](localization.md) — the bearing seam, machine matching,
    filter backends, evaluation rules, and derived viewers.
 
 ## Ground rules
