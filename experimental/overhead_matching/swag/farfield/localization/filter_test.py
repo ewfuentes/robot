@@ -232,6 +232,67 @@ class MeasurementUpdateTest(unittest.TestCase):
                     _identity_table("t", "lm"), catalog, 0.05)
 
 
+class IdentityWeightsTest(unittest.TestCase):
+    """FilterConfig.identity_weights: the per-pose (visible) normalization
+    and the flat prior."""
+
+    def _world(self):
+        # Two endorsed rows with equal LLR: A 500 m north (aligned), B 5 km
+        # east; two unendorsed rows 20 km away.
+        catalog = _catalog(["A", "B", "u1", "u2"],
+                           [0.0, 5000.0, 20000.0, -20000.0],
+                           [500.0, 0.0, 0.0, 0.0])
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("A", 4.0),
+                         structs.CompatibilityEntry("B", 4.0)],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        pose = (np.zeros(1), np.zeros(1), np.zeros(1))
+        return catalog, table, pose
+
+    def test_visible_equals_global_without_cap(self):
+        catalog, table, (e, n, h) = self._world()
+        meas = structs.TrackletMeasurement("trk", 0, 0.0, 3000.0)
+        a = pf.pose_log_likelihood(e, n, h, meas, table, catalog, 0.2)
+        b = pf.pose_log_likelihood(e, n, h, meas, table, catalog, 0.2,
+                                   visible=True)
+        np.testing.assert_allclose(a, b, atol=1e-12)
+
+    def test_visible_renormalizes_over_in_cap_rows(self):
+        """With a 1 km cap only A is admissible, so its prior share rises
+        from recall/2 to ~1: the landmark branch gains exactly log(1/0.25)."""
+        catalog, table, (e, n, h) = self._world()
+        meas = structs.TrackletMeasurement("trk", 0, 0.0, 3000.0,
+                                           range_max_m=1000.0)
+        log_null = math.log(0.2) - math.log(2.0 * math.pi)
+        glob = pf.pose_log_likelihood(e, n, h, meas, table, catalog, 0.2)
+        vis = pf.pose_log_likelihood(e, n, h, meas, table, catalog, 0.2,
+                                     visible=True)
+        branch = lambda v: math.log(math.exp(v[0]) - math.exp(log_null))
+        self.assertAlmostEqual(branch(vis) - branch(glob), math.log(4.0),
+                               places=6)
+
+    def test_flat_gives_endorsed_rows_equal_prior(self):
+        catalog, _, _ = self._world()
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("A", 4.0),
+                         structs.CompatibilityEntry("B", 0.0)],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        soft = pf._identity_log_weights(table, catalog, 0.5)
+        flat = pf._identity_log_weights(table, catalog, 0.5, flatten=True)
+        self.assertAlmostEqual(soft[0] - soft[1], 4.0)
+        self.assertAlmostEqual(flat[0], flat[1])
+        self.assertAlmostEqual(flat[0], math.log(0.25))
+        self.assertAlmostEqual(flat[2], math.log(0.25))
+
+    def test_visible_refuses_persistence(self):
+        config = structs.FilterConfig(
+            n_particles=4, seed=0,
+            init=structs.UniformBoxInit(-1.0, 1.0, -1.0, 1.0),
+            identity_weights=pf.VISIBLE_SOFTMAX, association_persistence=True)
+        with self.assertRaises(ValueError):
+            pf._validate(config, None, [], [], {})
+
+
 class KappaEffTest(unittest.TestCase):
     def test_map_error_widens_the_bearing_likelihood(self):
         """kappa_eff combines tracklet kappa with projected map error (§4):

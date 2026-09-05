@@ -271,6 +271,14 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # (given any exist), used to split a proper identity posterior between
     # endorsed and unendorsed candidates.
     matcher_recall: float = 0.5
+    # How p(j | appearance) is formed and normalized in the mixture
+    # (filter.IDENTITY_WEIGHTS). "global_softmax" is the historical model: a
+    # softmax of the table's clipped LLRs, normalized over the whole catalog
+    # independent of the particle. The "visible_*" models renormalize that
+    # prior per particle over the rows the epoch's range cap admits, so
+    # identity mass is not spent on rows the geometry has already excluded;
+    # "visible_flat" also gives every endorsed row the same prior weight.
+    identity_weights: str = "global_softmax"
     # Range cap on landmark components (see RangeCap); None means no cap. A
     # recorded run that predates the field reads as None, the value it had.
     range_cap: RangeCap | None = None

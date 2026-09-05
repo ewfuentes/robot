@@ -53,6 +53,12 @@ from experimental.overhead_matching.swag.farfield.localization import (
 # unendorsed-candidate rule, or the resampling scheme: every one of them is
 # the scar of a run that drifted.
 MAX_KAPPA = 1.0e6
+# FilterConfig.identity_weights: how the identity prior p(j | appearance) is
+# formed and normalized inside the §5.3 mixture.
+GLOBAL_SOFTMAX = "global_softmax"    # historical: softmax of LLRs, normalized over the whole catalog
+VISIBLE_SOFTMAX = "visible_softmax"  # same prior, renormalized per particle over rows the range cap admits
+VISIBLE_FLAT = "visible_flat"        # as visible_softmax, but every endorsed row gets the same prior
+IDENTITY_WEIGHTS = (GLOBAL_SOFTMAX, VISIBLE_SOFTMAX, VISIBLE_FLAT)
 # Candidate-axis block size for the measurement update, bounding the (N, M)
 # temporary arrays.
 CANDIDATE_BLOCK = 256
@@ -321,11 +327,14 @@ def range_cap_log_term(range_m, range_max_m, softness_frac):
 
 def _mixture_block_log_terms(east_m, north_m, heading_rad, observed_rad,
                              kappa_z, log_weight, catalog, sl,
-                             range_max_m=None, range_softness=0.25):
+                             range_max_m=None, range_softness=0.25,
+                             log_norm=None):
     """log[p(j|appearance) * vM(delta_j; kappa_eff) * g(r_j)] for one
     candidate block, from arbitrary pose arrays. `log_weight` is the proper
     identity posterior (`_identity_log_weights`); the (1-pi0) mixture
-    constant is the caller's. `g` is the range cap (`range_cap_log_term`)."""
+    constant is the caller's. `g` is the range cap (`range_cap_log_term`).
+    `log_norm` (per particle, from `_log_visible_mass`) turns the prior into
+    p(j | x, appearance) = p(j) g(r_j(x)) / sum_k p(k) g(r_k(x))."""
     bearing_world, range_m = catalog.bearings_from(east_m, north_m, sl)
     delta = geo.wrap_rad(
         bearing_world - heading_rad[:, None] - observed_rad)
@@ -333,7 +342,29 @@ def _mixture_block_log_terms(east_m, north_m, heading_rad, observed_rad,
     terms = log_weight[sl][None, :] + von_mises_logpdf(delta, kappa_eff)
     if range_max_m is not None:
         terms += range_cap_log_term(range_m, range_max_m, range_softness)
+    if log_norm is not None:
+        terms -= log_norm[:, None]
     return terms
+
+
+def _log_visible_mass(east_m, north_m, log_weight, catalog, blocks,
+                      range_max_m, range_softness=0.25):
+    """log sum_j p(j) g(r_j(x)) per pose: the mass of the identity prior the
+    range cap leaves admissible from x. Identity mass spent on rows the cap
+    has excluded is what made a perfectly aligned near landmark lose to the
+    fixed null on Flevoland (2 of 336 endorsed turbines inside a 500 m cap
+    at the true pose). Without a cap the prior already sums to 1 and the
+    normalizer is exactly zero."""
+    if range_max_m is None:
+        return np.zeros(east_m.shape[0])
+    per_block = np.empty((east_m.shape[0], len(blocks)))
+    for i, sl in enumerate(blocks):
+        _, range_m = catalog.bearings_from(east_m, north_m, sl)
+        per_block[:, i] = special.logsumexp(
+            log_weight[sl][None, :]
+            + range_cap_log_term(range_m, range_max_m, range_softness),
+            axis=1)
+    return special.logsumexp(per_block, axis=1)
 
 
 def pose_log_likelihood(east_m, north_m, heading_rad,
@@ -343,12 +374,14 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
                         pi0: float,
                         log_weight: np.ndarray = None,
                         matcher_recall: float = 0.5,
-                        range_softness: float = 0.25) -> np.ndarray:
+                        range_softness: float = 0.25,
+                        visible: bool = False) -> np.ndarray:
     """p(z | pose) under the §5.3 mixture, for arbitrary pose arrays.
 
     Exactly the density the belief update applies — exposed so proposal
     hypotheses can be scored on the same footing as the belief (§5.5
-    evidence gate)."""
+    evidence gate). `visible` selects the per-pose identity normalization
+    (`_log_visible_mass`)."""
     kappa_z = min(float(meas.kappa), MAX_KAPPA)
     if log_weight is None:
         log_weight = _identity_log_weights(table, catalog, matcher_recall)
@@ -360,6 +393,9 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
     heading_rad = np.asarray(heading_rad, dtype=np.float64)
     blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
               for start in range(0, catalog.n, CANDIDATE_BLOCK)]
+    log_norm = (_log_visible_mass(east_m, north_m, log_weight, catalog,
+                                  blocks, meas.range_max_m, range_softness)
+                if visible else None)
     per_block = np.empty((east_m.shape[0], len(blocks) + 1))
     per_block[:, 0] = log_null
     for i, sl in enumerate(blocks):
@@ -368,7 +404,7 @@ def pose_log_likelihood(east_m, north_m, heading_rad,
                 east_m, north_m, heading_rad, observed_rad, kappa_z,
                 log_weight, catalog, sl,
                 range_max_m=meas.range_max_m,
-                range_softness=range_softness), axis=1)
+                range_softness=range_softness, log_norm=log_norm), axis=1)
     return special.logsumexp(per_block, axis=1)
 
 
@@ -411,7 +447,8 @@ def measurement_update(
         rng: np.random.Generator = None,
         surprise: np.ndarray = None,
         matcher_recall: float = 0.5,
-        range_softness: float = 0.25) -> list:
+        range_softness: float = 0.25,
+        visible: bool = False) -> list:
     """Bearing update (design doc §5.3), in one of two association regimes.
 
     `assoc is None` — per-epoch marginalization:
@@ -466,18 +503,26 @@ def measurement_update(
     log_null = math.log(pi0) - math.log(2.0 * math.pi)
     log_mix = math.log1p(-pi0)
 
+    blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
+              for start in range(0, catalog.n, CANDIDATE_BLOCK)]
+    log_norm = (_log_visible_mass(
+        belief.east_m, belief.north_m, log_weight, catalog, blocks,
+        meas.range_max_m, range_softness) if visible else None)
+
     def block_log_terms(sl):
         """log[(1-pi0) * p(j|app) * vM(...) * g(r)] for one candidate
         block."""
         return log_mix + _mixture_block_log_terms(
             belief.east_m, belief.north_m, belief.heading_rad,
             observed_rad, kappa_z, log_weight, catalog, sl,
-            range_max_m=meas.range_max_m, range_softness=range_softness)
-
-    blocks = [slice(start, min(start + CANDIDATE_BLOCK, catalog.n))
-              for start in range(0, catalog.n, CANDIDATE_BLOCK)]
+            range_max_m=meas.range_max_m, range_softness=range_softness,
+            log_norm=log_norm)
 
     if assoc is not None:
+        if visible:
+            raise ValueError("visible identity weights are defined for the "
+                             "per-epoch mixture only; disable association "
+                             "persistence")
         return _persistence_update(
             belief, meas, catalog, block_log_terms, blocks, log_null,
             observed_rad, kappa_z, per_mode, resp_min, assoc,
@@ -542,7 +587,8 @@ def measurement_draw_seed(seed: int, meas) -> int:
 
 def _identity_log_weights(table: structs.CompatibilityTable,
                           catalog: catalog_mod.LandmarkCatalog,
-                          matcher_recall: float) -> np.ndarray:
+                          matcher_recall: float,
+                          flatten: bool = False) -> np.ndarray:
     """log p(j | tracklet appearance): a PROPER identity posterior over the
     catalog, replacing the unnormalized w_j * LR_j product in the §5.3
     mixture.
@@ -560,6 +606,9 @@ def _identity_log_weights(table: structs.CompatibilityTable,
     `matcher_recall` is a property of the MATCHER (probability the true
     landmark appears among a table's endorsed entries), not of any map;
     the softmax preserves the table's relative evidence within entries.
+    `flatten` discards that relative evidence: every endorsed row gets the
+    same share (the LLM's confidence tiers are not calibrated between
+    equally compatible rows — 0.9 vs 0.98 is a 6x weight ratio).
     """
     if not 0.0 < matcher_recall < 1.0:
         raise ValueError(f"matcher_recall must be in (0, 1), got "
@@ -571,11 +620,12 @@ def _identity_log_weights(table: structs.CompatibilityTable,
     if n_endorsed == 0:
         weights.fill(-math.log(catalog.n))
         return weights
-    entry_logits = log_lr[endorsed]
+    entry_logits = np.zeros(n_endorsed) if flatten else log_lr[endorsed]
     if n_endorsed == catalog.n:
         # No unendorsed remainder to hold (1 - recall): all mass goes to
         # the endorsed softmax (degenerate but common in small test worlds).
-        weights[:] = log_lr - special.logsumexp(log_lr)
+        logits = np.zeros(catalog.n) if flatten else log_lr
+        weights[:] = logits - special.logsumexp(logits)
         return weights
     weights[endorsed] = (math.log(matcher_recall) + entry_logits
                          - special.logsumexp(entry_logits))
@@ -1202,6 +1252,15 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
                          f"{config.ess_resample_frac}")
     if config.checkpoint_every <= 0:
         raise ValueError("checkpoint_every must be positive")
+    if config.identity_weights not in IDENTITY_WEIGHTS:
+        raise ValueError(
+            f"unknown identity_weights {config.identity_weights!r}; expected "
+            f"one of {IDENTITY_WEIGHTS}")
+    if (config.identity_weights != GLOBAL_SOFTMAX
+            and config.association_persistence):
+        raise ValueError(
+            f"identity_weights={config.identity_weights!r} requires "
+            "association_persistence=False")
 
     for kf, delta in enumerate(odometry, start=1):
         if delta.keyframe_idx != kf:
@@ -1283,8 +1342,11 @@ def run_filter(
 
     # Tables are static for a run, so their identity posteriors and
     # endorsement masks are computed once, not per measurement.
+    visible = config.identity_weights != GLOBAL_SOFTMAX
     weight_cache = {
-        tid: _identity_log_weights(table, catalog, config.matcher_recall)
+        tid: _identity_log_weights(
+            table, catalog, config.matcher_recall,
+            flatten=config.identity_weights == VISIBLE_FLAT)
         for tid, table in tables.items()}
     surprise_cache = {
         tid: _surprise_mask(table, _clipped_log_lr(table, catalog))
@@ -1310,7 +1372,7 @@ def run_filter(
         engine = torch_backend.TorchMeasurementEngine(
             catalog, weight_cache, seed=config.seed,
             surprise_by_tracklet=surprise_cache,
-            range_softness=_range_softness(config))
+            range_softness=_range_softness(config), visible=visible)
 
         def apply_measurement(meas):
             return engine.update(
@@ -1332,7 +1394,7 @@ def run_filter(
                 rng=np.random.default_rng(
                     measurement_draw_seed(config.seed, meas)),
                 surprise=surprise_cache[meas.tracklet_id],
-                range_softness=_range_softness(config))
+                range_softness=_range_softness(config), visible=visible)
     else:
         raise ValueError(
             f"unknown measurement_backend {config.measurement_backend!r}; "
@@ -1348,7 +1410,7 @@ def run_filter(
                 east, north, heading, meas, tables[meas.tracklet_id],
                 catalog, config.pi0,
                 log_weight=weight_cache[meas.tracklet_id],
-                range_softness=_range_softness(config))
+                range_softness=_range_softness(config), visible=visible)
 
     def apply_block(keyframe_measurements, kf, pass_index):
         """Apply one keyframe's measurement block in order.

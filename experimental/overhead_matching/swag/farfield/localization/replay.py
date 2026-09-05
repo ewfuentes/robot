@@ -140,6 +140,7 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Filter knobs the console exposes directly.
     pi0: float | None = None
     matcher_recall: float | None = None
+    identity_weights: str | None = None
     seed: int | None = None
     n_particles: int | None = None
     measurement_backend: str | None = None
@@ -166,8 +167,9 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
             parts.append(f"{tid} llr[" + ",".join(
                 f"{lid}={value:+.1f}"
                 for lid, value in sorted(overrides.items())) + "]")
-        for name in ("pi0", "matcher_recall", "seed", "n_particles",
-                     "measurement_backend", "checkpoint_every"):
+        for name in ("pi0", "matcher_recall", "identity_weights", "seed",
+                     "n_particles", "measurement_backend",
+                     "checkpoint_every"):
             value = getattr(self, name)
             if value is not None:
                 parts.append(f"{name}={value}")
@@ -420,6 +422,7 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
     config = inputs.config
     replacements = {}
     for name, field in (("pi0", "pi0"), ("matcher_recall", "matcher_recall"),
+                        ("identity_weights", "identity_weights"),
                         ("seed", "seed"), ("n_particles", "n_particles"),
                         ("measurement_backend", "measurement_backend"),
                         ("checkpoint_every", "checkpoint_every")):

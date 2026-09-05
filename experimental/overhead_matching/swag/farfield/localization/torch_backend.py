@@ -44,7 +44,8 @@ class TorchMeasurementEngine:
     def __init__(self, catalog, log_weight_by_tracklet: dict,
                  device: str = None, dtype=torch.float32, seed: int = 0,
                  surprise_by_tracklet: dict = None,
-                 range_softness: float = 0.25):
+                 range_softness: float = 0.25,
+                 visible: bool = False):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
@@ -56,6 +57,9 @@ class TorchMeasurementEngine:
         # (filter.range_cap_log_term); the cap itself rides on each
         # measurement.
         self.range_softness = float(range_softness)
+        # Per-particle renormalization of the identity prior over the rows
+        # the range cap admits (filter._log_visible_mass).
+        self.visible = bool(visible)
         # Own generator for association renewal draws (§5.3 persistence):
         # deterministic given the config seed, independent of the numpy
         # stream (the manifest records the backend, so replay is per-engine).
@@ -137,13 +141,33 @@ class TorchMeasurementEngine:
         excess = torch.clamp(rng - cap, min=0.0)
         return -0.5 * torch.square(excess / (self.range_softness * cap))
 
+    def _log_norm(self, east, north, meas):
+        """Mirror of filter._log_visible_mass: log sum_j p(j) g(r_j(x)) per
+        particle, or None when the prior is used as-is (global weights, or
+        no cap, where the prior already sums to 1)."""
+        if not self.visible or getattr(meas, "range_max_m", None) is None:
+            return None
+        log_weight = self.log_weight[meas.tracklet_id]
+        result = torch.full(east.shape, float("-inf"), dtype=self.dtype,
+                            device=self.device)
+        for start, end in self._candidate_slices(east.shape[0]):
+            d_east = self.east[None, start:end] - east[:, None]
+            d_north = self.north[None, start:end] - north[:, None]
+            terms = (log_weight[None, start:end]
+                     + self._range_cap_log_term(d_east, d_north, meas))
+            result = torch.logaddexp(result, torch.logsumexp(terms, dim=1))
+        return result
+
     def _landmark_log_likelihood(self, east, north, heading, meas,
                                  log_scale: float):
+        log_norm = self._log_norm(east, north, meas)
         result = torch.full(east.shape, float("-inf"), dtype=self.dtype,
                             device=self.device)
         for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
+            if log_norm is not None:
+                terms = terms - log_norm[:, None]
             result = torch.logaddexp(result, torch.logsumexp(terms, dim=1))
         return result
 
@@ -235,6 +259,11 @@ class TorchMeasurementEngine:
             east.shape, float("-inf"), dtype=self.dtype, device=self.device)
         best_value = best_arg = background_landmark = None
         unendorsed = None
+        if assoc is not None and self.visible:
+            raise ValueError("visible identity weights are defined for the "
+                             "per-epoch mixture only; disable association "
+                             "persistence")
+        log_norm = self._log_norm(east, north, meas)
         if assoc is not None:
             unendorsed = self.surprise_bool.get(meas.tracklet_id)
             if unendorsed is None:
@@ -250,6 +279,8 @@ class TorchMeasurementEngine:
         for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
+            if log_norm is not None:
+                terms = terms - log_norm[:, None]
             log_landmark = torch.logaddexp(
                 log_landmark, torch.logsumexp(terms, dim=1))
             if assoc is not None:
@@ -330,6 +361,8 @@ class TorchMeasurementEngine:
         for start, end in self._candidate_slices(east.shape[0]):
             terms = log_scale + self._log_terms(
                 east, north, heading, meas, start, end)
+            if log_norm is not None:
+                terms = terms - log_norm[:, None]
             avg = group_w @ torch.exp(terms - log_lik[:, None])
             if mask is not None:
                 surprise_shares += avg @ mask[start:end]

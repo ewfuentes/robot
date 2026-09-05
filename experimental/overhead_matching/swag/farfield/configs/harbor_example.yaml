@@ -168,6 +168,7 @@ localization:
   association_renewal_rate: 0.1
   association_outlier_rate: 0.1
   matcher_recall: 0.5
+  identity_weights: global_softmax
   # Extractor distance_estimate buckets as a one-sided range cap on each
   # landmark component (see structs.FilterConfig).
   range_cap:

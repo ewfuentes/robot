@@ -106,6 +106,41 @@ class TorchBackendEquivalenceTest(unittest.TestCase):
     def test_float32(self):
         self._check(position_sigma=8.0, dtype=torch.float32, atol=2e-3)
 
+    def test_visible_identity_weights_match_numpy(self):
+        """Per-particle in-cap renormalization: both backends must agree on
+        the weights and on the pose-likelihood scorer, with a cap that
+        excludes most of the fixture catalog from most particles."""
+        catalog, table, belief, meas = _fixture(position_sigma=8.0)
+        meas = structs.TrackletMeasurement("trk", 0, 41.0, 220.0,
+                                           range_max_m=3000.0)
+        log_weight = pf._identity_log_weights(table, catalog, 0.5)
+        belief_np = belief.copy()
+        belief_np.mode_id = belief.mode_id.copy()
+        pf.measurement_update(belief_np, meas, table, catalog, pi0=0.2,
+                              log_weight=log_weight, visible=True)
+        belief_t = belief.copy()
+        belief_t.mode_id = belief.mode_id.copy()
+        engine = torch_backend.TorchMeasurementEngine(
+            catalog, {"trk": log_weight}, device="cpu", dtype=torch.float64,
+            visible=True)
+        engine.update(belief_t, meas, pi0=0.2, per_mode=True, resp_min=1e-6)
+        np.testing.assert_allclose(belief_t.log_weight, belief_np.log_weight,
+                                   atol=1e-9)
+        expected = pf.pose_log_likelihood(
+            belief.east_m[:31], belief.north_m[:31], belief.heading_rad[:31],
+            meas, table, catalog, 0.2, log_weight=log_weight, visible=True)
+        actual = engine.pose_log_likelihood(
+            belief.east_m[:31], belief.north_m[:31], belief.heading_rad[:31],
+            meas, 0.2)
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+        # And the normalization is real: a global-weights engine disagrees.
+        plain = torch_backend.TorchMeasurementEngine(
+            catalog, {"trk": log_weight}, device="cpu", dtype=torch.float64)
+        self.assertFalse(np.allclose(
+            plain.pose_log_likelihood(
+                belief.east_m[:31], belief.north_m[:31],
+                belief.heading_rad[:31], meas, 0.2), actual, atol=1e-3))
+
     def test_chunked_pose_likelihood_matches_numpy(self):
         catalog, table, belief, meas = _fixture(position_sigma=8.0)
         log_weight = pf._identity_log_weights(table, catalog, 0.5)
