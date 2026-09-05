@@ -666,11 +666,15 @@ collapse had been a handful of confident instance matches to landmarks 2–23
 km away; under a 100–500 m cap those components vanish, so the cap does not fix
 the association but makes wrong far associations harmless while near caps add
 the range information a bearing lacks. Cross-dataset check:
-`runs/260904_range_cap`. Runs recorded before the fields existed are not
-back-filled: the strict run reader rejects them and they have to be re-run
-(review decision, PR #705). Alignment diagnostics ignore the bearings
-manifest's `range_cap` block, since they verify every other key as an exact
-set.
+`runs/260904_range_cap`. The filter config holds the cap as
+`range_cap: RangeCap | None`, None meaning no cap, and the measurement's
+`range_max_m` is `float | None`. The strict run reader has one general rule
+for such fields: a document that lacks an `X | None = None` field reads it
+as None and warns once per file, because None is the value the run had; a
+missing field with any other default is still rejected. No per-field
+back-fill table exists (review on PR #705). Alignment diagnostics ignore the
+bearings manifest's `range_cap` block, since they verify every other key as
+an exact set.
 
 **Cross-dataset check (2026-09-04, `runs/260904_range_cap`, successors of the
 260828 IMU baselines, 4 seeds, dn500 baseline → cap).** Boston leg1

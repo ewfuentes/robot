@@ -955,13 +955,13 @@ class RangeCapTest(unittest.TestCase):
         capped = [self._meas(100.0, anchor=1)]
         plain = [self._meas(None, anchor=1)]
         off = pf.run_filter(
-            structs.FilterConfig(range_cap_enabled=False, **base),
+            structs.FilterConfig(range_cap=None, **base),
             catalog, odometry, capped, tables)
         ref = pf.run_filter(
-            structs.FilterConfig(range_cap_enabled=False, **base),
+            structs.FilterConfig(range_cap=None, **base),
             catalog, odometry, plain, tables)
         on = pf.run_filter(
-            structs.FilterConfig(range_cap_enabled=True, **base),
+            structs.FilterConfig(range_cap=structs.RangeCap(), **base),
             catalog, odometry, capped, tables)
         self.assertEqual(off.particle_history_sha256,
                          ref.particle_history_sha256)

@@ -1065,7 +1065,7 @@ def _belief_window_reference(belief, window_meas,
                 min(float(meas.kappa), MAX_KAPPA),
                 config.association_outlier_rate, catalog,
                 range_max_m=meas.range_max_m,
-                range_softness=config.range_cap_softness_frac))
+                range_softness=_range_softness(config)))
         keep[assoc == ASSOC_NULL] = 1.0 / (2.0 * math.pi)
         uncommitted = assoc == ASSOC_UNCOMMITTED
         keep_scale = np.where(uncommitted, 0.0, 1.0 - beta)
@@ -1182,6 +1182,14 @@ def _hash_belief(hasher, belief: ParticleBelief) -> None:
         hasher.update(np.ascontiguousarray(arr).tobytes())
 
 
+def _range_softness(config: structs.FilterConfig) -> float:
+    """Softness of the configured cap. With no cap the caps are stripped from
+    every measurement before the kernels run, so the value returned for that
+    case (the struct default) is never consulted."""
+    cap = config.range_cap if config.range_cap is not None else structs.RangeCap()
+    return cap.softness_frac
+
+
 def _validate(config: structs.FilterConfig, catalog, odometry,
               measurements, tables) -> None:
     if config.n_particles <= 0:
@@ -1259,8 +1267,8 @@ def run_filter(
     original run rather than a different run that resembles it.
     """
     _validate(config, catalog, odometry, measurements, tables)
-    if not config.range_cap_enabled:
-        # Disabled means the likelihood is exactly the pre-cap one, whatever
+    if config.range_cap is None:
+        # No cap means the likelihood is exactly the pre-cap one, whatever
         # the export recorded: strip the caps here so every kernel below can
         # read `meas.range_max_m` without consulting the config again.
         measurements = [
@@ -1302,7 +1310,7 @@ def run_filter(
         engine = torch_backend.TorchMeasurementEngine(
             catalog, weight_cache, seed=config.seed,
             surprise_by_tracklet=surprise_cache,
-            range_softness=config.range_cap_softness_frac)
+            range_softness=_range_softness(config))
 
         def apply_measurement(meas):
             return engine.update(
@@ -1324,7 +1332,7 @@ def run_filter(
                 rng=np.random.default_rng(
                     measurement_draw_seed(config.seed, meas)),
                 surprise=surprise_cache[meas.tracklet_id],
-                range_softness=config.range_cap_softness_frac)
+                range_softness=_range_softness(config))
     else:
         raise ValueError(
             f"unknown measurement_backend {config.measurement_backend!r}; "
@@ -1340,7 +1348,7 @@ def run_filter(
                 east, north, heading, meas, tables[meas.tracklet_id],
                 catalog, config.pi0,
                 log_weight=weight_cache[meas.tracklet_id],
-                range_softness=config.range_cap_softness_frac)
+                range_softness=_range_softness(config))
 
     def apply_block(keyframe_measurements, kf, pass_index):
         """Apply one keyframe's measurement block in order.
