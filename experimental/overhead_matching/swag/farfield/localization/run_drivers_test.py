@@ -116,6 +116,11 @@ def localization_config(*, init="uniform", prior_sigma_m=None,
         "bearings_enabled": bearings_enabled,
         "ablation_tags": [],
         "position_mass_radii_m": [100.0, 500.0],
+        # The build config spells the cap as enabled + softness; FilterConfig
+        # holds a RangeCap or None.
+        "range_cap": {"enabled": template.range_cap is not None,
+                      "softness_frac": (template.range_cap
+                                        or structs.RangeCap()).softness_frac},
     })
     return config
 

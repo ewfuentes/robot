@@ -89,10 +89,13 @@ class BearingObservationInputBindingTest(unittest.TestCase):
             self.root / "build", dataset="ds", generator="test",
             config={
                 "artifacts": {
+                    "frame_landmarks_version": "fl-v1",
                     "object_tracks_version": "tracks-v1",
                     "semantic_audits_version": "audits-v1",
                     "bearing_observations_version": "obs-v1",
                 },
+                "ingest": {"fov_deg": 90.0, "seam_gap_norm": 25.0,
+                           "seam_min_y_iou": 0.3},
                 "tracking": {"reference_pano_width": 64},
                 "bearing_observations": {"bearing_sigma_deg": 1.5},
             },
@@ -103,9 +106,13 @@ class BearingObservationInputBindingTest(unittest.TestCase):
             })
         document = build_config.load(self.build_path.parent)
         self.build_identity = document["build_identity"]
+        self.frame_ref = self._publish(
+            self.root / "artifacts" / paths.FRAME_LANDMARKS / "ds"
+            / "fl-v1", paths.FRAME_LANDMARKS, "fl-v1", config={})
         self.tracks_ref = self._publish(
             self.root / "artifacts" / paths.OBJECT_TRACKS / "ds"
             / "tracks-v1", paths.OBJECT_TRACKS, "tracks-v1",
+            upstreams=(self.frame_ref,),
             config={
                 "build_identity": self.build_identity,
                 "source_digests": {
@@ -139,6 +146,7 @@ class BearingObservationInputBindingTest(unittest.TestCase):
             "dataset_base": self.dataset_base,
             "tracks_dir": Path(self.tracks_ref.path),
             "audit_dir": Path(self.audits_ref.path),
+            "frame_landmarks_dir": Path(self.frame_ref.path),
             "output_dir": self.root / "artifacts"
                 / paths.BEARING_OBSERVATIONS / "ds" / "obs-v1",
             "build_config": self.build_path,
@@ -168,13 +176,48 @@ class BearingObservationInputBindingTest(unittest.TestCase):
                 orchestration_config_digest="0" * 64))
 
     def test_valid_inputs_load_and_bind_tracks_sources(self):
-        with mock.patch.object(subject.audit_io, "load_audits",
-                               return_value=self.fake_audits):
+        detection = types.SimpleNamespace(
+            obs_id="obs-1", additional_tags=[["distance_estimate",
+                                              "under_100m"]])
+        fake_ingest = types.SimpleNamespace(
+            frame_landmarks_ref=self.frame_ref, observations=[detection])
+        with (mock.patch.object(subject.audit_io, "load_audits",
+                                return_value=self.fake_audits),
+              mock.patch.object(subject.dataset, "run_ingest",
+                                return_value=fake_ingest) as run_ingest):
             loaded = subject.load_inputs(self._args())
         self.assertIs(loaded["audits"], self.fake_audits)
         self.assertEqual(
             loaded["source_digests"]["dataset_tracking_inputs"],
             artifact.sha256_json(self.dataset_digests))
+        # Consumers verify the exact source_digests key set, so the
+        # frame_landmarks digest rides beside the caps instead.
+        self.assertEqual(set(loaded["source_digests"]),
+                         {"build_config", "dataset_tracking_inputs",
+                          paths.OBJECT_TRACKS, paths.SEMANTIC_AUDITS})
+        self.assertEqual(loaded["frame_landmarks_ref"], self.frame_ref)
+        self.assertEqual(loaded["obs_by_id"], {"obs-1": detection})
+        params = run_ingest.call_args.args[2]
+        self.assertEqual((params.fov_deg, params.seam_gap_norm,
+                          params.seam_min_y_iou), (90.0, 25.0, 0.3))
+
+    def test_frame_landmarks_must_be_the_one_the_tracks_bind(self):
+        other = self._publish(
+            self.root / "artifacts" / paths.FRAME_LANDMARKS / "ds"
+            / "fl-other", paths.FRAME_LANDMARKS, "fl-other",
+            config={"note": "different"})
+        document = build_config.load(self.build_path.parent)
+        document["config"]["artifacts"]["frame_landmarks_version"] = (
+            "fl-other")
+        with (mock.patch.object(subject.audit_io, "load_audits",
+                                return_value=self.fake_audits),
+              mock.patch.object(subject.build_config, "load",
+                                return_value=document)):
+            with self.assertRaisesRegex(
+                    subject.BearingObservationError,
+                    "bind the exact frame_landmarks"):
+                subject.load_inputs(self._args(
+                    frame_landmarks_dir=Path(other.path)))
 
     def test_tracks_missing_source_binding_is_rejected(self):
         stale_tracks = self._publish(

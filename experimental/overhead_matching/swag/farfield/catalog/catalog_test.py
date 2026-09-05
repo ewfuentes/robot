@@ -196,7 +196,7 @@ class LoadCatalogTest(unittest.TestCase):
             frame.to_feather(path)
             with self.assertRaisesRegex(
                     schema.CatalogSchemaError,
-                    "exactly 'osm' or 'enc'"):
+                    "landmark_type must be one of"):
                 cat.load_catalog(
                     path, *ANCHOR, position_sigma_m=TEST_SIGMA_M)
 

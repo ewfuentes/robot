@@ -34,7 +34,13 @@ def _reject_duplicate_keys(pairs):
 
 
 def output_paths(output: Path) -> tuple[Path, Path, Path]:
-    feather = Path(output).with_suffix(".feather")
+    output = Path(output)
+    if output.suffix not in ("", ".feather"):
+        # with_suffix would swallow everything after the last dot, so a stem
+        # such as "overture_2026-08-19.0_v1" would land as "overture_2026-08-19".
+        raise ValueError(
+            f"source output stem must not contain a dot: {output.name!r}")
+    feather = output.with_suffix(".feather")
     sidecar = feather.with_suffix(".provenance.json")
     staging = feather.with_name(f".{feather.name}{artifact.INCOMPLETE_SUFFIX}")
     return feather, sidecar, staging
@@ -101,6 +107,12 @@ def _validate_completed_pair(
         raise ValueError(
             f"completed source payload changed during validation: {feather}")
     return frame, document
+
+
+def validate_completed_pair(
+        feather: Path, sidecar: Path) -> tuple[Any, dict[str, Any]]:
+    """Strictly reopen a completed source: (compact frame, sidecar document)."""
+    return _validate_completed_pair(Path(feather), Path(sidecar))
 
 
 def reuse_completed(

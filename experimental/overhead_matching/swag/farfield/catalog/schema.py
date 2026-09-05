@@ -22,7 +22,7 @@ META_COLUMNS = ("id", "geometry", "landmark_type", TAGS_COLUMN)
 REQUIRED_COLUMNS = frozenset(META_COLUMNS)
 OPTIONAL_STRUCTURAL_COLUMNS = frozenset({"object_class"})
 ALLOWED_COLUMNS = REQUIRED_COLUMNS | OPTIONAL_STRUCTURAL_COLUMNS
-ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc"})
+ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc", "overture"})
 
 
 class CatalogSchemaError(ValueError):
@@ -156,7 +156,8 @@ def _validate_frame(frame: pd.DataFrame,
     invalid_sources = sorted(set(invalid_sources))
     if invalid_sources:
         raise CatalogSchemaError(
-            "landmark_type must be exactly 'osm' or 'enc'; found "
+            "landmark_type must be one of "
+            f"{sorted(ALLOWED_LANDMARK_TYPES)}; found "
             f"{invalid_sources}{_where(context)}")
 
     decoded_tags = [

@@ -69,6 +69,28 @@ The exact policy and values belong in the reviewed plan, not in this document.
 All feather access goes through `catalog/schema.py`; semantic pruning uses the
 one vocabulary in `catalog/catalog.py`.
 
+## Added sources
+
+A source the stage-5 planner does not attest (today: Overture Places) enters
+as a **derived** catalog, never by rebuilding the full catalog:
+
+1. `dataset_tools:extract_landmarks_from_overture` turns a pinned-release
+   `overturemaps download --type=place` GeoParquet into a typed source Feather
+   under `raw_material/catalog_sources/<dataset>/`. Places are mapped onto the
+   OSM tag vocabulary by taxonomy hierarchy; each row keeps its per-record
+   source licences in `overture:*` tags that the keep vocabulary prunes at
+   load.
+2. `dataset_tools:add_catalog_source` appends that Feather to a published
+   catalog as a new CATALOGS artifact with exactly one catalog upstream, so
+   `catalog/lineage.py` still terminates at the full catalog's coverage
+   attestation. A source row whose normalised name matches a catalog row
+   within `--dedupe_name_radius_m` is a duplicate and is recorded, not added.
+3. `trim_catalog` runs on the result as on any other catalog, so added rows
+   face the same far-field rules as OSM rows.
+
+`landmark_type` names the source (`osm`, `enc`, `overture`) and matcher
+landmark ids are namespaced by it. See decisions.md, 2026-09-03.
+
 ## Data-root layout
 
 ```

@@ -76,6 +76,15 @@ class AcceptedTracklet:
     quality: dict
 
 
+def _validate_range_cap(value, where: str) -> None:
+    if value is None:
+        return
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0.0):
+        raise TrackletContractError(
+            f"{where} range_max_m must be null or a finite positive number")
+
+
 @dataclass(frozen=True)
 class CameraBearingObservation:
     tracklet_id: str
@@ -84,8 +93,16 @@ class CameraBearingObservation:
     angular_width_deg: float
     sigma_deg: float
     correlation_group: str
+    # Upper edge of the tightest extractor `distance_estimate` bucket among
+    # the detections associated at this keyframe (metres); None when no
+    # associated detection reported one. Measured on Pohang 2026-09-03: the
+    # true range is below this edge for 99.8% of labelled detections, while
+    # the bucket's lower edge holds for 13%, so it is a one-sided cap, never
+    # a range estimate.
+    range_max_m: float | None = None
 
     def __post_init__(self):
+        _validate_range_cap(self.range_max_m, "observation")
         if not isinstance(self.tracklet_id, str) or not self.tracklet_id:
             raise TrackletContractError(
                 "observation tracklet_id must be a non-empty string")
@@ -126,6 +143,75 @@ class Measurement:
     anchor_keyframe_idx: int
     bearing_camera_cw_deg: float
     kappa: float
+    # Tightest range cap among the epoch's observations; None if none had one.
+    range_max_m: float | None = None
+
+    def __post_init__(self):
+        _validate_range_cap(self.range_max_m, "measurement")
+
+
+# Extractor `distance_estimate` bucket -> upper edge in metres. `over_10km`
+# carries no finite cap.
+DISTANCE_BUCKET_UPPER_M = {
+    "under_100m": 100.0,
+    "100m_to_500m": 500.0,
+    "500m_to_2km": 2000.0,
+    "2km_to_10km": 10000.0,
+    "over_10km": None,
+}
+
+# Recorded support classes whose detection counts as evidence for the track,
+# the same set `semantic_audit.collect_evidence` trusts (track_builder's
+# SUPPORT_CLASSES; duplicated here so this contract module stays free of the
+# tracker's numpy dependency).
+EVIDENCE_SUPPORT_CLASSES = frozenset(
+    ("continue_clean", "merge_superset", "split_child", "weak"))
+
+
+def _distance_bucket(observation) -> str | None:
+    for key, value in getattr(observation, "additional_tags", ()):
+        if key == "distance_estimate":
+            return value
+    return None
+
+
+def range_caps_by_keyframe(track: dict, obs_by_id: Mapping) -> dict:
+    """Keyframe -> tightest finite bucket upper edge among the detections
+    associated at that keyframe (birth plus evidence-class supports).
+
+    Keyframes with no associated detection, or none reporting a finite
+    bucket, are absent. An unknown bucket value is a contract error: the
+    extractor's vocabulary is fixed and a typo must not read as "no cap".
+    """
+    caps: dict = {}
+
+    def note(keyframe: int, obs_id) -> None:
+        observation = obs_by_id.get(obs_id)
+        if observation is None:
+            raise TrackletContractError(
+                f"track {track.get('track_id')} references unknown "
+                f"observation {obs_id!r}")
+        bucket = _distance_bucket(observation)
+        if bucket is None:
+            return
+        if bucket not in DISTANCE_BUCKET_UPPER_M:
+            raise TrackletContractError(
+                f"track {track.get('track_id')} keyframe {keyframe}: unknown "
+                f"distance_estimate bucket {bucket!r}")
+        upper = DISTANCE_BUCKET_UPPER_M[bucket]
+        if upper is None:
+            return
+        current = caps.get(keyframe)
+        caps[keyframe] = upper if current is None else min(current, upper)
+
+    for record in track.get("records", []):
+        keyframe = int(record["keyframe"])
+        if record.get("action") == "birth":
+            note(keyframe, track.get("birth_obs_id"))
+        for support in record.get("supports", []):
+            if support.get("class") in EVIDENCE_SUPPORT_CLASSES:
+                note(keyframe, support.get("obs_id"))
+    return caps
 
 
 def _canonical_sha256(value) -> str:
@@ -424,8 +510,13 @@ def bearing_series(track: dict, pano_w: int, valid_segments=None) -> list:
 
 def build_camera_bearing_observations(
         accepted_tracklets: list[AcceptedTracklet], pano_w: int,
-        bearing_sigma_deg: float) -> list[CameraBearingObservation]:
-    """Preserve every audit-valid bearing at its actual keyframe."""
+        bearing_sigma_deg: float,
+        range_caps: Mapping | None = None) -> list[CameraBearingObservation]:
+    """Preserve every audit-valid bearing at its actual keyframe.
+
+    `range_caps` maps tracklet_id -> {keyframe: range_max_m}
+    (`range_caps_by_keyframe`); None leaves every observation uncapped.
+    """
     if (isinstance(bearing_sigma_deg, bool)
             or not isinstance(bearing_sigma_deg, (int, float))
             or not math.isfinite(bearing_sigma_deg)
@@ -434,6 +525,7 @@ def build_camera_bearing_observations(
             "bearing_sigma_deg must be finite and positive")
     observations = []
     for tracklet in accepted_tracklets:
+        caps = (range_caps or {}).get(tracklet.tracklet_id, {})
         for segment in tracklet.valid_segments:
             raw_segment = [{"start_t": segment.start_t,
                             "end_t": segment.end_t}]
@@ -447,7 +539,8 @@ def build_camera_bearing_observations(
                     bearing_camera_cw_deg=azimuth,
                     angular_width_deg=width,
                     sigma_deg=bearing_sigma_deg,
-                    correlation_group=correlation_group))
+                    correlation_group=correlation_group,
+                    range_max_m=caps.get(keyframe)))
     observations.sort(key=lambda obs: (obs.keyframe_idx, obs.tracklet_id,
                                        obs.correlation_group))
     return observations
@@ -470,11 +563,16 @@ def _fuse_group(observations: list[CameraBearingObservation],
         mean_sigma = sum(obs.sigma_deg for obs in bucket) / len(bucket)
         anchor = bucket[len(bucket) // 2].keyframe_idx
         sigma = math.hypot(mean_sigma, mean_width / 4.0)
+        # The tightest cap in the epoch: under_100m was never wrong on the
+        # labelled Pohang tracks, so the minimum is the honest fusion.
+        caps = [obs.range_max_m for obs in bucket
+                if obs.range_max_m is not None]
         fused.append(Measurement(
             tracklet_id=bucket[0].tracklet_id,
             anchor_keyframe_idx=anchor,
             bearing_camera_cw_deg=mean_azimuth,
-            kappa=1.0 / math.radians(sigma) ** 2))
+            kappa=1.0 / math.radians(sigma) ** 2,
+            range_max_m=min(caps) if caps else None))
 
     for observation in observations:
         if observation.keyframe_idx - start_keyframe >= epoch_keyframes:

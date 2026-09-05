@@ -64,6 +64,10 @@ class TrackletMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     anchor_keyframe_idx: int
     bearing_forward_cw_deg: float  # CW from nominal forward, in [0, 360)
     kappa: float  # von Mises concentration of the fused bearing
+    # One-sided range cap (metres) from the extractor's distance_estimate
+    # buckets: the true range lay below this edge for 99.8% of labelled Pohang
+    # detections. None when no detection in the epoch reported a bucket.
+    range_max_m: float | None = None
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -100,6 +104,17 @@ class UniformBoxInit(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     east_max_m: float
     north_min_m: float
     north_max_m: float
+
+
+class RangeCap(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Range cap on landmark components: multiply each by
+    g(r) = P(extractor said "<= cap" | true range r) = 1 for r <= cap and a
+    one-sided Gaussian tail beyond, of width softness_frac * cap. The null
+    component is untouched, so "no landmark" stays a competitive
+    explanation. `FilterConfig.range_cap is None` means no cap: the
+    likelihood is exactly the pre-cap one, cap or no cap on the measurement.
+    """
+    softness_frac: float = 0.25
 
 
 class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -256,6 +271,9 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # (given any exist), used to split a proper identity posterior between
     # endorsed and unendorsed candidates.
     matcher_recall: float = 0.5
+    # Range cap on landmark components (see RangeCap); None means no cap. A
+    # recorded run that predates the field reads as None, the value it had.
+    range_cap: RangeCap | None = None
     # Responsibilities below this are dropped from reported association
     # posteriors (likelihoods are never truncated), bounding dense-catalog
     # run time and artifact size.

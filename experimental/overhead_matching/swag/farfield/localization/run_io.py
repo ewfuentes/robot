@@ -31,6 +31,7 @@ import dataclasses
 import json
 import math
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -106,13 +107,24 @@ def _strict_json_document(payload: bytes, where: str) -> Any:
         raise ValueError(f"invalid JSON in {where}: {error}") from error
 
 
-def _reject_unknown_shape(source: Any, normalized: Any, where: str) -> None:
-    """Reject fields a typed msgspec decoder would otherwise ignore."""
+def _reject_unknown_shape(source: Any, normalized: Any, where: str,
+                          absent: list[str]) -> None:
+    """Reject fields a typed msgspec decoder would otherwise ignore.
+
+    One exception: a field the document lacks whose decoded value is None
+    came from an `X | None = None` struct default, so the document was
+    recorded before the field existed and None is the value it had. Such
+    fields are appended to `absent` for the caller to warn about instead of
+    rejected. A missing field with any other default is still an error: the
+    default would be a choice the run never made.
+    """
     if isinstance(source, dict):
         if not isinstance(normalized, dict):
             raise ValueError(f"{where} has the wrong JSON shape")
         unknown = sorted(set(source) - set(normalized))
         missing = sorted(set(normalized) - set(source))
+        optional = [key for key in missing if normalized[key] is None]
+        missing = [key for key in missing if normalized[key] is not None]
         if unknown or missing:
             details = []
             if unknown:
@@ -120,14 +132,16 @@ def _reject_unknown_shape(source: Any, normalized: Any, where: str) -> None:
             if missing:
                 details.append(f"missing fields {missing}")
             raise ValueError(f"{where} has " + ", ".join(details))
+        absent.extend(f"{where}.{key}" for key in optional)
         for key, value in source.items():
-            _reject_unknown_shape(value, normalized[key], f"{where}.{key}")
+            _reject_unknown_shape(value, normalized[key], f"{where}.{key}",
+                                  absent)
         return
     if isinstance(source, list):
         if not isinstance(normalized, list) or len(source) != len(normalized):
             raise ValueError(f"{where} has the wrong JSON list shape")
         for index, (value, decoded) in enumerate(zip(source, normalized)):
-            _reject_unknown_shape(value, decoded, f"{where}[{index}]")
+            _reject_unknown_shape(value, decoded, f"{where}[{index}]", absent)
         return
     # msgspec legitimately accepts an integer spelling for a float field.
     if (isinstance(source, (int, float)) and not isinstance(source, bool)
@@ -140,7 +154,18 @@ def _reject_unknown_shape(source: Any, normalized: Any, where: str) -> None:
         raise ValueError(f"{where} changed type or value while decoding")
 
 
-def _decode_typed_json(payload: bytes, record_type, where: str):
+def _warn_absent_fields(absent: list[str], where: str) -> None:
+    if absent:
+        warnings.warn(
+            f"{where} predates {len(absent)} optional field(s), read as "
+            f"None: {sorted(set(absent))[:8]}", RuntimeWarning, stacklevel=3)
+
+
+def _decode_typed_json(payload: bytes, record_type, where: str,
+                       absent: list[str] | None = None):
+    """Decode one strict record. Fields the document predates (see
+    `_reject_unknown_shape`) are appended to `absent` when given, so a file of
+    records warns once; otherwise this call warns itself."""
     document = _strict_json_document(payload, where)
     try:
         value = msgspec.json.decode(
@@ -150,7 +175,10 @@ def _decode_typed_json(payload: bytes, record_type, where: str):
         raise
     normalized = _strict_json_document(
         msgspec.json.encode(value, enc_hook=msgspec_enc_hook), where)
-    _reject_unknown_shape(document, normalized, where)
+    own = absent if absent is not None else []
+    _reject_unknown_shape(document, normalized, where, own)
+    if absent is None:
+        _warn_absent_fields(own, where)
     return value
 
 
@@ -159,19 +187,23 @@ _RETIRED_NOOP_FILTER_FIELDS = {
 }
 _RETIRED_NOOP_PROPOSAL_FIELDS = {
     "revival_enabled": False,
-    "revival_margin_nats": 0.0,
     "revival_match_radius_m": None,
+    "revival_margin_nats": 0.0,
 }
-
-
 def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
-    """Normalize one brief, never-merged experiment out of recorded runs.
+    """Normalize recorded runs across filter-config schema changes.
 
-    Several 2026-08-27 runs were stamped with damage-cap/revival settings while
-    all four were disabled. The experiment was removed before commit, leaving
-    valid no-op runs that the strict reader could no longer inspect. Accept
-    only the exact inactive spellings; a non-default value shaped a run and is
-    still unknown science, so it remains a hard error.
+    Retired fields: several 2026-08-27 runs were stamped with damage-cap/
+    revival settings while all four were disabled. The experiment was removed
+    before commit, leaving valid no-op runs that the strict reader could no
+    longer inspect. Accept only the exact inactive spellings; a non-default
+    value shaped a run and is still unknown science, so it remains a hard
+    error.
+
+    Fields added later are not back-filled here. A run recorded before a
+    setting existed reads only if the field is `X | None = None` (absent
+    means None, with a warning; see `_reject_unknown_shape`); any other
+    missing field fails the strict shape check and the run is re-run.
     """
     normalized = dict(document)
     filter_config = document.get("filter_config")
@@ -224,11 +256,15 @@ def _read_regular_file(path: Path) -> bytes:
 def read_jsonl(path: Path, record_type) -> list:
     payload = _read_regular_file(path)
     records = []
+    absent: list[str] = []
     for line_number, line in enumerate(payload.splitlines(), start=1):
         if not line.strip():
             raise ValueError(f"blank JSONL record in {path}:{line_number}")
         records.append(_decode_typed_json(
-            line, record_type, f"{path}:{line_number}"))
+            line, record_type, f"{path}:{line_number}", absent))
+    _warn_absent_fields(
+        [entry.rsplit(":", 1)[-1].split(".", 1)[-1] for entry in absent],
+        str(path))
     return records
 
 
@@ -795,9 +831,19 @@ def read_run(run_dir: Path) -> RunData:
             recorded_contract,
             f"{run_dir / artifact.MANIFEST_NAME} config "
             f"{RUN_CONTRACT_CONFIG_KEY}")
-    if recorded_contract != expected_contract:
+    try:
+        if not isinstance(recorded_contract, dict):
+            raise ValueError("run contract is not a JSON object")
+        # Same rule as the typed records: a field the recorded contract
+        # predates reads as None. The RunManifest decode above already warned
+        # about it, so the contract check stays quiet.
+        _reject_unknown_shape(recorded_contract, expected_contract,
+                              f"{run_dir / artifact.MANIFEST_NAME} config "
+                              f"{RUN_CONTRACT_CONFIG_KEY}", [])
+    except ValueError as error:
         raise ValueError(
-            "artifact manifest does not contain the exact run contract")
+            "artifact manifest does not contain the exact run contract: "
+            f"{error}") from error
     for key, expected in (
             ("run_kind", manifest.run_kind),
             ("localization_inputs_manifest_sha256",

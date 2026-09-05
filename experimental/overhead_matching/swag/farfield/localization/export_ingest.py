@@ -425,6 +425,11 @@ def validate(data: ExportData) -> None:
             problems.append(f"measurement anchored outside the run: {key}")
         if not math.isfinite(measurement.kappa) or measurement.kappa <= 0.0:
             problems.append(f"non-positive kappa on {key}")
+        cap = measurement.range_max_m
+        if cap is not None and (isinstance(cap, bool)
+                                or not isinstance(cap, (int, float))
+                                or not math.isfinite(cap) or cap <= 0.0):
+            problems.append(f"range_max_m must be null or positive on {key}")
         if (not math.isfinite(measurement.bearing_forward_cw_deg)
                 or not 0.0 <= measurement.bearing_forward_cw_deg < 360.0):
             problems.append(

@@ -207,10 +207,12 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
     if manifest.declared_outputs != ("observations.jsonl",):
         raise AlignmentDiagnosticError(
             "bearing_observations must declare only observations.jsonl")
-    expected_config_keys = _OBSERVATION_CONFIG_KEYS | (
-        frozenset())
+    # `range_cap` (localization's per-keyframe range cap provenance) is
+    # optional: pre-cap artifacts lack it and diagnostics never read it.
     config = _exact_keys(
-        manifest.config, expected_config_keys,
+        {key: value for key, value in manifest.config.items()
+         if key != "range_cap"},
+        _OBSERVATION_CONFIG_KEYS,
         "bearing_observations manifest config")
     if config["schema"] != "farfield_bearing_observations/v1":
         raise AlignmentDiagnosticError(
@@ -285,8 +287,10 @@ def load_observations(observations_dir: Path, manifest: artifact.ArtifactManifes
         except json.JSONDecodeError as error:
             raise AlignmentDiagnosticError(
                 f"{path}:{line_number}: malformed JSON: {error}") from error
-        _exact_keys(record, _OBSERVATION_KEYS,
-                    f"{path}:{line_number} observation")
+        # range_max_m (a per-keyframe range cap for localization) is optional
+        # here: alignment diagnostics are pure bearing geometry.
+        _exact_keys({k: v for k, v in record.items() if k != "range_max_m"},
+                    _OBSERVATION_KEYS, f"{path}:{line_number} observation")
         tracklet_id = record["tracklet_id"]
         if not isinstance(tracklet_id, str) or not tracklet_id:
             raise AlignmentDiagnosticError(

@@ -51,10 +51,21 @@ def publish_observations(
         git_commit: str | None = None,
         artifact_identity: str | None = None,
         recipe: dict | None = None,
-        arguments: tuple[str, ...] = ()) -> artifact.ArtifactRef:
-    """Build, validate, and atomically publish one observation artifact."""
+        arguments: tuple[str, ...] = (),
+        range_caps: dict | None = None,
+        frame_landmarks_digest: str | None = None) -> artifact.ArtifactRef:
+    """Build, validate, and atomically publish one observation artifact.
+
+    `range_caps` (tracklet_id -> {keyframe: range_max_m}) attaches the
+    extractor's distance_estimate cap to each observation; None publishes
+    uncapped observations and records that no cap source was consulted.
+    `frame_landmarks_digest` names the detections the caps came from; it is
+    recorded beside the caps, not in `source_digests`, whose exact key set
+    downstream consumers verify.
+    """
     observations = tracklets.build_camera_bearing_observations(
-        accepted_tracklets, pano_width, bearing_sigma_deg)
+        accepted_tracklets, pano_width, bearing_sigma_deg,
+        range_caps=range_caps)
     accepted_ids = {item.tracklet_id for item in accepted_tracklets}
     observed_ids = {item.tracklet_id for item in observations}
     missing = sorted(accepted_ids - observed_ids)
@@ -76,6 +87,14 @@ def publish_observations(
         "bearing_sigma_deg": bearing_sigma_deg,
         "n_accepted_tracklets": len(accepted_tracklets),
         "n_observations": len(records),
+        "range_cap": {
+            "source": ("frame_landmarks distance_estimate, tightest bucket "
+                       "upper edge per keyframe"
+                       if range_caps is not None else None),
+            "frame_landmarks_content_digest": frame_landmarks_digest,
+            "n_observations_with_cap": sum(
+                1 for item in observations if item.range_max_m is not None),
+        },
         "coverage": "complete",
         "source_digests": source_digests,
     }
@@ -108,6 +127,9 @@ def orchestration_contract(document: dict) -> dict:
     keys = (
         "bearing_observations.bearing_sigma_deg",
         "tracking.reference_pano_width",
+        "ingest.fov_deg",
+        "ingest.seam_gap_norm",
+        "ingest.seam_min_y_iou",
         "artifacts.bearing_observations_version",
     )
     selected = {key: build_config.value(document, key) for key in keys}
@@ -208,9 +230,33 @@ def load_inputs(args):
             != dataset_source_digest):
         raise BearingObservationError(
             "object_tracks does not bind the current frozen dataset sources")
+
+    # The range cap comes from the detections the tracks were built from:
+    # the frame_landmarks artifact the tracks manifest binds, re-ingested
+    # under the recorded ingest settings so obs_ids line up.
+    frame_ref = artifact.open_artifact(
+        args.frame_landmarks_dir, expected_kind=paths_lib.FRAME_LANDMARKS,
+        expected_dataset=args.dataset,
+        expected_version=build_config.value(
+            document, "artifacts.frame_landmarks_version"))
+    if sum(ref == frame_ref for ref in tracks_manifest.upstreams) != 1:
+        raise BearingObservationError(
+            "object_tracks must bind the exact frame_landmarks artifact once")
+    ingest_params = dataset.IngestParams(
+        fov_deg=build_config.value(document, "ingest.fov_deg"),
+        seam_gap_norm=build_config.value(document, "ingest.seam_gap_norm"),
+        seam_min_y_iou=build_config.value(document, "ingest.seam_min_y_iou"))
+    ingest_result = dataset.run_ingest(
+        dataset_base, args.frame_landmarks_dir, ingest_params)
+    if ingest_result.frame_landmarks_ref != frame_ref:
+        raise BearingObservationError(
+            "frame_landmarks identity disagrees with the opened artifact")
+    obs_by_id = {obs.obs_id: obs for obs in ingest_result.observations}
     return {
         "document": document,
         "audits": audits,
+        "obs_by_id": obs_by_id,
+        "frame_landmarks_ref": frame_ref,
         "output_version": output_version,
         "orchestration": orchestration,
         "source_digests": {
@@ -229,6 +275,10 @@ def main() -> None:
     parser.add_argument("--dataset_base", type=Path, required=True)
     parser.add_argument("--tracks_dir", type=Path, required=True)
     parser.add_argument("--audit_dir", type=Path, required=True)
+    parser.add_argument("--frame_landmarks_dir", type=Path, required=True,
+                        help="the frame_landmarks artifact the tracks bind; "
+                             "its distance_estimate buckets become each "
+                             "observation's range cap")
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--build_config", type=Path, required=True)
     parser.add_argument("--orchestration_config_digest", required=True)
@@ -248,6 +298,10 @@ def main() -> None:
         audits = resolved["audits"]
         accepted = tracklets.build_accepted_tracklets(
             audits.source_tracks, audits)
+        range_caps = {
+            item.tracklet_id: tracklets.range_caps_by_keyframe(
+                item.source_track, resolved["obs_by_id"])
+            for item in accepted}
         reference = publish_observations(
             args.output_dir, dataset_name=args.dataset,
             version=resolved["output_version"],
@@ -265,7 +319,10 @@ def main() -> None:
             artifact_identity=getattr(args, "artifact_identity", None),
             recipe=artifact_recipe.load(
                 getattr(args, "artifact_recipe", None)),
-            arguments=tuple(sys.argv))
+            arguments=tuple(sys.argv),
+            range_caps=range_caps,
+            frame_landmarks_digest=(
+                resolved["frame_landmarks_ref"].content_digest))
     except (artifact.ArtifactError, audit_io.AuditArtifactError,
             BearingObservationError, dataset.ContractViolation,
             tracklets.TrackletContractError, OSError, ValueError) as error:

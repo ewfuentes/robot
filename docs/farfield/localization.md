@@ -10,7 +10,11 @@ typed products with explicit lineage:
 2. `tracking/tracklets.py` applies the support gate and exposes only those
    accepted segments;
 3. `tracking:build_bearing_observations` fuses supported observations into
-   body/camera-frame bearing measurements;
+   body/camera-frame bearing measurements, each carrying `range_max_m`: the
+   tightest `distance_estimate` bucket upper edge among the detections
+   associated at that keyframe (null when none reported one). It is a
+   one-sided cap, not a range estimate; `localization.range_cap.*` decides
+   whether the filter uses it (decisions.md, 2026-09-03);
 4. matching supplies a weighted compatibility table, including a null
    alternative;
 5. `localization:build_export` publishes `localization_inputs` from bearings,

@@ -572,3 +572,130 @@ so on) stay, because those are about the data.
 **Rule (ekf).** Builds may name prior parts. When the config for a plugged-in
 stage is given, a differing shared value fails; a key the artifact predates
 warns. Schema growth must not orphan artifacts.
+
+## 2026-09-03 · A second source enters the catalog as a derived artifact, under the OSM vocabulary
+
+Overture Places (Meta, Microsoft, Foursquare, AllThePlaces; no OSM content)
+names things OSM lacks. On the Pohang review set it holds the marina T199, the
+seafood hall behind T164, the pier T6/T14/T17/T18 point at, and the exact
+name of the canal pavilion T0/T13 missed 14 times. Two ways to bring it in:
+
+1. Rebuild the stage-5 full catalog with Overture as a third input beside OSM
+   and ENC. That reopens the reviewed coverage plan for a source the plan
+   cannot attest (Overture has no clip polygons), and every existing lineage
+   would point at a catalog that no longer exists.
+2. Publish a **derived** catalog: the full catalog plus the source's rows,
+   with the full catalog as its single CATALOGS upstream. Lineage still
+   terminates at the OSM coverage attestation; `trim_catalog` runs on top
+   unchanged.
+
+We do 2 (`dataset_tools:add_catalog_source`). Three rules travel with it:
+
+- **Overture rows speak OSM.** `extract_landmarks_from_overture` maps each
+  place's taxonomy hierarchy onto OSM-style tags (root default, leaf
+  override). The trim then judges an Overture café by the same
+  name-rescue/unobservable rules as an OSM `amenity=cafe` node. There is no
+  Overture-specific keep list; a "far_field=retain" flag computed outside the
+  repo is exactly the kind of untracked selection the artifact contract
+  exists to prevent.
+- **Same name within radius = same thing.** A source row is dropped when any
+  name-like tag equals a catalog row's (NFKC, casefold, letters and digits
+  only) within `--dedupe_name_radius_m` (150 m here, the collision-report
+  radius). Different-name near neighbours are kept: the matcher, not the
+  merge, decides which of two records of one building is right. Every
+  dropped pair is in the manifest config.
+- **Licences stay on the row.** Places is licensed per source record, so the
+  `overture:sources` tag carries each record's dataset, licence and id. It is
+  outside the keep vocabulary and never reaches the matcher.
+
+`landmark_type` gains `overture`; the matcher's landmark ids are namespaced by
+that column (`overture:<gers-id>`) instead of folding every non-ENC source
+into `osm:`.
+
+Fetch box: the catalog manifest's `bbox_wsen` (trajectory + 25 km), not the
+trajectory extent, so range landmarks (POSCO, Yeongildae, the breakwater
+lights) are covered the same way the OSM extract covers them.
+
+## 2026-09-03 · The extractor's distance bucket is a one-sided range cap, carried per keyframe
+
+The extraction prompt asks for a `distance_estimate` bucket per detection
+(<100 m, 100-500 m, 500 m-2 km, 2-10 km, >10 km). Until now it reached only
+the audit dossier text. Measured on Pohang against 44 labelled tracks whose
+bearing rays hit the labelled geometry (1,628 detections):
+
+- rank-correlated with true range (Spearman 0.87 per detection, 0.91 per
+  track), but **biased one bucket far**: exact agreement 13 %, within one
+  bucket 88 %, only 13.5 % of detections beyond their bucket's lower edge;
+- **99.8 % of detections nearer than the predicted bucket's upper edge**;
+- `under_100m` right 124/124 times (median 22 m), and it is what the bridges
+  we pass under carry.
+
+So the bucket enters the filter as a cap, never as a two-sided estimate or a
+lower bound. Three touch points, no new stage:
+
+1. `bearings`: each `CameraBearingObservation` gains `range_max_m`, the
+   tightest finite upper edge among the detections associated at that
+   keyframe (birth plus evidence-class supports, the audit's own set). The
+   stage now re-ingests the frame_landmarks the tracks bind, under the
+   recorded `ingest.*` settings, which therefore join its config prefixes;
+   `over_10km` is no cap. Readers of `observations.jsonl` treat a missing key
+   as no cap, so pre-cap artifacts still load.
+2. `localization_inputs`: the epoch reducer keeps the minimum cap in the
+   epoch (`under_100m` was never wrong here); `TrackletMeasurement.range_max_m`
+   rides into the export.
+3. `localize`: every landmark component is multiplied by
+   g(r) = 1 for r <= cap, exp(-½((r-cap)/(s·cap))²) beyond, in both the numpy
+   and torch kernels and in the committed-landmark density. The null
+   component is untouched, so clutter stays a competitive explanation.
+   `localization.range_cap.enabled` / `.softness_frac` are required keys;
+   disabled strips caps before any kernel, so the likelihood is bit-identical
+   to before whatever the export recorded.
+
+Why not per-keyframe measurements first: measured on the same tracks, the
+5-keyframe epoch reducer gives near landmarks (<100 m) 15 % of the total
+bearing precision and a 22-36° sigma under bridges, because the mask-width/4
+term and the circular mean erase the parallax. That is a separate change
+(ekf: stay with epochs for now); the cap is the cheap test of whether range
+information moves Pohang at all.
+
+**Measured 2026-09-04 (Pohang, 4 seeds, distance-normalised mass @500 m).**
+OSM-trim baseline 0.200 → 0.594 with the cap; Overture catalog 0.031 →
+0.612. Mass @100 m 0.024 → 0.18; final MAP 2–4 km → 0.5–0.8 km. Same
+matches, same tracks, no LLM call: one likelihood term. The Overture arm's
+collapse had been a handful of confident instance matches to landmarks 2–23
+km away; under a 100–500 m cap those components vanish, so the cap does not fix
+the association but makes wrong far associations harmless while near caps add
+the range information a bearing lacks. Cross-dataset check:
+`runs/260904_range_cap`. The filter config holds the cap as
+`range_cap: RangeCap | None`, None meaning no cap, and the measurement's
+`range_max_m` is `float | None`. The strict run reader has one general rule
+for such fields: a document that lacks an `X | None = None` field reads it
+as None and warns once per file, because None is the value the run had; a
+missing field with any other default is still rejected. No per-field
+back-fill table exists (review on PR #705). Alignment diagnostics ignore the
+bearings manifest's `range_cap` block, since they verify every other key as
+an exact set.
+
+**Cross-dataset check (2026-09-04, `runs/260904_range_cap`, successors of the
+260828 IMU baselines, 4 seeds, dn500 baseline → cap).** Boston leg1
+0.342 → 0.779, leg2 0.001 → 0.003, leg3 0.263 → 0.277; Mount Washington leg1
+0.000 → 0.004, leg2 0.940 → 0.947, leg3 0.431 → 0.623 with the seed
+bimodality gone (0.21–0.52 → 0.622–0.624) and a 39 m final MAP. Never worse;
+helps wherever the filter had near landmarks to bind, neutral where every
+landmark is beyond the 2–10 km buckets (Boston leg3), nothing where the data
+was already dead upstream (Boston leg2, mtw leg1 with 136 observations).
+Second batch the same day: Charles River (IMU-baseline successors) stays at
+its saturated 0.997 with dn100 0.649 → 0.655 and a 21 m final MAP; Boston
+snowy (successors of the 260903 `osmv2_v1` build, a 25 × 25 km OSM box)
+0.387 → 0.854 at 500 m, 0.171 → 0.604 at 100 m, final MAP 580–690 m → 26 m
+on every seed. Each dataset kept the catalog its baseline used, so the
+comparison is only the cap. Franconia leg 1 (successors of the 260903
+`stage3_b847f55_v1` build, 25 × 25 km box with 1,891 rows) is the one dead
+dataset the cap moves: dn500 0.002 → 0.102 and dn1000 0.013 → 0.297 over
+4 seeds, but three of four seeds still end 9–10 km off (one at 991 m). Only
+716 of 1,337 observations carry a cap there; the rest are `over_10km`
+summits, which the cap leaves unconstrained. Flevoland polder on the Gemini
+3.1 Pro matching pass (`stage3_b847f55_osmv2_pro_v1`, 25.6 × 29.4 km prior
+region) stays at 0.000 with and without the cap: only 4 of 169 tracks have
+an instance match at ≥ 0.8, so nearly every bearing is identity-free and a
+cap on it binds nothing. That is a matching problem, not a filter one.

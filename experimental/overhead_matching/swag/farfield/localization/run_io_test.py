@@ -293,6 +293,68 @@ class StrictReaderTest(unittest.TestCase):
 
         self.assertEqual(loaded.manifest, manifest)
 
+    def test_measurements_recorded_before_the_range_cap_read_as_uncapped(self):
+        # An `X | None = None` field the record predates reads as None, once
+        # warned about per file; no per-field table is involved.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_sample(run_dir)
+            path = run_dir / "tier1_measurements.jsonl"
+            stripped = []
+            for line in path.read_text().splitlines():
+                record = msgspec.json.decode(line)
+                record.pop("range_max_m")
+                stripped.append(msgspec.json.encode(record).decode())
+            replace_payload(run_dir, "tier1_measurements.jsonl",
+                            ("\n".join(stripped) + "\n").encode())
+
+            with self.assertWarnsRegex(RuntimeWarning, "range_max_m") as cm:
+                loaded = run_io.read_run(run_dir)
+
+        self.assertTrue(loaded.measurements)
+        self.assertTrue(all(m.range_max_m is None for m in loaded.measurements))
+        self.assertEqual(len(cm.warnings), 1)
+
+    def test_runs_recorded_before_the_range_cap_read_as_uncapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            manifest, *_ = write_sample(run_dir)
+            run_manifest_path = run_dir / run_io.RUN_MANIFEST_NAME
+            run_manifest = msgspec.json.decode(run_manifest_path.read_bytes())
+            run_manifest["filter_config"].pop("range_cap")
+            artifact.atomic_write_json(run_manifest_path, run_manifest)
+            outer = artifact.load_manifest(run_dir)
+            config = dict(outer.config)
+            contract = dict(config[run_io.RUN_CONTRACT_CONFIG_KEY])
+            contract["filter_config"].pop("range_cap")
+            config[run_io.RUN_CONTRACT_CONFIG_KEY] = contract
+            artifact.atomic_write_json(
+                run_dir / artifact.MANIFEST_NAME,
+                dataclasses.replace(outer, config=config).to_dict())
+            repair_content_digest(run_dir)
+
+            with self.assertWarnsRegex(RuntimeWarning, "range_cap"):
+                loaded = run_io.read_run(run_dir)
+
+        self.assertIsNone(loaded.manifest.filter_config.range_cap)
+        self.assertEqual(
+            msgspec.structs.replace(loaded.manifest.filter_config,
+                                    range_cap=manifest.filter_config.range_cap),
+            manifest.filter_config)
+
+    def test_missing_field_without_a_none_default_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_sample(run_dir)
+            run_manifest_path = run_dir / run_io.RUN_MANIFEST_NAME
+            run_manifest = msgspec.json.decode(run_manifest_path.read_bytes())
+            run_manifest["filter_config"].pop("matcher_recall")
+            artifact.atomic_write_json(run_manifest_path, run_manifest)
+            repair_content_digest(run_dir)
+
+            with self.assertRaisesRegex(ValueError, "missing fields"):
+                run_io.read_run(run_dir)
+
     def test_retired_experiment_fields_reject_active_values(self):
         cases = (
             {"measurement_damage_cap_nats": 2.0},
