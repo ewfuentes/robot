@@ -172,6 +172,44 @@ class TorchMeasurementEngine:
         return result
 
     @torch.no_grad()
+    def track_joint_log_q(self, belief, meas, spec, outlier_rate: float):
+        """Mirror of filter.track_joint_log_q on the device: log q_j(x) for
+        the tracklet's endorsed rows only, returned to numpy because the
+        running state lives beside the other per-particle arrays."""
+        if spec.candidate_idx.size == 0:
+            return None
+        east = torch.as_tensor(belief.east_m, dtype=self.dtype,
+                               device=self.device)
+        north = torch.as_tensor(belief.north_m, dtype=self.dtype,
+                                device=self.device)
+        heading = torch.as_tensor(belief.heading_rad, dtype=self.dtype,
+                                  device=self.device)
+        idx = torch.as_tensor(spec.candidate_idx, device=self.device)
+        kappa_z = min(float(meas.kappa), filter_mod.MAX_KAPPA)
+        observed = math.radians(meas.bearing_forward_cw_deg)
+        d_east = self.east[idx][None, :] - east[:, None]
+        d_north = self.north[idx][None, :] - north[:, None]
+        delta = torch.atan2(d_east, d_north) - heading[:, None] - observed
+        delta = torch.remainder(delta + math.pi, _TWO_PI) - math.pi
+        if self.sigma_pos is None:
+            kappa = torch.as_tensor(kappa_z, dtype=self.dtype,
+                                    device=self.device)
+        else:
+            rng = torch.sqrt(d_east * d_east + d_north * d_north)
+            kappa = 1.0 / (1.0 / kappa_z
+                           + torch.square(self.sigma_pos[idx][None, :]
+                                          / torch.clamp(rng, min=1.0)))
+        log_norm = math.log(_TWO_PI) + torch.log(
+            torch.special.i0e(kappa)) + kappa
+        log_vm = kappa * torch.cos(delta) - log_norm
+        if getattr(meas, "range_max_m", None) is not None:
+            log_vm = log_vm + self._range_cap_log_term(d_east, d_north, meas)
+        log_q = torch.logaddexp(
+            math.log1p(-outlier_rate) + log_vm,
+            torch.full_like(log_vm, math.log(outlier_rate) - math.log(_TWO_PI)))
+        return log_q.double().cpu().numpy()
+
+    @torch.no_grad()
     def pose_log_likelihood(self, east_m, north_m, heading_rad, meas,
                             pi0: float) -> np.ndarray:
         """Mirror of filter.pose_log_likelihood (§5.5 hypothesis scoring)."""

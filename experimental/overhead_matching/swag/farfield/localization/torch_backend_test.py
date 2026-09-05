@@ -141,6 +141,19 @@ class TorchBackendEquivalenceTest(unittest.TestCase):
                 belief.east_m[:31], belief.north_m[:31],
                 belief.heading_rad[:31], meas, 0.2), actual, atol=1e-3))
 
+    def test_track_joint_log_q_matches_numpy(self):
+        catalog, table, belief, meas = _fixture(position_sigma=8.0)
+        meas = structs.TrackletMeasurement("trk", 0, 41.0, 220.0,
+                                           range_max_m=6000.0)
+        spec = pf.track_joint_spec(table, catalog, 0.2, 0.5, flatten=False)
+        expected = pf.track_joint_log_q(
+            belief.east_m, belief.north_m, belief.heading_rad, meas, spec,
+            catalog, 0.1, 0.25)
+        engine = torch_backend.TorchMeasurementEngine(
+            catalog, {}, device="cpu", dtype=torch.float64)
+        actual = engine.track_joint_log_q(belief, meas, spec, 0.1)
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+
     def test_chunked_pose_likelihood_matches_numpy(self):
         catalog, table, belief, meas = _fixture(position_sigma=8.0)
         log_weight = pf._identity_log_weights(table, catalog, 0.5)

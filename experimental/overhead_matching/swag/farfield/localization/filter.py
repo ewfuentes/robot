@@ -58,7 +58,11 @@ MAX_KAPPA = 1.0e6
 GLOBAL_SOFTMAX = "global_softmax"    # historical: softmax of LLRs, normalized over the whole catalog
 VISIBLE_SOFTMAX = "visible_softmax"  # same prior, renormalized per particle over rows the range cap admits
 VISIBLE_FLAT = "visible_flat"        # as visible_softmax, but every endorsed row gets the same prior
-IDENTITY_WEIGHTS = (GLOBAL_SOFTMAX, VISIBLE_SOFTMAX, VISIBLE_FLAT)
+TRACK_JOINT = "track_joint"          # one identity per TRACK, marginalized exactly over its keyframes
+TRACK_JOINT_FLAT = "track_joint_flat"
+IDENTITY_WEIGHTS = (GLOBAL_SOFTMAX, VISIBLE_SOFTMAX, VISIBLE_FLAT,
+                    TRACK_JOINT, TRACK_JOINT_FLAT)
+JOINT_MODELS = (TRACK_JOINT, TRACK_JOINT_FLAT)
 # Candidate-axis block size for the measurement update, bounding the (N, M)
 # temporary arrays.
 CANDIDATE_BLOCK = 256
@@ -87,6 +91,11 @@ class ParticleBelief:
     # int32 array of catalog indices / ASSOC_NULL / ASSOC_UNCOMMITTED.
     # Survives resampling like any other per-particle state.
     associations: dict = None
+    # Per-tracklet running log-likelihoods for the track-joint model
+    # (`track_joint_update`): tracklet_id -> (n, K+1) array, one column per
+    # endorsed candidate row plus the clutter/background column. Survives
+    # resampling like any other per-particle state.
+    track_joint: dict = None
 
     def __post_init__(self):
         if self.proposal_event_id is None:
@@ -99,6 +108,8 @@ class ParticleBelief:
             self.mode_id = np.full(self.east_m.shape[0], -1, dtype=np.int64)
         if self.associations is None:
             self.associations = {}
+        if self.track_joint is None:
+            self.track_joint = {}
 
     @property
     def n(self) -> int:
@@ -111,7 +122,9 @@ class ParticleBelief:
                               self.proposal_hypothesis.copy(),
                               self.mode_id.copy(),
                               {tid: arr.copy()
-                               for tid, arr in self.associations.items()})
+                               for tid, arr in self.associations.items()},
+                              {tid: arr.copy()
+                               for tid, arr in self.track_joint.items()})
 
     def take(self, idx: np.ndarray) -> None:
         """Reindex every per-particle array in place (resample/inject)."""
@@ -123,6 +136,8 @@ class ParticleBelief:
         self.mode_id = self.mode_id[idx]
         for tid in self.associations:
             self.associations[tid] = self.associations[tid][idx]
+        for tid in self.track_joint:
+            self.track_joint[tid] = self.track_joint[tid][idx]
 
     def normalized_weights(self) -> np.ndarray:
         return np.exp(self.log_weight - special.logsumexp(self.log_weight))
@@ -775,6 +790,118 @@ def _commit_share_posteriors(belief, meas, assoc, landmark_ids, per_mode,
     return posteriors
 
 
+@dataclasses.dataclass(frozen=True)
+class TrackJointSpec:
+    """Static per-tracklet terms of the track-joint model (`track_joint_update`).
+
+    The track is ONE physical object, so its identity is marginalized once
+    over the whole bearing series rather than per epoch:
+
+        p(z_1..z_t | x_1..x_t) = c0 (1/2pi)^t
+                                 + (1-pi0) sum_j p(j) prod_s q_j(x_s)
+        q_j(x) = (1-eps) vM(delta_j(x); kappa_eff) g(r_j(x)) + eps / (2 pi)
+
+    over the table's endorsed rows j; c0 = pi0 + (1-pi0)(1-recall) folds the
+    clutter hypothesis and the unendorsed remainder (which carry no geometry
+    here) into one background column. Applied incrementally, the weight
+    gain at keyframe t is log Z_t - log Z_{t-1}: the identity prior is paid
+    once per track and every later keyframe delivers undiluted geometry —
+    what association persistence approximated by sampling one identity per
+    particle, computed exactly instead."""
+    candidate_idx: np.ndarray   # catalog indices of the endorsed rows (K,)
+    log_prior: np.ndarray       # log[(1-pi0) p(j)] per candidate (K,)
+    log_background: float       # log c0
+
+
+def track_joint_spec(table: structs.CompatibilityTable,
+                     catalog: catalog_mod.LandmarkCatalog, pi0: float,
+                     matcher_recall: float, flatten: bool) -> TrackJointSpec:
+    log_lr = _clipped_log_lr(table, catalog)
+    endorsed = ~_surprise_mask(table, log_lr)
+    idx = np.nonzero(endorsed)[0]
+    if idx.size == 0:
+        return TrackJointSpec(idx, np.zeros(0), 0.0)  # background only
+    logits = np.zeros(idx.size) if flatten else log_lr[idx]
+    log_p = math.log(matcher_recall) + logits - special.logsumexp(logits)
+    return TrackJointSpec(
+        idx, math.log1p(-pi0) + log_p,
+        math.log(pi0 + (1.0 - pi0) * (1.0 - matcher_recall)))
+
+
+def track_joint_log_q(east_m, north_m, heading_rad, meas, spec: TrackJointSpec,
+                      catalog, outlier_rate: float, range_softness: float):
+    """log q_j(x) for every particle x candidate (n, K)."""
+    kappa_z = min(float(meas.kappa), MAX_KAPPA)
+    observed_rad = math.radians(meas.bearing_forward_cw_deg)
+    d_east = catalog.east_m[spec.candidate_idx][None, :] - east_m[:, None]
+    d_north = catalog.north_m[spec.candidate_idx][None, :] - north_m[:, None]
+    range_m = np.hypot(d_east, d_north)
+    delta = geo.wrap_rad(geo.compass_bearing_rad(d_east, d_north)
+                         - heading_rad[:, None] - observed_rad)
+    log_vm = von_mises_logpdf(
+        delta, catalog.kappa_eff(kappa_z, range_m, spec.candidate_idx))
+    if meas.range_max_m is not None:
+        log_vm = log_vm + range_cap_log_term(range_m, meas.range_max_m,
+                                             range_softness)
+    return np.logaddexp(math.log1p(-outlier_rate) + log_vm,
+                        math.log(outlier_rate) - math.log(2.0 * math.pi))
+
+
+def _track_joint_log_z(state: np.ndarray, spec: TrackJointSpec) -> np.ndarray:
+    """log Z per particle from the running state (n, K+1)."""
+    return special.logsumexp(
+        np.concatenate([state[:, :-1] + spec.log_prior[None, :],
+                        state[:, -1:] + spec.log_background], axis=1),
+        axis=1)
+
+
+def track_joint_update(belief: ParticleBelief, meas, spec: TrackJointSpec,
+                       catalog, per_mode: bool, resp_min: float,
+                       outlier_rate: float, range_softness: float,
+                       log_q=None) -> list:
+    """Track-joint bearing update (`TrackJointSpec`): advances the tracklet's
+    running state in place and multiplies the weights by Z_t / Z_{t-1}.
+    `log_q` may be supplied precomputed (the torch backend does the dense
+    geometry on-device); the state itself stays numpy so resampling and
+    injection reindex it like every other per-particle array."""
+    state = belief.track_joint.get(meas.tracklet_id)
+    if state is None:
+        state = np.zeros((belief.n, spec.candidate_idx.size + 1))
+        belief.track_joint[meas.tracklet_id] = state
+    log_z_before = _track_joint_log_z(state, spec)
+    if spec.candidate_idx.size:
+        if log_q is None:
+            log_q = track_joint_log_q(
+                belief.east_m, belief.north_m, belief.heading_rad, meas,
+                spec, catalog, outlier_rate, range_softness)
+        state[:, :-1] += log_q
+    state[:, -1] += -math.log(2.0 * math.pi)
+    log_z = _track_joint_log_z(state, spec)
+    belief.log_weight += log_z - log_z_before
+
+    # Reportable form: the per-particle identity posterior given the whole
+    # history so far, averaged under the updated weights.
+    groups = _responsibility_groups(belief, per_mode)
+    null_term = np.exp(state[:, -1] + spec.log_background - log_z)
+    posteriors = []
+    for mode_id, group_weights in groups:
+        responsibilities = {}
+        if spec.candidate_idx.size:
+            avg = group_weights @ np.exp(
+                state[:, :-1] + spec.log_prior[None, :] - log_z[:, None])
+            for offset in np.nonzero(avg >= resp_min)[0]:
+                responsibilities[
+                    catalog.landmark_ids[spec.candidate_idx[offset]]] = float(
+                        avg[offset])
+        posteriors.append(structs.AssociationPosterior(
+            tracklet_id=meas.tracklet_id,
+            anchor_keyframe_idx=meas.anchor_keyframe_idx,
+            null_share=float(group_weights @ null_term),
+            responsibilities=responsibilities, mode_id=mode_id,
+            surprise_share=0.0))
+    return posteriors
+
+
 def ess(log_weight: np.ndarray) -> float:
     w = np.exp(log_weight - special.logsumexp(log_weight))
     return 1.0 / float(np.sum(np.square(w)))
@@ -1027,6 +1154,12 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
         belief.mode_id, np.full(east.size, -1, dtype=np.int64)])
     # ...and no association history: they commit at each tracklet's next
     # epoch, paying the identity prior the kept mass has already paid.
+    for tid in belief.track_joint:
+        # ...and no track history: their first keyframe on each track pays
+        # the full identity prior, exactly like the kept mass once did.
+        belief.track_joint[tid] = np.concatenate([
+            belief.track_joint[tid],
+            np.zeros((east.size, belief.track_joint[tid].shape[1]))])
     for tid in belief.associations:
         belief.associations[tid] = np.concatenate([
             belief.associations[tid],
@@ -1256,6 +1389,10 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
         raise ValueError(
             f"unknown identity_weights {config.identity_weights!r}; expected "
             f"one of {IDENTITY_WEIGHTS}")
+    if not 0.0 < config.association_outlier_rate < 1.0 \
+            and config.identity_weights in JOINT_MODELS:
+        raise ValueError("track_joint needs association_outlier_rate in "
+                         "(0, 1) as its per-keyframe outlier share")
     if (config.identity_weights != GLOBAL_SOFTMAX
             and config.association_persistence):
         raise ValueError(
@@ -1342,7 +1479,18 @@ def run_filter(
 
     # Tables are static for a run, so their identity posteriors and
     # endorsement masks are computed once, not per measurement.
-    visible = config.identity_weights != GLOBAL_SOFTMAX
+    joint = config.identity_weights in JOINT_MODELS
+    visible = config.identity_weights != GLOBAL_SOFTMAX and not joint
+    joint_cache = {
+        tid: track_joint_spec(
+            table, catalog, config.pi0, config.matcher_recall,
+            flatten=config.identity_weights == TRACK_JOINT_FLAT)
+        for tid, table in tables.items()} if joint else {}
+    # A track's running state is dropped after its last epoch.
+    last_epoch = {}
+    for meas in measurements:
+        last_epoch[meas.tracklet_id] = max(
+            last_epoch.get(meas.tracklet_id, -1), meas.anchor_keyframe_idx)
     weight_cache = {
         tid: _identity_log_weights(
             table, catalog, config.matcher_recall,
@@ -1375,6 +1523,15 @@ def run_filter(
             range_softness=_range_softness(config), visible=visible)
 
         def apply_measurement(meas):
+            if joint:
+                return track_joint_update(
+                    belief, meas, joint_cache[meas.tracklet_id], catalog,
+                    per_mode=config.modes.enabled, resp_min=resp_min,
+                    outlier_rate=config.association_outlier_rate,
+                    range_softness=_range_softness(config),
+                    log_q=engine.track_joint_log_q(
+                        belief, meas, joint_cache[meas.tracklet_id],
+                        config.association_outlier_rate))
             return engine.update(
                 belief, meas, config.pi0, per_mode=config.modes.enabled,
                 resp_min=resp_min, assoc=_assoc_for(meas),
@@ -1383,6 +1540,12 @@ def run_filter(
                 draw_seed=measurement_draw_seed(config.seed, meas))
     elif config.measurement_backend == "numpy":
         def apply_measurement(meas):
+            if joint:
+                return track_joint_update(
+                    belief, meas, joint_cache[meas.tracklet_id], catalog,
+                    per_mode=config.modes.enabled, resp_min=resp_min,
+                    outlier_rate=config.association_outlier_rate,
+                    range_softness=_range_softness(config))
             return measurement_update(
                 belief, meas, tables[meas.tracklet_id], catalog, config.pi0,
                 per_mode=config.modes.enabled,
@@ -1467,6 +1630,10 @@ def run_filter(
             m.tracklet_id: belief.associations[m.tracklet_id].copy()
             for m in keyframe_measurements
             if m.tracklet_id in belief.associations}
+        joint_snapshot = {
+            m.tracklet_id: belief.track_joint[m.tracklet_id].copy()
+            for m in keyframe_measurements
+            if m.tracklet_id in belief.track_joint}
 
         if observer is not None:
             observer.keyframe_start(kf, belief)
@@ -1587,6 +1754,13 @@ def run_filter(
                     else:
                         belief.associations[tid][:n_kept] = (
                             previous[kept_idx])
+                for meas in keyframe_measurements:
+                    tid = meas.tracklet_id
+                    if tid not in belief.track_joint:
+                        continue
+                    previous = joint_snapshot.get(tid)
+                    belief.track_joint[tid][:n_kept] = (
+                        0.0 if previous is None else previous[kept_idx])
                 # Injected particles have not seen this keyframe's bearings,
                 # so re-apply them to the whole belief. Injected mass is
                 # drawn from a subset of tracklets; scoring everything under
@@ -1648,7 +1822,11 @@ def run_filter(
             # Association state is replayable from Tier 1 and would add
             # ~n_tracklets * n_particles ints per checkpoint.
             snapshot.associations = {}
+            snapshot.track_joint = {}
             checkpoints[kf] = snapshot
+        for meas in keyframe_measurements:
+            if last_epoch[meas.tracklet_id] == kf:
+                belief.track_joint.pop(meas.tracklet_id, None)
 
         if resampled:
             resample_before = ((belief.log_weight.copy(), belief.mode_id.copy())

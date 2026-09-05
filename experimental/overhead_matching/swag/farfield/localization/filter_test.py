@@ -293,6 +293,102 @@ class IdentityWeightsTest(unittest.TestCase):
             pf._validate(config, None, [], [], {})
 
 
+class TrackJointTest(unittest.TestCase):
+    """identity_weights=track_joint: one identity per track, marginalized
+    exactly over its keyframes."""
+
+    def _world(self):
+        catalog = _catalog(["A", "B", "u"], [0.0, 3000.0, 20000.0],
+                           [1000.0, 0.0, 0.0])
+        table = structs.CompatibilityTable(
+            "trk", "v", [structs.CompatibilityEntry("A", 4.0),
+                         structs.CompatibilityEntry("B", 4.0)],
+            default_log_lr=-2.0, clip_lo=-4.0, clip_hi=4.0, status="fast")
+        spec = pf.track_joint_spec(table, catalog, pi0=0.2,
+                                   matcher_recall=0.5, flatten=False)
+        return catalog, table, spec
+
+    def test_spec_terms(self):
+        catalog, _, spec = self._world()
+        np.testing.assert_array_equal(spec.candidate_idx, [0, 1])
+        np.testing.assert_allclose(np.exp(spec.log_prior), [0.2, 0.2])
+        self.assertAlmostEqual(math.exp(spec.log_background), 0.2 + 0.8 * 0.5)
+
+    def test_prior_paid_once(self):
+        """A particle aligned with A on two keyframes: the first update pays
+        p(A), the second is (almost) pure geometry, so the second gain
+        exceeds the first by about log(1 / p(A))."""
+        catalog, _, spec = self._world()
+        belief = pf.ParticleBelief(np.zeros(1), np.zeros(1), np.zeros(1),
+                                   np.zeros(1))
+        meas = structs.TrackletMeasurement("trk", 0, 0.0, 3000.0)  # A is due north
+        pf.track_joint_update(belief, meas, spec, catalog, per_mode=False,
+                              resp_min=0.0, outlier_rate=0.1,
+                              range_softness=0.25)
+        first = float(belief.log_weight[0])
+        meas2 = structs.TrackletMeasurement("trk", 1, 0.0, 3000.0)
+        pf.track_joint_update(belief, meas2, spec, catalog, per_mode=False,
+                              resp_min=0.0, outlier_rate=0.1,
+                              range_softness=0.25)
+        second = float(belief.log_weight[0]) - first
+        # Closed form: Z_t = c0 (1/2pi)^t + sum_j (1-pi0) p(j) q_j^t.
+        q = np.exp(pf.track_joint_log_q(
+            np.zeros(1), np.zeros(1), np.zeros(1), meas, spec, catalog,
+            0.1, 0.25))[0]
+        c0 = math.exp(spec.log_background)
+        z = lambda t: c0 * (1 / (2 * math.pi)) ** t + float(
+            np.sum(np.exp(spec.log_prior) * q ** t))
+        self.assertAlmostEqual(first, math.log(z(1)), places=9)
+        self.assertAlmostEqual(second, math.log(z(2) / z(1)), places=9)
+        self.assertGreater(second - first, math.log(1.0 / 0.2) - 0.5)
+        # And the reported posterior has settled on A.
+        post = pf.track_joint_update(
+            belief, structs.TrackletMeasurement("trk", 2, 0.0, 3000.0), spec,
+            catalog, per_mode=False, resp_min=0.0, outlier_rate=0.1,
+            range_softness=0.25)[0]
+        self.assertGreater(post.responsibilities["A"], 0.99)
+        self.assertLess(post.responsibilities.get("B", 0.0), 1e-6)
+
+    def test_state_follows_particles(self):
+        catalog, _, spec = self._world()
+        belief = pf.ParticleBelief(np.array([0.0, 500.0]), np.zeros(2),
+                                   np.zeros(2), np.zeros(2))
+        meas = structs.TrackletMeasurement("trk", 0, 0.0, 3000.0)
+        pf.track_joint_update(belief, meas, spec, catalog, per_mode=False,
+                              resp_min=0.0, outlier_rate=0.1,
+                              range_softness=0.25)
+        state = belief.track_joint["trk"].copy()
+        belief.take(np.array([1, 1, 0]))
+        np.testing.assert_array_equal(belief.track_joint["trk"],
+                                      state[[1, 1, 0]])
+        copy = belief.copy()
+        self.assertIsNot(copy.track_joint["trk"], belief.track_joint["trk"])
+
+    def test_run_filter_drops_finished_tracks(self):
+        catalog, table, _ = self._world()
+        config = structs.FilterConfig(
+            n_particles=64, seed=0,
+            init=structs.UniformBoxInit(-200.0, 200.0, -200.0, 200.0),
+            identity_weights=pf.TRACK_JOINT, association_persistence=False,
+            measurement_backend="numpy",
+            proposal=structs.ProposalConfig(enabled=False),
+            modes=structs.ModeConfig(enabled=False))
+        odometry = [structs.OdometryDelta(k, 10.0, 0.0, 0.0, 1.0, 0.01)
+                    for k in range(1, 4)]
+        measurements = [structs.TrackletMeasurement("trk", k, 0.0, 3000.0)
+                        for k in range(3)]
+        seen = {}
+
+        class Obs(pf.RunObserver):
+            def keyframe_end(self, kf, belief, record):
+                seen[kf] = set(belief.track_joint)
+        pf.run_filter(config, catalog, odometry, measurements,
+                      {"trk": table}, observer=Obs())
+        # The observer sees the keyframe before finished tracks are dropped.
+        self.assertEqual(seen[2], {"trk"})
+        self.assertEqual(seen[3], set())  # last epoch was keyframe 2
+
+
 class KappaEffTest(unittest.TestCase):
     def test_map_error_widens_the_bearing_likelihood(self):
         """kappa_eff combines tracklet kappa with projected map error (§4):
