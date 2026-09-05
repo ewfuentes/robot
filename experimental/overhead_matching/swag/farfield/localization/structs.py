@@ -20,6 +20,9 @@ import msgspec
 
 from common.python.serialization import MSGSPEC_STRUCT_OPTS
 
+# 0.7 plus the additive retrieval observation source (CLD-3): new record
+# types and defaulted manifest fields only, so every existing 0.7 export and
+# run directory still decodes. A shape-changing edit must bump this.
 SCHEMA_VERSION = "0.7"
 
 
@@ -64,6 +67,68 @@ class TrackletMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     anchor_keyframe_idx: int
     bearing_forward_cw_deg: float  # CW from nominal forward, in [0, 360)
     kappa: float  # von Mises concentration of the fused bearing
+
+
+class RetrievalMeasurement(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """One keyframe's retrieval observation: a pose-scored field (CLD-3).
+
+    The dense (n_nodes, n_heading_bins) score field itself lives in the run's
+    `retrieval_fields.npz` (see localization/retrieval.py — the artifact
+    contract's one home); this record is the typed event that anchors field
+    `field_idx` at a keyframe. At most one per keyframe: the crops of one
+    panorama are already pooled into the field, so a second submission would
+    double-count the same pixels (the retrieval analogue of the
+    information-epoch rule).
+    """
+    keyframe_idx: int
+    field_idx: int
+    pano_id: str
+
+
+class RetrievalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
+    """Score -> likelihood calibration for retrieval observations (§5.5).
+
+    L(x) = (1 - outlier_epsilon) * softmax_temperature(S)(x)
+           + outlier_epsilon / |X|
+
+    Both parameters are selected on geographically disjoint validation
+    regions and then frozen. `calibration_frozen` says whether that has
+    happened: until it has, every consuming run is a diagnostic, not an
+    evaluation, and drivers must refuse to present it otherwise.
+    """
+    temperature: float
+    outlier_epsilon: float
+    calibration_frozen: bool = False
+    # Camera-frame azimuth of the platform's nominal forward, CW degrees
+    # (the dataset's approved mount offset). Field heading bins index the
+    # CAMERA-forward world bearing (bin k = k * spacing); particle headings
+    # are NOMINAL-forward, so the engine looks up bin(heading - this). A
+    # wrong value here is the classic silent 30/180-degree frame slip --
+    # docs/conventions.md is the authority.
+    forward_camera_cw_deg: float = 0.0
+    # Retrieval-seeded injection (the retrieval analogue of the bearing
+    # resection proposal). The epsilon floor preserves the LIKELIHOOD of
+    # deleted hypotheses but cannot re-seed PARTICLES there; without
+    # injection, whichever basin captures the first resamples is the
+    # incumbent forever (measured on mount_washington leg2: truth beat the
+    # captured mirror mode by ~0.4 nats/keyframe and still lost).
+    inject_on_init: bool = True
+    inject_fraction: float = 0.5
+    recovery_ess_floor_frac: float = 0.02
+    recovery_ess_floor_keyframes: int = 3
+    recovery_refractory_keyframes: int = 10
+    # Mixture-MCL: re-inject `periodic_inject_fraction` of the particles
+    # from the current field's softmax every `inject_every_keyframes`
+    # keyframes (0 disables). The ESS-floor recovery above almost never
+    # fires in practice — ordinary ESS-threshold resampling resets ESS long
+    # before it reaches the floor — so without a periodic term the filter
+    # is plain SIR after the init injection, and a hypothesis whose
+    # posterior mass passes below ~1/n_particles goes extinct even though
+    # the field keeps endorsing it (measured on mount_washington leg2
+    # whole-region: the truth basin's exact-inference mass dips to 2.3e-6
+    # at keyframe 75 and then wins; 50k-500k particles cannot hold that).
+    inject_every_keyframes: int = 0
+    periodic_inject_fraction: float = 0.1
 
 
 class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -239,6 +304,15 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # "numpy" (reference, bit-stable, CPU) or "torch" (GPU, float32; same
     # mixture, reductions differ at fp32 epsilon). Recorded so the manifest
     # states which engine produced a run.
+    #
+    # EVERY RUN DEFAULTS TO TORCH: the drivers and the pipeline config are
+    # where a run's backend comes from (run_retrieval --backend, and
+    # `localization.measurement_backend`, which the pipeline schema requires
+    # a build to state), and both default to torch — the bearing mixture
+    # over a dense catalog is the run's cost centre. This struct-level
+    # default stays numpy so the library is usable, and unit-testable,
+    # without a torch dependency; `filter` imports the torch backend lazily
+    # by config, so a bare FilterConfig must not demand it.
     measurement_backend: str = "numpy"
     # §5.3 association persistence: a tracklet is ONE physical object, so
     # its identity persists across its epochs under a renewal HMM.
@@ -275,6 +349,9 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     resample_survival_min_mass: float = 1e-9
     proposal: ProposalConfig = msgspec.field(default_factory=ProposalConfig)
     modes: ModeConfig = msgspec.field(default_factory=ModeConfig)
+    # Present iff the run consumes retrieval score fields; the calibration
+    # is part of the filter's model and therefore lives in its config echo.
+    retrieval: RetrievalConfig | None = None
 
 
 class ModeRecord(msgspec.Struct):
@@ -465,3 +542,9 @@ class RunManifest(msgspec.Struct):
     # Resolved truth-centered primary-metric identity/config. None when no
     # truth is present. The default headline radius is 500 m.
     position_mass_metric: PositionMassMetricConfig | None = None
+    # Retrieval observation source (schema 0.8): consumed iff the run's
+    # filter multiplied retrieval score fields into the belief; the source
+    # directory names where the fields came from. The consumed fields are
+    # copied into the run artifact as replay surface.
+    retrieval_consumed: bool = False
+    retrieval_dir: str | None = None

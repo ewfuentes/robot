@@ -52,6 +52,44 @@ class JointScoreTest(unittest.TestCase):
         self.assertAlmostEqual(
             float(result.scores[true_loc, true_shift]), 1.0, places=5)
 
+    def test_crop_top_k_recovers_under_occlusion(self):
+        # Corrupt most of the ring; the k clean crops must still carry the
+        # frame under top-k aggregation (they do not under the plain mean).
+        db = _random_db(seed=2)
+        true_loc, true_shift = 11, 4
+        n_theta = db.shape[1]
+        query = db[true_loc,
+                   (torch.arange(n_theta) + true_shift) % n_theta].clone()
+        generator = torch.Generator().manual_seed(3)
+        noise = torch.nn.functional.normalize(
+            torch.randn(n_theta - 3, query.shape[1], generator=generator),
+            dim=-1)
+        query[3:] = noise  # 3 clean crops, 9 occluded
+
+        result = panorama_score.joint_scores(db[true_loc], db, crop_top_k=3)
+        # sanity: with all crops clean, top-k still finds the truth
+        _, loc_idx, _ = result.top_k(1)
+        self.assertEqual(int(loc_idx[0]), true_loc)
+
+        top3 = panorama_score.joint_scores(query, db, crop_top_k=3)
+        self.assertAlmostEqual(
+            float(top3.scores[true_loc, true_shift]), 1.0, places=5)
+        _, loc_idx, shift_idx = top3.top_k(1)
+        self.assertEqual((int(loc_idx[0]), int(shift_idx[0])),
+                         (true_loc, true_shift))
+
+    def test_crop_top_k_validation(self):
+        db = _random_db(seed=4)
+        query = db[0]
+        with self.assertRaises(ValueError):
+            panorama_score.joint_scores(query, db, crop_top_k=0)
+        with self.assertRaises(ValueError):
+            panorama_score.joint_scores(query, db, crop_top_k=13)
+        with self.assertRaises(ValueError):
+            panorama_score.joint_scores(
+                query, db, valid_crops=torch.ones(12, dtype=torch.bool),
+                crop_top_k=3)
+
     def test_all_invalid_raises(self):
         db = _random_db()
         query = db[0]

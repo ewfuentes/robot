@@ -349,6 +349,36 @@ def _validate_table(table: structs.CompatibilityTable) -> None:
             f"table {table.tracklet_id!r} repeats a landmark id")
 
 
+def _catalog_fetch_bbox(catalog_ref: artifact.ArtifactRef) -> list:
+    """The [W, S, E, N] bbox the catalog stage actually queried.
+
+    Trimming republishes a catalog without restating the fetch bbox, so walk
+    the catalogs lineage until a manifest states it. This is the declared
+    candidate region (`export_ingest.region_box`); the observed extent of
+    landmark positions is NOT a substitute, because a kept way carries its
+    whole geometry and can place its representative point far outside the
+    queried box.
+    """
+    ref = catalog_ref
+    seen = set()
+    while ref is not None and str(ref.path) not in seen:
+        seen.add(str(ref.path))
+        manifest = artifact.load_manifest(Path(ref.path))
+        bbox = manifest.config.get("bbox_wsen")
+        if bbox is not None:
+            if len(bbox) != 4:
+                raise LocalizationInputError(
+                    f"catalog {ref.version!r} states a malformed bbox_wsen: "
+                    f"{bbox!r}")
+            return [float(value) for value in bbox]
+        ref = next((up for up in manifest.upstreams
+                    if up.kind == paths_lib.CATALOGS), None)
+    raise LocalizationInputError(
+        f"no catalog in the lineage of {catalog_ref.version!r} states its "
+        "fetch bbox_wsen; the candidate region cannot be derived (the "
+        "observed landmark extent is not a substitute)")
+
+
 def load_matching(matching_dir: Path, *, dataset_name: str,
                   accepted_tracklet_ids: set[str],
                   tracks_ref: artifact.ArtifactRef,
@@ -908,6 +938,7 @@ def build(args) -> artifact.ArtifactRef:
         "max_visible_range_m": max_visible_range_m,
         "landmark_position_sigma_m": position_sigma_m,
         "nominal_forward": nominal_meta,
+        "candidate_region_wsen": _catalog_fetch_bbox(catalog_ref),
         "motion": {
             "file": "motion_source.csv",
             "source_path": str(Path(args.motion_source).resolve()),

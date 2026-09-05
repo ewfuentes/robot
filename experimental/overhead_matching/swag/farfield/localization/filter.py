@@ -39,6 +39,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics,
     mode_tracker as mode_tracker_mod,
     proposal as proposal_mod,
+    retrieval as retrieval_mod,
     structs,
 )
 
@@ -903,6 +904,19 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     actual_injection = int(east.size)
     if actual_injection == 0:
         return 0, None
+    return _splice_injected(belief, east, north, heading,
+                            hypothesis.astype(np.int64), result.event_id, rng)
+
+
+def _splice_injected(belief: ParticleBelief, east, north, heading,
+                     hypothesis, event_id: int,
+                     rng: np.random.Generator) -> tuple[int, np.ndarray]:
+    """Replace `east.size` particles of the belief with the given poses,
+    resampling the kept mass so both components are unweighted samples.
+    Shared by the bearing resection proposal and the retrieval-seeded
+    injection; returns (n_injected, kept ancestor indices)."""
+    original_count = belief.n
+    actual_injection = int(east.size)
     if actual_injection > original_count:
         raise RuntimeError(
             f"proposal returned {actual_injection} particles for a belief of "
@@ -927,7 +941,7 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
                                          geo.wrap_rad(heading)])
     belief.proposal_event_id = np.concatenate([
         belief.proposal_event_id,
-        np.full(east.size, result.event_id, dtype=np.int64)])
+        np.full(east.size, event_id, dtype=np.int64)])
     belief.proposal_hypothesis = np.concatenate([
         belief.proposal_hypothesis, hypothesis.astype(np.int64)])
     # Injected particles have no ancestor: they will found new modes, and
@@ -1140,7 +1154,8 @@ def _hash_belief(hasher, belief: ParticleBelief) -> None:
 
 
 def _validate(config: structs.FilterConfig, catalog, odometry,
-              measurements, tables) -> None:
+              measurements, tables, retrieval_fields=None,
+              retrieval_measurements=()) -> None:
     if config.n_particles <= 0:
         raise ValueError(f"n_particles must be positive, got "
                          f"{config.n_particles}")
@@ -1194,6 +1209,42 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
                 f"table {table.tracklet_id!r} has clip_lo {table.clip_lo} > "
                 f"clip_hi {table.clip_hi}")
 
+    # Retrieval observation source (CLD-3). The checks are here rather than
+    # in the engine so a misconfigured run dies before its first keyframe.
+    if bool(retrieval_measurements) != (retrieval_fields is not None):
+        raise ValueError(
+            "retrieval_fields and retrieval_measurements come together: "
+            "fields without events (or events without fields) is a "
+            "misconfigured run, not an odometry-only control")
+    if retrieval_measurements:
+        if config.retrieval is None:
+            raise ValueError(
+                "retrieval measurements need config.retrieval (temperature "
+                "and outlier_epsilon are modeling choices, never defaults)")
+        if config.proposal.enabled:
+            raise ValueError(
+                "the resection proposal is a bearing mechanism and does not "
+                "understand retrieval observations; run retrieval sources "
+                "with proposal.enabled=False (the epsilon floor is what "
+                "keeps deleted hypotheses recoverable)")
+        n_fields = retrieval_fields.scores.shape[0]
+        seen_kf = set()
+        for meas in retrieval_measurements:
+            if not 0 <= meas.keyframe_idx < n_keyframes:
+                raise ValueError(
+                    f"retrieval measurement at keyframe {meas.keyframe_idx},"
+                    f" outside [0, {n_keyframes})")
+            if not 0 <= meas.field_idx < n_fields:
+                raise ValueError(
+                    f"retrieval field_idx {meas.field_idx} outside the "
+                    f"{n_fields} loaded fields")
+            if meas.keyframe_idx in seen_kf:
+                raise ValueError(
+                    f"two retrieval measurements at keyframe "
+                    f"{meas.keyframe_idx}: one panorama is one observation "
+                    "(its crops are already pooled inside the field)")
+            seen_kf.add(meas.keyframe_idx)
+
 
 def run_filter(
         config: structs.FilterConfig,
@@ -1201,7 +1252,10 @@ def run_filter(
         odometry: list,
         measurements: list,
         tables: dict,
-        observer: RunObserver | None = None) -> FilterHistory:
+        observer: RunObserver | None = None,
+        *,
+        retrieval_fields=None,
+        retrieval_measurements: list = ()) -> FilterHistory:
     """Pure function of (config, ordered event log) -> history (§3.8).
 
     Keyframes are the odometry timebase; tracklet measurements fire sparsely
@@ -1214,8 +1268,18 @@ def run_filter(
     identical histories and identical `particle_history_sha256` — which is
     what makes replay-with-instrumentation a faithful reconstruction of the
     original run rather than a different run that resembles it.
+
+    `retrieval_fields` / `retrieval_measurements` are the second observation
+    source (CLD-3): dense location-heading score fields from a retrieval
+    baseline, one per scored keyframe (`retrieval.ScoreFields` plus
+    `structs.RetrievalMeasurement` events). They share this loop's motion
+    model, resampling, mode tracking, and health reporting; only the
+    per-measurement likelihood differs. The resection proposal stays off for
+    retrieval sources (validated), so hypothesis preservation rests on the
+    calibration's epsilon floor.
     """
-    _validate(config, catalog, odometry, measurements, tables)
+    _validate(config, catalog, odometry, measurements, tables,
+              retrieval_fields, retrieval_measurements)
     rng = np.random.default_rng(config.seed)
     belief = init_belief(config, rng)
     tracker = mode_tracker_mod.ModeTracker(config.modes)
@@ -1243,6 +1307,12 @@ def run_filter(
             belief.associations[meas.tracklet_id] = arr
         return arr
 
+    # The retrieval engine is numpy on the belief arrays either way, so it
+    # composes with both bearing backends.
+    retrieval_engine = (
+        retrieval_mod.RetrievalEngine(retrieval_fields, config.retrieval)
+        if retrieval_measurements else None)
+
     if config.measurement_backend == "torch":
         # Lazy import: torch is a heavyweight dependency that only the GPU
         # backend needs; the numpy path must stay importable without it.
@@ -1252,7 +1322,7 @@ def run_filter(
             catalog, weight_cache, seed=config.seed,
             surprise_by_tracklet=surprise_cache)
 
-        def apply_measurement(meas):
+        def apply_bearing(meas):
             return engine.update(
                 belief, meas, config.pi0, per_mode=config.modes.enabled,
                 resp_min=resp_min, assoc=_assoc_for(meas),
@@ -1260,7 +1330,7 @@ def run_filter(
                 outlier_rate=config.association_outlier_rate,
                 draw_seed=measurement_draw_seed(config.seed, meas))
     elif config.measurement_backend == "numpy":
-        def apply_measurement(meas):
+        def apply_bearing(meas):
             return measurement_update(
                 belief, meas, tables[meas.tracklet_id], catalog, config.pi0,
                 per_mode=config.modes.enabled,
@@ -1276,6 +1346,11 @@ def run_filter(
         raise ValueError(
             f"unknown measurement_backend {config.measurement_backend!r}; "
             f"expected 'numpy' or 'torch'")
+
+    def apply_measurement(meas):
+        if isinstance(meas, structs.RetrievalMeasurement):
+            return retrieval_engine.update(belief, meas)
+        return apply_bearing(meas)
 
     if config.measurement_backend == "torch":
         def score_fn(east, north, heading, meas):
@@ -1308,6 +1383,11 @@ def run_filter(
     meas_by_kf = {}
     for meas in measurements:
         meas_by_kf.setdefault(meas.anchor_keyframe_idx, []).append(meas)
+    # Retrieval fields apply after any bearings at the same keyframe; both
+    # are multiplicative, so ordering only fixes the reported intermediate
+    # attribution, not the posterior.
+    for meas in retrieval_measurements:
+        meas_by_kf.setdefault(meas.keyframe_idx, []).append(meas)
 
     hasher = hashlib.sha256()
     health = []
@@ -1342,7 +1422,8 @@ def run_filter(
         assoc_snapshot = {
             m.tracklet_id: belief.associations[m.tracklet_id].copy()
             for m in keyframe_measurements
-            if m.tracklet_id in belief.associations}
+            if isinstance(m, structs.TrackletMeasurement)
+            and m.tracklet_id in belief.associations}
 
         if observer is not None:
             observer.keyframe_start(kf, belief)
@@ -1473,6 +1554,80 @@ def run_filter(
                 current_ess = ess(belief.log_weight)
                 # Injection changed the belief, so the clusters that entered
                 # the update no longer describe it; re-derive them.
+                if config.modes.enabled:
+                    assignment = tracker.update(belief, kf, proposal_events)
+                    belief.mode_id = assignment.mode_id
+                    mode_events = mode_events + assignment.events
+
+        # --- retrieval-seeded injection (CLD-3) -------------------------
+        # The retrieval analogue of the resection proposal: the field is a
+        # global posterior over the declared support, so init and recovery
+        # injections sample it directly. Without this, the epsilon floor
+        # preserves likelihood but nothing re-seeds PARTICLES in a basin the
+        # early resamples emptied.
+        retrieval_meas_here = [m for m in keyframe_measurements
+                               if isinstance(m, structs.RetrievalMeasurement)]
+        if retrieval_engine is not None and retrieval_meas_here:
+            rcfg = config.retrieval
+            r_trigger = None
+            if (rcfg.inject_on_init and not proposal_events
+                    and isinstance(config.init, structs.UniformBoxInit)):
+                r_trigger = "retrieval_init"
+            elif (rcfg.inject_fraction > 0.0
+                  and (last_proposal_kf is None
+                       or kf - last_proposal_kf
+                       >= rcfg.recovery_refractory_keyframes)
+                  and low_ess_run >= rcfg.recovery_ess_floor_keyframes):
+                r_trigger = "retrieval_ess_floor"
+            elif (rcfg.inject_every_keyframes > 0
+                  and rcfg.periodic_inject_fraction > 0.0
+                  and kf - (last_proposal_kf if last_proposal_kf is not None
+                            else -rcfg.inject_every_keyframes)
+                  >= rcfg.inject_every_keyframes):
+                # Mixture-MCL: unconditional cadence, not a failure trigger.
+                r_trigger = "retrieval_periodic"
+            if r_trigger is not None:
+                frac = (rcfg.periodic_inject_fraction
+                        if r_trigger == "retrieval_periodic"
+                        else rcfg.inject_fraction)
+                n_requested = int(round(frac * belief.n))
+                meas0 = retrieval_meas_here[0]
+                east_i, north_i, heading_i = retrieval_engine.sample_poses(
+                    meas0.field_idx, n_requested, rng)
+                r_event_id = len(proposal_events)
+                n_injected, kept_idx = _splice_injected(
+                    belief, east_i, north_i, geo.wrap_rad(heading_i),
+                    np.zeros(n_requested, dtype=np.int64), r_event_id, rng)
+                proposal_events.append(structs.ProposalEvent(
+                    event_id=r_event_id, keyframe_idx=kf, trigger=r_trigger,
+                    n_hypotheses=1, n_injected=n_injected,
+                    n_tracklets_considered=0, n_combinations_examined=0,
+                    n_combinations_skipped=0))
+                if observer is not None:
+                    observer.injection(kf, proposal_events[-1], n_injected)
+                event_id = r_event_id
+                last_proposal_kf = kf
+                low_ess_run = 0
+                # Restore kept-mass association state and re-apply this
+                # keyframe's measurements to score kept and injected
+                # particles on the same footing (same discipline as the
+                # bearing proposal path).
+                n_kept = belief.n - n_injected
+                for meas in keyframe_measurements:
+                    if not isinstance(meas, structs.TrackletMeasurement):
+                        continue
+                    tid = meas.tracklet_id
+                    if tid not in belief.associations:
+                        continue
+                    previous = assoc_snapshot.get(tid)
+                    if previous is None:
+                        belief.associations[tid][:n_kept] = ASSOC_UNCOMMITTED
+                    else:
+                        belief.associations[tid][:n_kept] = (
+                            previous[kept_idx])
+                associations = apply_block(keyframe_measurements, kf, 1)
+                belief.log_weight -= special.logsumexp(belief.log_weight)
+                current_ess = ess(belief.log_weight)
                 if config.modes.enabled:
                     assignment = tracker.update(belief, kf, proposal_events)
                     belief.mode_id = assignment.mode_id

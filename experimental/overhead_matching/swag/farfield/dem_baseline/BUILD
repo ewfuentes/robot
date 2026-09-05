@@ -159,6 +159,27 @@ py_binary(
 )
 
 py_binary(
+    name = "score_localization_inputs",
+    srcs = ["score_localization_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/localization:retrieval",
+        "//experimental/overhead_matching/swag/farfield/localization:structs",
+    ],
+)
+
+py_binary(
     name = "port_verification",
     srcs = ["port_verification.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -169,6 +190,25 @@ py_binary(
         requirement("pillow"),
         requirement("torch"),
         "//common/torch:load_torch_deps",
+    ],
+)
+
+py_library(
+    name = "framewise_eval_lib",
+    srcs = ["framewise_eval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:paths",
     ],
 )
 
@@ -185,6 +225,23 @@ py_binary(
         requirement("numpy"),
         requirement("pillow"),
         requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:paths",
+    ],
+)
+
+py_binary(
+    name = "crop_aggregation_eval",
+    srcs = ["crop_aggregation_eval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":framewise_eval_lib",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
         requirement("torch"),
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield:paths",

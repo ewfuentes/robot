@@ -11,6 +11,33 @@ py_library(
 )
 
 py_library(
+    name = "retrieval",
+    srcs = ["retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("scipy"),
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_test(
+    name = "retrieval_test",
+    size = "large",
+    srcs = ["retrieval_test.py"],
+    deps = [
+        ":filter",
+        ":metrics",
+        ":retrieval",
+        ":scenario",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_library(
     name = "filter_catalog",
     srcs = ["filter_catalog.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -197,6 +224,7 @@ py_library(
         ":filter_catalog",
         ":metrics",
         ":mode_tracker",
+        ":retrieval",
         ":proposal",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:geometry",
@@ -400,6 +428,49 @@ py_test(
         "//experimental/overhead_matching/swag/farfield/catalog:schema",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
         "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+
+py_library(
+    name = "run_retrieval_lib",
+    srcs = ["run_retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":metrics",
+        ":retrieval",
+        ":runner",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:provenance",
+    ],
+)
+
+py_binary(
+    name = "run_retrieval",
+    srcs = ["run_retrieval.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        # torch_backend so the default (GPU) measurement backend resolves;
+        # filter imports it lazily by config. A retrieval-only run does its
+        # scoring on CPU arrays either way, but the backend is recorded in
+        # the manifest and a mixed bearings+retrieval run needs it.
+        requirement("torch"),
+        ":run_retrieval_lib",
+        ":torch_backend",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_binary(
+    name = "mask_retrieval_fields",
+    srcs = ["mask_retrieval_fields.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":retrieval",
     ],
 )
 

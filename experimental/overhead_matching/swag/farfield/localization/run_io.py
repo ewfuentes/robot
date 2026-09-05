@@ -68,6 +68,9 @@ class RunData:
     proposal_events: list = dataclasses.field(default_factory=list)
     mode_events: list = dataclasses.field(default_factory=list)
     artifact_ref: artifact.ArtifactRef | None = None
+    # Retrieval observation source (CLD-3): the typed per-keyframe events;
+    # the dense fields sit beside them as retrieval_fields.npz + meta.
+    retrieval_measurements: list = dataclasses.field(default_factory=list)
 
 
 def write_jsonl(path: Path, records) -> None:
@@ -303,11 +306,18 @@ def validate_manifest(manifest: structs.RunManifest) -> None:
     if (tags != sorted(set(tags))
             or any(not isinstance(tag, str) or not tag for tag in tags)):
         problems.append("ablation_tags must be sorted unique non-empty strings")
-    if not manifest.bearings_consumed and "no_bearings" not in tags:
+    # A run with no consumed observation source at all is an odometry-only
+    # ablation and must say so. A retrieval-only run withheld nothing: the
+    # bearings were never its observation source (CLD-3).
+    if (not manifest.bearings_consumed and not manifest.retrieval_consumed
+            and "no_bearings" not in tags):
         problems.append(
             "a bearings-withheld control must carry ablation tag no_bearings")
     if manifest.bearings_consumed and "no_bearings" in tags:
         problems.append("no_bearings tag disagrees with bearings_consumed")
+    if manifest.retrieval_consumed and not manifest.retrieval_dir:
+        problems.append(
+            "retrieval_consumed requires retrieval_dir to name the source")
     if manifest.initialization_kind == "truth":
         problems.append(
             "initialization_kind 'truth' is ambiguous; use 'truth_position'")
@@ -488,8 +498,10 @@ def _validate_checkpoint(kf: int, value: Any,
 def _validate_payloads(manifest: structs.RunManifest, truth: list,
                        odometry: list, measurements: list, tables: dict,
                        health: list, checkpoints: dict,
-                       proposal_events: list, mode_events: list) -> None:
+                       proposal_events: list, mode_events: list,
+                       retrieval_measurements: list = ()) -> None:
     problems = []
+    _finite_tree(retrieval_measurements, "retrieval_measurements", problems)
     _finite_tree(truth, "truth", problems)
     _finite_tree(odometry, "odometry", problems)
     _finite_tree(measurements, "measurements", problems)
@@ -568,6 +580,25 @@ def _validate_payloads(manifest: structs.RunManifest, truth: list,
             problems.append(
                 f"measurement {record.tracklet_id!r} has invalid bearing "
                 "or concentration")
+    seen_retrieval_kf = set()
+    for record in retrieval_measurements:
+        if not 0 <= record.keyframe_idx < manifest.n_keyframes:
+            problems.append(
+                f"retrieval measurement at keyframe {record.keyframe_idx} "
+                "is outside the run")
+        elif record.keyframe_idx in seen_retrieval_kf:
+            problems.append(
+                f"two retrieval measurements at keyframe "
+                f"{record.keyframe_idx}")
+        else:
+            seen_retrieval_kf.add(record.keyframe_idx)
+            counts[record.keyframe_idx] += 1
+        if record.field_idx < 0:
+            problems.append("retrieval field_idx must be non-negative")
+    if manifest.retrieval_consumed != bool(retrieval_measurements):
+        problems.append(
+            "manifest.retrieval_consumed disagrees with the retrieval "
+            "measurements the run carries")
     if health_indices == expected_health:
         recorded_counts = [record.n_measurements for record in health]
         if recorded_counts != counts:
@@ -648,16 +679,24 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
               artifact_config: dict | None = None,
               generator: str = "farfield.localization.run_io",
               arguments: tuple[str, ...] | None = None,
-              extra_outputs: dict[str, bytes] | None = None
+              extra_outputs: dict[str, bytes] | None = None,
+              retrieval_measurements: list = (),
+              retrieval_source_dir: Path | None = None
               ) -> artifact.ArtifactRef:
     """`history` is a filter.FilterHistory (duck-typed to avoid the dep).
 
     `measurements`/`tables` must be the ones the filter actually consumed:
     an odometry-only control run passes its empty lists, never the full
     inputs it chose to ignore (writing the unconsumed ones once produced run
-    directories describing runs that never happened).
+    directories describing runs that never happened). The same rule covers
+    `retrieval_measurements`: when given, `retrieval_source_dir` must name
+    the fields directory so the consumed dense fields are preserved in the
+    run artifact as replay surface.
     """
     validate_manifest(manifest)
+    if retrieval_measurements and retrieval_source_dir is None:
+        raise ValueError(
+            "retrieval measurements require retrieval_source_dir")
     if dataset != manifest.dataset:
         raise ValueError("run artifact dataset disagrees with RunManifest")
     localization_inputs = [
@@ -685,7 +724,8 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
     keyframes = sorted(history.checkpoints.keys())
     _validate_payloads(
         manifest, truth, odometry, measurements, tables, history.health,
-        history.checkpoints, history.proposal_events, history.mode_events)
+        history.checkpoints, history.proposal_events, history.mode_events,
+        retrieval_measurements)
     artifact_config = dict(artifact_config or {})
     managed_config = {
         "run_kind": manifest.run_kind,
@@ -728,6 +768,8 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
         "mode_events.jsonl",
         "checkpoints/index.json",
         *(f"checkpoints/kf_{kf:05d}.npz" for kf in keyframes),
+        *(("tier1_retrieval.jsonl", "retrieval_meta.json",
+           "retrieval_fields.npz") if retrieval_measurements else ()),
         *extra_outputs,
     )
     with publication.published_artifact(
@@ -767,6 +809,13 @@ def write_run(run_dir: Path, manifest: structs.RunManifest, truth: list,
                      proposal_event_id=belief.proposal_event_id,
                      proposal_hypothesis=belief.proposal_hypothesis,
                      mode_id=belief.mode_id)
+        if retrieval_measurements:
+            write_jsonl(builder.output_path("tier1_retrieval.jsonl"),
+                        retrieval_measurements)
+            for name in ("retrieval_meta.json", "retrieval_fields.npz"):
+                artifact.atomic_write_file(
+                    builder.output_path(name),
+                    (Path(retrieval_source_dir) / name).read_bytes())
         for name, payload in extra_outputs.items():
             artifact.atomic_write_file(builder.output_path(name), payload)
     if builder.artifact_ref is None:
@@ -902,9 +951,13 @@ def read_run(run_dir: Path) -> RunData:
                                    structs.ProposalEvent),
         mode_events=read_jsonl(run_dir / "mode_events.jsonl",
                                structs.ModeEvent),
-        artifact_ref=reference)
+        artifact_ref=reference,
+        retrieval_measurements=(
+            read_jsonl(run_dir / "tier1_retrieval.jsonl",
+                       structs.RetrievalMeasurement)
+            if manifest.retrieval_consumed else []))
     _validate_payloads(
         data.manifest, data.truth, data.odometry, data.measurements,
         data.tables, data.health, data.checkpoints, data.proposal_events,
-        data.mode_events)
+        data.mode_events, data.retrieval_measurements)
     return data
