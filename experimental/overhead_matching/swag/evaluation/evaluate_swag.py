@@ -85,16 +85,27 @@ def compute_similarity_matrix(
         sat_model: torch.nn.Module,
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
-        device: torch.device):
-    sat_data_view = dataset.get_sat_patch_view()
-    sat_data_view_loader = vd.get_dataloader(sat_data_view, batch_size=96, num_workers=8)
+        device: torch.device,
+        satellite_embeddings: torch.Tensor | None = None):
+    if satellite_embeddings is None:
+        sat_data_view = dataset.get_sat_patch_view()
+        sat_data_view_loader = vd.get_dataloader(
+            sat_data_view, batch_size=96, num_workers=8)
     pano_data_view = dataset.get_pano_view()
     pano_data_view_loader = vd.get_dataloader(pano_data_view, batch_size=96, num_workers=8)
 
     with torch.no_grad():
-        print("building satellite embedding database")
-        sat_embeddings = sed.build_satellite_db(
-            sat_model, sat_data_view_loader, device=device)
+        if satellite_embeddings is None:
+            print("building satellite embedding database")
+            sat_embeddings = sed.build_satellite_db(
+                sat_model, sat_data_view_loader, device=device)
+        else:
+            sat_embeddings = satellite_embeddings
+            print("using precomputed satellite embedding database")
+        if sat_embeddings.shape[0] != len(dataset._satellite_metadata):
+            raise ValueError(
+                "satellite embedding row count does not match dataset: "
+                f"{sat_embeddings.shape[0]} != {len(dataset._satellite_metadata)}")
         print("building panorama embedding database")
         pano_embeddings = sed.build_panorama_db(
             pano_model, pano_data_view_loader, device=device)
@@ -107,7 +118,8 @@ def compute_similarity_matrix(
         assert (sat_embeddings.ndim == 2 or
                 (sat_embeddings.ndim == 3 and sat_embeddings.shape[1] == 1))
         out = sed.calculate_cos_similarity_against_database(
-            pano_embeddings.squeeze(), sat_embeddings.squeeze()) 
+            pano_embeddings.squeeze(), sat_embeddings.squeeze().to(
+                device=device, dtype=pano_embeddings.dtype))
         return out
 
 
@@ -116,7 +128,11 @@ def compute_cached_similarity_matrix(
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
         device: torch.device,
-        use_cached_similarity: bool):
+        use_cached_similarity: bool,
+        satellite_embeddings: torch.Tensor | None = None):
+
+    if satellite_embeddings is not None:
+        use_cached_similarity = False
 
     cache_exists = False
     if use_cached_similarity:
@@ -132,7 +148,8 @@ def compute_cached_similarity_matrix(
                 sat_model=sat_model,
                 pano_model=pano_model,
                 dataset=dataset,
-                device=device)
+                device=device,
+                satellite_embeddings=satellite_embeddings)
 
     if use_cached_similarity:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,14 +162,16 @@ def evaluate_prediction_top_k(
         pano_model: torch.nn.Module,
         dataset: vd.VigorDataset,
         device: torch.device = "cuda",
-        use_cached_similarity: bool = True):
+        use_cached_similarity: bool = True,
+        satellite_embeddings: torch.Tensor | None = None):
 
     all_similarity = compute_cached_similarity_matrix(
         sat_model=sat_model,
         pano_model=pano_model,
         dataset=dataset,
         device=device,
-        use_cached_similarity=use_cached_similarity)
+        use_cached_similarity=use_cached_similarity,
+        satellite_embeddings=satellite_embeddings)
 
     rankings = torch.argsort(all_similarity, dim=1, descending=True)
 
@@ -458,6 +477,7 @@ def evaluate_model_on_paths(
     use_cached_similarity: bool = True,
     save_intermediate_filter_states=False,
     obs_likelihood_calculator: sa.ObservationLikelihoodCalculator | None = None,
+    satellite_embeddings: torch.Tensor | None = None,
 ) -> None:
     all_final_particle_error_meters = []
     with torch.no_grad():
@@ -466,7 +486,8 @@ def evaluate_model_on_paths(
                 pano_model=pano_model,
                 dataset=vigor_dataset,
                 device=device,
-                use_cached_similarity=use_cached_similarity)
+                use_cached_similarity=use_cached_similarity,
+                satellite_embeddings=satellite_embeddings)
 
         # Build shared components for observation likelihood
         satellite_patch_locations = vigor_dataset.get_patch_positions()

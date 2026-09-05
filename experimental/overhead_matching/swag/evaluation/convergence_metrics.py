@@ -5,6 +5,8 @@ converges to the true location by tracking probability mass within specified
 radii of the ground truth position over the course of a path.
 """
 
+import math
+
 import common.torch.load_torch_deps
 import torch
 
@@ -31,7 +33,12 @@ def compute_probability_mass_within_radius(
         Probability mass within the specified radius (value in [0, 1])
     """
     # Get cell centers in pixel coordinates
-    cell_centers_px = belief.grid_spec.get_all_cell_centers_px(belief.device)
+    # Absolute z20 Web-Mercator coordinates are around 1e8 pixels, where
+    # float32 quantization is roughly a meter. Evaluation truth comes from the
+    # full-precision trajectory mapping, so keep the truth-centered radius
+    # calculation in float64. This does not affect the filter state itself.
+    cell_centers_px = belief.grid_spec.get_all_cell_centers_px(
+        belief.device, dtype=torch.float64)
 
     # Get true position in pixel coordinates
     true_lat = true_latlon[0]
@@ -46,7 +53,7 @@ def compute_probability_mass_within_radius(
 
     # Compute pixel distances from all cell centers to true position
     true_pos_px = torch.tensor(
-        [[true_y_px, true_x_px]], device=belief.device, dtype=torch.float32
+        [[true_y_px, true_x_px]], device=belief.device, dtype=torch.float64
     )
     delta = cell_centers_px - true_pos_px
     dist_px = torch.norm(delta, dim=1)
@@ -59,7 +66,12 @@ def compute_probability_mass_within_radius(
     within_mask = dist_meters <= radius_meters
     prob_mass = belief.get_belief().flatten()[within_mask].sum()
 
-    return prob_mass.item()
+    value = prob_mass.item()
+    if not math.isfinite(value):
+        raise ValueError("probability mass must be finite")
+    # Match the far-field metric contract: floating-point summation of a
+    # normalized posterior can land a few ulps outside the probability domain.
+    return min(1.0, max(0.0, value))
 
 
 def compute_convergence_cost(

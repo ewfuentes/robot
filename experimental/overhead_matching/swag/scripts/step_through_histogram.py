@@ -28,7 +28,9 @@ from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     load_aggregator_config,
     aggregator_from_config,
 )
-import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
+from experimental.overhead_matching.swag.scripts.evaluate_histogram_on_paths import (
+    load_applied_motion_deltas,
+)
 from common.gps import web_mercator
 
 
@@ -349,6 +351,8 @@ def main():
                         help="Path to evaluation results directory")
     parser.add_argument("--dataset-path", type=str, required=True,
                         help="Path to VIGOR dataset")
+    parser.add_argument("--satellite-dir", type=str, default=None,
+                        help="Optional external satellite patch directory")
     parser.add_argument("--aggregator-config", type=str, required=True,
                         help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
     parser.add_argument("--motion-noise-frac", type=float, default=None,
@@ -371,10 +375,16 @@ def main():
 
     eval_path = Path(args.eval_path).expanduser()
     dataset_path = Path(args.dataset_path).expanduser()
+    satellite_dir = (
+        Path(args.satellite_dir).expanduser()
+        if args.satellite_dir is not None else None
+    )
 
     # Load config
     with open(eval_path / "args.json") as f:
         eval_args = json.load(f)
+    with open(eval_path / "histogram_config.json") as f:
+        histogram_config = json.load(f)
 
     simple_mode = args.simple
     lightweight_mode = args.lightweight
@@ -387,9 +397,13 @@ def main():
             f"args.json at {eval_path / 'args.json'} has no 'motion_noise_frac' key. "
             f"Pass --motion-noise-frac on the CLI, or re-run the eval with the new key."
         )
-    subdivision_factor = eval_args.get("subdivision_factor", 4)
+    subdivision_factor = histogram_config["subdivision_factor"]
+    zoom_level = histogram_config["zoom_level"]
+    patch_size_px = histogram_config["patch_size_px"]
+    footprint_px = histogram_config.get("source_px") or patch_size_px
 
-    print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}")
+    print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}, "
+          "applied_motion_deltas=stored")
 
     # Load path statistics
     print("Loading path statistics...")
@@ -416,10 +430,12 @@ def main():
         panorama_tensor_cache_info=None,
         satellite_tensor_cache_info=None,
         panorama_neighbor_radius=0.0005,
-        satellite_patch_size=(640, 640),
+        satellite_patch_size=(patch_size_px, patch_size_px),
         panorama_size=(640, 640),
         factor=1.0,
         landmark_version=eval_args.get("landmark_version", "v4_202001"),
+        should_load_landmarks=False,
+        satellite_dir=satellite_dir,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
     print(f"Dataset loaded in {_time.time() - _t0:.1f}s")
@@ -433,28 +449,32 @@ def main():
         aggregator_config,
         vigor_dataset,
         device,
+        require_similarity_identity=True,
     )
     print(f"Aggregator loaded in {_time.time() - _t0:.1f}s")
 
     # Use CPU for filter computations (visualization doesn't need GPU)
     filter_device = torch.device('cpu')
 
-    # Build grid with buffer of half patch size (320 pixels)
+    # Rebuild the exact grid geometry recorded by evaluation.
     min_lat, max_lat, min_lon, max_lon = get_dataset_bounds(vigor_dataset)
-    cell_size_px = 640.0 / subdivision_factor
+    cell_size_px = footprint_px / subdivision_factor
 
-    # Add buffer of half patch size (320 pixels at zoom 20)
+    patch_half_size_px = footprint_px / 2.0
     center_lat = (min_lat + max_lat) / 2
-    ref_y, ref_x = web_mercator.latlon_to_pixel_coords(center_lat, min_lon, 20)
-    buf_lat, _ = web_mercator.pixel_coords_to_latlon(ref_y - 320, ref_x, 20)
-    _, buf_lon = web_mercator.pixel_coords_to_latlon(ref_y, ref_x + 320, 20)
+    ref_y, ref_x = web_mercator.latlon_to_pixel_coords(
+        center_lat, min_lon, zoom_level)
+    buf_lat, _ = web_mercator.pixel_coords_to_latlon(
+        ref_y - patch_half_size_px, ref_x, zoom_level)
+    _, buf_lon = web_mercator.pixel_coords_to_latlon(
+        ref_y, ref_x + patch_half_size_px, zoom_level)
     lat_buffer = buf_lat - center_lat
     lon_buffer = buf_lon - min_lon
 
     grid_spec = GridSpec.from_bounds_and_cell_size(
         min_lat=min_lat - lat_buffer, max_lat=max_lat + lat_buffer,
         min_lon=min_lon - lon_buffer, max_lon=max_lon + lon_buffer,
-        zoom_level=20, cell_size_px=cell_size_px,
+        zoom_level=zoom_level, cell_size_px=cell_size_px,
     )
     print(f"Grid: {grid_spec.num_rows} x {grid_spec.num_cols}")
 
@@ -462,8 +482,9 @@ def main():
     patch_positions_px = get_patch_positions_px(vigor_dataset, device)
     _t0 = _time.time()
     max_chunk_gib = args.max_chunk_gib if args.max_chunk_gib is not None else eval_args.get("max_chunk_gib", 2.0)
-    mapping = build_cell_to_patch_mapping(grid_spec, patch_positions_px, 320.0, device,
-                                          max_chunk_bytes=int(max_chunk_gib * 1024**3))
+    mapping = build_cell_to_patch_mapping(
+        grid_spec, patch_positions_px, patch_half_size_px, device,
+        max_chunk_bytes=int(max_chunk_gib * 1024**3))
     mapping = mapping.to(filter_device)
     print(f"Cell-to-patch mapping built in {_time.time() - _t0:.1f}s")
 
@@ -627,8 +648,9 @@ def main():
         # Get ground truth positions
         gt_positions = vigor_dataset.get_panorama_positions(path).numpy()
 
-        # Get motion deltas
-        motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
+        # Replay the exact controls used by evaluation. Seeds are insufficient:
+        # RNG and noise implementations can change independently of an artifact.
+        motion_deltas = load_applied_motion_deltas(path_dir, len(path))
 
         # Initialize and run filter
         if lightweight_mode:

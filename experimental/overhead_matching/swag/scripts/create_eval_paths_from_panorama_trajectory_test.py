@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,8 +7,10 @@ from pathlib import Path
 from common.gps.web_mercator import EARTH_RADIUS_M
 from common.math.haversine import find_d_on_unit_circle
 from experimental.overhead_matching.swag.scripts.create_eval_paths_from_panorama_trajectory import (
+    generate_full_trajectory_paths,
     generate_paths,
     load_trajectory,
+    mapping_sha256,
 )
 from experimental.overhead_matching.swag.scripts.dataset_statistics import (
     compute_trajectory_km,
@@ -45,6 +48,19 @@ def _write_uniform_linear_trajectory(
 
 
 class LoadTrajectoryTest(unittest.TestCase):
+
+    def test_mapping_sha256_hashes_file_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = Path(tmp)
+            _write_mapping(
+                dataset,
+                [{"pano_id": "a", "lat": "1.0", "lon": "2.0"}],
+            )
+            mapping = dataset / "pano_id_mapping.csv"
+            self.assertEqual(
+                mapping_sha256(dataset),
+                hashlib.sha256(mapping.read_bytes()).hexdigest(),
+            )
 
     def test_matches_haversine(self):
         rows = [
@@ -128,6 +144,20 @@ class ComputeTrajectoryKmTest(unittest.TestCase):
 
 
 class GeneratePathsTest(unittest.TestCase):
+
+    def test_full_trajectory_paths_preserve_every_panorama(self):
+        pano_ids = ["f0000", "f0001", "f0002"]
+        self.assertEqual(
+            generate_full_trajectory_paths(pano_ids),
+            [pano_ids, list(reversed(pano_ids))],
+        )
+
+    def test_full_trajectory_can_be_forward_only(self):
+        pano_ids = ["f0000", "f0001", "f0002"]
+        self.assertEqual(
+            generate_full_trajectory_paths(pano_ids, forward_only=True),
+            [pano_ids],
+        )
 
     # Uniform synthetic trajectory: 10001 points spaced ~1m apart ⇒ ~10 km.
     N_POINTS = 10001

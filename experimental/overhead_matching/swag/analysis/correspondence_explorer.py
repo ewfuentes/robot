@@ -26,7 +26,13 @@ from experimental.overhead_matching.swag.evaluation.correspondence_matching impo
     AggregationMode,
     MatchingMethod,
     RawCorrespondenceData,
+    compute_uniqueness_weights,
+    load_raw_cost_data,
     match_and_aggregate,
+)
+from experimental.overhead_matching.swag.scripts.export_correspondence_similarity import (
+    _resolve_landmark_path,
+    validate_raw_identity,
 )
 
 app = Flask(__name__)
@@ -38,6 +44,23 @@ PANO_ID_TO_VIGOR_IDX: dict[str, int] = {}
 PANO_ID_LIST: list[str] = []  # ordered pano_ids with cost data
 # sat_idx → list of column positions in cost matrix (prebuilt for speed)
 SAT_TO_COL_POSITIONS: list[list[int]] = []
+
+
+def validate_precomputed_data(
+    raw: RawCorrespondenceData,
+    dataset: vd.VigorDataset,
+    dataset_path: Path,
+    landmark_version: str | None,
+    landmark_path: Path | None,
+) -> None:
+    """Require raw correspondence data to match the live viewer inputs."""
+    validate_raw_identity(
+        raw,
+        dataset,
+        dataset_path,
+        _resolve_landmark_path(dataset_path, landmark_version, landmark_path),
+        require_identity=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +190,7 @@ HTML_TEMPLATE = '''
             <input type="range" id="threshold-slider" min="0" max="0.9" step="0.05" value="0.8"
                    oninput="document.getElementById('threshold-val').textContent=this.value">
             <span id="threshold-val" style="font-size:12px;width:30px;">0.8</span>
+            <label><input type="checkbox" id="uniqueness-weighted" checked> Uniqueness weighted</label>
             <button onclick="recomputeScores()" style="background:#2e7d32;">Recompute</button>
             <label style="margin-left:12px;"><input type="checkbox" id="show-zeros" onchange="recomputeScores()"> Show zero patches</label>
         </div>
@@ -312,6 +336,7 @@ HTML_TEMPLATE = '''
                 method: document.getElementById('method-select').value,
                 aggregation: document.getElementById('agg-select').value,
                 prob_threshold: parseFloat(document.getElementById('threshold-slider').value),
+                uniqueness_weighted: document.getElementById('uniqueness-weighted').checked,
                 show_zeros: document.getElementById('show-zeros').checked ? '1' : '0',
             };
         }
@@ -858,12 +883,17 @@ def get_satellite_scores(pano_id):
     method = MatchingMethod(params.get('method', 'hungarian'))
     aggregation = AggregationMode(params.get('aggregation', 'sum'))
     threshold = float(params.get('prob_threshold', 0.3))
+    uniqueness_weighted = bool(params.get('uniqueness_weighted', False))
 
     rows = RAW_DATA.pano_id_to_lm_rows.get(pano_id)
     if rows is None:
         return jsonify({'error': 'Panorama not found'}), 404
 
     pano_cost = RAW_DATA.cost_matrix[rows]
+    uniqueness_weights = (
+        compute_uniqueness_weights(pano_cost, threshold)
+        if uniqueness_weighted else None
+    )
     vigor_idx = PANO_ID_TO_VIGOR_IDX[pano_id]
     pano_row = VIGOR_DATASET._panorama_metadata.iloc[vigor_idx]
     positive_set = set(pano_row['positive_satellite_idxs']) | set(
@@ -877,7 +907,9 @@ def get_satellite_scores(pano_id):
         if not cols:
             continue
         sub_cost = pano_cost[:, cols]
-        result = match_and_aggregate(sub_cost, method, aggregation, threshold)
+        result = match_and_aggregate(
+            sub_cost, method, aggregation, threshold,
+            uniqueness_weights=uniqueness_weights)
         scores_array[sat_idx] = result.similarity_score
 
     # Build sorted ranking
@@ -987,6 +1019,7 @@ def get_satellite_detail(pano_id, sat_idx):
     method = MatchingMethod(params.get('method', 'hungarian'))
     aggregation = AggregationMode(params.get('aggregation', 'sum'))
     threshold = float(params.get('prob_threshold', 0.3))
+    uniqueness_weighted = bool(params.get('uniqueness_weighted', False))
 
     rows = RAW_DATA.pano_id_to_lm_rows.get(pano_id)
     if rows is None:
@@ -1000,8 +1033,14 @@ def get_satellite_detail(pano_id, sat_idx):
         })
 
     pano_cost = RAW_DATA.cost_matrix[rows]
+    uniqueness_weights = (
+        compute_uniqueness_weights(pano_cost, threshold)
+        if uniqueness_weighted else None
+    )
     sub_cost = pano_cost[:, cols]
-    result = match_and_aggregate(sub_cost, method, aggregation, threshold)
+    result = match_and_aggregate(
+        sub_cost, method, aggregation, threshold,
+        uniqueness_weights=uniqueness_weights)
 
     pano_tags = ['; '.join(f'{k}={v}' for k, v in RAW_DATA.pano_lm_tags[r])
                  for r in rows]
@@ -1039,6 +1078,10 @@ def main():
                         help='Path to .pt file from export_correspondence_similarity --save_raw')
     parser.add_argument('--dataset_path', type=str, required=True,
                         help='Path to VIGOR city directory')
+    parser.add_argument('--satellite_dir', type=Path, default=None,
+                        help='Optional external satellite patch directory')
+    parser.add_argument('--landmark_path', type=Path, default=None,
+                        help='Optional external OSM landmark file')
     parser.add_argument('--landmark_version', type=str, default=None,
                         help='Landmark version (default: auto-detect)')
     parser.add_argument('--inflation_factor', type=float, default=1.0,
@@ -1051,18 +1094,7 @@ def main():
 
     # 1. Load precomputed data
     print("Loading precomputed data...")
-    data = torch.load(args.precomputed_data, weights_only=False)
-    if 'cost_matrix' in data:
-        _cost = data['cost_matrix']
-    else:
-        _cost = np.load(data['cost_matrix_path'])
-    RAW_DATA = RawCorrespondenceData(
-        cost_matrix=_cost,
-        pano_id_to_lm_rows=data['pano_id_to_lm_rows'],
-        pano_lm_tags=data['pano_lm_tags'],
-        osm_lm_indices=data['osm_lm_indices'],
-        osm_lm_tags=data['osm_lm_tags'],
-    )
+    RAW_DATA = load_raw_cost_data(Path(args.precomputed_data))
     print(f"  Cost matrix: {RAW_DATA.cost_matrix.shape}")
     print(f"  {len(RAW_DATA.pano_id_to_lm_rows)} panoramas, "
           f"{len(RAW_DATA.osm_lm_indices)} OSM landmarks")
@@ -1083,8 +1115,13 @@ def main():
         should_load_landmarks=True,
         landmark_version=landmark_version,
         landmark_correspondence_inflation_factor=args.inflation_factor,
+        satellite_dir=args.satellite_dir,
+        landmark_path=args.landmark_path,
     )
     VIGOR_DATASET = vd.VigorDataset(dataset_path, config)
+    validate_precomputed_data(
+        RAW_DATA, VIGOR_DATASET, dataset_path, landmark_version,
+        args.landmark_path)
     print(f"  {len(VIGOR_DATASET._panorama_metadata)} panos, "
           f"{len(VIGOR_DATASET._satellite_metadata)} sats")
 
@@ -1130,7 +1167,7 @@ def main():
     startup_time = time.time() - startup_start
     print(f"\nStartup: {startup_time:.1f}s")
     print(f"Starting server on http://localhost:{args.port}")
-    app.run(debug=True, use_reloader=False, port=args.port, host='0.0.0.0')
+    app.run(debug=True, use_reloader=False, port=args.port, host='127.0.0.1')
 
 
 if __name__ == '__main__':
