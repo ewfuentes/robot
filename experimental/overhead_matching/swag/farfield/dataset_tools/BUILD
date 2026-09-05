@@ -78,6 +78,108 @@ py_test(
 )
 
 py_library(
+    name = "anonymize_video_lib",
+    srcs = ["anonymize_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("onnxruntime"),
+        requirement("opencv-python"),
+    ],
+)
+
+py_binary(
+    name = "anonymize_video",
+    srcs = ["anonymize_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":anonymize_video_lib"],
+)
+
+py_test(
+    name = "anonymize_video_test",
+    srcs = ["anonymize_video_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":anonymize_video_lib",
+    ],
+)
+
+py_library(
+    name = "person_mask_persistence",
+    srcs = ["person_mask_persistence.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+    ],
+)
+
+py_test(
+    name = "person_mask_persistence_test",
+    srcs = ["person_mask_persistence_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":person_mask_persistence",
+    ],
+)
+
+py_library(
+    name = "person_segmentation_preview_lib",
+    srcs = ["person_segmentation_preview.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+        requirement("ultralytics"),
+        ":person_mask_persistence",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_binary(
+    name = "person_segmentation_preview",
+    srcs = ["person_segmentation_preview.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":person_segmentation_preview_lib"],
+)
+
+py_library(
+    name = "person_anonymize_video_lib",
+    srcs = ["person_anonymize_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+        ":anonymize_video_lib",
+        ":person_mask_persistence",
+        ":person_segmentation_preview_lib",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_binary(
+    name = "person_anonymize_video",
+    srcs = ["person_anonymize_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":person_anonymize_video_lib"],
+)
+
+py_test(
+    name = "person_anonymize_video_test",
+    srcs = ["person_anonymize_video_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":person_anonymize_video_lib",
+    ],
+)
+
+py_binary(
+    name = "fetch_anonymization_models",
+    srcs = ["fetch_anonymization_models.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_library(
     name = "trim_dataset_lib",
     srcs = ["trim_dataset.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
