@@ -653,10 +653,10 @@ class EndToEndBuildAggregateTest(unittest.TestCase):
 
 
 class DetectionModeTest(unittest.TestCase):
-    # The dossier prompt is what every published matching artifact recorded;
-    # splitting it into head/evidence/tail must not have moved a byte.
+    # Keep the approved repaired dossier prompt byte-stable while sharing its
+    # common rules with the detection prompt.
     BASELINE_PROMPT_SHA256 = (
-        "da22586bf8567c50de2cbd23bf44f5e5741918ab3444afb20f6217477314cb64")
+        "630b8f84eae2a7f34eecbd84dee6d7d9dcfa8122dc57c8eeccfe1c23469d93ab")
 
     def test_dossier_prompt_is_byte_stable(self):
         import hashlib

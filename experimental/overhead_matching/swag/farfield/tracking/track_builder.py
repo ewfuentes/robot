@@ -29,6 +29,10 @@ from experimental.overhead_matching.swag.farfield.tracking.perf_profile import (
     PROFILE,
 )
 
+# ponytail: two-track batches cap 8K crop RAM; use a byte budget only if this
+# becomes a measured throughput bottleneck.
+MAX_TRACKS_PER_BATCH = 2
+
 
 @dataclass
 class TrackBuilderConfig:
@@ -295,43 +299,46 @@ class TrackBuilder:
         no later interval in which to create and validate a birth record.
         """
         cfg = self.cfg
-        # Plan every track's prompt first, propagate them together, then apply
-        # the outcomes in the same order a per-track loop would have. Nothing in
-        # the planning phase reads another track's post-propagation state, and
-        # cross-track bookkeeping (`_record_track_overlaps`) already runs after
-        # the loop, so the split is behaviour-preserving -- what it buys is one
-        # batched image-encoder pass per frame instead of one per track (see
-        # sam_backend.propagate_batch).
-        plans = []
-        for track in self.alive_tracks():
-            if track.birth_keyframe > keyframe:
-                continue  # seeded at a future keyframe (shouldn't happen)
-            crops, origins = crops_fn(track, track.window_px or cfg.window_px)
-            is_birth = track.last_keyframe is None
-            if is_birth:
-                track.prompt_box = self._box_in_window(
-                    track._birth_pano_box, origins[0])
-                plans.append((track, crops, origins, True,
-                              track.prompt_box, None))
-            elif track.prompt_box is not None:
-                box = self._box_in_window(track._reanchor_pano_box, origins[0])
-                plans.append((track, crops, origins, False, box, None))
-            else:
-                mask = self._mask_in_window(track, origins[0],
-                                            crops[0].shape[0])
-                if mask.sum() < cfg.min_mask_area_px:
-                    self._close(track, keyframe, "mask_lost_in_window")
-                    continue
-                plans.append((track, crops, origins, False, None, mask))
+        # Nothing in one track's propagation reads another track's outcome;
+        # overlap bookkeeping and new births happen only after every batch.
+        # Bounding the batch therefore preserves ordering while releasing the
+        # full-resolution interval crops before planning the next tracks.
+        tracks = self.alive_tracks()
+        for start in range(0, len(tracks), MAX_TRACKS_PER_BATCH):
+            plans = []
+            for track in tracks[start:start + MAX_TRACKS_PER_BATCH]:
+                if track.birth_keyframe > keyframe:
+                    continue  # seeded at a future keyframe (shouldn't happen)
+                crops, origins = crops_fn(
+                    track, track.window_px or cfg.window_px)
+                is_birth = track.last_keyframe is None
+                if is_birth:
+                    track.prompt_box = self._box_in_window(
+                        track._birth_pano_box, origins[0])
+                    plans.append((track, crops, origins, True,
+                                  track.prompt_box, None))
+                elif track.prompt_box is not None:
+                    box = self._box_in_window(
+                        track._reanchor_pano_box, origins[0])
+                    plans.append((track, crops, origins, False, box, None))
+                else:
+                    mask = self._mask_in_window(track, origins[0],
+                                                crops[0].shape[0])
+                    if mask.sum() < cfg.min_mask_area_px:
+                        self._close(track, keyframe, "mask_lost_in_window")
+                        continue
+                    plans.append((track, crops, origins, False, None, mask))
+            if plans:
+                self._propagate_plans(
+                    keyframe, plans, detections, det_pano_boxes)
 
-        if not plans:
-            with PROFILE.phase("track_overlaps"):
-                self._record_track_overlaps(keyframe + 1)
-            if allow_new_births:
-                self.seed_unassigned(
-                    keyframe + 1, detections, det_pano_boxes)
-            return
+        with PROFILE.phase("track_overlaps"):
+            self._record_track_overlaps(keyframe + 1)
+        if allow_new_births:
+            self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
 
+    def _propagate_plans(self, keyframe, plans, detections, det_pano_boxes):
+        cfg = self.cfg
         with PROFILE.phase("propagate_batch", items=len(plans)):
             batched = self.backend.propagate_batch(
                 [(crops, box, mask) for _, crops, _, _, box, mask in plans])
@@ -413,11 +420,6 @@ class TrackBuilder:
                 with PROFILE.phase("media_on_interval", items=1):
                     self.on_interval(track, keyframe, crops, origins, masks,
                                      frame_previews)
-
-        with PROFILE.phase("track_overlaps"):
-            self._record_track_overlaps(keyframe + 1)
-        if allow_new_births:
-            self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
 
     def seed_unassigned(self, keyframe, detections, det_pano_boxes):
         """Detections that supported no track become new seeds. Also used to

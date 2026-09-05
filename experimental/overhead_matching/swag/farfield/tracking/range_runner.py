@@ -147,12 +147,9 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
         with PROFILE.phase("video_decode"):
             frames = list(provider.frames_between(t0, t1))
         PROFILE.items["video_decode"] += len(frames)
-        track_crops = {}
 
-        def crops_fn(track, size, _frames=frames, _t0=t0, _cache=track_crops):
-            key = (track.track_id, size)
-            if key not in _cache:
-              with PROFILE.phase("window_crops", items=len(_frames)):
+        def crops_fn(track, size, _frames=frames, _t0=t0):
+            with PROFILE.phase("window_crops", items=len(_frames)):
                 crops, origins = [], []
                 for _, t, frame_rgb in _frames:
                     az0, _el = geo.direction_from_pano_px(
@@ -173,8 +170,7 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
                         track.center_y - size / 2.0, size, size)
                     crops.append(crop)
                     origins.append((wx - size / 2.0, y0))
-                _cache[key] = (crops, origins)
-            return _cache[key]
+            return crops, origins
 
         dets_next = obs_by_frame.get(k + 1, [])
         n_alive = len(builder.alive_tracks())
@@ -196,6 +192,7 @@ def run_range(range_name, k_start, k_end, builder_cfg, backend, provider,
             renderer.snap(builder, k + 1, keyframe_crop_fn_for(pano1))
         log(f"  [{range_name}] f{k:04d}->f{k + 1:04d}: {n_alive} alive, "
             f"{len(dets_next)} dets, {len(builder.tracks)} total tracks")
+        del crops_fn, frames
 
     artifact = track_artifact(builder, builder_cfg, range_name, k_start, k_end)
     PROFILE.report(log=log, label=f"range {range_name}")

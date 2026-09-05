@@ -48,6 +48,7 @@ class FakeBackend:
     def __init__(self, masks_per_call):
         self.masks_per_call = list(masks_per_call)
         self.calls = []
+        self.batch_sizes = []
 
     def propagate(self, frames, prompt_box=None, prompt_mask=None):
         self.calls.append({"n": len(frames), "box": prompt_box,
@@ -63,6 +64,7 @@ class FakeBackend:
         optimization in the real backend, not a semantic one, so the fake
         simply serves each clip in order -- which is also what keeps
         `masks_per_call` scripted per track, as these tests expect."""
+        self.batch_sizes.append(len(clips))
         return [self.propagate(frames, prompt_box=box, prompt_mask=mask)
                 for frames, box, mask in clips]
 
@@ -393,6 +395,20 @@ class TrackBuilderTest(unittest.TestCase):
         # Masks span pano x 972..1032 and 990..1050: 42px shared of 60px
         # width -> inter_over_min = 42/60.
         self.assertAlmostEqual(ov["inter_over_min"], 42 / 60, places=2)
+
+    def test_propagation_batches_bound_live_crop_residency(self):
+        good = rect_mask(108, 88, 148, 168)
+        backend = FakeBackend([good] * 5)
+        builder = tb.TrackBuilder(backend, cfg(), PANO_W, PANO_H)
+        observations = [FakeObs(f"f0000__lm{i}__box0") for i in range(5)]
+        boxes = {
+            obs.obs_id: centered_pano_box(1000 + i * 500, 1920, 40, 80)
+            for i, obs in enumerate(observations)
+        }
+        builder.seed_unassigned(0, observations, boxes)
+        builder.step(0, crops_fn_factory(builder), [], {})
+        self.assertEqual(backend.batch_sizes, [2, 2, 1])
+        self.assertTrue(all(track.records for track in builder.tracks))
 
     def test_mask_death_closes(self):
         good = rect_mask(108, 88, 148, 168)

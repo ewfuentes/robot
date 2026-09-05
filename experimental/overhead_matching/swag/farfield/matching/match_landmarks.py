@@ -75,37 +75,37 @@ from experimental.overhead_matching.swag.farfield.extraction import (
 from experimental.overhead_matching.swag.farfield.localization import structs
 from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
-_PROMPT_HEAD = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
-bundles, identify which landmarks in Set 1 (observed in images) are the same physical object as a
-landmark in Set 2 (a map database). Both use key=value notation.
+_PROMPT_HEAD = """You are a landmark matching expert. Given OpenStreetMap-style evidence for
+landmarks observed in images (Set 1) and tag bundles from a map database (Set 2), identify every
+Set 2 entry that is compatible with each Set 1 observation and distinguish category compatibility
+from exact-instance identification. Do not use or infer location.
 
-Set 2 is one arbitrary slice of a much larger map. Most of it is irrelevant to any given Set 1
-landmark, and for most Set 1 landmarks the correct answer is not in this slice at all. Returning no
-match is the expected outcome, not a failure. Never settle for the closest thing present.
+Set 2 is an arbitrary slice of a much larger map. Most entries are irrelevant. Return no match when
+no shown entry is compatible, but do not choose merely the closest-looking incompatible entry.
 
-Match the observed object ITSELF, not what it stands on, contains, or sits beside. A structure on an
-island is not the island; a light on a pier is not the pier. When only the container, the contents,
-or a neighbour appears in Set 2, that is a no match - not a weaker match.
+Match the observed object itself, not a container, contents, support, or neighbour. A structure on
+an island is not the island; a light on a pier is not the pier.
 
-A Set 1 landmark may match several Set 2 entries when the map holds more than one row for the same
-physical object. Several rows for one object is a real multiple match. Several related-but-distinct
-objects is not.
+Evaluate every Set 2 entry independently. A Set 1 landmark may be compatible with many distinct
+physical Set 2 objects. When the evidence identifies only a category, return EVERY compatible
+entry shown, not one representative or winner. Candidates that differ only in attributes not
+observed in Set 1 should receive equal confidence.
+
+Use open-world map semantics:
+  - A missing Set 2 attribute is unknown, not a contradiction.
+  - An explicit incompatible value is negative evidence.
+  - A matching optional attribute can be positive evidence, but must not exclude otherwise
+    compatible entries merely because they omit that attribute.
+  - A name, reference, operator, color, model, output rating, or other unique value appearing only
+    in Set 2 is not evidence that this is the observed instance.
 
 """
 
-_TRACK_EVIDENCE = """Each Set 1 entry spans several lines. It is the output of a prior review stage that examined every
-detection of the object across many frames alongside the images, and reported both what it concluded
-and how sure it was. Every number below is that stage's belief, not a measurement:
-  tags        - candidate tags, each with its belief (0-1). A low weight is a possibility that stage
-                could not rule out, not a claim.
-  names       - candidate names, each with a belief and a basis. "both" means the review stage could
-                also corroborate the name from the images it was shown. "reported_by_detections"
-                means it could not, which does not eliminate the name as a possibility.
-  kind/extent - what sort of object it is, and whether it is point-like or spatially extended.
-  description - one sentence on intrinsic appearance. Set 2 rows sometimes carry free text as well;
-                compare them directly.
-  features    - distinguishing visual details.
-  unresolved  - what that stage could not settle. Read it as a warning.
+_TRACK_EVIDENCE = """Each Set 1 entry is a reviewed summary of many detections:
+  - tags are candidate OSM-style tags with belief weights. Low weight is a possibility, not a claim.
+  - names carry a weight and basis. basis=both means the name was corroborated from imagery;
+    basis=reported_by_detections means it was reported but not visually corroborated.
+  - kind/extent, description, features, and unresolved describe the observed evidence and its limits.
 
 """
 
@@ -117,25 +117,20 @@ the model read off the object or recognised it by; it may be a variant spelling 
 
 """
 
-_PROMPT_TAIL = """For each match report:
-  - match_type:
-      "instance" - this exact physical object, identified uniquely by a matching name or by a tag
-        combination no other candidate shares.
-      "category" - the right kind of object, but the tags cannot say WHICH one.
-  - confidence 0.0-1.0 - how sure you are that this Set 2 entry is the same physical object as the
-    Set 1 landmark. This is about the match, not about how distinctive the landmark is.
+_PROMPT_TAIL = """For each returned Set 2 entry report:
+  - match_type="category" when the entry is a plausible identity because its class and all known
+    observed attributes are compatible, but the evidence does not identify which physical member
+    of that category was seen. Category matches may refer to distinct physical objects.
+  - match_type="instance" only when identifying evidence PRESENT IN SET 1 also agrees with Set 2,
+    such as a supported name, reference, inscription, or genuinely distinctive combination of
+    observed properties. Uniqueness within the shown map slice is never sufficient.
+  - confidence for category means confidence in compatibility, not the probability that this one
+    row is the exact physical identity. Confidence for instance means confidence in exact identity.
 
-Also report, once per Set 1 landmark:
-  - no_match_confidence 0.0-1.0 - how sure you are that none of the Set 2 entries SHOWN HERE is this
-    landmark. It is a statement about this slice only, not about the map as a whole, and it will
-    usually be high. Report it honestly rather than lowering it to justify a weak match.
-  - uniqueness_score 1-5 - how distinctive the SET 1 landmark is on its own, independent of any match
-    and of your confidence: 1 generic (building=yes), 3 moderately specific (man_made=water_tower),
-    5 unmistakable (a named lighthouse).
-
-Not evidence against a match: small numeric differences (height 40 vs 45 - the observer is often
-off); different tag specificity for the same thing (man_made=tower vs man_made=water_tower); one
-name being a longer or shorter variant of another; tags present on one side only."""
+Also report no_match_confidence for the shown slice and a Set 1 uniqueness_score from 1 (generic)
+to 5 (unmistakable). Small numeric differences, tag-specificity differences for the same kind,
+missing tags, and short/long variants of a supported name are not by themselves evidence against
+a match."""
 
 SYSTEM_PROMPT = _PROMPT_HEAD + _TRACK_EVIDENCE + _PROMPT_TAIL
 DETECTION_SYSTEM_PROMPT = _PROMPT_HEAD + _DETECTION_EVIDENCE + _PROMPT_TAIL

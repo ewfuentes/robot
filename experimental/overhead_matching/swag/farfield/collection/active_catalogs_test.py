@@ -29,7 +29,7 @@ class ActiveCatalogsTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def _write_mapping(self, dataset, points):
+    def _write_mapping(self, dataset, points, *, real_panorama=False):
         dataset_dir = self.root / "datasets" / dataset
         path = dataset_dir / "pano_id_mapping.csv"
         path.parent.mkdir(parents=True)
@@ -61,12 +61,13 @@ class ActiveCatalogsTest(unittest.TestCase):
                     "dist_m": float(index),
                     "video_t_s": float(index),
                 })
-        frames = dataset_dir / "frames"
+        frames = dataset_dir / ("panorama" if real_panorama else "frames")
         frames.mkdir()
         for row in rows:
             (frames / row["filename"]).write_bytes(b"jpeg")
-        (dataset_dir / "panorama").symlink_to(
-            "frames", target_is_directory=True)
+        if not real_panorama:
+            (dataset_dir / "panorama").symlink_to(
+                "frames", target_is_directory=True)
         return path
 
     def _write_pbf(self, spec, vintage="260824"):
@@ -93,8 +94,10 @@ class ActiveCatalogsTest(unittest.TestCase):
         self.assertEqual(
             [scope.name for scope in subject.ACTIVE_SCOPES],
             ["boston_harbor_20260712", "charles_river_20260727",
-             "mount_washington_20260815", "pohang_canal_04"])
-        boston, charles, washington, pohang = subject.ACTIVE_SCOPES
+             "mount_washington_20260815", "pohang_canal_04",
+             "boston_snowy_20260125", "flevoland_polder_20250111"])
+        boston, charles, washington, pohang, snowy, flevoland = (
+            subject.ACTIVE_SCOPES)
         self.assertEqual(boston.output_datasets, (
             "boston_harbor_leg1", "boston_harbor_leg2",
             "boston_harbor_leg3"))
@@ -105,6 +108,9 @@ class ActiveCatalogsTest(unittest.TestCase):
             "north-america/us/maine-latest.osm.pbf"))
         self.assertIsNone(washington.enc_state)
         self.assertEqual(pohang.output_datasets, ("pohang_canal_04",))
+        self.assertIsNone(snowy.enc_state)
+        self.assertEqual(flevoland.osm_specs,
+                         ("europe/netherlands-latest.osm.pbf",))
         self.assertEqual(subject.BBOX_BUFFER_KM, 25.0)
         self.assertEqual(subject.ENC_BAND, 5)
         self.assertEqual(subject.OSM_GEOMETRY_INDEX_MODE,
@@ -273,6 +279,15 @@ class ActiveCatalogsTest(unittest.TestCase):
         plan = self._plan(dataset, {spec: self._write_pbf(spec)})
 
         self.assertEqual(plan["scopes"][0]["dataset_tables"][0]["rows"], 1)
+
+    def test_real_panorama_directory_is_accepted(self):
+        dataset = "flevoland_polder"
+        self._write_mapping(dataset, [(52.4, 5.5)], real_panorama=True)
+
+        record, _, _ = subject.read_dataset_tables(dataset, self.root)
+
+        self.assertEqual(record["panorama"]["relative_link"], None)
+        self.assertEqual(record["panorama"]["jpeg_count"], 1)
 
     def test_panorama_member_symlink_is_rejected(self):
         dataset = "pohang_canal_04"

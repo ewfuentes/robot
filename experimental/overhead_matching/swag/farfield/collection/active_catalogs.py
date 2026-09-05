@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan or materialize strict full catalogs for the eight active datasets.
+"""Plan or materialize strict full catalogs for the active datasets.
 
 The default mode is report-only: it validates the exact frozen trajectory
 tables, caller-pinned full PBF files, and Geofabrik coverage, then prints a
@@ -130,6 +130,22 @@ ACTIVE_SCOPES = (
         output_datasets=("pohang_canal_04",),
         bbox_datasets=("pohang_canal_04",),
         osm_specs=("asia/south-korea-latest.osm.pbf",),
+        enc_state=None,
+    ),
+    ActiveCatalogScope(
+        name="boston_snowy_20260125",
+        output_datasets=("boston_snowy",),
+        bbox_datasets=("boston_snowy",),
+        osm_specs=(
+            "north-america/us/massachusetts-latest.osm.pbf",
+        ),
+        enc_state=None,
+    ),
+    ActiveCatalogScope(
+        name="flevoland_polder_20250111",
+        output_datasets=("flevoland_polder",),
+        bbox_datasets=("flevoland_polder",),
+        osm_specs=("europe/netherlands-latest.osm.pbf",),
         enc_state=None,
     ),
 )
@@ -427,23 +443,21 @@ def read_dataset_tables(
     gps_rows = _read_gps_rows(gps_bytes, gps_path, dataset)
 
     panorama_dir = dataset_dir / "panorama"
-    try:
-        panorama_target = _read_symlink(
+    panorama_link = None
+    frames_dir = panorama_dir
+    if panorama_dir.is_symlink():
+        panorama_link = _read_symlink(
             panorama_dir, what=f"{dataset} panorama")
-    except ActiveCatalogError as error:
-        raise ActiveCatalogError(
-            f"{dataset} panorama must be the symlink 'panorama -> frames': "
-            f"{error}") from error
-    if panorama_target != "frames":
-        raise ActiveCatalogError(
-            f"{dataset} panorama symlink text must be exactly 'frames'")
-    frames_dir = dataset_dir / "frames"
-    if not frames_dir.exists():
-        raise ActiveCatalogError(
-            f"{dataset} panorama -> frames symlink is dangling or cyclic")
-    if frames_dir.is_symlink() or not frames_dir.is_dir():
-        raise ActiveCatalogError(
-            f"{dataset} frames must be a real non-symlink directory")
+        if panorama_link != "frames":
+            raise ActiveCatalogError(
+                f"{dataset} panorama symlink text must be exactly 'frames'")
+        frames_dir = dataset_dir / "frames"
+        if not frames_dir.exists():
+            raise ActiveCatalogError(
+                f"{dataset} panorama -> frames symlink is dangling or cyclic")
+        if frames_dir.is_symlink() or not frames_dir.is_dir():
+            raise ActiveCatalogError(
+                f"{dataset} frames must be a real non-symlink directory")
     panorama_names = _scan_regular_directory(
         frames_dir, what=f"{dataset} panorama set")
     if not panorama_names:
@@ -544,8 +558,9 @@ def read_dataset_tables(
             or _scan_regular_directory(
                 frames_dir, what=f"{dataset} panorama set")
             != panorama_names
-            or _read_symlink(panorama_dir, what=f"{dataset} panorama")
-            != "frames"):
+            or (panorama_link is None and panorama_dir.is_symlink())
+            or (panorama_link is not None and _read_symlink(
+                panorama_dir, what=f"{dataset} panorama") != "frames")):
         raise ActiveCatalogError(
             f"{dataset} canonical tables changed before validation returned")
     return ({
@@ -554,7 +569,7 @@ def read_dataset_tables(
         "frames_gps": gps_identity,
         "panorama": {
             "path": str(frames_dir),
-            "relative_link": "frames",
+            "relative_link": panorama_link,
             "jpeg_count": len(panorama_names),
             "filenames_sha256": artifact.sha256_json(panorama_names),
         },
