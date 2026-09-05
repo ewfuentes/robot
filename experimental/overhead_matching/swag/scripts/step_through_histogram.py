@@ -29,6 +29,10 @@ from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     aggregator_from_config,
 )
 import experimental.overhead_matching.swag.evaluation.evaluate_swag as es
+from experimental.overhead_matching.swag.evaluation.odometry_noise import (
+    OdometryNoiseConfig,
+    add_noise_to_motion_deltas,
+)
 from common.gps import web_mercator
 
 
@@ -349,6 +353,8 @@ def main():
                         help="Path to evaluation results directory")
     parser.add_argument("--dataset-path", type=str, required=True,
                         help="Path to VIGOR dataset")
+    parser.add_argument("--satellite-dir", type=str, default=None,
+                        help="Optional external satellite patch directory")
     parser.add_argument("--aggregator-config", type=str, required=True,
                         help="Path to YAML config file for aggregator (see adaptive_aggregators.py)")
     parser.add_argument("--motion-noise-frac", type=float, default=None,
@@ -371,6 +377,10 @@ def main():
 
     eval_path = Path(args.eval_path).expanduser()
     dataset_path = Path(args.dataset_path).expanduser()
+    satellite_dir = (
+        Path(args.satellite_dir).expanduser()
+        if args.satellite_dir is not None else None
+    )
 
     # Load config
     with open(eval_path / "args.json") as f:
@@ -388,8 +398,15 @@ def main():
             f"Pass --motion-noise-frac on the CLI, or re-run the eval with the new key."
         )
     subdivision_factor = eval_args.get("subdivision_factor", 4)
+    odometry_noise_frac = eval_args.get("odometry_noise_frac")
+    odometry_noise_seed = eval_args.get("odometry_noise_seed", 7919)
+    odometry_noise_config = (
+        OdometryNoiseConfig(odometry_noise_frac, odometry_noise_seed)
+        if odometry_noise_frac is not None else None
+    )
 
-    print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}")
+    print(f"Config: motion_noise_frac={motion_noise_frac}, subdivision={subdivision_factor}, "
+          f"odometry_noise={odometry_noise_config}")
 
     # Load path statistics
     print("Loading path statistics...")
@@ -420,6 +437,8 @@ def main():
         panorama_size=(640, 640),
         factor=1.0,
         landmark_version=eval_args.get("landmark_version", "v4_202001"),
+        should_load_landmarks=False,
+        satellite_dir=satellite_dir,
     )
     vigor_dataset = vd.VigorDataset(dataset_path, dataset_config)
     print(f"Dataset loaded in {_time.time() - _t0:.1f}s")
@@ -629,6 +648,13 @@ def main():
 
         # Get motion deltas
         motion_deltas = es.get_motion_deltas_from_path(vigor_dataset, path)
+        if odometry_noise_config is not None:
+            start_latlon = vigor_dataset.get_panorama_positions(path)[0]
+            noise_gen = torch.Generator(device="cpu").manual_seed(
+                odometry_noise_config.seed * (path_idx + 1))
+            motion_deltas = add_noise_to_motion_deltas(
+                motion_deltas.cpu(), start_latlon.cpu(),
+                odometry_noise_config, generator=noise_gen)
 
         # Initialize and run filter
         if lightweight_mode:
