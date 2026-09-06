@@ -218,8 +218,8 @@ CONFIG_SCHEMA = {
     "localization.association_outlier_rate": _number(maximum=1.0),
     "localization.matcher_recall": _open_probability(),
     "localization.identity_weights": _text(
-        choices=("global_softmax", "visible_softmax", "visible_flat",
-                 "track_joint", "track_joint_flat")),
+        choices=("global_softmax", "global_flat", "visible_softmax",
+                 "visible_flat", "track_joint", "track_joint_flat")),
     "localization.range_cap.enabled": _boolean(),
     "localization.range_cap.softness_frac": _positive_number(maximum=10.0),
     "localization.min_reported_responsibility": _number(maximum=1.0),

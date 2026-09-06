@@ -58,11 +58,14 @@ MAX_KAPPA = 1.0e6
 GLOBAL_SOFTMAX = "global_softmax"    # historical: softmax of LLRs, normalized over the whole catalog
 VISIBLE_SOFTMAX = "visible_softmax"  # same prior, renormalized per particle over rows the range cap admits
 VISIBLE_FLAT = "visible_flat"        # as visible_softmax, but every endorsed row gets the same prior
+GLOBAL_FLAT = "global_flat"          # the historical model with every endorsed row at the same prior
 TRACK_JOINT = "track_joint"          # one identity per TRACK, marginalized exactly over its keyframes
 TRACK_JOINT_FLAT = "track_joint_flat"
-IDENTITY_WEIGHTS = (GLOBAL_SOFTMAX, VISIBLE_SOFTMAX, VISIBLE_FLAT,
+IDENTITY_WEIGHTS = (GLOBAL_SOFTMAX, GLOBAL_FLAT, VISIBLE_SOFTMAX, VISIBLE_FLAT,
                     TRACK_JOINT, TRACK_JOINT_FLAT)
 JOINT_MODELS = (TRACK_JOINT, TRACK_JOINT_FLAT)
+FLAT_MODELS = (GLOBAL_FLAT, VISIBLE_FLAT, TRACK_JOINT_FLAT)
+VISIBLE_MODELS = (VISIBLE_SOFTMAX, VISIBLE_FLAT)
 # Candidate-axis block size for the measurement update, bounding the (N, M)
 # temporary arrays.
 CANDIDATE_BLOCK = 256
@@ -1411,7 +1414,7 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
             and config.identity_weights in JOINT_MODELS:
         raise ValueError("track_joint needs association_outlier_rate in "
                          "(0, 1) as its per-keyframe outlier share")
-    if (config.identity_weights != GLOBAL_SOFTMAX
+    if (config.identity_weights in VISIBLE_MODELS + JOINT_MODELS
             and config.association_persistence):
         raise ValueError(
             f"identity_weights={config.identity_weights!r} requires "
@@ -1498,7 +1501,7 @@ def run_filter(
     # Tables are static for a run, so their identity posteriors and
     # endorsement masks are computed once, not per measurement.
     joint = config.identity_weights in JOINT_MODELS
-    visible = config.identity_weights != GLOBAL_SOFTMAX and not joint
+    visible = config.identity_weights in VISIBLE_MODELS
     joint_cache = {
         tid: track_joint_spec(
             table, catalog, config.pi0, config.matcher_recall,
@@ -1512,7 +1515,7 @@ def run_filter(
     weight_cache = {
         tid: _identity_log_weights(
             table, catalog, config.matcher_recall,
-            flatten=config.identity_weights == VISIBLE_FLAT)
+            flatten=config.identity_weights in FLAT_MODELS)
         for tid, table in tables.items()}
     surprise_cache = {
         tid: _surprise_mask(table, _clipped_log_lr(table, catalog))

@@ -277,7 +277,9 @@ class FilterConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # independent of the particle. The "visible_*" models renormalize that
     # prior per particle over the rows the epoch's range cap admits, so
     # identity mass is not spent on rows the geometry has already excluded;
-    # "visible_flat" also gives every endorsed row the same prior weight.
+    # "visible_flat" also gives every endorsed row the same prior weight;
+    # "global_flat" does only that (no renormalization), so it composes with
+    # association persistence like the historical model.
     # "track_joint" / "track_joint_flat" marginalize ONE identity per track
     # over all of its keyframes (filter.TrackJointSpec); they reuse
     # association_outlier_rate as the per-keyframe outlier share.
