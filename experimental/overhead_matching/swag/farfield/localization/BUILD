@@ -860,3 +860,15 @@ py_binary(
         "//common/torch:load_torch_deps",
     ],
 )
+
+py_binary(
+    name = "grid_filter",
+    srcs = ["grid_filter.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        ":export_ingest",
+        ":filter",
+        "//common/torch:load_torch_deps",
+    ],
+)
