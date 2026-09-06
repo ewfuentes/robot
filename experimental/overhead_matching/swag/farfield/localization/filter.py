@@ -866,7 +866,11 @@ def track_joint_update(belief: ParticleBelief, meas, spec: TrackJointSpec,
     injection reindex it like every other per-particle array."""
     state = belief.track_joint.get(meas.tracklet_id)
     if state is None:
-        state = np.zeros((belief.n, spec.candidate_idx.size + 1))
+        # float32: the peak concurrent state on Flevoland is ~8.6k columns
+        # x n particles; the accumulated log-likelihoods never need more
+        # than ~1e-3 relative precision to rank candidates.
+        state = np.zeros((belief.n, spec.candidate_idx.size + 1),
+                         dtype=np.float32)
         belief.track_joint[meas.tracklet_id] = state
     log_z_before = _track_joint_log_z(state, spec)
     if spec.candidate_idx.size:
@@ -880,16 +884,22 @@ def track_joint_update(belief: ParticleBelief, meas, spec: TrackJointSpec,
     belief.log_weight += log_z - log_z_before
 
     # Reportable form: the per-particle identity posterior given the whole
-    # history so far, averaged under the updated weights.
+    # history so far, averaged under the updated weights. Before the first
+    # geometric factor that posterior is uniform over K candidates, so the
+    # reporting floor is raised to twice the uniform share: a candidate is
+    # reported once the history prefers it, not merely because it exists
+    # (with K in the thousands and resp_min at 1e-6, reporting every row on
+    # every epoch retained gigabytes of health records).
     groups = _responsibility_groups(belief, per_mode)
     null_term = np.exp(state[:, -1] + spec.log_background - log_z)
+    report_min = max(resp_min, min(0.5, 2.0 / max(spec.candidate_idx.size, 1)))
     posteriors = []
     for mode_id, group_weights in groups:
         responsibilities = {}
         if spec.candidate_idx.size:
             avg = group_weights @ np.exp(
                 state[:, :-1] + spec.log_prior[None, :] - log_z[:, None])
-            for offset in np.nonzero(avg >= resp_min)[0]:
+            for offset in np.nonzero(avg >= report_min)[0]:
                 responsibilities[
                     catalog.landmark_ids[spec.candidate_idx[offset]]] = float(
                         avg[offset])
@@ -1159,7 +1169,8 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
         # the full identity prior, exactly like the kept mass once did.
         belief.track_joint[tid] = np.concatenate([
             belief.track_joint[tid],
-            np.zeros((east.size, belief.track_joint[tid].shape[1]))])
+            np.zeros((east.size, belief.track_joint[tid].shape[1]),
+                     dtype=belief.track_joint[tid].dtype)])
     for tid in belief.associations:
         belief.associations[tid] = np.concatenate([
             belief.associations[tid],
@@ -1818,11 +1829,13 @@ def run_filter(
         # final weighted posterior — and it is a copy, unaffected by the
         # resampling below.
         if kf % config.checkpoint_every == 0 or kf == n_keyframes - 1:
+            # Association / track-joint state is replayable from Tier 1 and
+            # would add ~n_tracklets * n_particles entries per checkpoint;
+            # detach it before copying so the copy never holds it.
+            joint_state, belief.track_joint = belief.track_joint, {}
             snapshot = belief.copy()
-            # Association state is replayable from Tier 1 and would add
-            # ~n_tracklets * n_particles ints per checkpoint.
+            belief.track_joint = joint_state
             snapshot.associations = {}
-            snapshot.track_joint = {}
             checkpoints[kf] = snapshot
         for meas in keyframe_measurements:
             if last_epoch[meas.tracklet_id] == kf:

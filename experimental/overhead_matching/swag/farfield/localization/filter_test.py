@@ -338,8 +338,8 @@ class TrackJointTest(unittest.TestCase):
         c0 = math.exp(spec.log_background)
         z = lambda t: c0 * (1 / (2 * math.pi)) ** t + float(
             np.sum(np.exp(spec.log_prior) * q ** t))
-        self.assertAlmostEqual(first, math.log(z(1)), places=9)
-        self.assertAlmostEqual(second, math.log(z(2) / z(1)), places=9)
+        self.assertAlmostEqual(first, math.log(z(1)), places=5)  # float32 state
+        self.assertAlmostEqual(second, math.log(z(2) / z(1)), places=5)
         self.assertGreater(second - first, math.log(1.0 / 0.2) - 0.5)
         # And the reported posterior has settled on A.
         post = pf.track_joint_update(
