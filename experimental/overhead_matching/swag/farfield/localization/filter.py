@@ -1204,9 +1204,8 @@ def _window_gate(belief, result, measurements, odometry, tables, catalog,
     particles and the proposal's hypotheses are scored by the SAME window
     function (one identity per tracklet over the window), so neither side
     enjoys committed geometry the other lacks. Injection proceeds when the
-    best hypothesis explains more tracklets than the incumbent, or as many at
-    a lower rms by the margin (in degrees, `evidence_gate_margin_nats` is not
-    used here). Returns (passed, best_hypothesis_score, incumbent_score)."""
+    best hypothesis's tempered window score beats the incumbent's by
+    `evidence_gate_margin_nats` (one inconsistent tracklet is about one unit). Returns (passed, best_hypothesis_score, incumbent_score)."""
     order = np.argsort(-belief.log_weight, kind="stable")[:n_incumbent]
     incumbent = window_proposal.incumbent_score(
         belief.east_m[order], belief.north_m[order], belief.heading_rad[order],
@@ -1224,14 +1223,13 @@ def _window_gate(belief, result, measurements, odometry, tables, catalog,
         return True, None, None
     hyp = hyp[0]
 
-    def best(score):
-        i = int(np.lexsort((score.mean_rms_rad, -score.n_consistent))[0])
-        return int(score.n_consistent[i]), float(score.mean_rms_rad[i]), float(score.score[i])
-
-    inc_n, inc_rms, inc_score = best(incumbent)
-    hyp_n, hyp_rms, hyp_score = best(hyp)
-    margin = math.radians(0.25)
-    passed = hyp_n > inc_n or (hyp_n == inc_n and hyp_rms < inc_rms - margin)
+    # The tempered window log-score already prices an inconsistent tracklet
+    # (about one unit) and the rms of the consistent ones; injection has to
+    # beat the incumbent by `evidence_gate_margin_nats` of it. A near-tie is
+    # exactly the case where displacing half the belief is a coin flip.
+    inc_score = float(incumbent.score.max())
+    hyp_score = float(hyp.score.max())
+    passed = hyp_score >= inc_score + config.proposal.evidence_gate_margin_nats
     return passed, hyp_score, inc_score
 
 
