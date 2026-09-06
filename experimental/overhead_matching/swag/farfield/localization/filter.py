@@ -1213,22 +1213,30 @@ def _window_gate(belief, result, measurements, odometry, tables, catalog,
         refine_poses=True)
     if incumbent is None:
         return True, None, None
-    incumbent = incumbent[0]
-    hyp = window_proposal.incumbent_score(
-        np.array([h.east_m for h in result.hypotheses]),
-        np.array([h.north_m for h in result.hypotheses]),
-        np.array([h.heading_rad for h in result.hypotheses]),
-        measurements, odometry, tables, catalog, config.proposal, kf)
-    if hyp is None:
-        return True, None, None
-    hyp = hyp[0]
-
+    scored, refined = incumbent
+    # Both sides carry the same cross-event site memory: the hypotheses'
+    # accumulated score is what the generator ranked them by, and the
+    # incumbent's refined particles earn the credit of any remembered site
+    # they sit on. A lattice alias and the truth tie on one window; only the
+    # side that has kept fitting window after window pulls ahead.
+    inc_acc = window_proposal.accumulate(refined, scored.score, memory,
+                                         odometry, kf)
+    inc_score = float(inc_acc.max())
+    if result.best_score is not None:
+        hyp_score = float(result.best_score)
+    else:
+        hyp = window_proposal.incumbent_score(
+            np.array([h.east_m for h in result.hypotheses]),
+            np.array([h.north_m for h in result.hypotheses]),
+            np.array([h.heading_rad for h in result.hypotheses]),
+            measurements, odometry, tables, catalog, config.proposal, kf)
+        if hyp is None:
+            return True, None, None
+        hyp_score = float(hyp[0].score.max())
     # The tempered window log-score already prices an inconsistent tracklet
     # (about one unit) and the rms of the consistent ones; injection has to
     # beat the incumbent by `evidence_gate_margin_nats` of it. A near-tie is
     # exactly the case where displacing half the belief is a coin flip.
-    inc_score = float(incumbent.score.max())
-    hyp_score = float(hyp.score.max())
     passed = hyp_score >= inc_score + config.proposal.evidence_gate_margin_nats
     return passed, hyp_score, inc_score
 
@@ -1537,6 +1545,7 @@ def run_filter(
             particle_budget = min(
                 config.n_particles,
                 int(round(inject_fraction * config.n_particles)))
+            previous_memory = window_memory
             if config.proposal.generator == "window_joint":
                 result, window_memory = window_proposal.propose(
                     measurements, odometry, tables, catalog, config.proposal,
@@ -1560,7 +1569,7 @@ def run_filter(
                 if config.proposal.generator == "window_joint":
                     gate_passed, gate_best, gate_ref = _window_gate(
                         belief, result, measurements, odometry, tables,
-                        catalog, config, kf)
+                        catalog, config, kf, memory=previous_memory)
                 else:
                     gate_passed, gate_best, gate_ref = _evidence_gate(
                         tracker, result, window, config, rng, score_fn,
