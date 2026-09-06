@@ -218,11 +218,11 @@ localization:
     generator: snapshot
     window_joint_keyframes: 20
     window_joint_max_tracklets: 8
-    window_joint_resection_tracklets: 5
+    window_joint_resection_tracklets: 6
     window_joint_min_tracklets: 4
     window_joint_rms_tolerance_deg: 1.5
     window_joint_max_outlier_tracklets: 2
-    window_joint_max_tuples: 4000000
+    window_joint_max_tuples: 1000000
     window_joint_max_hypotheses: 400
     window_joint_temperature: 4.0
     window_joint_injection_sigma_m: 25.0

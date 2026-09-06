@@ -29,6 +29,7 @@ def main() -> None:
     parser.add_argument("--tolerance_deg", type=float, default=1.5)
     parser.add_argument("--max_outliers", type=int, default=2)
     parser.add_argument("--budget", type=int, default=25000)
+    parser.add_argument("--debug_truth", action="store_true")
     args = parser.parse_args()
 
     data = export_ingest.load(Path(args.input_dir))
@@ -52,11 +53,51 @@ def main() -> None:
         import itertools
         n_gen = min(config.window_joint_resection_tracklets, len(tracks))
         for trip in itertools.combinations(range(n_gen), 3):
+            k_ref, chosen = window_proposal.reference_epochs([tracks[i] for i in trip])
             poses, idents, n_total, n_pruned = window_proposal.resect_snapshot(
                 [tracks[i] for i in trip], east, north, bbox,
-                config.window_joint_max_tuples, np.random.default_rng(0))
-            print(f"   triple {trip}: {n_total:.3g} tuples, {n_pruned} after prune, {len(poses)} snapshot fixes")
+                config.window_joint_max_tuples, np.random.default_rng(0), epochs=chosen)
+            print(f"   triple {trip} @kf {k_ref} (offsets {[e[0]-k_ref for e in chosen]}): {n_total:.3g} tuples, {n_pruned} after prune, {len(poses)} snapshot fixes")
         tr0 = truth.get(kf)
+        if tr0 is not None and args.debug_truth:
+            import dataclasses
+            rel = window_proposal.relative_poses(data.odometry, kf, config.window_joint_keyframes)
+            pose_t = np.array([[tr0.east_m, tr0.north_m, math.radians(tr0.course_world_cw_deg)]])
+            # truth identity per track = best in-cap row by window rms at the truth pose
+            ident = {}
+            for t in tracks:
+                arr = window_proposal._epoch_arrays(t, rel)
+                u, v, dtheta, bearing, kappa, cap, yv = arr
+                px, py = window_proposal._platform_at(pose_t, u, v)
+                best = (None, 9.0)
+                for j in t.cand_idx:
+                    res = (np.arctan2(east[j] - px, north[j] - py) - pose_t[0, 2] - dtheta - bearing + math.pi) % (2 * math.pi) - math.pi
+                    rng_ok = (np.hypot(east[j] - px, north[j] - py) <= cap * 1.25).all()
+                    rms = float(np.sqrt(np.mean(res ** 2)))
+                    if rng_ok and rms < best[1]:
+                        best = (int(j), rms)
+                ident[t.tracklet_id] = best
+            for trip in itertools.combinations(range(n_gen), 3):
+                tr3 = [tracks[i] for i in trip]
+                ids = [ident[t.tracklet_id] for t in tr3]
+                if any(i[0] is None or math.degrees(i[1]) > 2.5 for i in ids):
+                    print(f"   [truth] triple {trip}: not truth-consistent {[round(math.degrees(i[1]),1) if i[0] is not None else None for i in ids]}")
+                    continue
+                k_ref, chosen = window_proposal.reference_epochs(tr3)
+                offsets = [math.hypot(rel[e[0]][0] - rel[k_ref][0], rel[e[0]][1] - rel[k_ref][1]) for e in chosen]
+                narrow = [dataclasses.replace(t, cand_idx=np.array([i[0]]), cand_w=np.array([1.0])) for t, i in zip(tr3, ids)]
+                poses, idents, n_total, n_pruned = window_proposal.resect_snapshot(
+                    narrow, east, north, bbox, 10, np.random.default_rng(0), epochs=chosen, offsets_m=offsets)
+                trk = truth.get(k_ref)
+                msg = f"   [truth] triple {trip} @kf {k_ref} offsets {[round(o) for o in offsets]} m, tuple prune {n_pruned}/{n_total}, fixes {len(poses)}"
+                if len(poses) and trk is not None:
+                    d = np.hypot(poses[:, 0] - trk.east_m, poses[:, 1] - trk.north_m)
+                    cur = window_proposal.to_current_frame(poses, rel[k_ref])
+                    ref = window_proposal.refine(cur, idents, tr3, rel, east, north)
+                    own = window_proposal.own_track_rms(ref, idents, tr3, rel, east, north, math.radians(config.window_joint_rms_tolerance_deg))
+                    d2 = np.hypot(ref[:, 0] - tr0.east_m, ref[:, 1] - tr0.north_m)
+                    msg += f"; nearest fix to truth@k_ref {d.min():.0f} m; after move+refine nearest {d2.min():.0f} m, own rms/tol {np.round(own[np.argmin(d2)], 2)}"
+                print(msg)
         if tr0 is not None:
             sc = window_proposal.incumbent_score(
                 np.array([tr0.east_m]), np.array([tr0.north_m]),

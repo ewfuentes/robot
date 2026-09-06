@@ -224,14 +224,14 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     generator: str = "snapshot"
     window_joint_keyframes: int = 20
     window_joint_max_tracklets: int = 8
-    window_joint_resection_tracklets: int = 5
+    window_joint_resection_tracklets: int = 6
     # Init fires once this many distinct tracklets are in the window.
     window_joint_min_tracklets: int = 4
     window_joint_rms_tolerance_deg: float = 1.5
     # Tracklets that may align nothing without sinking a hypothesis: a third
     # of Flevoland's tracklets align no endorsed row at the true pose.
     window_joint_max_outlier_tracklets: int = 2
-    window_joint_max_tuples: int = 4000000
+    window_joint_max_tuples: int = 1000000
     window_joint_max_hypotheses: int = 400
     # Tempering of the window log-likelihood used to allocate particles
     # across sites: a proposal covers the plausible sites, it does not decide.

@@ -17,8 +17,10 @@ Per event:
      `window_joint_resection_tracklets` generate hypotheses, all of them score.
   2. exhaustive identity triples of the generating tracklets, pruned by the
      PER-TRACKLET range caps (pairwise baseline <= cap_a + cap_b), closed-form
-     three-point resection of their latest epochs treated as simultaneous
-     (coarse tolerance; step 3 removes the approximation).
+     three-point resection of one epoch per tracklet chosen nearest a common
+     reference keyframe and treated as simultaneous there (coarse tolerance;
+     the fix is moved to the current keyframe by odometry and step 3 removes
+     the approximation).
   3. Gauss-Newton refinement of every fix on its three tracklets' window
      epochs with the proper per-epoch ray origins from back-integrated
      odometry.
@@ -148,7 +150,28 @@ def collect_tracks(measurements, tables, catalog, config: structs.ProposalConfig
     # generator key: a short near tracklet with a wrong cap heads the list and
     # then sits in every generating triple.
     tracks.sort(key=lambda t: (-len(t.epochs), t.cap_m, t.tracklet_id))
-    return tracks[:config.window_joint_max_tracklets]
+    # Two tracklets whose bearings agree within DUPLICATE_BEARING_RAD at
+    # nearby epochs are almost surely one object tracked twice; a triple that
+    # contains both is degenerate (same landmark, no baseline), and in a
+    # sparse window they would crowd out the independent tracklets.
+    kept = []
+    for track in tracks:
+        if not any(_looks_duplicate(track, other) for other in kept):
+            kept.append(track)
+    return kept[:config.window_joint_max_tracklets]
+
+
+DUPLICATE_BEARING_RAD = math.radians(2.0)
+DUPLICATE_KEYFRAMES = 2
+
+
+def _looks_duplicate(track, other) -> bool:
+    for k, b, _, _ in track.epochs:
+        for k2, b2, _, _ in other.epochs:
+            if (abs(k - k2) <= DUPLICATE_KEYFRAMES
+                    and abs(geo.wrap_rad(b - b2)) < DUPLICATE_BEARING_RAD):
+                return True
+    return False
 
 
 def _circles(a, b, gamma):
@@ -217,13 +240,38 @@ def _enumerate_tuples(tracks3, east, north, max_tuples, rng):
     return tuples, total, pruned_to
 
 
-def resect_snapshot(tracks3, east, north, bbox, max_tuples, rng, chunk=150000):
-    """Closed-form fixes of the three tracklets' latest epochs.
+def reference_epochs(tracks3):
+    """Pick a reference keyframe and one epoch per tracklet for the snapshot
+    fix: the keyframe minimising the largest anchor offset among the three
+    tracklets' nearest epochs (staggered epochs are only approximately
+    simultaneous; the offset is what the refinement then removes).
+    Returns (k_ref, [epoch, epoch, epoch])."""
+    best = None
+    for k_ref in sorted({e[0] for t in tracks3 for e in t.epochs}, reverse=True):
+        chosen = [min(t.epochs, key=lambda e: (abs(e[0] - k_ref), -e[0])) for t in tracks3]
+        cost = max(abs(e[0] - k_ref) for e in chosen)
+        if best is None or cost < best[0]:
+            best = (cost, k_ref, chosen)
+    return best[1], best[2]
+
+
+def resect_snapshot(tracks3, east, north, bbox, max_tuples, rng, chunk=150000,
+                    epochs=None, offsets_m=(0.0, 0.0, 0.0)):
+    """Closed-form fixes of one epoch per tracklet (the latest by default),
+    treated as simultaneous. `offsets_m` is how far the platform had moved
+    between each epoch and the reference keyframe; the verification
+    tolerance widens by the bearing error that motion can induce at the
+    tracklet's range cap (a near tracklet three keyframes off is several
+    degrees out, and the refinement, not this stage, removes it).
 
     Returns (poses (m, 3): east, north, heading; identities (m, 3): catalog
     indices; n_tuples_total; n_tuples_after_cap_prune).
     """
-    bearings = [t.epochs[-1][1] for t in tracks3]
+    if epochs is None:
+        epochs = [t.epochs[-1] for t in tracks3]
+    bearings = [e[1] for e in epochs]
+    tolerances = [SNAPSHOT_TOLERANCE_RAD + math.atan2(off, max(t.cap_m, 1.0))
+                  for t, off in zip(tracks3, offsets_m)]
     order = None
     for perm in itertools.permutations(range(3)):
         g12 = abs(geo.wrap_rad(bearings[perm[1]] - bearings[perm[0]]))
@@ -235,7 +283,10 @@ def resect_snapshot(tracks3, east, north, bbox, max_tuples, rng, chunk=150000):
     if order is None:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=int), 0, 0
     tracks3 = [tracks3[p] for p in order]
-    b1, b2, b3 = [t.epochs[-1][1] for t in tracks3]
+    b1, b2, b3 = [bearings[p] for p in order]
+    t1, t2, t3 = [tolerances[p] for p in order]
+    # The heading comes from tracklet 1, so its error adds to both residuals.
+    tol2, tol3 = t1 + t2, t1 + t3
     g12 = abs(geo.wrap_rad(b2 - b1))
     g13 = abs(geo.wrap_rad(b3 - b1))
     tuples, total, pruned_to = _enumerate_tuples(tracks3, east, north, max_tuples, rng)
@@ -266,8 +317,8 @@ def resect_snapshot(tracks3, east, north, bbox, max_tuples, rng, chunk=150000):
         heading = geo.wrap_rad(bearing_to(l1) - b1)
         e2 = geo.wrap_rad(bearing_to(l2) - heading - b2)
         e3 = geo.wrap_rad(bearing_to(l3) - heading - b3)
-        good = ((np.abs(e2) < SNAPSHOT_TOLERANCE_RAD)
-                & (np.abs(e3) < SNAPSHOT_TOLERANCE_RAD)
+        good = ((np.abs(e2) < tol2)
+                & (np.abs(e3) < tol3)
                 & (range_to(l1) > resection.MIN_BASELINE_M)
                 & (range_to(l1) <= caps[0]) & (range_to(l2) <= caps[1])
                 & (range_to(l3) <= caps[2])
@@ -290,6 +341,18 @@ def resect_snapshot(tracks3, east, north, bbox, max_tuples, rng, chunk=150000):
     # Restore the caller's tracklet order for the identity columns.
     inverse = np.argsort(order)
     return poses[unique], idents[unique][:, inverse], total, pruned_to
+
+
+def to_current_frame(poses, rel_ref):
+    """Fixes computed for the platform at the reference keyframe, expressed
+    as the pose at the current keyframe: p_ref = p_kf + R(h_kf)(u, v) and
+    h_ref = h_kf + dtheta, inverted."""
+    u, v, dtheta = rel_ref[0], rel_ref[1], rel_ref[2]
+    out = poses.copy()
+    out[:, 2] = geo.wrap_rad(poses[:, 2] - dtheta)
+    out[:, 0] = poses[:, 0] - (u * np.cos(out[:, 2]) + v * np.sin(out[:, 2]))
+    out[:, 1] = poses[:, 1] - (-u * np.sin(out[:, 2]) + v * np.cos(out[:, 2]))
+    return out
 
 
 def _epoch_arrays(track, rel):
@@ -474,12 +537,19 @@ def propose(measurements, odometry, tables, catalog,
     all_poses, total, examined, pruned = [], 0, 0, 0
     for trip in itertools.combinations(range(n_gen), 3):
         tracks3 = [tracks[i] for i in trip]
+        k_ref, chosen = reference_epochs(tracks3)
+        if k_ref not in rel:
+            continue
+        offsets = [math.hypot(rel[e[0]][0] - rel[k_ref][0], rel[e[0]][1] - rel[k_ref][1])
+                   if e[0] in rel else 0.0 for e in chosen]
         poses, idents, n_total, n_pruned = resect_snapshot(
-            tracks3, east, north, bbox, config.window_joint_max_tuples, rng)
+            tracks3, east, north, bbox, config.window_joint_max_tuples, rng,
+            epochs=chosen, offsets_m=offsets)
         total += n_total
         examined += n_pruned
         pruned += n_total - n_pruned
         if len(poses):
+            poses = to_current_frame(poses, rel[k_ref])
             refined = refine(poses, idents, tracks3, rel, east, north)
             # Stage-one prune on the generating tracklets' OWN window rms
             # (identities fixed): a wrong triple rarely fits four or five
