@@ -848,11 +848,13 @@ def track_joint_log_q(east_m, north_m, heading_rad, meas, spec: TrackJointSpec,
 
 
 def _track_joint_log_z(state: np.ndarray, spec: TrackJointSpec) -> np.ndarray:
-    """log Z per particle from the running state (n, K+1)."""
-    return special.logsumexp(
-        np.concatenate([state[:, :-1] + spec.log_prior[None, :],
-                        state[:, -1:] + spec.log_background], axis=1),
-        axis=1)
+    """log Z per particle from the running state (n, K+1), in the state's
+    own precision (one (n, K) temporary, not three float64 ones)."""
+    terms = state[:, :-1] + spec.log_prior[None, :].astype(state.dtype)
+    landmark = special.logsumexp(terms, axis=1) if terms.shape[1] else np.full(
+        state.shape[0], -np.inf)
+    return np.logaddexp(landmark, state[:, -1] + spec.log_background).astype(
+        np.float64)
 
 
 def track_joint_update(belief: ParticleBelief, meas, spec: TrackJointSpec,
@@ -894,11 +896,16 @@ def track_joint_update(belief: ParticleBelief, meas, spec: TrackJointSpec,
     null_term = np.exp(state[:, -1] + spec.log_background - log_z)
     report_min = max(resp_min, min(0.5, 2.0 / max(spec.candidate_idx.size, 1)))
     posteriors = []
+    post = None
+    if spec.candidate_idx.size:
+        # One (n, K) posterior matrix shared by every group, in float32.
+        post = np.exp(state[:, :-1]
+                      + spec.log_prior[None, :].astype(state.dtype)
+                      - log_z[:, None].astype(state.dtype))
     for mode_id, group_weights in groups:
         responsibilities = {}
-        if spec.candidate_idx.size:
-            avg = group_weights @ np.exp(
-                state[:, :-1] + spec.log_prior[None, :] - log_z[:, None])
+        if post is not None:
+            avg = group_weights.astype(np.float32) @ post
             for offset in np.nonzero(avg >= report_min)[0]:
                 responsibilities[
                     catalog.landmark_ids[spec.candidate_idx[offset]]] = float(
