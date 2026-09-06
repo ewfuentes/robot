@@ -1198,8 +1198,8 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
 
 
 def _window_gate(belief, result, measurements, odometry, tables, catalog,
-                 config: structs.FilterConfig, kf: int, n_incumbent: int = 64
-                 ) -> tuple:
+                 config: structs.FilterConfig, kf: int, memory=None,
+                 n_incumbent: int = 64) -> tuple:
     """Evidence gate for the window-joint generator: the incumbent's best
     particles and the proposal's hypotheses are scored by the SAME window
     function (one identity per tracklet over the window), so neither side
