@@ -1210,9 +1210,11 @@ def _window_gate(belief, result, measurements, odometry, tables, catalog,
     order = np.argsort(-belief.log_weight, kind="stable")[:n_incumbent]
     incumbent = window_proposal.incumbent_score(
         belief.east_m[order], belief.north_m[order], belief.heading_rad[order],
-        measurements, odometry, tables, catalog, config.proposal, kf)
+        measurements, odometry, tables, catalog, config.proposal, kf,
+        refine_poses=True)
     if incumbent is None:
         return True, None, None
+    incumbent = incumbent[0]
     hyp = window_proposal.incumbent_score(
         np.array([h.east_m for h in result.hypotheses]),
         np.array([h.north_m for h in result.hypotheses]),
@@ -1220,6 +1222,7 @@ def _window_gate(belief, result, measurements, odometry, tables, catalog,
         measurements, odometry, tables, catalog, config.proposal, kf)
     if hyp is None:
         return True, None, None
+    hyp = hyp[0]
 
     def best(score):
         i = int(np.lexsort((score.mean_rms_rad, -score.n_consistent))[0])

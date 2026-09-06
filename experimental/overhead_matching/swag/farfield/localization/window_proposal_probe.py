@@ -105,6 +105,7 @@ def main() -> None:
                 np.array([math.radians(tr0.course_world_cw_deg)]),
                 data.measurements, data.odometry, data.tables, data.catalog, config, kf)
             if sc is not None:
+                sc = sc[0]
                 rel = window_proposal.relative_poses(data.odometry, kf, config.window_joint_keyframes)
                 per = []
                 for t in tracks:

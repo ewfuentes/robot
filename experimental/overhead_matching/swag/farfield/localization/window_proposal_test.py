@@ -193,7 +193,7 @@ class ProposeTest(unittest.TestCase):
         measurements = _epochs(self.catalog, self.poses, self.rng, self.watched)
         kf = N_KEYFRAMES - 1
         east, north, heading = self.poses[kf]
-        score = window_proposal.incumbent_score(
+        score, _ = window_proposal.incumbent_score(
             np.array([east, east + 400.0, east + 30.0]),
             np.array([north, north, north + 30.0]),
             np.array([heading, heading, heading]),
@@ -201,6 +201,24 @@ class ProposeTest(unittest.TestCase):
             self.catalog, self.config, kf)
         self.assertGreaterEqual(int(score.n_consistent[0]), 5)
         self.assertEqual(int(np.argmax(score.score)), 0)
+
+    def test_refined_incumbent_matches_the_exact_pose(self):
+        measurements = _epochs(self.catalog, self.poses, self.rng, self.watched)
+        kf = N_KEYFRAMES - 1
+        east, north, heading = self.poses[kf]
+        tables = _tables(self.catalog, self.watched)
+        exact, _ = window_proposal.incumbent_score(
+            np.array([east]), np.array([north]), np.array([heading]),
+            measurements, self.deltas, tables, self.catalog, self.config, kf)
+        jittered, refined = window_proposal.incumbent_score(
+            np.array([east + 30.0]), np.array([north - 25.0]),
+            np.array([heading + math.radians(1.5)]),
+            measurements, self.deltas, tables, self.catalog, self.config, kf,
+            refine_poses=True)
+        self.assertLess(math.hypot(refined[0, 0] - east, refined[0, 1] - north), 15.0)
+        self.assertEqual(int(jittered.n_consistent[0]), int(exact.n_consistent[0]))
+        self.assertLess(abs(jittered.mean_rms_rad[0] - exact.mean_rms_rad[0]),
+                        math.radians(0.15))
 
 
 if __name__ == "__main__":

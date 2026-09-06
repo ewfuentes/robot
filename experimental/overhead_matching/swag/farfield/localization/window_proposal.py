@@ -100,8 +100,9 @@ MEMORY_NEW_SITE_PENALTY = 1.0
 class WindowScore:
     n_consistent: np.ndarray  # (n_hyp,)
     mean_rms_rad: np.ndarray  # over consistent tracklets
-    identity: np.ndarray  # (n_hyp, n_tracks) catalog index, -1 = none
+    identity: np.ndarray  # (n_hyp, n_tracks) catalog index, -1 = inconsistent
     score: np.ndarray
+    best_identity: np.ndarray = None  # (n_hyp, n_tracks) argmin identity, consistent or not
 
 
 def relative_poses(odometry, kf: int, window_keyframes: int) -> dict:
@@ -395,9 +396,10 @@ def _platform_at(poses, u, v):
     return px, py
 
 
-def refine(poses, idents, tracks3, rel, east, north):
-    """Gauss-Newton on the three tracklets' window epochs (identities fixed)."""
-    arrays = [_epoch_arrays(t, rel) for t in tracks3]
+def refine(poses, idents, tracks, rel, east, north):
+    """Gauss-Newton on the tracklets' window epochs, identities fixed per
+    (hypothesis, tracklet); an identity of -1 leaves that tracklet out."""
+    arrays = [_epoch_arrays(t, rel) for t in tracks]
     poses = poses.copy()
     for _ in range(REFINE_ITERATIONS):
         jtj = np.zeros((len(poses), 3, 3))
@@ -408,8 +410,12 @@ def refine(poses, idents, tracks3, rel, east, north):
             if arr is None:
                 continue
             u, v, dtheta, bearing, kappa, _, _ = arr
-            lx = east[idents[:, col]][:, None]
-            ly = north[idents[:, col]][:, None]
+            used = idents[:, col] >= 0
+            if not used.any():
+                continue
+            safe = np.where(used, idents[:, col], 0)
+            lx = east[safe][:, None]
+            ly = north[safe][:, None]
             px, py = _platform_at(poses, u, v)
             dx = lx - px
             dy = ly - py
@@ -421,7 +427,7 @@ def refine(poses, idents, tracks3, rel, east, north):
             jy = dx / rho2
             jh = (dy / rho2) * (-dpx_dh) + (-dx / rho2) * (-dpy_dh) - 1.0
             jac = np.stack([jx, jy, jh], 2)  # (m, e, 3)
-            w = kappa[None, :, None]
+            w = kappa[None, :, None] * used[:, None, None]
             jtj += np.einsum("mei,mej->mij", jac * w, jac)
             jtr += np.einsum("mei,me->mi", jac * w, res)
         jtj += np.eye(3)[None] * 1e-9
@@ -524,9 +530,9 @@ def score_window(poses, tracks, rel, east, north, tol_rad, max_outliers,
     ll = np.where(consistent, -0.5 * (best / scale) ** 2 * n_epochs[None], -penalty)
     ll = np.where(np.isfinite(ll), ll, -penalty)
     score = ll.sum(1) / max(temperature, 1e-9)
-    ident = np.where(consistent, ident, -1)
     return WindowScore(n_consistent=n_consistent, mean_rms_rad=mean_rms,
-                       identity=ident, score=score)
+                       identity=np.where(consistent, ident, -1), score=score,
+                       best_identity=ident)
 
 
 def _dedupe(poses, score, config):
@@ -676,9 +682,15 @@ def propose(measurements, odometry, tables, catalog,
 
 
 def incumbent_score(east_m, north_m, heading_rad, measurements, odometry, tables,
-                    catalog, config: structs.ProposalConfig, keyframe_idx: int):
+                    catalog, config: structs.ProposalConfig, keyframe_idx: int,
+                    refine_poses: bool = False):
     """Window score of given poses (the belief's) on the same footing as the
-    proposal's hypotheses; None when the window has too few tracklets."""
+    proposal's hypotheses; None when the window has too few tracklets.
+
+    With `refine_poses`, each pose is first Gauss-Newton-refined on the
+    identities the window assigns it, as every generated hypothesis was: a
+    particle 30 m off its site must not lose to a refined copy of the same
+    site. Returns (score, refined poses)."""
     tracks = collect_tracks(measurements, tables, catalog, config, keyframe_idx)
     if len(tracks) < 3:
         return None
@@ -689,7 +701,16 @@ def incumbent_score(east_m, north_m, heading_rad, measurements, odometry, tables
         min(kappa for t in tracks for _, _, kappa, _ in t.epochs), 1e-9))
     poses = np.stack([np.asarray(east_m, float), np.asarray(north_m, float),
                       np.asarray(heading_rad, float)], 1)
-    return score_window(poses, tracks, rel, east, north,
-                        math.radians(config.window_joint_rms_tolerance_deg),
-                        config.window_joint_max_outlier_tracklets, sigma_rad,
-                        config.window_joint_temperature)
+    tol_rad = math.radians(config.window_joint_rms_tolerance_deg)
+    scored = score_window(poses, tracks, rel, east, north, tol_rad,
+                          config.window_joint_max_outlier_tracklets, sigma_rad,
+                          config.window_joint_temperature)
+    if not refine_poses:
+        return scored, poses
+    # Refine on the best identity of every tracklet, consistent or not: a
+    # pose a few tens of metres off may have no consistent tracklet yet.
+    poses = refine(poses, scored.best_identity, tracks, rel, east, north)
+    scored = score_window(poses, tracks, rel, east, north, tol_rad,
+                          config.window_joint_max_outlier_tracklets, sigma_rad,
+                          config.window_joint_temperature)
+    return scored, poses
