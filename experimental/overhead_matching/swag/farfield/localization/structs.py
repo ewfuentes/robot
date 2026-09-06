@@ -216,6 +216,34 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # Ceiling, so one hopeless bearing cannot smear particles region-wide.
     max_injection_sigma_m: float = 2000.0
 
+    # --- Window-joint generator (window_proposal.py). "snapshot" is the
+    # historical 1/2/3-tracklet resection of the latest bearings;
+    # "window_joint" holds one identity per tracklet over a window of
+    # keyframes related by odometry, which is what resolves a field of
+    # interchangeable landmarks (runs/260906_proposal_audit).
+    generator: str = "snapshot"
+    window_joint_keyframes: int = 20
+    window_joint_max_tracklets: int = 8
+    window_joint_resection_tracklets: int = 5
+    # Init fires once this many distinct tracklets are in the window.
+    window_joint_min_tracklets: int = 4
+    window_joint_rms_tolerance_deg: float = 1.5
+    # Tracklets that may align nothing without sinking a hypothesis: a third
+    # of Flevoland's tracklets align no endorsed row at the true pose.
+    window_joint_max_outlier_tracklets: int = 2
+    window_joint_max_tuples: int = 4000000
+    window_joint_max_hypotheses: int = 400
+    # Tempering of the window log-likelihood used to allocate particles
+    # across sites: a proposal covers the plausible sites, it does not decide.
+    window_joint_temperature: float = 4.0
+    window_joint_injection_sigma_m: float = 25.0
+    window_joint_injection_heading_sigma_deg: float = 1.5
+    # Re-fire (subject to the refractory period) while the belief's position
+    # spread exceeds this many metres; 0 disables. Nothing to protect, so the
+    # evidence gate is bypassed like on init.
+    diffuse_trigger_std_m: float = 0.0
+    diffuse_inject_fraction: float = 0.5
+
 
 class ModeConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     """Belief clustering for mode tracking (design doc §5.1/§5.6)."""
@@ -407,7 +435,7 @@ class ProposalEvent(msgspec.Struct):
     """
     event_id: int
     keyframe_idx: int
-    trigger: str  # "init" | "null_share" | "ess_floor"
+    trigger: str  # "init" | "null_share" | "ess_floor" | "diffuse"
     n_hypotheses: int
     n_injected: int
     n_tracklets_considered: int

@@ -188,6 +188,42 @@ py_test(
 )
 
 py_library(
+    name = "window_proposal",
+    srcs = ["window_proposal.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":proposal",
+        ":resection",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+    ],
+)
+
+py_test(
+    name = "window_proposal_test",
+    srcs = ["window_proposal_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":filter_catalog",
+        ":structs",
+        ":window_proposal",
+    ],
+)
+
+py_binary(
+    name = "window_proposal_probe",
+    srcs = ["window_proposal_probe.py"],
+    deps = [
+        requirement("numpy"),
+        ":export_ingest",
+        ":filter_catalog",
+        ":structs",
+        ":window_proposal",
+    ],
+)
+
+py_library(
     name = "filter",
     srcs = ["filter.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -199,6 +235,7 @@ py_library(
         ":mode_tracker",
         ":proposal",
         ":structs",
+        ":window_proposal",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],
 )

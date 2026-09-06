@@ -215,6 +215,20 @@ localization:
     injection_sigma_m: 100.0
     injection_heading_sigma_deg: 3.0
     max_injection_sigma_m: 2000.0
+    generator: snapshot
+    window_joint_keyframes: 20
+    window_joint_max_tracklets: 8
+    window_joint_resection_tracklets: 5
+    window_joint_min_tracklets: 4
+    window_joint_rms_tolerance_deg: 1.5
+    window_joint_max_outlier_tracklets: 2
+    window_joint_max_tuples: 4000000
+    window_joint_max_hypotheses: 400
+    window_joint_temperature: 4.0
+    window_joint_injection_sigma_m: 25.0
+    window_joint_injection_heading_sigma_deg: 1.5
+    diffuse_trigger_std_m: 0.0
+    diffuse_inject_fraction: 0.5
   modes:
     enabled: true
     cell_size_m: 150.0

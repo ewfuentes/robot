@@ -36,6 +36,7 @@ from scipy import special
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
+    window_proposal,
     filter_catalog as catalog_mod,
     metrics,
     mode_tracker as mode_tracker_mod,
@@ -912,7 +913,9 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
 
 
 def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig,
-                    rng: np.random.Generator) -> tuple[int, np.ndarray | None]:
+                    rng: np.random.Generator,
+                    inject_fraction: float | None = None
+                    ) -> tuple[int, np.ndarray | None]:
     """Replace a fraction of the belief with proposal-drawn particles.
 
     Mixture-MCL restart: keep (1 - phi) of the mass resampled from the
@@ -933,8 +936,9 @@ def inject_proposal(belief: ParticleBelief, result, config: structs.FilterConfig
     through the internal resample (§5.3 persistence).
     """
     original_count = belief.n
-    requested_injection = int(round(
-        config.proposal.inject_fraction * original_count))
+    if inject_fraction is None:
+        inject_fraction = config.proposal.inject_fraction
+    requested_injection = int(round(inject_fraction * original_count))
     if not result.hypotheses or requested_injection <= 0:
         return 0, None
     requested_injection = min(requested_injection, original_count)
@@ -1084,10 +1088,15 @@ def _init_window_is_observable(measurements, kf: int, first_bearing_kf,
     sequence still gets an initial proposal rather than being left to sample a
     region-sized uniform box.
     """
-    window_start = kf - config.proposal.window_keyframes
+    if config.proposal.generator == "window_joint":
+        window_start = kf - config.proposal.window_joint_keyframes
+        needed = config.proposal.window_joint_min_tracklets
+    else:
+        window_start = kf - config.proposal.window_keyframes
+        needed = config.proposal.min_tracklets_for_injection
     distinct = {m.tracklet_id for m in measurements
                 if window_start <= m.anchor_keyframe_idx <= kf}
-    if len(distinct) >= config.proposal.min_tracklets_for_injection:
+    if len(distinct) >= needed:
         return True
     return (first_bearing_kf is not None
             and kf - first_bearing_kf >= config.proposal.init_max_wait_keyframes)
@@ -1174,6 +1183,41 @@ def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
     threshold = (ref + config.proposal.evidence_gate_margin_nats
                  + selection_penalty)
     return best >= threshold, best, ref
+
+
+def _window_gate(belief, result, measurements, odometry, tables, catalog,
+                 config: structs.FilterConfig, kf: int, n_incumbent: int = 64
+                 ) -> tuple:
+    """Evidence gate for the window-joint generator: the incumbent's best
+    particles and the proposal's hypotheses are scored by the SAME window
+    function (one identity per tracklet over the window), so neither side
+    enjoys committed geometry the other lacks. Injection proceeds when the
+    best hypothesis explains more tracklets than the incumbent, or as many at
+    a lower rms by the margin (in degrees, `evidence_gate_margin_nats` is not
+    used here). Returns (passed, best_hypothesis_score, incumbent_score)."""
+    order = np.argsort(-belief.log_weight, kind="stable")[:n_incumbent]
+    incumbent = window_proposal.incumbent_score(
+        belief.east_m[order], belief.north_m[order], belief.heading_rad[order],
+        measurements, odometry, tables, catalog, config.proposal, kf)
+    if incumbent is None:
+        return True, None, None
+    hyp = window_proposal.incumbent_score(
+        np.array([h.east_m for h in result.hypotheses]),
+        np.array([h.north_m for h in result.hypotheses]),
+        np.array([h.heading_rad for h in result.hypotheses]),
+        measurements, odometry, tables, catalog, config.proposal, kf)
+    if hyp is None:
+        return True, None, None
+
+    def best(score):
+        i = int(np.lexsort((score.mean_rms_rad, -score.n_consistent))[0])
+        return int(score.n_consistent[i]), float(score.mean_rms_rad[i]), float(score.score[i])
+
+    inc_n, inc_rms, inc_score = best(incumbent)
+    hyp_n, hyp_rms, hyp_score = best(hyp)
+    margin = math.radians(0.25)
+    passed = hyp_n > inc_n or (hyp_n == inc_n and hyp_rms < inc_rms - margin)
+    return passed, hyp_score, inc_score
 
 
 def _hash_belief(hasher, belief: ParticleBelief) -> None:
@@ -1459,6 +1503,10 @@ def run_filter(
             elif refractory_ok and (
                     low_ess_run >= config.proposal.ess_floor_keyframes):
                 trigger = "ess_floor"
+            elif (refractory_ok and config.proposal.diffuse_trigger_std_m > 0
+                    and metrics.position_std_m(belief)
+                    > config.proposal.diffuse_trigger_std_m):
+                trigger = "diffuse"
 
         event_id = None
         if trigger is not None:
@@ -1468,14 +1516,22 @@ def run_filter(
             window_start = kf - config.proposal.window_keyframes
             window = [m for m in measurements
                       if window_start <= m.anchor_keyframe_idx <= kf]
+            inject_fraction = (config.proposal.diffuse_inject_fraction
+                               if trigger == "diffuse"
+                               else config.proposal.inject_fraction)
             particle_budget = min(
                 config.n_particles,
-                int(round(config.proposal.inject_fraction
-                          * config.n_particles)))
-            result = proposal_mod.propose(
-                window, tables, catalog, config.proposal,
-                event_id=len(proposal_events), keyframe_idx=kf,
-                trigger=trigger, particle_budget=particle_budget)
+                int(round(inject_fraction * config.n_particles)))
+            if config.proposal.generator == "window_joint":
+                result = window_proposal.propose(
+                    measurements, odometry, tables, catalog, config.proposal,
+                    event_id=len(proposal_events), keyframe_idx=kf,
+                    trigger=trigger, particle_budget=particle_budget, rng=rng)
+            else:
+                result = proposal_mod.propose(
+                    window, tables, catalog, config.proposal,
+                    event_id=len(proposal_events), keyframe_idx=kf,
+                    trigger=trigger, particle_budget=particle_budget)
             gate_passed, gate_best, gate_ref = True, None, None
             # The init trigger bypasses the gate: it only fires for an
             # uninformative prior (§5.5), and the only thing standing is
@@ -1484,13 +1540,18 @@ def run_filter(
             # mass threshold), leaving the gate defending a prior that
             # says nothing.
             if (config.proposal.evidence_gate and result.hypotheses
-                    and trigger != "init"):
-                gate_passed, gate_best, gate_ref = _evidence_gate(
-                    tracker, result, window, config, rng, score_fn, belief,
-                    catalog)
+                    and trigger not in ("init", "diffuse")):
+                if config.proposal.generator == "window_joint":
+                    gate_passed, gate_best, gate_ref = _window_gate(
+                        belief, result, measurements, odometry, tables,
+                        catalog, config, kf)
+                else:
+                    gate_passed, gate_best, gate_ref = _evidence_gate(
+                        tracker, result, window, config, rng, score_fn,
+                        belief, catalog)
             n_injected, kept_idx = ((0, None) if not gate_passed else
                                     inject_proposal(belief, result, config,
-                                                    rng))
+                                                    rng, inject_fraction))
             proposal_events.append(_proposal_event_record(
                 result, n_injected, gate_passed, gate_best, gate_ref))
             # Health links every proposal attempt, including an attempt that
