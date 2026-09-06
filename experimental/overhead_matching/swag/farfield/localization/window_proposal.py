@@ -632,9 +632,17 @@ def propose(measurements, odometry, tables, catalog,
     need = max(3, len(tracks) - config.window_joint_max_outlier_tracklets)
     keep = scored.n_consistent >= need
     if not keep.any():
-        return dataclasses.replace(
-            empty, n_combinations_total=total, n_combinations_enumerated=examined,
-            n_combinations_geometry_pruned=pruned), memory
+        # Nothing explains all but `max_outlier_tracklets`: in a window full
+        # of junk tracklets (thin names, wrong caps) fall back to the best
+        # consistency tier on offer rather than propose nothing — the gate and
+        # the site memory, not this threshold, decide what survives. Three is
+        # the observability floor.
+        best_tier = int(scored.n_consistent.max()) if len(scored.n_consistent) else 0
+        if best_tier < 3:
+            return dataclasses.replace(
+                empty, n_combinations_total=total, n_combinations_enumerated=examined,
+                n_combinations_geometry_pruned=pruned), memory
+        keep = scored.n_consistent >= best_tier
     poses = poses[keep]
     score = accumulate(poses, scored.score[keep], memory, odometry, keyframe_idx)
     n_cons = scored.n_consistent[keep]
