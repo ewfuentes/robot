@@ -1439,6 +1439,8 @@ def run_filter(
     # When bearings first appear, so the init proposal's wait for an
     # over-determined window has a deadline rather than running forever.
     first_bearing_kf = None
+    # Window-joint generator: sites kept at the last event, with scores.
+    window_memory = None
 
     for kf in range(n_keyframes):
         if kf > 0:
@@ -1535,10 +1537,11 @@ def run_filter(
                 config.n_particles,
                 int(round(inject_fraction * config.n_particles)))
             if config.proposal.generator == "window_joint":
-                result = window_proposal.propose(
+                result, window_memory = window_proposal.propose(
                     measurements, odometry, tables, catalog, config.proposal,
                     event_id=len(proposal_events), keyframe_idx=kf,
-                    trigger=trigger, particle_budget=particle_budget, rng=rng)
+                    trigger=trigger, particle_budget=particle_budget, rng=rng,
+                    memory=window_memory)
             else:
                 result = proposal_mod.propose(
                     window, tables, catalog, config.proposal,

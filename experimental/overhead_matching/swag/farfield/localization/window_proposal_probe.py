@@ -40,6 +40,7 @@ def main() -> None:
         window_joint_rms_tolerance_deg=args.tolerance_deg,
         window_joint_max_outlier_tracklets=args.max_outliers)
     rng = np.random.default_rng(0)
+    memory = None
     for kf in args.keyframes:
         tracks = window_proposal.collect_tracks(
             data.measurements, data.tables, data.catalog, config, kf)
@@ -120,10 +121,10 @@ def main() -> None:
                     per.append((round(math.degrees(best), 1), round(math.degrees(window_proposal.track_tolerance(arr, math.radians(config.window_joint_rms_tolerance_deg))), 1)))
                 print(f"   truth pose: consistent {int(sc.n_consistent[0])}/{len(tracks)}, (best-any-row rms, tolerance) per track (deg) {per}")
         t0 = time.time()
-        result = window_proposal.propose(
+        result, memory = window_proposal.propose(
             data.measurements, data.odometry, data.tables, data.catalog, config,
             event_id=0, keyframe_idx=kf, trigger="probe",
-            particle_budget=args.budget, rng=rng)
+            particle_budget=args.budget, rng=rng, memory=memory)
         elapsed = time.time() - t0
         tr = truth.get(kf)
         print(f"\n== kf {kf}: {result.n_tracklets_considered} tracklets, "

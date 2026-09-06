@@ -25,13 +25,17 @@ Per event:
      epochs with the proper per-epoch ray origins from back-integrated
      odometry.
   4. window scoring against every window tracklet: per tracklet the best
-     in-cap identity by window rms; consistent below
-     `window_joint_rms_tolerance_deg`. Up to `window_joint_max_outlier_tracklets`
+     identity by window rms (bearing residuals plus the soft range-cap excess
+     of every epoch, as one chi-square); consistent below
+     `window_joint_rms_tolerance_deg` widened by the declared heading drift. Up to `window_joint_max_outlier_tracklets`
      inconsistent tracklets are tolerated (a third of Flevoland's tracklets
      align no endorsed row at the true pose).
-  5. rank by (#consistent, mean rms), dedupe on the solution-cluster grid,
-     emit PointHypothesis(kind=TRIPLE) with compatibility_mass = exp(score /
-     temperature) so the existing allocation and injection apply unchanged.
+  5. rank by the tempered window log-likelihood plus the decayed score of the
+     same site at the previous event (moved here by odometry): a lattice
+     alias fits one window, the truth fits them in a row. Dedupe on the
+     solution-cluster grid, emit PointHypothesis(kind=TRIPLE) with
+     compatibility_mass = exp(score) so the existing allocation and injection
+     apply unchanged.
 
 The generator is a proposal, not a likelihood: every injected particle is
 re-scored under the exact measurement model, so what matters here is recall
@@ -73,6 +77,23 @@ class WindowTrack:
     cand_w: np.ndarray
     cap_m: float  # the latest epoch's cap (catalog maximum when none)
     landmark_ids: tuple
+
+
+@dataclasses.dataclass
+class WindowMemory:
+    """Hypotheses kept at the last event with their accumulated scores, so a
+    site that stays consistent from one window to the next earns credit. A
+    lattice alias fits one window; only the truth fits the windows in a row."""
+    keyframe_idx: int
+    poses: np.ndarray  # (m, 3) at keyframe_idx
+    scores: np.ndarray  # accumulated tempered log-scores
+
+
+MEMORY_MATCH_M = 100.0
+MEMORY_MATCH_RAD = math.radians(5.0)
+MEMORY_DECAY = 0.9
+# In tempered log-score units (temperature 4): one inconsistent tracklet.
+MEMORY_NEW_SITE_PENALTY = 1.0
 
 
 @dataclasses.dataclass
@@ -422,6 +443,16 @@ def track_tolerance(arr, tol_rad):
     return math.sqrt(tol_rad ** 2 + float(np.mean(yaw_var)))
 
 
+# One-sided Gaussian tail beyond the cap, as the filter's range_cap_log_term
+# (softness 0.25): a 500 m cap on a 700 m object costs 1.3 nats, not a veto.
+CAP_SOFTNESS = 0.25
+
+
+def _cap_chi2(rng_m, cap_m):
+    """Squared standardised excess beyond the cap: -2 log g(range)."""
+    return np.square(np.maximum(rng_m - cap_m, 0.0) / (CAP_SOFTNESS * cap_m))
+
+
 def own_track_rms(poses, idents, tracks3, rel, east, north, tol_rad):
     """Window rms of each generating tracklet under its fixed identity,
     divided by that tracklet's tolerance: (m, 3), < 1 means consistent."""
@@ -437,9 +468,12 @@ def own_track_rms(poses, idents, tracks3, rel, east, north, tol_rad):
         px, py = _platform_at(poses, u, v)
         res = geo.wrap_rad(np.arctan2(lx - px, ly - py)
                            - poses[:, 2:3] - dtheta[None] - bearing[None])
-        in_cap = (np.hypot(lx - px, ly - py) <= cap[None] * CAP_SLACK).all(1)
-        rms = np.sqrt(np.mean(res ** 2, 1))
-        out[:, col] = np.where(in_cap, rms / tol, np.inf)
+        sigma = 1.0 / np.sqrt(np.maximum(kappa, 1e-9))[None]
+        # Bearing residuals plus the soft range-cap excess, as one chi-square
+        # per epoch, expressed as an rms-equivalent bearing error.
+        chi2 = np.square(res / sigma) + _cap_chi2(np.hypot(lx - px, ly - py), cap[None])
+        rms = np.sqrt(np.mean(chi2, 1)) * float(np.mean(sigma))
+        out[:, col] = rms / tol
     return out
 
 
@@ -462,24 +496,23 @@ def score_window(poses, tracks, rel, east, north, tol_rad, max_outliers,
         cand = track.cand_idx
         lx = east[cand][None]
         ly = north[cand][None]
+        sigma_e = 1.0 / np.sqrt(np.maximum(kappa, 1e-9))
+        sigma_mean = float(np.mean(sigma_e))
         for start in range(0, n_hyp, SCORE_CHUNK):
             block = poses[start:start + SCORE_CHUNK]
             acc = np.zeros((len(block), len(cand)))
-            in_cap = np.ones((len(block), len(cand)), dtype=bool)
             for e in range(len(u)):
                 px, py = _platform_at(block, u[e:e + 1], v[e:e + 1])
                 res = geo.wrap_rad(np.arctan2(lx - px, ly - py)
                                    - block[:, 2:3] - dtheta[e] - bearing[e])
-                acc += res ** 2
-                # Each epoch's one-sided cap holds at its own platform position.
-                in_cap &= np.hypot(lx - px, ly - py) <= cap[e] * CAP_SLACK
-            rms = np.sqrt(acc / len(u))
-            rms = np.where(in_cap, rms, np.inf)
+                # Each epoch's one-sided cap holds at its own platform
+                # position, softly: the excess joins the chi-square.
+                acc += np.square(res / sigma_e[e]) + _cap_chi2(np.hypot(lx - px, ly - py), cap[e])
+            rms = np.sqrt(acc / len(u)) * sigma_mean
             j = np.argmin(rms, 1)
             rows = np.arange(len(block))
             best[start:start + SCORE_CHUNK, col] = rms[rows, j]
-            ident[start:start + SCORE_CHUNK, col] = np.where(
-                np.isfinite(rms[rows, j]), cand[j], -1)
+            ident[start:start + SCORE_CHUNK, col] = cand[j]
     consistent = best < tol_col[None]
     n_consistent = consistent.sum(1)
     mean_rms = np.where(consistent, best, 0.0).sum(1) / np.maximum(n_consistent, 1)
@@ -507,11 +540,34 @@ def _dedupe(poses, score, config):
     return order[np.sort(first)]
 
 
+def accumulate(poses, score, memory, odometry, keyframe_idx):
+    """Add the decayed accumulated score of the nearest remembered site
+    (moved to this keyframe by odometry) to each hypothesis."""
+    if memory is None or len(memory.poses) == 0 or memory.keyframe_idx >= keyframe_idx:
+        return score
+    rel = relative_poses(odometry, keyframe_idx, keyframe_idx - memory.keyframe_idx)
+    if memory.keyframe_idx not in rel:
+        return score
+    prev = to_current_frame(memory.poses, rel[memory.keyframe_idx])
+    dist = np.hypot(poses[:, None, 0] - prev[None, :, 0], poses[:, None, 1] - prev[None, :, 1])
+    dhead = np.abs(geo.wrap_rad(poses[:, None, 2] - prev[None, :, 2]))
+    ok = (dist <= MEMORY_MATCH_M) & (dhead <= MEMORY_MATCH_RAD)
+    matched = np.where(ok, memory.scores[None, :], -np.inf).max(1)
+    # A site with no remembered counterpart is treated as if it had scored
+    # one outlier tracklet worse than the worst remembered site: memory is
+    # credit for persisting, never a penalty for having been proposed.
+    floor = float(memory.scores.min()) - MEMORY_NEW_SITE_PENALTY
+    credit = np.where(np.isfinite(matched), matched, floor) - floor
+    return score + MEMORY_DECAY * credit
+
+
 def propose(measurements, odometry, tables, catalog,
             config: structs.ProposalConfig, event_id: int, keyframe_idx: int,
             trigger: str, *, particle_budget: int,
-            rng: np.random.Generator) -> proposal.ProposalResult:
-    """Window-joint hypothesis set for an injection budget."""
+            rng: np.random.Generator, memory: WindowMemory | None = None
+            ) -> tuple[proposal.ProposalResult, WindowMemory | None]:
+    """Window-joint hypothesis set for an injection budget, and the memory
+    to hand to the next event (unchanged when this event produced nothing)."""
     particle_budget = int(particle_budget)
     tracks = collect_tracks(measurements, tables, catalog, config, keyframe_idx)
     east = np.asarray(catalog.east_m, dtype=float)
@@ -525,7 +581,7 @@ def propose(measurements, odometry, tables, catalog,
         n_solution_clusters_merged=0, represented_compatibility_mass=0.0)
     n_gen = min(config.window_joint_resection_tracklets, len(tracks))
     if n_gen < 3:
-        return empty
+        return empty, memory
     rel = relative_poses(odometry, keyframe_idx, config.window_joint_keyframes)
     margin = 2000.0
     bbox = (east.min() - margin, east.max() + margin,
@@ -562,7 +618,7 @@ def propose(measurements, odometry, tables, catalog,
     if not all_poses:
         return dataclasses.replace(
             empty, n_combinations_total=total, n_combinations_enumerated=examined,
-            n_combinations_geometry_pruned=pruned)
+            n_combinations_geometry_pruned=pruned), memory
     poses = np.concatenate(all_poses)
     scored = score_window(poses, tracks, rel, east, north, tol_rad,
                           config.window_joint_max_outlier_tracklets,
@@ -572,9 +628,9 @@ def propose(measurements, odometry, tables, catalog,
     if not keep.any():
         return dataclasses.replace(
             empty, n_combinations_total=total, n_combinations_enumerated=examined,
-            n_combinations_geometry_pruned=pruned)
+            n_combinations_geometry_pruned=pruned), memory
     poses = poses[keep]
-    score = scored.score[keep]
+    score = accumulate(poses, scored.score[keep], memory, odometry, keyframe_idx)
     n_cons = scored.n_consistent[keep]
     mean_rms = scored.mean_rms_rad[keep]
     identity = scored.identity[keep]
@@ -607,6 +663,8 @@ def propose(measurements, odometry, tables, catalog,
     best_tier = int(n_cons[order].max())
     tier_mass = sum(h.compatibility_mass for h, i in zip(hypotheses, order)
                     if n_cons[i] == best_tier)
+    new_memory = WindowMemory(keyframe_idx=keyframe_idx, poses=poses[order].copy(),
+                              scores=score[order].copy())
     return proposal.ProposalResult(
         event_id=event_id, keyframe_idx=keyframe_idx, trigger=trigger,
         hypotheses=hypotheses, particle_budget=particle_budget,
@@ -614,7 +672,7 @@ def propose(measurements, odometry, tables, catalog,
         n_combinations_enumerated=examined, n_combinations_sampled=0,
         n_combinations_geometry_pruned=pruned, n_partially_represented_ties=0,
         n_solution_clusters_merged=merged,
-        represented_compatibility_mass=float(tier_mass))
+        represented_compatibility_mass=float(tier_mass)), new_memory
 
 
 def incumbent_score(east_m, north_m, heading_rad, measurements, odometry, tables,

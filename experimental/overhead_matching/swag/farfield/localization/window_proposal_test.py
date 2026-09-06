@@ -109,7 +109,7 @@ class ProposeTest(unittest.TestCase):
         return window_proposal.propose(
             measurements, self.deltas, _tables(self.catalog, self.watched),
             self.catalog, self.config, event_id=0, keyframe_idx=kf,
-            trigger="init", particle_budget=5000, rng=self.rng)
+            trigger="init", particle_budget=5000, rng=self.rng)[0]
 
     def _best(self, result):
         return max(result.hypotheses, key=lambda h: h.compatibility_mass)
@@ -143,11 +143,51 @@ class ProposeTest(unittest.TestCase):
     def test_too_few_tracklets_yields_nothing(self):
         two = {k: v for k, v in list(self.watched.items())[:2]}
         measurements = _epochs(self.catalog, self.poses, self.rng, two)
-        result = window_proposal.propose(
+        result, memory = window_proposal.propose(
             measurements, self.deltas, _tables(self.catalog, two), self.catalog,
             self.config, event_id=0, keyframe_idx=N_KEYFRAMES - 1,
             trigger="init", particle_budget=5000, rng=self.rng)
         self.assertEqual(result.hypotheses, [])
+        self.assertIsNone(memory)
+
+    def test_accumulate_credits_only_the_persistent_site(self):
+        kf = N_KEYFRAMES - 1
+        east, north, heading = self.poses[kf]
+        east0, north0, heading0 = self.poses[20]
+        memory = window_proposal.WindowMemory(
+            keyframe_idx=20,
+            poses=np.array([[east0, north0, heading0], [east0 + 800.0, north0, heading0]]),
+            scores=np.array([-1.0, -3.0]))
+        poses = np.array([[east, north, heading], [east + 800.0, north, heading],
+                          [east + 3000.0, north, heading]])
+        score = window_proposal.accumulate(poses, np.zeros(3), memory, self.deltas, kf)
+        # floor = -3 - 1: persistent truth earns 0.9 * 3, the alias 0.9 * 1, the new site 0.
+        self.assertAlmostEqual(score[0], 0.9 * 3.0, places=6)
+        self.assertAlmostEqual(score[1], 0.9 * 1.0, places=6)
+        self.assertAlmostEqual(score[2], 0.0, places=6)
+
+    def test_memory_rewards_the_persistent_site(self):
+        measurements = _epochs(self.catalog, self.poses, self.rng, self.watched)
+        tables = _tables(self.catalog, self.watched)
+        first, memory = window_proposal.propose(
+            measurements, self.deltas, tables, self.catalog, self.config,
+            event_id=0, keyframe_idx=20, trigger="init", particle_budget=5000,
+            rng=self.rng)
+        self.assertTrue(first.hypotheses)
+        self.assertEqual(memory.keyframe_idx, 20)
+        second, memory2 = window_proposal.propose(
+            measurements, self.deltas, tables, self.catalog, self.config,
+            event_id=1, keyframe_idx=N_KEYFRAMES - 1, trigger="diffuse",
+            particle_budget=5000, rng=self.rng, memory=memory)
+        east, north, _ = self.poses[N_KEYFRAMES - 1]
+        best = self._best(second)
+        self.assertLess(math.hypot(best.east_m - east, best.north_m - north), 40.0)
+        # Lattice copies persist too, so the truth need not dominate; it must
+        # stay the best and the memory must roll forward.
+        first_best = self._best(first)
+        self.assertLess(math.hypot(first_best.east_m - self.poses[20][0],
+                                   first_best.north_m - self.poses[20][1]), 40.0)
+        self.assertEqual(memory2.keyframe_idx, N_KEYFRAMES - 1)
 
     def test_incumbent_score_ranks_truth_first(self):
         measurements = _epochs(self.catalog, self.poses, self.rng, self.watched)
