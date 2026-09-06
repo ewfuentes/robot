@@ -1539,9 +1539,10 @@ def run_filter(
             window_start = kf - config.proposal.window_keyframes
             window = [m for m in measurements
                       if window_start <= m.anchor_keyframe_idx <= kf]
-            inject_fraction = (config.proposal.diffuse_inject_fraction
-                               if trigger == "diffuse"
-                               else config.proposal.inject_fraction)
+            inject_fraction = {
+                "diffuse": config.proposal.diffuse_inject_fraction,
+                "init": config.proposal.inject_fraction,
+            }.get(trigger, config.proposal.recovery_inject_fraction)
             particle_budget = min(
                 config.n_particles,
                 int(round(inject_fraction * config.n_particles)))

@@ -229,6 +229,7 @@ localization:
     window_joint_injection_heading_sigma_deg: 1.5
     diffuse_trigger_std_m: 0.0
     diffuse_inject_fraction: 0.5
+    recovery_inject_fraction: 0.5
   modes:
     enabled: true
     cell_size_m: 150.0

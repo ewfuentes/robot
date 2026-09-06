@@ -243,6 +243,10 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # evidence gate is bypassed like on init.
     diffuse_trigger_std_m: float = 0.0
     diffuse_inject_fraction: float = 0.5
+    # Fraction replaced by a RECOVERY injection (null_share / ess_floor);
+    # `inject_fraction` still governs init. A recovery displaces a belief
+    # that may hold the truth at modest mass, so it can afford to be smaller.
+    recovery_inject_fraction: float = 0.5
 
 
 class ModeConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

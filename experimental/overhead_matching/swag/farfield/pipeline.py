@@ -274,6 +274,7 @@ CONFIG_SCHEMA = {
     "localization.proposal.window_joint_injection_heading_sigma_deg": _number(),
     "localization.proposal.diffuse_trigger_std_m": _number(),
     "localization.proposal.diffuse_inject_fraction": _number(maximum=1.0),
+    "localization.proposal.recovery_inject_fraction": _number(maximum=1.0),
     "localization.modes.enabled": _boolean(),
     "localization.modes.cell_size_m": _positive_number(),
     "localization.modes.heading_cell_deg": _positive_number(),
