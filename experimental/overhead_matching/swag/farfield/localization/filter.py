@@ -849,8 +849,20 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
         representative[group_index[::-1]] = np.arange(n - 1, -1, -1)
         is_hypothesis = ((belief.mode_id[representative] >= 0)
                          | (belief.proposal_event_id[representative] >= 0))
-        minimum[is_hypothesis & (group_mass >= survival_min_mass)] = (
-            survival_floor)
+        protected = is_hypothesis & (group_mass >= survival_min_mass)
+        # The floor may pin at most half the particles: with a proposal that
+        # injects hundreds of hypotheses per event, hypothesis groups can
+        # outnumber n / floor, and protecting all of them would leave nothing
+        # for the posterior to allocate by evidence. Beyond the budget only
+        # the most massive groups keep the floor; the rest are allocated
+        # proportionally like the diffuse remainder (and may round to zero).
+        max_protected = max(1, (n // 2) // survival_floor)
+        if int(protected.sum()) > max_protected:
+            keep = np.argsort(-np.where(protected, group_mass, -1.0),
+                              kind="stable")[:max_protected]
+            protected = np.zeros(n_groups, dtype=bool)
+            protected[keep] = True
+        minimum[protected] = survival_floor
         deficit = np.maximum(minimum - counts, 0)
         need = int(deficit.sum())
         if need > 0:
