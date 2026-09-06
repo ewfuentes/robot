@@ -1565,6 +1565,29 @@ def run_filter(
                     gate_passed, gate_best, gate_ref = _evidence_gate(
                         tracker, result, window, config, rng, score_fn,
                         belief, catalog)
+            if (config.proposal.generator == "window_joint"
+                    and trigger not in ("init", "diffuse")
+                    and (not result.hypotheses or not gate_passed)):
+                # Recovery fallback: a window whose tracklets mostly align
+                # nothing (thin names, wrong caps) gives the window-joint
+                # generator no gate-worthy site, while a pair or a single
+                # good tracklet still yields a broad-but-containing arc or
+                # disc. Offer the snapshot generator under its own gate.
+                fallback = proposal_mod.propose(
+                    window, tables, catalog, config.proposal,
+                    event_id=len(proposal_events), keyframe_idx=kf,
+                    trigger=trigger, particle_budget=particle_budget)
+                fb_passed, fb_best, fb_ref = True, None, None
+                if config.proposal.evidence_gate and fallback.hypotheses:
+                    fb_passed, fb_best, fb_ref = _evidence_gate(
+                        tracker, fallback, window, config, rng, score_fn,
+                        belief, catalog)
+                if fallback.hypotheses and fb_passed:
+                    result, gate_passed, gate_best, gate_ref = (
+                        fallback, True, fb_best, fb_ref)
+                elif not result.hypotheses:
+                    result, gate_passed, gate_best, gate_ref = (
+                        fallback, False, fb_best, fb_ref)
             n_injected, kept_idx = ((0, None) if not gate_passed else
                                     inject_proposal(belief, result, config,
                                                     rng, inject_fraction))

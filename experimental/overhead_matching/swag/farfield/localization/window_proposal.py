@@ -77,6 +77,9 @@ class WindowTrack:
     cand_w: np.ndarray
     cap_m: float  # the latest epoch's cap (catalog maximum when none)
     landmark_ids: tuple
+    # log identity prior over the endorsed candidates (softmax of the clipped
+    # matcher log-odds, as the filter's _identity_log_weights), max 0.
+    cand_logp: np.ndarray = None
 
 
 @dataclasses.dataclass
@@ -158,6 +161,7 @@ def collect_tracks(measurements, tables, catalog, config: structs.ProposalConfig
         latest = max(epochs, key=lambda m: m.anchor_keyframe_idx)
         cap = latest.range_max_m if latest.range_max_m is not None else catalog_max
         ids = tuple(c.landmark_id for c in candidates)
+        log_w = np.array([math.log(max(c.weight, 1e-300)) for c in candidates])
         tracks.append(WindowTrack(
             tracklet_id=tid,
             epochs=sorted((m.anchor_keyframe_idx,
@@ -166,6 +170,7 @@ def collect_tracks(measurements, tables, catalog, config: structs.ProposalConfig
                           for m in epochs),
             cand_idx=np.array([catalog.index_of(i) for i in ids], dtype=int),
             cand_w=np.array([c.weight for c in candidates]),
+            cand_logp=log_w - log_w.max(),
             cap_m=float(cap), landmark_ids=ids))
     # Most epochs first (more constraint, and a long tracklet is more often a
     # real object), tightest cap second. The tightest cap alone is a bad
@@ -449,6 +454,13 @@ def track_tolerance(arr, tol_rad):
     return math.sqrt(tol_rad ** 2 + float(np.mean(yaw_var)))
 
 
+# The identity prior chooses the candidate at full strength but enters the
+# hypothesis score at this weight: matcher confidence tiers among genuinely
+# interchangeable landmarks are noisy (a 0.9 vs 0.98 turbine is a 1.8-nat gap
+# that would cost the true site an outlier-equivalent over a few tracklets),
+# while in a named harbour the choice itself is what matters.
+PRIOR_SCORE_WEIGHT = 0.25
+
 # One-sided Gaussian tail beyond the cap, as the filter's range_cap_log_term
 # (softness 0.25): a 500 m cap on a 700 m object costs 1.3 nats, not a veto.
 CAP_SOFTNESS = 0.25
@@ -490,6 +502,7 @@ def score_window(poses, tracks, rel, east, north, tol_rad, max_outliers,
     n_tracks = len(tracks)
     best = np.full((n_hyp, n_tracks), np.inf)
     ident = np.full((n_hyp, n_tracks), -1, dtype=int)
+    prior_cost = np.zeros((n_hyp, n_tracks))
     n_epochs = np.zeros(n_tracks)
     tol_col = np.full(n_tracks, tol_rad)
     for col, track in enumerate(tracks):
@@ -514,11 +527,18 @@ def score_window(poses, tracks, rel, east, north, tol_rad, max_outliers,
                 # Each epoch's one-sided cap holds at its own platform
                 # position, softly: the excess joins the chi-square.
                 acc += np.square(res / sigma_e[e]) + _cap_chi2(np.hypot(lx - px, ly - py), cap[e])
-            rms = np.sqrt(acc / len(u)) * sigma_mean
-            j = np.argmin(rms, 1)
+            # Candidate choice weighs geometry against the matcher's identity
+            # prior, as the filter does: in a harbour with ~9 named candidates
+            # per tracklet a wrong pose can fit every tracklet on some
+            # low-confidence row; in a turbine field the prior is flat.
+            logp = track.cand_logp if track.cand_logp is not None else np.zeros(len(cand))
+            objective = 0.5 * acc - logp[None]
+            j = np.argmin(objective, 1)
             rows = np.arange(len(block))
-            best[start:start + SCORE_CHUNK, col] = rms[rows, j]
+            rms = np.sqrt(acc[rows, j] / len(u)) * sigma_mean
+            best[start:start + SCORE_CHUNK, col] = rms
             ident[start:start + SCORE_CHUNK, col] = cand[j]
+            prior_cost[start:start + SCORE_CHUNK, col] = -PRIOR_SCORE_WEIGHT * logp[j]
     consistent = best < tol_col[None]
     n_consistent = consistent.sum(1)
     mean_rms = np.where(consistent, best, 0.0).sum(1) / np.maximum(n_consistent, 1)
@@ -527,7 +547,7 @@ def score_window(poses, tracks, rel, east, north, tol_rad, max_outliers,
     # the tolerance-boundary penalty for each inconsistent one, tempered.
     scale = np.maximum(tol_col[None] / math.radians(1.5), 1.0) * sigma_rad
     penalty = 0.5 * (tol_col[None] / scale) ** 2 * n_epochs[None]
-    ll = np.where(consistent, -0.5 * (best / scale) ** 2 * n_epochs[None], -penalty)
+    ll = np.where(consistent, -0.5 * (best / scale) ** 2 * n_epochs[None] - prior_cost, -penalty)
     ll = np.where(np.isfinite(ll), ll, -penalty)
     score = ll.sum(1) / max(temperature, 1e-9)
     return WindowScore(n_consistent=n_consistent, mean_rms_rad=mean_rms,
