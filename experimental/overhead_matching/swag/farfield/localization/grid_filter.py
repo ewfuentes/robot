@@ -354,8 +354,10 @@ def main():
                              "folded into a uniform-bearing floor")
     parser.add_argument("--identity_weights", default="global_softmax",
                         choices=("global_softmax", "visible_softmax",
-                                 "visible_flat"),
-                        help="FilterConfig.identity_weights semantics")
+                                 "visible_flat", "global_flat"),
+                        help="FilterConfig.identity_weights semantics; "
+                             "global_flat = equal endorsed weights without "
+                             "the per-cell in-cap renormalization")
     parser.add_argument("--range_cap", type=int, default=1,
                         help="1: apply each measurement's range_max_m as the "
                              "PF's one-sided cap; 0: ignore caps")
@@ -421,7 +423,8 @@ def main():
             table = data.tables[tracklet_id]
             log_w = filter_lib._identity_log_weights(
                 table, catalog, args.matcher_recall,
-                flatten=args.identity_weights == "visible_flat")
+                flatten=args.identity_weights in ("visible_flat",
+                                                  "global_flat"))
             weights = np.exp(log_w)
             if args.tail == "exact":
                 idx = np.arange(catalog.n)
@@ -488,7 +491,7 @@ def main():
             cap_prev = min(caps_prev) if caps_prev else None
             kw = dict(quantization_comp=bool(args.quantization_comp),
                       range_softness=args.range_softness,
-                      visible=args.identity_weights != "global_softmax")
+                      visible=args.identity_weights.startswith("visible"))
             like = belief.track_likelihood(
                 new, c_east, c_north, c_weight, sigma_pos,
                 args.pi0, tail_mass, range_max_m=cap_new, **kw)
