@@ -706,7 +706,8 @@ def propose(measurements, odometry, tables, catalog,
         n_combinations_enumerated=examined, n_combinations_sampled=0,
         n_combinations_geometry_pruned=pruned, n_partially_represented_ties=0,
         n_solution_clusters_merged=merged,
-        represented_compatibility_mass=float(tier_mass)), new_memory
+        represented_compatibility_mass=float(tier_mass),
+        best_score=float(top)), new_memory
 
 
 def incumbent_score(east_m, north_m, heading_rad, measurements, odometry, tables,

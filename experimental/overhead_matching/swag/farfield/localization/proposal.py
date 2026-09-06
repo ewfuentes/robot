@@ -167,6 +167,9 @@ class ProposalResult:
     n_partially_represented_ties: int
     n_solution_clusters_merged: int
     represented_compatibility_mass: float
+    # Window-joint generator: the best hypothesis's accumulated (tempered)
+    # window score, for the gate; None for the snapshot generator.
+    best_score: float | None = None
 
     @property
     def n_combinations_examined(self) -> int:
