@@ -275,6 +275,7 @@ CONFIG_SCHEMA = {
     "localization.proposal.diffuse_trigger_std_m": _number(),
     "localization.proposal.diffuse_inject_fraction": _number(maximum=1.0),
     "localization.proposal.recovery_inject_fraction": _number(maximum=1.0),
+    "localization.proposal.window_joint_keyframes_long": _integer(),
     "localization.modes.enabled": _boolean(),
     "localization.modes.cell_size_m": _positive_number(),
     "localization.modes.heading_cell_deg": _positive_number(),

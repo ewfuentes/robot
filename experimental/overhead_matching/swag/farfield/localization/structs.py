@@ -247,6 +247,11 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # `inject_fraction` still governs init. A recovery displaces a belief
     # that may hold the truth at modest mass, so it can afford to be smaller.
     recovery_inject_fraction: float = 0.5
+    # A second, longer window pooled with the first at every event (0 = off).
+    # Eight epochs per tracklet resolve a turbine lattice that four cannot,
+    # while four epochs keep a harbour's drift-widened tolerance tight; the
+    # union of both hypothesis sets lets one memory and one gate decide.
+    window_joint_keyframes_long: int = 0
 
 
 class ModeConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):

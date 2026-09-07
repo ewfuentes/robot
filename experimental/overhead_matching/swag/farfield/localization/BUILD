@@ -192,6 +192,7 @@ py_library(
     srcs = ["window_proposal.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
+        requirement("msgspec"),
         requirement("numpy"),
         ":proposal",
         ":resection",

@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--max_outliers", type=int, default=2)
     parser.add_argument("--budget", type=int, default=25000)
     parser.add_argument("--debug_truth", action="store_true")
+    parser.add_argument("--long_window", type=int, default=0)
     args = parser.parse_args()
 
     data = export_ingest.load(Path(args.input_dir))
@@ -38,7 +39,8 @@ def main() -> None:
         generator="window_joint", window_joint_keyframes=args.window_keyframes,
         window_joint_max_tracklets=args.max_tracklets,
         window_joint_rms_tolerance_deg=args.tolerance_deg,
-        window_joint_max_outlier_tracklets=args.max_outliers)
+        window_joint_max_outlier_tracklets=args.max_outliers,
+        window_joint_keyframes_long=args.long_window)
     rng = np.random.default_rng(0)
     memory = None
     for kf in args.keyframes:

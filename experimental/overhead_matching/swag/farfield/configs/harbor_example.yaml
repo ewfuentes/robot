@@ -230,6 +230,7 @@ localization:
     diffuse_trigger_std_m: 0.0
     diffuse_inject_fraction: 0.5
     recovery_inject_fraction: 0.5
+    window_joint_keyframes_long: 0
   modes:
     enabled: true
     cell_size_m: 150.0

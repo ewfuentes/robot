@@ -46,6 +46,7 @@ import dataclasses
 import itertools
 import math
 
+import msgspec
 import numpy as np
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
@@ -587,35 +588,19 @@ def accumulate(poses, score, memory, odometry, keyframe_idx):
     return score + MEMORY_DECAY * credit
 
 
-def propose(measurements, odometry, tables, catalog,
-            config: structs.ProposalConfig, event_id: int, keyframe_idx: int,
-            trigger: str, *, particle_budget: int,
-            rng: np.random.Generator, memory: WindowMemory | None = None
-            ) -> tuple[proposal.ProposalResult, WindowMemory | None]:
-    """Window-joint hypothesis set for an injection budget, and the memory
-    to hand to the next event (unchanged when this event produced nothing)."""
-    particle_budget = int(particle_budget)
-    tracks = collect_tracks(measurements, tables, catalog, config, keyframe_idx)
-    east = np.asarray(catalog.east_m, dtype=float)
-    north = np.asarray(catalog.north_m, dtype=float)
-    empty = proposal.ProposalResult(
-        event_id=event_id, keyframe_idx=keyframe_idx, trigger=trigger,
-        hypotheses=[], particle_budget=particle_budget,
-        n_tracklets_considered=len(tracks), n_combinations_total=0,
-        n_combinations_enumerated=0, n_combinations_sampled=0,
-        n_combinations_geometry_pruned=0, n_partially_represented_ties=0,
-        n_solution_clusters_merged=0, represented_compatibility_mass=0.0)
-    n_gen = min(config.window_joint_resection_tracklets, len(tracks))
+def _generate_and_score(measurements, odometry, tables, catalog, config, keyframe_idx,
+                        window_keyframes, rng, east, north, bbox):
+    """One window length: tracklets, exhaustive triples, refinement, scoring.
+    Returns (poses, WindowScore, n_tracks, counts) or None."""
+    cfg = msgspec.structs.replace(config, window_joint_keyframes=window_keyframes)
+    tracks = collect_tracks(measurements, tables, catalog, cfg, keyframe_idx)
+    n_gen = min(cfg.window_joint_resection_tracklets, len(tracks))
     if n_gen < 3:
-        return empty, memory
-    rel = relative_poses(odometry, keyframe_idx, config.window_joint_keyframes)
-    margin = 2000.0
-    bbox = (east.min() - margin, east.max() + margin,
-            north.min() - margin, north.max() + margin)
-    tol_rad = math.radians(config.window_joint_rms_tolerance_deg)
+        return None
+    rel = relative_poses(odometry, keyframe_idx, window_keyframes)
+    tol_rad = math.radians(cfg.window_joint_rms_tolerance_deg)
     sigma_rad = 1.0 / math.sqrt(max(
         min(kappa for t in tracks for _, _, kappa, _ in t.epochs), 1e-9))
-
     all_poses, total, examined, pruned = [], 0, 0, 0
     for trip in itertools.combinations(range(n_gen), 3):
         tracks3 = [tracks[i] for i in trip]
@@ -625,7 +610,7 @@ def propose(measurements, odometry, tables, catalog,
         offsets = [math.hypot(rel[e[0]][0] - rel[k_ref][0], rel[e[0]][1] - rel[k_ref][1])
                    if e[0] in rel else 0.0 for e in chosen]
         poses, idents, n_total, n_pruned = resect_snapshot(
-            tracks3, east, north, bbox, config.window_joint_max_tuples, rng,
+            tracks3, east, north, bbox, cfg.window_joint_max_tuples, rng,
             epochs=chosen, offsets_m=offsets)
         total += n_total
         examined += n_pruned
@@ -633,41 +618,92 @@ def propose(measurements, odometry, tables, catalog,
         if len(poses):
             poses = to_current_frame(poses, rel[k_ref])
             refined = refine(poses, idents, tracks3, rel, east, north)
-            # Stage-one prune on the generating tracklets' OWN window rms
-            # (identities fixed): a wrong triple rarely fits four or five
-            # epochs of each of its three tracklets. Cheap, and it leaves the
-            # full scoring only the fixes that could survive it.
             own = own_track_rms(refined, idents, tracks3, rel, east, north, tol_rad)
             keep = (own < 1.0).all(1)
             if keep.any():
                 all_poses.append(refined[keep])
+    counts = (total, examined, pruned)
     if not all_poses:
-        return dataclasses.replace(
-            empty, n_combinations_total=total, n_combinations_enumerated=examined,
-            n_combinations_geometry_pruned=pruned), memory
+        return None, None, len(tracks), counts, tracks
     poses = np.concatenate(all_poses)
     scored = score_window(poses, tracks, rel, east, north, tol_rad,
-                          config.window_joint_max_outlier_tracklets,
-                          sigma_rad, config.window_joint_temperature)
-    need = max(3, len(tracks) - config.window_joint_max_outlier_tracklets)
-    keep = scored.n_consistent >= need
-    if not keep.any():
-        # Nothing explains all but `max_outlier_tracklets`: in a window full
-        # of junk tracklets (thin names, wrong caps) fall back to the best
-        # consistency tier on offer rather than propose nothing — the gate and
-        # the site memory, not this threshold, decide what survives. Three is
-        # the observability floor.
-        best_tier = int(scored.n_consistent.max()) if len(scored.n_consistent) else 0
-        if best_tier < 3:
-            return dataclasses.replace(
-                empty, n_combinations_total=total, n_combinations_enumerated=examined,
-                n_combinations_geometry_pruned=pruned), memory
-        keep = scored.n_consistent >= best_tier
-    poses = poses[keep]
-    score = accumulate(poses, scored.score[keep], memory, odometry, keyframe_idx)
-    n_cons = scored.n_consistent[keep]
-    mean_rms = scored.mean_rms_rad[keep]
-    identity = scored.identity[keep]
+                          cfg.window_joint_max_outlier_tracklets,
+                          sigma_rad, cfg.window_joint_temperature)
+    return poses, scored, len(tracks), counts, tracks
+
+
+def propose(measurements, odometry, tables, catalog,
+            config: structs.ProposalConfig, event_id: int, keyframe_idx: int,
+            trigger: str, *, particle_budget: int,
+            rng: np.random.Generator, memory: WindowMemory | None = None
+            ) -> tuple[proposal.ProposalResult, WindowMemory | None]:
+    """Window-joint hypothesis set for an injection budget, and the memory
+    to hand to the next event (unchanged when this event produced nothing).
+    With `window_joint_keyframes_long` > 0 the hypothesis sets of both window
+    lengths are pooled before ranking."""
+    particle_budget = int(particle_budget)
+    east = np.asarray(catalog.east_m, dtype=float)
+    north = np.asarray(catalog.north_m, dtype=float)
+    margin = 2000.0
+    bbox = (east.min() - margin, east.max() + margin,
+            north.min() - margin, north.max() + margin)
+    windows = [config.window_joint_keyframes]
+    if config.window_joint_keyframes_long > config.window_joint_keyframes:
+        windows.append(config.window_joint_keyframes_long)
+    pooled_poses, pooled_score, pooled_ncons, pooled_rms, pooled_ident = [], [], [], [], []
+    total = examined = pruned = 0
+    n_tracks_seen = 0
+    union_tids = []  # tracklets across windows, for identity provenance
+    for w in windows:
+        out = _generate_and_score(measurements, odometry, tables, catalog, config,
+                                  keyframe_idx, w, rng, east, north, bbox)
+        if out is None:
+            continue
+        poses, scored, n_tracks, counts, tracks = out
+        total += counts[0]
+        examined += counts[1]
+        pruned += counts[2]
+        n_tracks_seen = max(n_tracks_seen, n_tracks)
+        if poses is None:
+            continue
+        need = max(3, n_tracks - config.window_joint_max_outlier_tracklets)
+        keep = scored.n_consistent >= need
+        if not keep.any():
+            best_tier = int(scored.n_consistent.max())
+            if best_tier < 3:
+                continue
+            keep = scored.n_consistent >= best_tier
+        # Identities are reported against this window's tracklet list; remap
+        # the columns onto the union of tracklets seen across windows.
+        for t in tracks:
+            if t.tracklet_id not in union_tids:
+                union_tids.append(t.tracklet_id)
+        pooled_ident.append((scored.identity[keep], [t.tracklet_id for t in tracks]))
+        pooled_poses.append(poses[keep])
+        pooled_score.append(scored.score[keep])
+        pooled_ncons.append(scored.n_consistent[keep])
+        pooled_rms.append(scored.mean_rms_rad[keep])
+    empty = proposal.ProposalResult(
+        event_id=event_id, keyframe_idx=keyframe_idx, trigger=trigger,
+        hypotheses=[], particle_budget=particle_budget,
+        n_tracklets_considered=n_tracks_seen, n_combinations_total=total,
+        n_combinations_enumerated=examined, n_combinations_sampled=0,
+        n_combinations_geometry_pruned=pruned, n_partially_represented_ties=0,
+        n_solution_clusters_merged=0, represented_compatibility_mass=0.0)
+    if not pooled_poses:
+        return empty, memory
+    remapped = []
+    for ident, tids_w in pooled_ident:
+        full = -np.ones((len(ident), len(union_tids)), dtype=int)
+        for col, tid in enumerate(tids_w):
+            full[:, union_tids.index(tid)] = ident[:, col]
+        remapped.append(full)
+    poses = np.concatenate(pooled_poses)
+    score = accumulate(poses, np.concatenate(pooled_score), memory, odometry, keyframe_idx)
+    n_cons = np.concatenate(pooled_ncons)
+    mean_rms = np.concatenate(pooled_rms)
+    identity = np.concatenate(remapped)
+    tids = tuple(union_tids)
     order = _dedupe(poses, score, config)
     merged = len(poses) - len(order)
     limit = min(config.window_joint_max_hypotheses,
@@ -676,9 +712,8 @@ def propose(measurements, odometry, tables, catalog,
     order = order[:limit]
     top = float(score[order].max())
     hypotheses = []
-    tids = tuple(t.tracklet_id for t in tracks)
     for i in order:
-        used = [c for c in range(len(tracks)) if identity[i, c] >= 0]
+        used = [c for c in range(len(tids)) if identity[i, c] >= 0]
         hypotheses.append(proposal.PointHypothesis(
             kind=proposal.TRIPLE,
             tracklet_ids=tuple(tids[c] for c in used),
@@ -702,7 +737,7 @@ def propose(measurements, odometry, tables, catalog,
     return proposal.ProposalResult(
         event_id=event_id, keyframe_idx=keyframe_idx, trigger=trigger,
         hypotheses=hypotheses, particle_budget=particle_budget,
-        n_tracklets_considered=len(tracks), n_combinations_total=total,
+        n_tracklets_considered=n_tracks_seen, n_combinations_total=total,
         n_combinations_enumerated=examined, n_combinations_sampled=0,
         n_combinations_geometry_pruned=pruned, n_partially_represented_ties=0,
         n_solution_clusters_merged=merged,
