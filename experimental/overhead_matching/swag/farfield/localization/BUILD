@@ -188,6 +188,43 @@ py_test(
 )
 
 py_library(
+    name = "episodes",
+    srcs = ["episodes.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        ":metrics",
+        ":structs",
+    ],
+)
+
+py_test(
+    name = "episodes_test",
+    srcs = ["episodes_test.py"],
+    deps = [
+        ":episodes",
+        ":structs",
+    ],
+)
+
+py_binary(
+    name = "episode_eval",
+    srcs = ["episode_eval.py"],
+    deps = [
+        requirement("msgspec"),
+        ":episodes",
+        ":export_ingest",
+        ":filter",
+        ":metrics",
+        ":run_export_lib",
+        ":runner",
+        ":structs",
+        ":torch_backend",
+        "//experimental/overhead_matching/swag/farfield:build_config",
+    ],
+)
+
+py_library(
     name = "window_proposal",
     srcs = ["window_proposal.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
