@@ -860,3 +860,23 @@ py_binary(
         "//common/torch:load_torch_deps",
     ],
 )
+
+py_library(
+    name = "odometry_profiles",
+    srcs = ["odometry_profiles.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":gps_to_odometry_lib",
+        ":structs",
+    ],
+)
+
+py_test(
+    name = "odometry_profiles_test",
+    srcs = ["odometry_profiles_test.py"],
+    deps = [
+        ":odometry_profiles",
+        ":structs",
+    ],
+)
