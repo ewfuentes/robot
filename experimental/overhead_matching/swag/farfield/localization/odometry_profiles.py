@@ -1,4 +1,4 @@
-"""Experiment-only odometry profiles over a validated localization export."""
+"""Odometry profiles shared by localization export and experiments."""
 
 import csv
 import hashlib
@@ -14,6 +14,8 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 
 PLANAR_IMU_PROFILE = "epson_mg570_calibrated_planar_v1"
+LEGACY_PROFILE = "gps_course_distance_wiener_v1"
+PIPELINE_PROFILE_CHOICES = (LEGACY_PROFILE, PLANAR_IMU_PROFILE)
 PROFILE_CHOICES = ("recorded", PLANAR_IMU_PROFILE)
 EPSON_ARW_DEG_SQRT_HR = 0.04
 EPSON_BIAS_SIGMA_DEG_PER_HR = 0.5
@@ -37,14 +39,20 @@ _CONFIG_KEYS = (
 )
 
 
+def _odometry_config(selected):
+    if not isinstance(selected, dict):
+        raise ValueError("odometry config must be a mapping")
+    missing = [key for key in _CONFIG_KEYS if key not in selected]
+    if missing:
+        raise ValueError(f"odometry config is missing {missing}")
+    return {key: selected[key] for key in _CONFIG_KEYS}
+
+
 def _selected_config(data):
     selected = data.manifest.config.get("localization_inputs")
     if not isinstance(selected, dict):
         raise ValueError("manifest does not record localization_inputs")
-    missing = [key for key in _CONFIG_KEYS if key not in selected]
-    if missing:
-        raise ValueError(f"manifest odometry config is missing {missing}")
-    return {key: selected[key] for key in _CONFIG_KEYS}
+    return _odometry_config(selected)
 
 
 def load_timestamps(input_dir: Path, n_keyframes: int):
@@ -189,6 +197,120 @@ def _derive_planar_imu_v1(nominal, timestamps, noise_seed, stream_id):
     }
 
 
+def derive_from_motion(east_m, north_m, timestamps, configured, *,
+                       profile: str, noise_seed: int, stream_id: str,
+                       motion_sha256: str):
+    """Build a configured odometry stream from one complete motion source."""
+    if profile not in PIPELINE_PROFILE_CHOICES:
+        raise ValueError(f"unknown pipeline odometry profile {profile!r}")
+    if (isinstance(noise_seed, bool) or not isinstance(noise_seed, int)
+            or noise_seed < 0):
+        raise ValueError("noise_seed must be a nonnegative integer")
+    selected = _odometry_config(configured)
+    nominal = gps_to_odometry.derive_increments(
+        east_m, north_m,
+        sigma_pair_m=selected["odometry_sigma_pair_m"],
+        displacement_gate_m=selected["displacement_gate_m"],
+        stationary_sigma_m=selected["stationary_sigma_m"],
+        slow_yaw_sigma_deg=selected["slow_yaw_sigma_deg"],
+        course_yaw_drift_sigma_deg=(
+            selected["course_yaw_drift_sigma_deg"]),
+        reverse_keyframe_ranges=selected["reverse_keyframe_ranges"],
+        imu_translation_noise_frac=(
+            selected["imu_translation_noise_frac"]
+            if profile == LEGACY_PROFILE else 0.0),
+        imu_yaw_noise_frac=(
+            selected["imu_yaw_noise_frac"]
+            if profile == LEGACY_PROFILE else 0.0),
+        noise_seed=noise_seed)
+    if profile == LEGACY_PROFILE:
+        return nominal, {
+            "name": profile,
+            "schema": "gps_course_distance_wiener/v1",
+            "source": "synthetic_from_motion_source_gps_course",
+            "parameters": selected,
+            "noise": {
+                "base_seed": noise_seed,
+                "generation_scope": "full_trajectory",
+            },
+        }
+
+    odometry, realization = _derive_planar_imu_v1(
+        nominal, timestamps, noise_seed, stream_id)
+    accel_bias_sigma_mps2 = (
+        EPSON_ACCEL_BIAS_SIGMA_MICRO_G * 1e-6 * STANDARD_GRAVITY_MPS2)
+    return odometry, {
+        "name": profile,
+        "schema": "epson_mg570_calibrated_planar/v1",
+        "source": "synthetic_from_motion_source_planar_inertial_error_model",
+        "position_source": "motion_source.csv GPS fixes projected to ENU",
+        "timestamp_source": {
+            "file": "motion_source.csv",
+            "column": "video_t_s",
+            "content_sha256": motion_sha256,
+            "n_keyframes": len(timestamps),
+            "start_s": float(timestamps[0]),
+            "end_s": float(timestamps[-1]),
+        },
+        "yaw_model": {
+            "type": "white_arw_plus_constant_trajectory_rate_bias",
+            "arw_deg_sqrt_hr": EPSON_ARW_DEG_SQRT_HR,
+            "bias_sigma_deg_per_hr": EPSON_BIAS_SIGMA_DEG_PER_HR,
+            "sigma_yaw_rad": "increments of cumulative ARW_plus_bias_variance",
+            "temporal_correlations_serialized": False,
+        },
+        "translation_model": {
+            "type": "stateful_planar_accelerometer_preintegration",
+            "velocity_random_walk_mps_sqrt_hr":
+                EPSON_ACCEL_VRW_MPS_SQRT_HR,
+            "velocity_random_walk_mps_sqrt_s":
+                EPSON_ACCEL_VRW_MPS_SQRT_HR / 60.0,
+            "bias_sigma_micro_g": EPSON_ACCEL_BIAS_SIGMA_MICRO_G,
+            "bias_sigma_mps2": accel_bias_sigma_mps2,
+            "bias_frame": "fixed_sensor_forward_left",
+            "velocity_position_error_reset": "trajectory_start_only",
+            "white_noise_discretization":
+                "continuous_white_acceleration_exact_interval_covariance",
+            "sigma_m": (
+                "increments of the nondecreasing cumulative largest_axis_"
+                "covariance_envelope"),
+            "temporal_correlations_serialized": False,
+            "pose_filter_interpretation": (
+                "conservative_marginal_moment_match_for_pose_only_grid_or_"
+                "particle_filter"),
+        },
+        "noise": {
+            "base_seed": noise_seed,
+            "dataset_stream_id": stream_id,
+            "dataset_stream_sha256": realization["stream_sha256"],
+            "seed_composition": "base_seed_plus_dataset_sha256_words",
+            "generation_scope": "full_trajectory_before_episode_slicing",
+            "independent_streams": [
+                "gyro_bias", "gyro_white", "accel_bias", "accel_white"],
+            "realization": realization,
+        },
+        "calibration_assumptions": {
+            "bias_instability_as_constant_residual_1sigma_proxy": True,
+            "initial_gyro_bias_error_deg_per_hr_excluded": 360.0,
+            "initial_accel_bias_error_milli_g_excluded": 2.0,
+            "initial_velocity_error_mps": 0.0,
+            "perfect_roll_pitch_and_gravity_compensation": True,
+            "nominal_temperature_c": 25.0,
+            "omitted_errors": [
+                "scale_factor", "misalignment", "temperature_change",
+                "vibration", "clock", "bias_time_variation",
+                "gyro_attitude_error_coupling_into_specific_force_and_gravity",
+            ],
+            "interpretation": (
+                "optimistic_calibrated_synthetic_model_not_hardware_"
+                "validation"),
+        },
+        "datasheet": EPSON_DATASHEET,
+        "reverse_keyframe_ranges": selected["reverse_keyframe_ranges"],
+        "reverse_annotation_source": selected["reverse_annotation_source"],
+    }
+
+
 def derive(input_dir: Path, data, profile: str,
            noise_seed: int = DEFAULT_NOISE_SEED):
     """Return ``(odometry, metadata)`` without mutating the export data."""
@@ -207,96 +329,11 @@ def derive(input_dir: Path, data, profile: str,
         raise ValueError("Epson odometry profile requires contiguous truth")
     timestamps = load_timestamps(input_dir, len(data.truth))
     if profile == PLANAR_IMU_PROFILE:
-        nominal = gps_to_odometry.derive_increments(
+        return derive_from_motion(
             [pose.east_m for pose in data.truth],
-            [pose.north_m for pose in data.truth],
-            sigma_pair_m=configured["odometry_sigma_pair_m"],
-            displacement_gate_m=configured["displacement_gate_m"],
-            stationary_sigma_m=configured["stationary_sigma_m"],
-            slow_yaw_sigma_deg=configured["slow_yaw_sigma_deg"],
-            course_yaw_drift_sigma_deg=(
-                configured["course_yaw_drift_sigma_deg"]),
-            reverse_keyframe_ranges=configured["reverse_keyframe_ranges"],
-            imu_translation_noise_frac=0.0,
-            imu_yaw_noise_frac=0.0)
-        odometry, realization = _derive_planar_imu_v1(
-            nominal, timestamps, noise_seed, data.artifact_ref.dataset)
-        timestamp_meta = data.meta.motion
-        accel_bias_sigma_mps2 = (
-            EPSON_ACCEL_BIAS_SIGMA_MICRO_G * 1e-6
-            * STANDARD_GRAVITY_MPS2)
-        return odometry, {
-            "name": profile,
-            "schema": "epson_mg570_calibrated_planar/v1",
-            "source": "synthetic_from_truth_planar_inertial_error_model",
-            "position_source": "localization_inputs/truth.jsonl",
-            "timestamp_source": {
-                "file": "motion_source.csv",
-                "column": "video_t_s",
-                "content_sha256": timestamp_meta["content_sha256"],
-                "n_keyframes": len(timestamps),
-                "start_s": timestamps[0],
-                "end_s": timestamps[-1],
-            },
-            "yaw_model": {
-                "type": "white_arw_plus_constant_trajectory_rate_bias",
-                "arw_deg_sqrt_hr": EPSON_ARW_DEG_SQRT_HR,
-                "bias_sigma_deg_per_hr": EPSON_BIAS_SIGMA_DEG_PER_HR,
-                "sigma_yaw_rad": (
-                    "increments of cumulative ARW_plus_bias_variance"),
-                "temporal_correlations_serialized": False,
-            },
-            "translation_model": {
-                "type": "stateful_planar_accelerometer_preintegration",
-                "velocity_random_walk_mps_sqrt_hr":
-                    EPSON_ACCEL_VRW_MPS_SQRT_HR,
-                "velocity_random_walk_mps_sqrt_s":
-                    EPSON_ACCEL_VRW_MPS_SQRT_HR / 60.0,
-                "bias_sigma_micro_g": EPSON_ACCEL_BIAS_SIGMA_MICRO_G,
-                "bias_sigma_mps2": accel_bias_sigma_mps2,
-                "bias_frame": "fixed_sensor_forward_left",
-                "velocity_position_error_reset": "trajectory_start_only",
-                "white_noise_discretization": (
-                    "continuous_white_acceleration_exact_interval_covariance"),
-                "sigma_m": (
-                    "increments of the nondecreasing cumulative largest_axis_"
-                    "covariance_envelope"),
-                "temporal_correlations_serialized": False,
-                "pose_filter_interpretation": (
-                    "conservative_marginal_moment_match_for_pose_only_grid_"
-                    "or_particle_filter"),
-            },
-            "noise": {
-                "base_seed": noise_seed,
-                "dataset_stream_id": data.artifact_ref.dataset,
-                "dataset_stream_sha256": realization["stream_sha256"],
-                "seed_composition": "base_seed_plus_dataset_sha256_words",
-                "generation_scope": "full_trajectory_before_episode_slicing",
-                "independent_streams": [
-                    "gyro_bias", "gyro_white", "accel_bias", "accel_white"],
-                "realization": realization,
-            },
-            "calibration_assumptions": {
-                "bias_instability_as_constant_residual_1sigma_proxy": True,
-                "initial_gyro_bias_error_deg_per_hr_excluded": 360.0,
-                "initial_accel_bias_error_milli_g_excluded": 2.0,
-                "initial_velocity_error_mps": 0.0,
-                "perfect_roll_pitch_and_gravity_compensation": True,
-                "nominal_temperature_c": 25.0,
-                "omitted_errors": [
-                    "scale_factor", "misalignment", "temperature_change",
-                    "vibration", "clock", "bias_time_variation",
-                    "gyro_attitude_error_coupling_into_specific_force_and_"
-                    "gravity",
-                ],
-                "interpretation": (
-                    "optimistic_calibrated_synthetic_model_not_hardware_"
-                    "validation"),
-            },
-            "datasheet": EPSON_DATASHEET,
-            "reverse_keyframe_ranges": configured["reverse_keyframe_ranges"],
-            "reverse_annotation_source":
-                configured["reverse_annotation_source"],
-        }
+            [pose.north_m for pose in data.truth], timestamps, configured,
+            profile=profile, noise_seed=noise_seed,
+            stream_id=data.artifact_ref.dataset,
+            motion_sha256=data.meta.motion["content_sha256"])
 
     raise AssertionError("unreachable")
