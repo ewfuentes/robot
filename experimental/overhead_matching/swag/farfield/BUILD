@@ -329,6 +329,7 @@ py_library(
         ":nominal_forward",
         ":paths",
         ":provenance",
+        "//experimental/overhead_matching/swag/farfield/localization:odometry_profiles",
         "//experimental/overhead_matching/swag/farfield/localization:run_identity",
         "//experimental/overhead_matching/swag/farfield/localization:viewer_review_assets",
         "//experimental/overhead_matching/swag/farfield/localization:viewer_satellite_assets",

@@ -350,7 +350,7 @@ py_library(
         requirement("numpy"),
         requirement("pillow"),
         ":export_ingest",
-        ":gps_to_odometry_lib",
+        ":odometry_profiles",
         ":run_io",
         ":structs",
         "//common/python:serialization",
@@ -387,6 +387,8 @@ py_test(
         requirement("shapely"),
         ":build_export_lib",
         ":export_ingest",
+        ":gps_to_odometry_lib",
+        ":odometry_profiles",
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",
@@ -858,5 +860,25 @@ py_binary(
         ":run_io",
         ":torch_backend",
         "//common/torch:load_torch_deps",
+    ],
+)
+
+py_library(
+    name = "odometry_profiles",
+    srcs = ["odometry_profiles.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        ":gps_to_odometry_lib",
+        ":structs",
+    ],
+)
+
+py_test(
+    name = "odometry_profiles_test",
+    srcs = ["odometry_profiles_test.py"],
+    deps = [
+        ":odometry_profiles",
+        ":structs",
     ],
 )

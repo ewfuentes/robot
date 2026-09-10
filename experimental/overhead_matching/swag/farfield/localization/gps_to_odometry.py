@@ -38,30 +38,13 @@ filter consumes, the way §5.2 specifies:
   0.52 -> 0.05); 0.25/0.5/1.0 m give 0.44/0.47/0.52 — the per-pair value
   is load-bearing, keep it.
 
-  THE OBJECTIVE OF DIFFERENCING IS TO APPROXIMATE AN IMU: the deployed
-  platform integrates inertial increments whose noise is genuinely
-  independent per step, while raw GPS-differenced deltas carry the
-  anti-correlated (telescoping, bounded) noise above — strictly friendlier
-  data than an IMU would produce. To make the emitted delta stream an
-  honest IMU surrogate, every production build INJECTS independent
-  per-step Gaussian noise into the delta values and inflates the emitted
-  sigmas to match, so the declared uncertainty describes noise that is
-  actually in the data. The noise is a WIENER PROCESS driven by distance
-  travelled — per step, sigma = coefficient x sqrt(|forward|) — so the
-  injected drift is self-consistent under any keyframe spacing and
-  diffuses on straightaways the way a real gyro does (per-delta
-  proportional noise, as in ReWAG, injects nothing on straight travel and
-  composes inconsistently under step refinement). The coefficients keep
-  ReWAG's values (Downes et al., arXiv:2308.07432: "We add 2% noise to
-  the ground-truth odometry and 1% noise to the ground-truth heading at
-  each time step"): `imu_translation_noise_frac` = 0.02 m/sqrt(m) and
-  `imu_yaw_noise_frac` = 0.01 rad/sqrt(m) — at our ~3 m keyframes that is
-  ~1.0 deg/keyframe of yaw diffusion, the same grade ReWAG's 1% implies on
-  typical turns. The m/sqrt(m) convention matches the histogram filter's
-  OdometryNoiseConfig.sigma_noise_frac. Stationary (gated) steps travel no
-  distance and receive no injected diffusion; their heading hold is
-  covered by slow_yaw_sigma_deg. The injected grade is a recorded
-  build-config decision.
+  The retained `gps_course_distance_wiener_v1` profile adds independent
+  per-step Gaussian noise to make GPS-differenced deltas less friendly than
+  their naturally telescoping errors. Its noise is a Wiener process driven
+  by distance travelled: per-step sigma is coefficient x sqrt(|forward|).
+  The configured coefficients keep ReWAG's 2% odometry / 1% heading values.
+  The default Epson profile uses this function only for clean nominal
+  geometry, then applies its calibrated time-domain sensor model elsewhere.
 
 The serialized noise realization is deterministic (fixed noise_seed), so a
 rebuilt export reproduces byte-identical increments.
@@ -132,10 +115,9 @@ def derive_increments(east_m, north_m, *,
     pass immutable build-config values, so the recorded recipe shaped the
     odometry. The imu_* parameters inject independent per-step noise into
     the delta values AND declare it in the emitted sigmas (an honest
-    producer emulating the deployed IMU, not a lying one); the pipeline
-    config requires them positive so production exports are always IMU
-    surrogates, while zero remains valid here for exact-geometry tests of
-    the pure derivation.
+    producer emulating the deployed IMU, not a lying one). The retained
+    legacy profile config requires them positive; zero remains valid here for
+    exact geometry and for the calibrated Epson profile's nominal increments.
     """
     east_m = np.asarray(east_m, dtype=np.float64)
     north_m = np.asarray(north_m, dtype=np.float64)

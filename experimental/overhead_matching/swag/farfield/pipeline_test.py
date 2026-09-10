@@ -160,6 +160,11 @@ class ConfigContractTest(unittest.TestCase):
         self.assertEqual(
             config["localization_inputs"]["landmark_position_sigma_m"],
             25.0)
+        self.assertEqual(
+            config["localization_inputs"]["odometry_profile"],
+            "epson_mg570_calibrated_planar_v1")
+        self.assertEqual(
+            config["localization_inputs"]["odometry_noise_seed"], 0)
         self.assertIsNone(
             config["localization_inputs"]["identity_review_dir"])
         self.assertEqual(config["localization"]["ablation_tags"], [])
@@ -962,6 +967,32 @@ class ManifestCompletionTest(unittest.TestCase):
         self.assertIn("WARNING", out.getvalue())
         self.assertIn("tracking.fragment_patience", out.getvalue())
         self.assertEqual(out.getvalue().count("WARNING"), 1)
+
+    def test_profileless_localization_inputs_are_known_legacy_not_epson(self):
+        inputs = {"dataset_panorama_sha256": "c" * 64}
+        self.publish_catalog()
+        for stage in ("extract", "track", "audit", "bearings", "match",
+                      "localization_inputs"):
+            self.publish_stage(stage, build_inputs=inputs)
+        localization_inputs = self.paths.localization_inputs
+        self._strip_recorded_setting(
+            localization_inputs, "localization_inputs.odometry_profile")
+        self._strip_recorded_setting(
+            localization_inputs, "localization_inputs.odometry_noise_seed")
+
+        with self.assertRaisesRegex(
+                pipeline.StageContractError,
+                "localization_inputs.odometry_profile"):
+            pipeline.stage_done(
+                "localization_inputs", self.paths, self.config,
+                build_identity=self.build_identity, build_inputs=inputs)
+
+        legacy = copy.deepcopy(self.config)
+        legacy["localization_inputs"]["odometry_profile"] = \
+            "gps_course_distance_wiener_v1"
+        self.assertTrue(pipeline.stage_done(
+            "localization_inputs", self.paths, legacy,
+            build_identity=self.build_identity, build_inputs=inputs))
 
     def test_an_upstream_made_with_a_different_value_is_refused(self):
         inputs = {"dataset_panorama_sha256": "c" * 64}

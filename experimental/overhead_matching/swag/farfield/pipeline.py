@@ -46,6 +46,7 @@ from experimental.overhead_matching.swag.farfield import (
     provenance,
 )
 from experimental.overhead_matching.swag.farfield.localization import (
+    odometry_profiles,
     run_identity,
     viewer_review_assets as review_assets,
     viewer_satellite_assets as satellite_assets,
@@ -183,6 +184,9 @@ CONFIG_SCHEMA = {
         (int, float)),
     "localization_inputs.compatibility_clip": _positive_number(),
     "localization_inputs.reducer_epoch_keyframes": _integer(minimum=1),
+    "localization_inputs.odometry_profile": _text(
+        choices=odometry_profiles.PIPELINE_PROFILE_CHOICES),
+    "localization_inputs.odometry_noise_seed": _integer(),
     "localization_inputs.odometry_sigma_pair_m": _positive_number(),
     "localization_inputs.displacement_gate_m": _positive_number(),
     "localization_inputs.stationary_sigma_m": _positive_number(),
@@ -643,7 +647,16 @@ def _check_plug_in(manifest, *, kind: str, owner: str, config: dict,
             f"{kind} artifact {manifest.version!r} records no recipe, so the "
             "settings it was made with cannot be checked; it was not "
             "published by this pipeline")
-    recorded = artifact_recipe.validate(manifest.recipe)["stage_config"]
+    recorded = dict(
+        artifact_recipe.validate(manifest.recipe)["stage_config"])
+    if owner == "localization_inputs":
+        # Before profiles were selectable, build_export always emitted this
+        # legacy model with seed zero. Make that known history comparable so
+        # it cannot masquerade as a newly configured Epson artifact.
+        recorded.setdefault(
+            "localization_inputs.odometry_profile",
+            odometry_profiles.LEGACY_PROFILE)
+        recorded.setdefault("localization_inputs.odometry_noise_seed", 0)
     current = stage_config_selection(owner, config)
     differing = [key for key in sorted(set(recorded) & set(current))
                  if _is_scientific(key) and recorded[key] != current[key]]

@@ -24,6 +24,8 @@ from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.localization import (
     build_export,
     export_ingest,
+    gps_to_odometry,
+    odometry_profiles,
     structs,
 )
 from experimental.overhead_matching.swag.farfield.matching import identity_review
@@ -256,7 +258,9 @@ def write_nominal_forward(path: Path):
     return path
 
 
-def build_fixture(root: Path, upstream_identity: str = None):
+def build_fixture(
+        root: Path, upstream_identity: str = None,
+        odometry_profile: str = odometry_profiles.PLANAR_IMU_PROFILE):
     base = testing.make_dataset(
         root / "datasets" / DATASET, n_frames=4,
         pano_size=(PANO_W, PANO_W // 2))
@@ -281,6 +285,8 @@ def build_fixture(root: Path, upstream_identity: str = None):
             "default_log_compatibility": 0.0,
             "compatibility_clip": 4.0,
             "reducer_epoch_keyframes": 2,
+            "odometry_profile": odometry_profile,
+            "odometry_noise_seed": 0,
             "odometry_sigma_pair_m": 1.0,
             "displacement_gate_m": 2.0,
             "stationary_sigma_m": 3.0,
@@ -369,6 +375,47 @@ class ReducerTest(unittest.TestCase):
 
 
 class EndToEndTest(unittest.TestCase):
+    def test_export_defaults_to_epson_and_retains_legacy_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            epson_args, _ = build_fixture(root / "epson")
+            legacy_args, _ = build_fixture(
+                root / "legacy",
+                odometry_profile=odometry_profiles.LEGACY_PROFILE)
+            build_export.build(epson_args)
+            build_export.build(legacy_args)
+
+            epson = export_ingest.load(
+                epson_args.output_dir, expected_dataset=DATASET)
+            legacy = export_ingest.load(
+                legacy_args.output_dir, expected_dataset=DATASET)
+            epson_manifest = artifact.load_manifest(epson_args.output_dir)
+            legacy_manifest = artifact.load_manifest(legacy_args.output_dir)
+            self.assertNotEqual(epson.odometry, legacy.odometry)
+            self.assertEqual(
+                epson_manifest.config["odometry"]["name"],
+                odometry_profiles.PLANAR_IMU_PROFILE)
+            self.assertEqual(
+                epson_manifest.config["odometry"]["noise"]["base_seed"], 0)
+            self.assertEqual(
+                legacy_manifest.config["odometry"]["name"],
+                odometry_profiles.LEGACY_PROFILE)
+            selected = legacy_manifest.config["localization_inputs"]
+            self.assertEqual(legacy.odometry, gps_to_odometry.derive_increments(
+                [pose.east_m for pose in legacy.truth],
+                [pose.north_m for pose in legacy.truth],
+                sigma_pair_m=selected["odometry_sigma_pair_m"],
+                displacement_gate_m=selected["displacement_gate_m"],
+                stationary_sigma_m=selected["stationary_sigma_m"],
+                slow_yaw_sigma_deg=selected["slow_yaw_sigma_deg"],
+                course_yaw_drift_sigma_deg=selected[
+                    "course_yaw_drift_sigma_deg"],
+                reverse_keyframe_ranges=selected["reverse_keyframe_ranges"],
+                imu_translation_noise_frac=selected[
+                    "imu_translation_noise_frac"],
+                imu_yaw_noise_frac=selected["imu_yaw_noise_frac"],
+                noise_seed=selected["odometry_noise_seed"]))
+
     def test_empty_matching_tables_have_pointed_diagnostic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -56,7 +56,7 @@ from experimental.overhead_matching.swag.farfield.catalog import (
 )
 from experimental.overhead_matching.swag.farfield.localization import (
     export_ingest,
-    gps_to_odometry,
+    odometry_profiles,
     run_io,
     structs,
 )
@@ -812,29 +812,6 @@ def build(args) -> artifact.ArtifactRef:
             tables, matcher_version = apply_identity_review(
                 tables, review, review_ref.version)
 
-    sigma_pair_m = _finite(
-        _config(document, "localization_inputs.odometry_sigma_pair_m"),
-        "odometry_sigma_pair_m", positive=True)
-    displacement_gate_m = _finite(
-        _config(document, "localization_inputs.displacement_gate_m"),
-        "displacement_gate_m", positive=True)
-    stationary_sigma_m = _finite(
-        _config(document, "localization_inputs.stationary_sigma_m"),
-        "stationary_sigma_m", positive=True)
-    slow_yaw_sigma_deg = _finite(
-        _config(document, "localization_inputs.slow_yaw_sigma_deg"),
-        "slow_yaw_sigma_deg", positive=True)
-    course_yaw_drift_sigma_deg = _finite(
-        _config(document, "localization_inputs.course_yaw_drift_sigma_deg"),
-        "course_yaw_drift_sigma_deg", positive=True)
-    imu_translation_noise_frac = _finite(
-        _config(document, "localization_inputs.imu_translation_noise_frac"),
-        "imu_translation_noise_frac", positive=True)
-    imu_yaw_noise_frac = _finite(
-        _config(document, "localization_inputs.imu_yaw_noise_frac"),
-        "imu_yaw_noise_frac", positive=True)
-    reverse_ranges = _config(
-        document, "localization_inputs.reverse_keyframe_ranges")
     reverse_source = _config(
         document, "localization_inputs.reverse_annotation_source")
     course_min_displacement_m = _finite(
@@ -847,17 +824,12 @@ def build(args) -> artifact.ArtifactRef:
         raise LocalizationInputError(
             "course_smooth_window_s must be nonnegative")
 
-    odometry = gps_to_odometry.derive_increments(
-        east, north,
-        sigma_pair_m=sigma_pair_m,
-        displacement_gate_m=displacement_gate_m,
-        stationary_sigma_m=stationary_sigma_m,
-        slow_yaw_sigma_deg=slow_yaw_sigma_deg,
-        course_yaw_drift_sigma_deg=course_yaw_drift_sigma_deg,
-        reverse_keyframe_ranges=reverse_ranges,
-        imu_translation_noise_frac=imu_translation_noise_frac,
-        imu_yaw_noise_frac=imu_yaw_noise_frac,
-        noise_seed=0)
+    odometry, odometry_meta = odometry_profiles.derive_from_motion(
+        east, north, times, config,
+        profile=_config(document, "localization_inputs.odometry_profile"),
+        noise_seed=_config(
+            document, "localization_inputs.odometry_noise_seed"),
+        stream_id=args.dataset, motion_sha256=motion_sha)
     course_model = heading.gps_course_model_from_positions(
         east, north, times,
         min_displacement_m=course_min_displacement_m,
@@ -986,6 +958,7 @@ def build(args) -> artifact.ArtifactRef:
                     args.matching_dir).config["n_expected"],
                 "matching_n_successful": artifact.load_manifest(
                     args.matching_dir).config["n_successful"],
+                "odometry": odometry_meta,
                 "reducer": meta["reducer"],
             },
             declared_outputs=tuple(outputs)) as builder:
