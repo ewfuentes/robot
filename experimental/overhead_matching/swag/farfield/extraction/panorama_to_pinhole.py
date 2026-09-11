@@ -2,7 +2,10 @@
 Process panoramas to pinhole projections.
 
 Takes a directory of panoramas and projects them to pinhole images with
-configurable resolution and FOV. Saves images from 90-degree yaw rotations.
+configurable resolution and FOV. Saves images from 90-degree yaw rotations,
+all at one camera pitch (radians, up-positive; 0 puts the horizon through the
+face centre, negative looks down). geometry.direction_from_face_px is the
+exact inverse of this render and takes the same pitch in degrees.
 """
 
 import argparse
@@ -104,7 +107,8 @@ def reproject_pinhole(panorama, output_shape, fov, yaw=0.0, pitch=0.0):
     return output
 
 
-def process_single_panorama(pano_file, output_path, fov_x, fov_y, res_x, res_y, yaw_angles):
+def process_single_panorama(pano_file, output_path, fov_x, fov_y, res_x, res_y, yaw_angles,
+                            pitch=0.0):
     """
     Process a single panorama file.
 
@@ -125,7 +129,7 @@ def process_single_panorama(pano_file, output_path, fov_x, fov_y, res_x, res_y, 
             (res_y, res_x),
             (fov_x, fov_y),
             yaw=yaw,
-            pitch=0.0
+            pitch=pitch
         )
 
         # Convert back to uint8
@@ -137,7 +141,8 @@ def process_single_panorama(pano_file, output_path, fov_x, fov_y, res_x, res_y, 
         Image.fromarray(projected_uint8).save(output_file)
 
 
-def process_panoramas(input_dir, output_dir, fov_x, fov_y, res_x, res_y, num_workers=1):
+def process_panoramas(input_dir, output_dir, fov_x, fov_y, res_x, res_y, num_workers=1,
+                      pitch=0.0):
     """
     Process all panoramas in input_dir and save pinhole projections.
 
@@ -149,6 +154,7 @@ def process_panoramas(input_dir, output_dir, fov_x, fov_y, res_x, res_y, num_wor
         res_x: Horizontal resolution in pixels
         res_y: Vertical resolution in pixels
         num_workers: Number of parallel workers (default: 1 for sequential processing)
+        pitch: Camera pitch in radians, up-positive (0 = horizon through the face centre)
     """
     input_path = Path(input_dir)
     output_path = Path(output_dir)
@@ -167,6 +173,7 @@ def process_panoramas(input_dir, output_dir, fov_x, fov_y, res_x, res_y, num_wor
     print(f"Found {len(panorama_files)} panorama files")
     print(f"Output resolution: {res_x}x{res_y}")
     print(f"FOV: {np.degrees(fov_x):.1f}° x {np.degrees(fov_y):.1f}°")
+    print(f"Pitch: {np.degrees(pitch):+.1f}° (up-positive)")
     print(f"Using {num_workers} worker(s)")
 
     # Generate 4 yaw angles at 90-degree intervals
@@ -180,7 +187,8 @@ def process_panoramas(input_dir, output_dir, fov_x, fov_y, res_x, res_y, num_wor
         fov_y=fov_y,
         res_x=res_x,
         res_y=res_y,
-        yaw_angles=yaw_angles
+        yaw_angles=yaw_angles,
+        pitch=pitch,
     )
 
     if num_workers > 1:
@@ -243,6 +251,13 @@ def main():
         default=1,
         help="Number of parallel workers (default: 1 for sequential processing)"
     )
+    parser.add_argument(
+        "--pitch_deg",
+        type=float,
+        default=0.0,
+        help="Camera pitch in degrees, up-positive; negative looks down "
+             "(default: 0, horizon through the face centre)"
+    )
 
     args = parser.parse_args()
 
@@ -257,7 +272,8 @@ def main():
         args.fov_y,
         args.res_x,
         args.res_y,
-        args.num_workers
+        args.num_workers,
+        pitch=np.radians(args.pitch_deg),
     )
 
 

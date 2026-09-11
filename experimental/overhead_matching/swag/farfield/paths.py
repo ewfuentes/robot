@@ -186,9 +186,18 @@ def pinhole_declared_outputs(
 
 def pinhole_manifest_config(
         source_digests: dict[str, str], *, resolution: int,
-        panorama_keys: tuple[str, ...] | list[str]) -> dict:
-    """Dataset-and-projection identity shared by every pinhole producer."""
+        panorama_keys: tuple[str, ...] | list[str],
+        pitch_deg: float = 0.0) -> dict:
+    """Dataset-and-projection identity shared by every pinhole producer.
+
+    `pitch_deg` (camera pitch, up-positive, see geometry.py) is recorded only
+    when non-zero: every render before 2026-09-10 was level and carries no
+    key, so a level render's identity is unchanged by the setting's arrival.
+    """
     keys = tuple(panorama_keys)
+    if (isinstance(pitch_deg, bool) or not isinstance(pitch_deg, (int, float))
+            or not -90.0 <= float(pitch_deg) <= 90.0):
+        raise ValueError("pinhole pitch must be a number within [-90, 90]")
     # Validate keys here as well so callers cannot publish a config whose
     # declared output set cannot be represented by the shared contract.
     pinhole_declared_outputs(keys)
@@ -208,6 +217,7 @@ def pinhole_manifest_config(
             "resolution_y": resolution,
             "n_panoramas": len(keys),
             "layout": PINHOLE_LAYOUT,
+            **({"pitch_deg": float(pitch_deg)} if pitch_deg else {}),
         },
         "panorama_keys": list(keys),
     }

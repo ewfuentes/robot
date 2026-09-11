@@ -115,14 +115,9 @@ CLIP_POLICY_KEYS = frozenset({
     "resolved_area_km2",
 })
 
-# Structural keys that say what a thing IS, in the far-field vocabulary. A
-# landmark with none of these carries no class a distant observer could name.
-STRUCTURAL_KEYS = frozenset({
-    "seamark:type", "object_class", "man_made", "historic", "place",
-    "natural", "building", "landuse", "leisure", "amenity", "tourism",
-    "power", "bridge", "aeroway", "railway", "waterway", "military",
-    "industrial",
-})
+# Structural keys that say what a thing IS; owned by the catalog vocabulary
+# and shared with the extraction prompt's primary-tag enum.
+STRUCTURAL_KEYS = catalog.STRUCTURAL_KEYS
 
 # Unobservable tags come in two tiers, because a name means different things
 # depending on what it names.

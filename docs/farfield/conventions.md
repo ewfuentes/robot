@@ -71,6 +71,15 @@ column"; `nominal_forward.camera_to_forward_cw_deg` and
 `geometry.forward_to_world_bearing_cw_deg` are the named frame steps. Nothing
 else converts.
 
+**Face pitch.** Faces may be rendered pitched about their own horizontal axis
+(`extraction.pinhole_pitch_deg`, degrees, **up-positive**, so the airborne
+setting is −30). The renderer's `pitch` argument, `direction_from_face_px`'s
+`pitch_deg`, the pinhole manifest's `geometry.pitch_deg`, and
+`prompts.PROMPT_PITCH_DEG` all carry that one number; the extraction stage
+refuses a build whose pitch differs from what its prompt describes, and
+ingest reads the pitch from the `frame_landmarks` manifest rather than from a
+second config key. Absence means 0: every render before 2026-09-10 was level.
+
 ## 2. Nominal forward
 
 **Owner: `farfield/nominal_forward.py`.**

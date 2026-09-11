@@ -108,6 +108,7 @@ CONFIG_SCHEMA = {
     "extraction.model": _text(),
     "extraction.prompt_type": _text(),
     "extraction.pinhole_resolution": _integer(minimum=1),
+    "extraction.pinhole_pitch_deg": _number(minimum=-90.0, maximum=90.0),
     "extraction.media_resolution": _text(),
     "extraction.thinking_level": _text(),
     "execution.llm_transport": _text(choices=("batch", "on_demand")),

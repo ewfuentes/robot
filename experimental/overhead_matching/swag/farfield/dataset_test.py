@@ -300,6 +300,31 @@ class IngestTest(unittest.TestCase):
         self.assertEqual(boxes, [])
         self.assertEqual(n_invalid, 1)
 
+    def test_structured_distance_estimate_is_folded_into_tags(self):
+        landmark = testing.landmark("Stack", [(0, 100, 100, 200, 300)])
+        landmark["distance_estimate"] = "2km_to_10km"
+        folded, boxes, _ = ds_lib._validated_landmark(landmark, "lm")
+        self.assertEqual(len(boxes), 1)
+        self.assertNotIn("distance_estimate", folded)
+        self.assertIn({"key": "distance_estimate", "value": "2km_to_10km"},
+                      folded["additional_tags"])
+        # Agreeing tag + field is one tag; a disagreeing pair is refused.
+        landmark["additional_tags"].append(
+            {"key": "distance_estimate", "value": "2km_to_10km"})
+        folded, _, _ = ds_lib._validated_landmark(landmark, "lm")
+        self.assertEqual(
+            sum(t["key"] == "distance_estimate"
+                for t in folded["additional_tags"]), 1)
+        landmark["distance_estimate"] = "over_10km"
+        with self.assertRaisesRegex(ds_lib.ContractViolation, "disagrees"):
+            ds_lib._validated_landmark(landmark, "lm")
+        landmark["additional_tags"].pop()
+        landmark["distance_estimate"] = "far"
+        with self.assertRaisesRegex(ds_lib.ContractViolation,
+                                    "distance_estimate must be one of"):
+            ds_lib._validated_landmark(landmark, "lm")
+        self.assertIsNone(ds_lib.DISTANCE_BUCKET_UPPER_M["over_10km"])
+
     def test_float_bbox_coordinates_are_not_truncated(self):
         self.make_predictions({
             self.stems[0]: [testing.landmark(

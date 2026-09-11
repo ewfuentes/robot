@@ -87,6 +87,18 @@ FAR_FIELD_DROP_PREFIXES = (
 FAR_FIELD_KEEP_NAME_VARIANTS = frozenset({"name:en"})
 FAR_FIELD_KEEP_NAME_SUFFIXES = ("-latn",)
 
+# Structural keys that say what a thing IS, in the far-field vocabulary. A
+# landmark with none of these carries no class a distant observer could name.
+# Shared by the catalog trim (a row needs one to survive unnamed) and the
+# extraction prompt's primary-tag enum (the model may only emit one of these
+# as a primary key), so what can be detected and what can be matched agree.
+STRUCTURAL_KEYS = frozenset({
+    "seamark:type", "object_class", "man_made", "historic", "place",
+    "natural", "building", "landuse", "leisure", "amenity", "tourism",
+    "power", "bridge", "aeroway", "aerialway", "railway", "waterway",
+    "military", "industrial",
+})
+
 
 def is_kept_name_variant(key: str) -> bool:
     """True for the `name:xx` variants worth keeping (see the note above)."""

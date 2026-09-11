@@ -80,6 +80,7 @@ EXTRACTION_CONFIG_KEYS = (
     "extraction.model",
     "extraction.prompt_type",
     "extraction.pinhole_resolution",
+    "extraction.pinhole_pitch_deg",
     "extraction.media_resolution",
     "extraction.thinking_level",
     "execution.llm_transport",
@@ -242,9 +243,10 @@ def _validate_schema(value: Any, schema: Mapping[str, Any],
         raise ValueError(f"{where} must be <= {schema['maximum']}")
 
 
-def _provider_prediction_to_canonical(value: Any) -> dict[str, Any]:
+def _provider_prediction_to_canonical(
+        value: Any, schema: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the provider schema and normalize yaw strings for ingest."""
-    _validate_schema(value, prompts.response_schema())
+    _validate_schema(value, schema)
     # JSON round-trip detaches the returned payload before normalization.
     prediction = json.loads(artifact.canonical_json_bytes(value))
     for landmark_index, landmark in enumerate(prediction["landmarks"]):
@@ -267,7 +269,8 @@ def _provider_prediction_to_canonical(value: Any) -> dict[str, Any]:
     return prediction
 
 
-def _validate_canonical_prediction(value: Any) -> dict[str, Any]:
+def _validate_canonical_prediction(
+        value: Any, schema: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the exact prediction shape consumed by ``dataset.run_ingest``."""
     try:
         prediction = json.loads(artifact.canonical_json_bytes(value))
@@ -308,27 +311,38 @@ def _validate_canonical_prediction(value: Any) -> dict[str, Any]:
             except (KeyError, TypeError) as error:
                 raise ValueError(f"{where} has invalid coordinates") from error
             box["yaw_angle"] = str(yaw)
-    _validate_schema(schema_view, prompts.response_schema())
+    _validate_schema(schema_view, schema)
     return prediction
 
 
-def validate_response(key: str, response: Mapping[str, Any]) -> dict[str, Any]:
-    """LLM lifecycle validator for one extraction response."""
-    del key
-    candidates = response.get("candidates")
-    if not isinstance(candidates, list) or len(candidates) != 1:
-        raise ValueError("response must contain exactly one candidate")
-    candidate = candidates[0]
-    content = candidate.get("content") if isinstance(candidate, Mapping) else None
-    parts = content.get("parts") if isinstance(content, Mapping) else None
-    if not isinstance(parts, list) or len(parts) != 1:
-        raise ValueError("response candidate must contain exactly one part")
-    part = parts[0]
-    text = part.get("text") if isinstance(part, Mapping) else None
-    if not isinstance(text, str) or not text:
-        raise ValueError("response part must contain non-empty JSON text")
-    payload = _strict_json_loads(text, "response text")
-    return _provider_prediction_to_canonical(payload)
+def _selected_schema(context: "ExtractionContext") -> dict[str, Any]:
+    return prompts.response_schema(context.selected["extraction.prompt_type"])
+
+
+def response_validator(schema: Mapping[str, Any]) -> llm_lifecycle.Validator:
+    """LLM lifecycle validator for extraction responses against one schema.
+
+    The schema is the one recorded in the request set, so a response is judged
+    by the contract it was requested under, not by whichever prompt is current.
+    """
+    def validate_response(key: str, response: Mapping[str, Any]
+                          ) -> dict[str, Any]:
+        del key
+        candidates = response.get("candidates")
+        if not isinstance(candidates, list) or len(candidates) != 1:
+            raise ValueError("response must contain exactly one candidate")
+        candidate = candidates[0]
+        content = candidate.get("content") if isinstance(candidate, Mapping) else None
+        parts = content.get("parts") if isinstance(content, Mapping) else None
+        if not isinstance(parts, list) or len(parts) != 1:
+            raise ValueError("response candidate must contain exactly one part")
+        part = parts[0]
+        text = part.get("text") if isinstance(part, Mapping) else None
+        if not isinstance(text, str) or not text:
+            raise ValueError("response part must contain non-empty JSON text")
+        payload = _strict_json_loads(text, "response text")
+        return _provider_prediction_to_canonical(payload, schema)
+    return validate_response
 
 
 def _selected_values(document: dict[str, Any]) -> dict[str, Any]:
@@ -347,6 +361,8 @@ def _validate_selected(selected: dict[str, Any]) -> None:
             (str,), choices=prompts.PROMPT_TYPES),
         "extraction.pinhole_resolution": build_config.ValueSpec(
             (int,), minimum=1),
+        "extraction.pinhole_pitch_deg": build_config.ValueSpec(
+            (int, float), minimum=-90.0, maximum=90.0),
         "extraction.media_resolution": build_config.ValueSpec(
             (str,), choices=prompts.MEDIA_RESOLUTIONS),
         "extraction.thinking_level": build_config.ValueSpec(
@@ -369,6 +385,14 @@ def _validate_selected(selected: dict[str, Any]) -> None:
     elif prefix is not None:
         raise build_config.InvalidConfigValue(
             "execution.batch_gcs_prefix must be null in on_demand mode")
+    prompt_type = selected["extraction.prompt_type"]
+    asserted_pitch = prompts.PROMPT_PITCH_DEG[prompt_type]
+    if float(selected["extraction.pinhole_pitch_deg"]) != float(asserted_pitch):
+        raise build_config.InvalidConfigValue(
+            f"extraction.pinhole_pitch_deg is "
+            f"{selected['extraction.pinhole_pitch_deg']!r} but prompt "
+            f"{prompt_type!r} describes faces rendered at {asserted_pitch} "
+            "deg; the render and the prompt must agree")
 
 
 def load_artifact_validation_context(
@@ -499,7 +523,23 @@ def _pinhole_config(context: ExtractionContext) -> dict[str, Any]:
     return paths_lib.pinhole_manifest_config(
         source_digests,
         resolution=context.selected["extraction.pinhole_resolution"],
-        panorama_keys=context.stems)
+        panorama_keys=context.stems,
+        pitch_deg=_selected_pitch_deg(context))
+
+
+def _selected_pitch_deg(context: "ExtractionContext") -> float:
+    return float(context.selected["extraction.pinhole_pitch_deg"])
+
+
+def _comparable_selected(recorded: Mapping[str, Any]) -> dict[str, Any]:
+    """A recorded extraction selection in today's key set.
+
+    Artifacts made before 2026-09-10 predate `extraction.pinhole_pitch_deg`;
+    their faces were level, so the value they had is 0.
+    """
+    comparable = dict(recorded)
+    comparable.setdefault("extraction.pinhole_pitch_deg", 0)
+    return comparable
 
 
 def _validate_manifest(path: Path, *, upstreams: Sequence[artifact.ArtifactRef],
@@ -536,13 +576,14 @@ def _sample_frame_indices(n_frames: int) -> tuple[int, ...]:
 
 
 def _expected_decoded_face(
-        panorama: np.ndarray, resolution: int, yaw_deg: int) -> np.ndarray:
+        panorama: np.ndarray, resolution: int, yaw_deg: int,
+        pitch_deg: float) -> np.ndarray:
     projected = panorama_to_pinhole.reproject_pinhole(
         panorama,
         (resolution, resolution),
         (FACE_FOV_RAD, FACE_FOV_RAD),
         yaw=math.radians(yaw_deg),
-        pitch=0.0,
+        pitch=math.radians(pitch_deg),
     )
     pixels = np.clip(projected * 255.0, 0, 255).astype(np.uint8)
     encoded = io.BytesIO()
@@ -578,7 +619,7 @@ def validate_pinhole_images(path: Path, context: ExtractionContext) -> None:
             face_path = path / frame.pano_stem / f"{face}.jpg"
             actual = _decode_pinhole_face(face_path, resolution)
             expected = _expected_decoded_face(
-                panorama, resolution, yaw_deg)
+                panorama, resolution, yaw_deg, _selected_pitch_deg(context))
             if not np.array_equal(actual, expected):
                 difference = np.abs(
                     actual.astype(np.int16) - expected.astype(np.int16))
@@ -634,6 +675,7 @@ def ensure_pinhole_artifact(
             resolution,
             resolution,
             num_workers=NUM_WORKERS,
+            pitch=math.radians(_selected_pitch_deg(context)),
         )
         validate_pinhole_images(builder.path, context)
     assert builder.artifact_ref is not None
@@ -647,6 +689,9 @@ def _request_media_settings(context: ExtractionContext) -> dict[str, Any]:
         "media_resolution": context.selected["extraction.media_resolution"],
         "thinking_level": context.selected["extraction.thinking_level"],
         "face_order": list(prompts.PINHOLE_FACES),
+        # Recorded only when pitched: level request sets predate the key.
+        **({"pinhole_pitch_deg": _selected_pitch_deg(context)}
+           if _selected_pitch_deg(context) else {}),
     }
 
 
@@ -659,7 +704,7 @@ def _request_set_matches(
             or value["model"] != context.selected["extraction.model"]
             or value["system_prompt"] != prompts.SYSTEM_PROMPTS[
                 context.selected["extraction.prompt_type"]]
-            or value["response_schema"] != prompts.response_schema()
+            or value["response_schema"] != _selected_schema(context)
             or value["media_settings"] != _request_media_settings(context)
             or value["input_digests"] != context.input_digests
             or request_set.upstreams != (pinhole_ref,)):
@@ -738,7 +783,7 @@ def build_request_set(
         model=context.selected["extraction.model"],
         system_prompt=prompts.SYSTEM_PROMPTS[
             context.selected["extraction.prompt_type"]],
-        response_schema=prompts.response_schema(),
+        response_schema=_selected_schema(context),
         media_settings=_request_media_settings(context),
         input_digests=context.input_digests,
         upstreams=(pinhole_ref,),
@@ -952,6 +997,7 @@ def pending_units(
     """Units without a valid response; duplicate valid responses fail closed."""
     expected = {unit.key for unit in request_set.units}
     valid = {key: 0 for key in expected}
+    validator = response_validator(request_set.to_dict()["response_schema"])
     for attempt in attempts:
         if attempt.request_set_fingerprint != request_set.fingerprint:
             raise llm_lifecycle.LlmLifecycleError(
@@ -968,7 +1014,7 @@ def pending_units(
             # during canonical compilation.
             response_value = attempt.to_dict()["response"]
             assert response_value is not None
-            validate_response(attempt.key, response_value)
+            validator(attempt.key, response_value)
         except Exception:
             continue
         valid[attempt.key] += 1
@@ -1157,10 +1203,11 @@ def predictions_bytes(
             result.key for result in results]:
         raise llm_lifecycle.IncompleteCoverageError(
             "canonical extraction results do not match request order")
+    schema = request_set.to_dict()["response_schema"]
     return b"".join(
         artifact.canonical_json_bytes({
             "key": result.key,
-            "prediction": _validate_canonical_prediction(result.result),
+            "prediction": _validate_canonical_prediction(result.result, schema),
         }) + b"\n"
         for result in results)
 
@@ -1177,7 +1224,7 @@ def _frame_config(
         "prompt_sha256": prompts.prompt_sha256(
             context.selected["extraction.prompt_type"]),
         "response_schema_sha256": artifact.sha256_json(
-            prompts.response_schema()),
+            _selected_schema(context)),
         "request_set_fingerprint": request_set.fingerprint,
         "request_artifact": _ref_identity(request_ref),
         "canonical_results_artifact": _ref_identity(result_ref),
@@ -1187,7 +1234,8 @@ def _frame_config(
     }
 
 
-def _read_predictions(path: Path, expected_keys: Sequence[str]) -> list[dict]:
+def _read_predictions(path: Path, expected_keys: Sequence[str],
+                      schema: Mapping[str, Any]) -> list[dict]:
     records = []
     with path.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
@@ -1199,7 +1247,7 @@ def _read_predictions(path: Path, expected_keys: Sequence[str]) -> list[dict]:
                 raise ValueError(
                     f"{path}:{line_number}: expected exact keys key, prediction")
             value["prediction"] = _validate_canonical_prediction(
-                value["prediction"])
+                value["prediction"], schema)
             records.append(value)
     keys = [record["key"] for record in records]
     if keys != list(expected_keys) or len(keys) != len(set(keys)):
@@ -1389,7 +1437,7 @@ def _validate_existing_adopted_frame_artifact(
             or frame_config["prompt_sha256"] != prompts.prompt_sha256(
                 context.selected["extraction.prompt_type"])
             or frame_config["response_schema_sha256"]
-                != artifact.sha256_json(prompts.response_schema())
+                != artifact.sha256_json(_selected_schema(context))
             or frame_config["coverage"] != "complete"
             or frame_config["n_expected"] != len(context.frames)
             or frame_config["n_successful"] != len(context.frames)
@@ -1512,7 +1560,8 @@ def _validate_existing_adopted_frame_artifact(
     if prediction_path.read_bytes() != expected_predictions:
         raise ValueError(
             "adopted frame predictions differ from canonical results")
-    _read_predictions(prediction_path, context.stems)
+    _read_predictions(prediction_path, context.stems,
+                      _selected_schema(context))
     expected_frame_config = {
         "purpose": "frame_landmark_extraction",
         "orchestration": context.orchestration,
@@ -1520,7 +1569,7 @@ def _validate_existing_adopted_frame_artifact(
         "prompt_sha256": prompts.prompt_sha256(
             context.selected["extraction.prompt_type"]),
         "response_schema_sha256": artifact.sha256_json(
-            prompts.response_schema()),
+            _selected_schema(context)),
         "request_set_fingerprint": fingerprint,
         "request_artifact": _ref_identity(request_ref),
         "canonical_results_artifact": _ref_identity(result_ref),
@@ -1580,11 +1629,12 @@ def validate_existing_frame_artifact(
         raise ValueError(f"{destination} has an invalid manifest config shape")
     if (config["orchestration"] != context.orchestration
             or config["build_identity"] != context.document["build_identity"]
-            or config["selected_config"] != context.selected
+            or _comparable_selected(config["selected_config"])
+                != context.selected
             or config["prompt_sha256"] != prompts.prompt_sha256(
                 context.selected["extraction.prompt_type"])
             or config["response_schema_sha256"] != artifact.sha256_json(
-                prompts.response_schema())
+                _selected_schema(context))
             or config["coverage"] != "complete"
             or config["n_expected"] != len(context.frames)
             or config["n_successful"] != len(context.frames)
@@ -1659,7 +1709,8 @@ def validate_existing_frame_artifact(
     if prediction_path.read_bytes() != expected_predictions:
         raise ValueError(
             "frame predictions differ from canonical results")
-    _read_predictions(prediction_path, context.stems)
+    _read_predictions(prediction_path, context.stems,
+                      _selected_schema(context))
     _validate_manifest(
         destination, upstreams=(pinhole_ref, result_ref),
         config=_frame_config(
@@ -1742,7 +1793,8 @@ def run(args: argparse.Namespace, *, arguments: Sequence[str] = ()) \
         args, request_set, pending, work_dir, attempts_dir)
     attempts = _attempts(attempts_dir)
     results = llm_lifecycle.compile_canonical_results(
-        request_set, attempts, validate_response)
+        request_set, attempts,
+        response_validator(request_set.to_dict()["response_schema"]))
     result_ref = ensure_result_artifact(
         args, context, request_set, request_ref, results, work_dir,
         arguments=arguments)
