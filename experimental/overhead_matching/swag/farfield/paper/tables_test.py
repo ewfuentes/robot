@@ -6,7 +6,7 @@ from pathlib import Path
 from experimental.overhead_matching.swag.farfield.paper import dataset_table
 from experimental.overhead_matching.swag.farfield.paper import results_table
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
-    DATASET_GROUPS,
+    TABLE_GROUPS,
 )
 
 
@@ -26,7 +26,7 @@ class DatasetTableTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_dirs = []
-            for group_index, group in enumerate(DATASET_GROUPS, start=1):
+            for group_index, group in enumerate(TABLE_GROUPS, start=1):
                 for sequence_index, sequence in enumerate(group.sequences):
                     _write_json(
                         root / "datasets" / sequence / "pipeline_metadata.json",
@@ -37,7 +37,7 @@ class DatasetTableTest(unittest.TestCase):
                             **(
                                 {"video": {"sync": {"source_video_start_utc":
                                     f"2026-08-{group_index:02d}T12:00:00Z"}}}
-                                if group.key == "boston_snowy"
+                                if group.key == "pohang"
                                 else {"capture_date": f"2026-08-{group_index:02d}"}
                             ),
                             "resolution": "100x50",
@@ -94,8 +94,8 @@ class DatasetTableTest(unittest.TestCase):
             self.assertAlmostEqual(rows[0].trajectory_km, 4.5)
             self.assertEqual(rows[0].map_landmarks, 100)
             self.assertEqual(rows[0].prior_areas_km2, (1000.0, 1001.0, 1002.0))
-            self.assertEqual(rows[-1].capture_date, "2026-08-06")
-            self.assertEqual(rows[-1].prior_areas_km2, (6000.0,))
+            self.assertEqual(rows[-1].capture_date, "2026-08-05")
+            self.assertEqual(rows[-1].prior_areas_km2, (5000.0, 5001.0, 5002.0))
             rendered = dataset_table.render_dataset_table(rows)
             self.assertIn("Mt. Washington", rendered)
             self.assertIn("3 / 30", rendered)
@@ -103,7 +103,7 @@ class DatasetTableTest(unittest.TestCase):
             self.assertIn("Area (km$^2$)", rendered)
             self.assertIn("MSM Sources", rendered)
             self.assertIn("1,002", rendered)
-            self.assertEqual(rendered.count(" \\\\"), 7)
+            self.assertEqual(rendered.count(" \\\\"), 6)
 
 
 class ResultsTableTest(unittest.TestCase):
@@ -214,7 +214,7 @@ class ResultsTableTest(unittest.TestCase):
                 results_table.load_localization_results(
                     [runs[0]], {dataset}, {0}, method="no_range")
 
-            group = DATASET_GROUPS[0]
+            group = TABLE_GROUPS[0]
             method_values = {
                 "crosslocate": (0.1, 0.6),
                 "loci": (0.2, 0.4),
@@ -283,7 +283,7 @@ class ResultsTableTest(unittest.TestCase):
     def test_rejects_duplicate_results_for_a_sequence(self):
         with tempfile.TemporaryDirectory() as directory:
             experiment_dir = Path(directory)
-            dataset = DATASET_GROUPS[0].sequences[0]
+            dataset = TABLE_GROUPS[0].sequences[0]
             first = self._make_run(experiment_dir, dataset, 0.4, 1)
             duplicate = self._make_run(
                 experiment_dir, dataset, 0.5, 1, suffix="_duplicate")

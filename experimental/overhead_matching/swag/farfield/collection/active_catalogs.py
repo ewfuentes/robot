@@ -129,21 +129,25 @@ ACTIVE_SCOPES = (
         enc_state=None,
     ),
     ActiveCatalogScope(
+        # leg2 and the full drive were archived on 2026-09-10; the published
+        # stage3_f4a5761 full catalogs record the three-leg plan they were
+        # fetched with in their own manifests. New clip plans centre on leg1.
         name="franconia_20260829",
-        output_datasets=(
-            "franconia_leg1",
-            "franconia_leg2",
-            "franconia_drive",
-        ),
-        bbox_datasets=(
-            "franconia_leg1",
-            "franconia_leg2",
-            "franconia_drive",
-        ),
+        output_datasets=("franconia_leg1",),
+        bbox_datasets=("franconia_leg1",),
         osm_specs=(
             "north-america/us/new-hampshire-latest.osm.pbf",
             "north-america/us/vermont-latest.osm.pbf",
         ),
+        enc_state=None,
+    ),
+    ActiveCatalogScope(
+        # Registered 2026-09-10 so clip plans can be rebuilt; the published
+        # osm_20260903 catalogs record the same terms in their manifests.
+        name="flevoland_polder_20250111",
+        output_datasets=("flevoland_polder",),
+        bbox_datasets=("flevoland_polder",),
+        osm_specs=("europe/netherlands-latest.osm.pbf",),
         enc_state=None,
     ),
     ActiveCatalogScope(

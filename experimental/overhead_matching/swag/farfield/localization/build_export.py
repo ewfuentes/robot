@@ -501,6 +501,36 @@ def uninformative_tables(tracklet_ids: set[str], default_log_lr: float,
         status="fast") for tracklet_id in sorted(tracklet_ids)]
 
 
+def _prior_region(catalog_manifest: artifact.ArtifactManifest,
+                  anchor_lat: float, anchor_lon: float) -> dict:
+    """The uniform prior's box: the region the trimmed catalog was clipped to.
+
+    Expressed in the export's ENU frame as the bounding box of the four
+    WGS84 corners. A catalog without a recorded region cannot bound a prior.
+    """
+    bbox = catalog_manifest.config.get("region_bbox_wsen")
+    if (not isinstance(bbox, list) or len(bbox) != 4
+            or not all(isinstance(v, (int, float)) and math.isfinite(v)
+                       for v in bbox)):
+        raise LocalizationInputError(
+            f"catalog {catalog_manifest.version!r} records no "
+            "region_bbox_wsen; re-trim it with the current trim_catalog so "
+            "the uniform prior has a declared region")
+    west, south, east, north = map(float, bbox)
+    frame = geo.RegionFrame(anchor_lat, anchor_lon)
+    east_m, north_m = frame.enu_from_latlon(
+        np.asarray([south, south, north, north]),
+        np.asarray([west, east, east, west]))
+    return {
+        "source": f"catalogs.{catalog_manifest.config.get('region_source')}",
+        "bbox_wsen": [west, south, east, north],
+        "east_min_m": float(east_m.min()),
+        "east_max_m": float(east_m.max()),
+        "north_min_m": float(north_m.min()),
+        "north_max_m": float(north_m.max()),
+    }
+
+
 def landmark_entries(catalog_path: Path, anchor_lat: float, anchor_lon: float,
                      position_sigma_m: float) -> list[structs.LandmarkEntry]:
     """Load the whole catalog with one uniform explicit map uncertainty."""
@@ -872,6 +902,8 @@ def build(args) -> artifact.ArtifactRef:
     max_visible_range_m = _finite(
         _config(document, "localization_inputs.max_visible_range_m"),
         "max_visible_range_m", positive=True)
+    prior_region = _prior_region(
+        artifact.load_manifest(args.catalog_dir), anchor_lat, anchor_lon)
     nominal_meta = _nominal_forward_meta(
         args.nominal_forward_calibration, calibration)
     meta = {
@@ -886,6 +918,7 @@ def build(args) -> artifact.ArtifactRef:
         "matching_coverage": "complete",
         "max_visible_range_m": max_visible_range_m,
         "landmark_position_sigma_m": position_sigma_m,
+        "prior_region": prior_region,
         "nominal_forward": nominal_meta,
         "motion": {
             "file": "motion_source.csv",

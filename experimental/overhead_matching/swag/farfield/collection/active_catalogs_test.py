@@ -94,9 +94,13 @@ class ActiveCatalogsTest(unittest.TestCase):
             [scope.name for scope in subject.ACTIVE_SCOPES],
             ["boston_harbor_20260712", "charles_river_20260727",
              "mount_washington_20260815", "franconia_20260829",
-             "pohang_canal_04", "portland_flight_20260906"])
-        (boston, charles, washington, franconia, pohang,
+             "flevoland_polder_20250111", "pohang_canal_04",
+             "portland_flight_20260906"])
+        (boston, charles, washington, franconia, flevoland, pohang,
          portland) = subject.ACTIVE_SCOPES
+        self.assertEqual(flevoland.output_datasets, ("flevoland_polder",))
+        self.assertEqual(flevoland.osm_specs,
+                         ("europe/netherlands-latest.osm.pbf",))
         self.assertEqual(boston.output_datasets, (
             "boston_harbor_leg1", "boston_harbor_leg2",
             "boston_harbor_leg3"))
@@ -106,8 +110,7 @@ class ActiveCatalogsTest(unittest.TestCase):
             "north-america/us/new-hampshire-latest.osm.pbf",
             "north-america/us/maine-latest.osm.pbf"))
         self.assertIsNone(washington.enc_state)
-        self.assertEqual(franconia.output_datasets, (
-            "franconia_leg1", "franconia_leg2", "franconia_drive"))
+        self.assertEqual(franconia.output_datasets, ("franconia_leg1",))
         self.assertEqual(franconia.output_datasets, franconia.bbox_datasets)
         self.assertEqual(franconia.osm_specs, (
             "north-america/us/new-hampshire-latest.osm.pbf",

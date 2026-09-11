@@ -13,7 +13,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics as metrics_lib,
 )
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
-    DATASET_GROUPS,
+    TABLE_GROUPS,
     DEFAULT_FARFIELD_ROOT,
     FULL_METHOD_RUN_SPECS,
     DatasetGroup,
@@ -42,7 +42,6 @@ SEQUENCE_DISPLAY_NAMES = {
     "boston_harbor_leg1": "Boston Harbor, leg 1",
     "boston_harbor_leg2": "Boston Harbor, leg 2",
     "boston_harbor_leg3": "Boston Harbor, leg 3",
-    "boston_snowy": "Boston Snowy",
 }
 
 # LOCI's corrected float64-truth runs for the original sequences are v3. The
@@ -62,7 +61,7 @@ LOCI_VERSIONS = {
     },
     **{
         sequence: "paper_sigmas_full_leg_mass100_500_v1"
-        for sequence in ("pohang_canal_04", "flevoland_polder", "boston_snowy")
+        for sequence in ("pohang_canal_04", "flevoland_polder")
     },
 }
 
@@ -329,8 +328,6 @@ def load_default_results(
         (runs / "260828_imu_baseline", "boston_harbor_*_imu_seed[0-3]--tracks-*"),
         (runs / "260828_imu_baseline", "charles_river_*_imu_seed[0-3]--tracks-*"),
         (runs / "260902_pohang_matching", "pohang_canal_04_baseline_seed[0-3]--tracks-*"),
-        (runs / "260903_boston_flevoland_osmv2", "boston_snowy_*_seed[01]--tracks-*"),
-        (runs / "260904_range_cap", "boston_snowy_osmv2_base_seed[23]--tracks-*"),
         (runs / "260903_boston_flevoland_osmv2", "flevoland_polder_*_pro_v1_seed[01]--tracks-*"),
         (runs / "260904_range_cap", "flevoland_polder_pro_base_seed[23]--tracks-*"),
     ))
@@ -363,7 +360,7 @@ def _format_value(estimate: Estimate | None, *, bold: bool = False) -> str:
 
 def render_results_table(
     results: dict[str, dict[str, dict[float, Estimate]]],
-    groups: Sequence[DatasetGroup] = DATASET_GROUPS,
+    groups: Sequence[DatasetGroup] = TABLE_GROUPS,
     radii_m: Sequence[float] = DEFAULT_RADII_M,
 ) -> str:
     method_headers = [header for _, header in METHODS]

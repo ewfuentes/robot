@@ -4,6 +4,15 @@ py_library(
 )
 
 py_binary(
+    name = "check_roster",
+    srcs = ["check_roster.py"],
+    deps = [
+        ":table_common",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_binary(
     name = "dataset_table",
     srcs = ["dataset_table.py"],
     deps = [":table_common"],

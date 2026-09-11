@@ -60,6 +60,7 @@ from types import MappingProxyType
 
 import geopandas as gpd
 import numpy as np
+import shapely
 
 from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield import geometry as geo
@@ -90,12 +91,19 @@ CLIP_SCOPE_POLICY_SCHEMA = "farfield.catalog_clip_scope_policy/v1"
 CLIP_SCOPE_POLICY_KEYS = frozenset({
     "schema", "minimum_area_floor_km2", "require_reviewed_bbox_plan",
 })
+_AREA625_POLICY = MappingProxyType({
+    "schema": CLIP_SCOPE_POLICY_SCHEMA,
+    "minimum_area_floor_km2": 625.0,
+    "require_reviewed_bbox_plan": True,
+})
+# Every scope whose paper region is the reviewed 625 km^2 clip plan. Scopes
+# absent here (mountain, canal, airborne) are not clipped: their region is
+# the full catalog's fetch bbox.
 TRUSTED_CLIP_SCOPE_POLICY_BY_NAME = MappingProxyType({
-    "boston_harbor_20260712": MappingProxyType({
-        "schema": CLIP_SCOPE_POLICY_SCHEMA,
-        "minimum_area_floor_km2": 625.0,
-        "require_reviewed_bbox_plan": True,
-    }),
+    "boston_harbor_20260712": _AREA625_POLICY,
+    "charles_river_20260727": _AREA625_POLICY,
+    "flevoland_polder_20250111": _AREA625_POLICY,
+    "franconia_20260829": _AREA625_POLICY,
 })
 CLIP_PLAN_KEYS = frozenset({
     "schema", "scope", "output_dataset", "bbox_datasets",
@@ -425,22 +433,84 @@ def _validate_track_bbox_wsen(value) -> tuple[float, float, float, float]:
     return west, south, east, north
 
 
-def clip_bbox_mask(
-        gdf: gpd.GeoDataFrame,
-        bbox_wsen: tuple[float, float, float, float],
-) -> np.ndarray:
-    """True where a row's representative point is inside ``bbox_wsen``.
+def full_catalog_bbox_wsen(input_ref: artifact.ArtifactRef) -> tuple:
+    """The fetch bbox of the full catalog this trim input descends from.
 
-    Bounds are inclusive. Representative points match :func:`clip_mask` and
-    keep the decision stable for concave or multipart geometries whose
-    centroid may lie outside the feature.
+    Derived catalogs (added sources, earlier trims) may not restate it, so
+    walk their single CATALOGS upstream until a manifest records `bbox_wsen`.
+    """
+    ref = input_ref
+    seen = set()
+    while ref.manifest_digest not in seen:
+        seen.add(ref.manifest_digest)
+        manifest = artifact.load_manifest(ref.path)
+        bbox = manifest.config.get("bbox_wsen")
+        if bbox is not None:
+            return validate_bbox_wsen(bbox)
+        parents = [item for item in manifest.upstreams
+                   if item.kind == paths_lib.CATALOGS]
+        if len(parents) != 1:
+            break
+        ref = parents[0]
+    raise ValueError(
+        f"no catalog in the lineage of {input_ref.version!r} records its "
+        "fetch bbox_wsen; the region cannot be resolved")
+
+
+def region_bbox_for(input_ref: artifact.ArtifactRef, resolved_bbox,
+                    clip_km, clip_center_lat, clip_center_lon
+                    ) -> tuple[str, tuple[float, float, float, float]]:
+    """(source, bbox_wsen) of the region every output geometry is clipped to.
+
+    This is the box the uniform localization prior spans, so it is recorded
+    on the trimmed catalog and read back by `localization:build_export`.
+    """
+    if resolved_bbox is not None:
+        return "clip_bbox_wsen", tuple(resolved_bbox)
+    if clip_km is not None:
+        half = clip_km * 1000.0 / 2.0
+        frame = geo.RegionFrame(clip_center_lat, clip_center_lon)
+        lat, lon = frame.latlon_from_enu(
+            np.asarray([-half, half, half, -half]),
+            np.asarray([-half, -half, half, half]))
+        return "metric_square", validate_bbox_wsen(
+            (float(lon.min()), float(lat.min()),
+             float(lon.max()), float(lat.max())))
+    return "full_catalog_bbox_wsen", full_catalog_bbox_wsen(input_ref)
+
+
+def _dominant_parts(geometry):
+    """Reduce a mixed-dimension intersection to its highest-dimension parts."""
+    if geometry.geom_type != "GeometryCollection":
+        return geometry
+    parts = shapely.get_parts(geometry)
+    if not len(parts):
+        return geometry
+    dims = shapely.get_dimensions(parts)
+    return shapely.union_all(parts[dims == dims.max()])
+
+
+def clip_geometry(gdf: gpd.GeoDataFrame,
+                  bbox_wsen) -> tuple[gpd.GeoSeries, np.ndarray, int]:
+    """Clip every geometry to the region box.
+
+    Returns (clipped geometries, mask of rows left with no geometry inside
+    the box, number of rows whose geometry was actually cut). OSM selects a
+    way or relation by any in-bbox vertex, so pipelines, rivers, and power
+    lines reach tens of kilometres past the box; their centroids would
+    otherwise widen the prior derived from this catalog. Rows fully inside
+    are returned untouched, byte for byte.
     """
     west, south, east, north = validate_bbox_wsen(bbox_wsen)
-    point = gdf.geometry.representative_point()
-    lon = np.asarray(point.x)
-    lat = np.asarray(point.y)
-    return ((west <= lon) & (lon <= east)
-            & (south <= lat) & (lat <= north))
+    box = shapely.box(west, south, east, north)
+    geoms = np.asarray(gdf.geometry.values, dtype=object)
+    inside = shapely.covers(box, geoms)
+    clipped = geoms.copy()
+    cut = shapely.intersection(geoms[~inside], box)
+    clipped[~inside] = [_dominant_parts(item) for item in cut]
+    empty = shapely.is_empty(clipped)
+    n_clipped = int((~inside & ~empty).sum())
+    return gpd.GeoSeries(clipped, index=gdf.index, crs=gdf.crs), empty, n_clipped
 
 
 def _finite_plan_number(value, field: str, *, minimum=0.0,
@@ -1078,8 +1148,16 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
                              "make the catalog impossible to reproduce")
         masks["outside_clip_box"] = ~clip_mask(gdf, clip_center_lat,
                                                clip_center_lon, clip_km)
-    if resolved_bbox is not None:
-        masks["outside_clip_bbox"] = ~clip_bbox_mask(gdf, resolved_bbox)
+    try:
+        region_source, region_bbox = region_bbox_for(
+            input_ref, resolved_bbox, clip_km, clip_center_lat,
+            clip_center_lon)
+    except (ValueError, artifact.ArtifactError) as exc:
+        raise SystemExit(f"cannot resolve the catalog region: {exc}") from exc
+    clipped_geometry, masks["outside_region"], n_geometry_clipped = \
+        clip_geometry(gdf, region_bbox)
+    print(f"region ({region_source}): {list(region_bbox)}; "
+          f"{n_geometry_clipped} geometries cut at its edge")
 
     dropped = np.zeros(len(gdf), dtype=bool)
     for mask in masks.values():
@@ -1174,7 +1252,7 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
         print("\n(dry run: nothing written)")
         return gdf
 
-    out = gdf[kept].reset_index(drop=True)
+    out = gdf.set_geometry(clipped_geometry)[kept].reset_index(drop=True)
     unique_guard_refs = []
     for reference in guard_refs:
         if reference not in unique_guard_refs:
@@ -1191,6 +1269,10 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
                            if resolved_bbox is not None else None),
         "clip_plan": clip_plan,
         "clip_plan_digest": clip_plan_digest,
+        # The box every geometry is clipped to and the uniform prior spans.
+        "region_source": region_source,
+        "region_bbox_wsen": list(region_bbox),
+        "geometry_clipped_rows": n_geometry_clipped,
         "clip_plan_source_verification": clip_plan_sources,
         "rows_in": int(len(gdf)),
         "rows_out": int(kept.sum()),
@@ -1248,6 +1330,37 @@ def main(input_catalog_dir: Path, output_dir: Path, positive_set_path,
     return out
 
 
+def write_clip_plan(args) -> int:
+    """Author a clip plan from the live scope tables and print its terms."""
+    missing = [name for name in ("scope", "nominal_buffer_km",
+                                 "minimum_buffer_km", "minimum_area_km2",
+                                 "farfield_root")
+               if getattr(args, name) is None]
+    if missing:
+        raise SystemExit(
+            "--build_clip_plan needs " + ", ".join(f"--{m}" for m in missing))
+    if args.build_clip_plan.exists():
+        raise SystemExit(f"{args.build_clip_plan} already exists")
+    try:
+        input_ref, _ = open_catalog_artifact(args.input_catalog_dir)
+        plan = build_clip_plan(
+            scope_name=args.scope, output_dataset=input_ref.dataset,
+            farfield_root=args.farfield_root,
+            nominal_buffer_km=args.nominal_buffer_km,
+            minimum_buffer_km=args.minimum_buffer_km,
+            minimum_area_km2=args.minimum_area_km2)
+    except (artifact.ArtifactError, ValueError) as exc:
+        raise SystemExit(f"cannot build clip plan: {exc}") from exc
+    args.build_clip_plan.write_text(json.dumps(plan, indent=2, sort_keys=True))
+    bbox = " ".join(repr(value) for value in plan["bbox_wsen"])
+    print(f"wrote {args.build_clip_plan}\n"
+          f"  --clip_bbox_wsen {bbox}\n"
+          f"  --expected_clip_plan_digest {artifact.sha256_json(plan)}\n"
+          f"  resolved buffer {plan['policy']['resolved_buffer_km']:.3f} km, "
+          f"area {plan['policy']['resolved_area_km2']:.1f} km^2")
+    return 0
+
+
 def cli(argv=None) -> int:
     """Command-line entry point; :func:`main` remains the typed Python API."""
     parser = argparse.ArgumentParser(
@@ -1303,7 +1416,22 @@ def cli(argv=None) -> int:
         "--expected_clip_plan_digest", default=None,
         help="required canonical JSON SHA-256 when --clip_plan is supplied")
     parser.add_argument("--dry_run", action="store_true")
+    plan_group = parser.add_argument_group(
+        "clip plan authoring",
+        "write the reviewed clip plan for --input_catalog_dir's dataset and "
+        "print the --clip_bbox_wsen / --expected_clip_plan_digest a trim "
+        "then needs; nothing is trimmed")
+    plan_group.add_argument("--build_clip_plan", type=Path, default=None,
+                            metavar="PLAN_JSON")
+    plan_group.add_argument("--scope", default=None,
+                            help="active catalog scope name")
+    plan_group.add_argument("--nominal_buffer_km", type=float, default=None)
+    plan_group.add_argument("--minimum_buffer_km", type=float, default=None)
+    plan_group.add_argument("--minimum_area_km2", type=float, default=None)
     args = parser.parse_args(argv)
+
+    if args.build_clip_plan is not None:
+        return write_clip_plan(args)
 
     main(args.input_catalog_dir, args.output_dir, args.positive_set,
          args.min_building_area_m2, args.min_building_levels, args.dry_run,

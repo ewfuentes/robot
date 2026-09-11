@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
-    DATASET_GROUPS,
+    TABLE_GROUPS,
     DEFAULT_FARFIELD_ROOT,
     FULL_METHOD_RUN_SPECS,
     DatasetGroup,
@@ -127,7 +127,7 @@ def _capture_date(metadata: dict, metadata_path: Path) -> str:
 def collect_dataset_statistics(
     farfield_root: Path,
     catalog_version: str | None = None,
-    groups: Sequence[DatasetGroup] = DATASET_GROUPS,
+    groups: Sequence[DatasetGroup] = TABLE_GROUPS,
     localization_run_dirs: Sequence[Path] | None = None,
 ) -> list[DatasetStatistics]:
     """Load and aggregate the paper datasets.

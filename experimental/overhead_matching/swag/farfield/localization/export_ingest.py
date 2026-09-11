@@ -65,6 +65,16 @@ _REDUCER_KEYS = frozenset({
 })
 
 
+class PriorRegion(msgspec.Struct, forbid_unknown_fields=True):
+    """The declared region the uniform prior spans, from the catalog."""
+    source: str
+    bbox_wsen: list[float]
+    east_min_m: float
+    east_max_m: float
+    north_min_m: float
+    north_max_m: float
+
+
 class ExportMeta(msgspec.Struct, forbid_unknown_fields=True):
     schema_version: str
     message_schema_version: str
@@ -80,6 +90,9 @@ class ExportMeta(msgspec.Struct, forbid_unknown_fields=True):
     nominal_forward: dict
     motion: dict
     reducer: dict
+    # Exports that predate the recorded region read as None; a uniform-prior
+    # run then refuses rather than deriving a box from catalog row extents.
+    prior_region: PriorRegion | None = None
 
 
 @dataclasses.dataclass
@@ -290,6 +303,8 @@ def load(export_dir: Path, *, expected_dataset: str | None = None) \
     _finite(meta.max_visible_range_m, "max_visible_range_m", positive=True)
     _finite(meta.landmark_position_sigma_m,
             "landmark_position_sigma_m", positive=True)
+    if meta.prior_region is not None:
+        _validate_prior_region(meta.prior_region)
     if meta.matching_coverage != "complete" \
             or manifest.config.get("matching_coverage") != "complete":
         raise ValueError("localization input requires complete matching coverage")
@@ -486,8 +501,41 @@ def validate(data: ExportData) -> None:
                          + "\n  - ".join(problems))
 
 
+def _validate_prior_region(region: PriorRegion) -> None:
+    if not isinstance(region.source, str) or not region.source:
+        raise ValueError("prior_region.source must be non-empty")
+    if len(region.bbox_wsen) != 4 or not all(
+            isinstance(v, (int, float)) and math.isfinite(v)
+            for v in region.bbox_wsen):
+        raise ValueError("prior_region.bbox_wsen must be four finite numbers")
+    for name in ("east_min_m", "east_max_m", "north_min_m", "north_max_m"):
+        _finite(getattr(region, name), f"prior_region.{name}")
+    if (region.east_min_m >= region.east_max_m
+            or region.north_min_m >= region.north_max_m):
+        raise ValueError("prior_region box is empty or inverted")
+
+
+def prior_box(data: ExportData, margin_m: float) -> structs.UniformBoxInit:
+    """The uniform prior: the catalog's declared region, padded by margin_m."""
+    margin_m = _finite(margin_m, "margin_m")
+    if margin_m < 0.0:
+        raise ValueError("margin_m must be nonnegative")
+    region = data.meta.prior_region
+    if region is None:
+        raise ValueError(
+            "this localization export records no prior_region; rebuild "
+            "localization_inputs from a catalog that records region_bbox_wsen "
+            "(trim_catalog) so the prior is the declared region, not the "
+            "catalog rows' extent")
+    return structs.UniformBoxInit(
+        east_min_m=region.east_min_m - margin_m,
+        east_max_m=region.east_max_m + margin_m,
+        north_min_m=region.north_min_m - margin_m,
+        north_max_m=region.north_max_m + margin_m)
+
+
 def region_box(data: ExportData, margin_m: float) -> structs.UniformBoxInit:
-    """A uniform prior spanning everything the catalog could explain."""
+    """The box spanned by the catalog rows themselves (diagnostic only)."""
     margin_m = _finite(margin_m, "margin_m")
     if margin_m < 0.0:
         raise ValueError("margin_m must be nonnegative")

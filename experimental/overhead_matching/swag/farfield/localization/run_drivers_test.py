@@ -67,7 +67,12 @@ def tiny_export(input_dir: Path, build_identity: str, input_contract: dict) \
             "approved_at": "2026-08-23T00:00:00Z",
         },
         motion={"course_heading_status": "gps_course_diagnostic_only"},
-        reducer={"name": "epoch_fused_compat_v1"})
+        reducer={"name": "epoch_fused_compat_v1"},
+        prior_region=export_ingest.PriorRegion(
+            source="catalogs.clip_bbox_wsen",
+            bbox_wsen=[-71.06, 42.34, -71.04, 42.36],
+            east_min_m=-500.0, east_max_m=1500.0,
+            north_min_m=-500.0, north_max_m=1500.0))
     reference = artifact.ArtifactRef(
         kind=paths_lib.LOCALIZATION_INPUTS,
         dataset=DATASET,
