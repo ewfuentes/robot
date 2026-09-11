@@ -225,8 +225,11 @@ def _dirs(path: Path) -> list[Path]:
     for entry in path.iterdir():
         if entry.name.startswith("."):
             continue
-        if entry.is_symlink() and entry.is_dir():
-            raise IndexRefreshError(f"refusing symlink directory: {entry}")
+        # A directory symlink placed inside the root by its owner redirects
+        # storage (raw_material/portland_flight_videos -> /more_data) and is
+        # followed; only the root itself may not be a symlink
+        # (_require_directory). A dangling link is not a directory and is
+        # skipped like any other non-directory entry.
         if entry.is_dir():
             directories.append(entry)
     return sorted(directories, key=lambda entry: entry.name)

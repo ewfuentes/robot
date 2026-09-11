@@ -431,14 +431,13 @@ class FarfieldPaths:
             raise MissingInput(
                 f"{self.metadata_path} video.source_video must be a normalized "
                 "root-relative path")
-        candidate = self.root / path
-        try:
-            candidate.resolve(strict=False).relative_to(self.root.resolve())
-        except ValueError as exc:
-            raise MissingInput(
-                f"{self.metadata_path} video.source_video escapes farfield root") \
-                from exc
-        return candidate
+        # The parts check above is the escape guard: a normalised relative path
+        # cannot leave the root. Symlinks are deliberately NOT resolved here: a
+        # collection directory under raw_material/ may be a symlink onto another
+        # disk (portland_flight_videos -> /more_data), and that redirection was
+        # placed inside the root by its owner. The file itself must still be a
+        # regular file (pipeline._source_video_inputs refuses symlinked files).
+        return self.root / path
 
     @property
     def sam2_checkpoint(self) -> Path:

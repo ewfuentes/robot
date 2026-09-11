@@ -668,3 +668,64 @@ py_test(
         FARFIELD + "/catalog:schema",
     ],
 )
+
+py_library(
+    name = "level_equirect_video_lib",
+    srcs = ["level_equirect_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+        ":anonymize_video_lib",
+        FARFIELD + ":artifact",
+        FARFIELD + ":code_provenance",
+        FARFIELD + ":geometry",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_binary(
+    name = "level_equirect_video",
+    srcs = ["level_equirect_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":level_equirect_video_lib"],
+)
+
+py_test(
+    name = "level_equirect_video_test",
+    srcs = ["level_equirect_video_test.py"],
+    deps = [
+        requirement("numpy"),
+        ":level_equirect_video_lib",
+        FARFIELD + ":geometry",
+    ],
+)
+
+py_library(
+    name = "extract_plan_frames_lib",
+    srcs = ["extract_plan_frames.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("opencv-python"),
+        FARFIELD + ":artifact",
+        FARFIELD + ":code_provenance",
+    ],
+)
+
+py_binary(
+    name = "extract_plan_frames",
+    srcs = ["extract_plan_frames.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":extract_plan_frames_lib"],
+)
+
+py_test(
+    name = "extract_plan_frames_test",
+    srcs = ["extract_plan_frames_test.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("opencv-python"),
+        ":extract_plan_frames_lib",
+        FARFIELD + ":artifact",
+    ],
+)

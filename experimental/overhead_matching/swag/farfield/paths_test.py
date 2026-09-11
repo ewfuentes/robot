@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -107,6 +108,24 @@ class ResolutionTest(unittest.TestCase):
                 p = self.paths_for(["--dataset", "boston_harbor_leg2"])
                 with self.assertRaises(paths_lib.MissingInput):
                     _ = p.video
+
+    def test_video_follows_a_collection_directory_symlink_inside_the_root(self):
+        # raw_material/<collection> may be a symlink onto another disk; the
+        # logical root-relative path is what the dataset declares and what
+        # every consumer opens.
+        outside = Path(tempfile.mkdtemp(prefix="farfield_outside_"))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (outside / "leg2_3fps.mp4").write_bytes(b"\x00")
+        (self.root / "raw_material").mkdir(exist_ok=True)
+        (self.root / "raw_material" / "collect").symlink_to(outside)
+        meta = self.root / "datasets" / "boston_harbor_leg2" / \
+            "pipeline_metadata.json"
+        meta.write_text(json.dumps({"video": {
+            "source_video": "raw_material/collect/leg2_3fps.mp4"}}))
+        p = self.paths_for(["--dataset", "boston_harbor_leg2"])
+        self.assertEqual(p.video, self.root / "raw_material" / "collect" /
+                         "leg2_3fps.mp4")
+        self.assertTrue(p.video.is_file())
 
     def test_require_lists_all_missing_at_once(self):
         p = self.paths_for(["--dataset", "boston_harbor_leg2"])

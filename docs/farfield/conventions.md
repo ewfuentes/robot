@@ -148,6 +148,7 @@ moment a panorama is missing).
 | `video_t_s` | seconds into the source video, carried **verbatim** through trims, never rebased (the charles_river 510 s incident) | `dataset_tools:trim_dataset`, audited by `audit_dataset`'s NCC check |
 | ENU | region-anchored, anchor = mean frame lat/lon (data-dependent by design; participates in catalog cache keys) | `geometry.RegionFrame`, `dataset.fill_enu` |
 | catalog positions | centroid for extended features; `bearing_span_from` returns the angular interval instead | `catalog/catalog.py` |
+| stored panorama attitude | **level**: the horizon lies on row H/2, so `el_up` in §1 is true elevation. A source whose export is not level is re-levelled per frame by a rotation about a **horizontal** axis only (yaw untouched); the applied roll/pitch travel with the dataset in `extraction_log.csv` and a leveling manifest | `dataset_tools/level_equirect_video.py` |
 
 ## Enforcement points
 

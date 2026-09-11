@@ -342,6 +342,55 @@ This writes `review_decision.json`, bound to the manifest hash. A rendered
 dataset with no approved decision is mechanically complete but remains
 privacy-review pending and must not be described as privacy-cleared.
 
+## Unlevel exports: `level_equirect_video`
+
+An export whose horizon is not on the equator row biases every bearing to a
+landmark below the horizon by about `tilt * tan|elevation|`; from an aircraft
+that is nearly every landmark and 2-6 degrees at the tilts GoPro Player's
+horizon lock left on the Portland flight. `dataset_tools:level_equirect_video`
+fits the horizon plane in every output frame (sky/ground boundary lifted to
+camera-frame unit vectors, RANSAC plane constrained to sit near elevation zero),
+gates single-frame fits against a running median and a re-detection on the
+levelled frame, interpolates gated frames from their neighbours, and resamples
+each frame by the minimal rotation that puts the plane on the equator. The
+rotation axis is horizontal, so yaw is untouched and the centre column stays the
+camera forward. It writes the 3 fps derivative that becomes
+`video.source_video`, a per-frame CSV of applied roll/pitch, a stacked
+before/after review video, and a manifest with source and output digests:
+
+```bash
+bazel run //experimental/overhead_matching/swag/farfield/dataset_tools:level_equirect_video -- \
+  --source /data/farfield_matching/raw_material/COLLECTION/legN_source.mp4 \
+  --output_dir /data/farfield_matching/raw_material/COLLECTION/processed/derivatives \
+  --name legN --output_fps 3 --encoder nvenc --device cuda
+```
+
+Level the whole source, not a clip, so `video_t_s` stays in source time. Watch
+the review video before planning frames: gated frames are labelled, and a fit
+that locks onto a shoreline or cloud underside is visible as a horizon that
+leaves the equator. Point the recording's `video` at the derivative; its media
+rate is then exactly `output_fps`.
+
+## Waived anonymization
+
+A collection whose frames cannot contain identifiable people or plates (aerial
+imagery from tens of metres up, after trimming the runway) does not run the
+person/plate workflow, and therefore never runs `prepare_selfcollect finalize`,
+which fails closed without an approved review. Instead:
+
+1. `prepare_selfcollect plan` as usual;
+2. `dataset_tools:extract_plan_frames --video <derivative> --plan <output_dir>/frames_gps.csv --output_dir <output_dir>`
+   writes the plan's JPEGs by one sequential decode and hashes each into
+   `extraction_manifest.json`;
+3. write `extra_metadata.json` by hand from `extra_metadata.base.json`: a `video`
+   block naming the derivative (root-relative path, SHA-256, media fps,
+   `anonymized: false`, `privacy_review_status: "waived_<reason>"`) and a
+   `collection_preprocessing.status` that says the waiver out loud;
+4. `ingest_selfcollect --extra_metadata` that file.
+
+The dataset then records that it was never anonymized. Do not describe it as
+privacy-cleared, and do not use this path for ground-level footage.
+
 ## Finalize and ingest
 
 After rendering **and recording an approved human review**, bind the anonymized

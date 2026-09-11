@@ -254,13 +254,22 @@ class RefreshTest(unittest.TestCase):
                                     "refusing symlink directory"):
             indexes.refresh(root_link)
 
+
+    def test_follows_directory_symlink_placed_inside_the_root(self):
+        # A collection or dataset stored on another disk and linked into the
+        # root by its owner is part of the root; only the root itself may not
+        # be a symlink.
         linked_target = Path(self.tmp.name) / "linked-target"
-        linked_target.mkdir()
+        frames = linked_target / "frames"
+        frames.mkdir(parents=True)
+        (frames / "f0000,42.0,-71.0,.jpg").write_bytes(b"jpeg")
+        (linked_target / "panorama").symlink_to(
+            "frames", target_is_directory=True)
         (self.root / "datasets" / "linked").symlink_to(
             linked_target, target_is_directory=True)
-        with self.assertRaisesRegex(indexes.IndexRefreshError,
-                                    "refusing symlink directory"):
-            indexes.refresh(self.root)
+        indexes.refresh(self.root)
+        page = (self.root / "datasets" / "index.html").read_text()
+        self.assertIn("linked", page)
 
     def test_accepts_relative_in_dataset_panorama_symlink(self):
         dataset = self.root / "datasets" / "symlinked-panorama"
