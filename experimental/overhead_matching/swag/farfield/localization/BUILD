@@ -198,6 +198,7 @@ py_library(
         ":metrics",
         ":mode_tracker",
         ":proposal",
+        ":resection",
         ":structs",
         "//experimental/overhead_matching/swag/farfield:geometry",
     ],

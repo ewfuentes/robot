@@ -222,6 +222,13 @@ def _without_retired_noop_filter_fields(document: dict, where: str) -> dict:
     proposal = filter_config.get("proposal")
     if isinstance(proposal, dict):
         proposal = dict(proposal)
+        # Runs predating yaw-frame transport are exactly the explicit False
+        # case. Keep their hashes replayable without relaxing other fields.
+        proposal.setdefault("transport_window_yaw", False)
+        proposal.setdefault("moving_resection_from_pairs", False)
+        proposal.setdefault("precision_weighted_moving_resection", False)
+        proposal.setdefault("fisher_covariance_moving_resection", False)
+        proposal.setdefault("require_observable_recovery", False)
         for name, expected in _RETIRED_NOOP_PROPOSAL_FIELDS.items():
             if name not in proposal:
                 continue

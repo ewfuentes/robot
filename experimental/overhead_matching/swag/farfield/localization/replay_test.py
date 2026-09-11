@@ -228,6 +228,33 @@ class ReplayFidelityTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 replay_mod.replay(run_dir)
 
+    def test_old_proposal_manifest_remains_replayable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, _, _ = _harbor_run(Path(tmp))
+            raw = msgspec.json.decode(
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
+            del raw["filter_config"]["proposal"]["transport_window_yaw"]
+            del raw["filter_config"]["proposal"][
+                "moving_resection_from_pairs"]
+            del raw["filter_config"]["proposal"][
+                "precision_weighted_moving_resection"]
+            del raw["filter_config"]["proposal"][
+                "fisher_covariance_moving_resection"]
+            del raw["filter_config"]["proposal"][
+                "require_observable_recovery"]
+            _write_tampered_run_manifest(run_dir, raw)
+
+            status = replay_mod.replayability(run_dir)
+
+            self.assertTrue(status.replayable)
+            self.assertEqual(status.missing_config_keys, ())
+            proposal = replay_mod.load_inputs(run_dir).config.proposal
+            self.assertFalse(proposal.transport_window_yaw)
+            self.assertFalse(proposal.moving_resection_from_pairs)
+            self.assertFalse(proposal.precision_weighted_moving_resection)
+            self.assertFalse(proposal.fisher_covariance_moving_resection)
+            self.assertFalse(proposal.require_observable_recovery)
+
     def test_divergence_is_inspectable_without_verify(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir, _, _, _ = _harbor_run(Path(tmp))
@@ -241,6 +268,10 @@ class ReplayFidelityTest(unittest.TestCase):
             result = replay_mod.replay(run_dir, verify=False)
             self.assertFalse(result.hash_match)
             self.assertIn("DIVERGED", result.report())
+            edited = replay_mod.replay(
+                run_dir, edits=replay_mod.Edits(seed=2), verify=False)
+            self.assertIsNone(edited.baseline_hash_match)
+            self.assertIn("baseline verification SKIPPED", edited.report())
 
     def test_edited_replay_first_requires_matching_baseline(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,7 +336,8 @@ class EditsTest(unittest.TestCase):
             table = edited.tables[tracklet_id]
             self.assertEqual([e.landmark_id for e in table.entries], [target])
             self.assertEqual(table.entries[0].log_lr, table.clip_hi)
-            self.assertIn("forced", table.matcher_version)
+            self.assertEqual(table.matcher_version,
+                             inputs.tables[tracklet_id].matcher_version)
             # The original table object is unchanged.
             self.assertNotEqual(inputs.tables[tracklet_id].entries,
                                 table.entries)
@@ -326,6 +358,25 @@ class EditsTest(unittest.TestCase):
                        for e in edited.tables[tracklet_id].entries}
             self.assertEqual(entries[fresh], 2.5)
             self.assertTrue(existing <= set(entries))
+
+    def test_proposal_window_edit_preserves_other_proposal_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir, _, _, _ = _harbor_run(Path(tmp))
+            inputs = replay_mod.load_inputs(run_dir)
+            edited = replay_mod.apply_edits(inputs, replay_mod.Edits(
+                proposal_window_keyframes=50,
+                proposal_transport_yaw=True,
+                proposal_moving_resection_from_pairs=True,
+                proposal_precision_weighted_moving_resection=True,
+                proposal_fisher_covariance_moving_resection=True,
+                proposal_require_observable_recovery=True))
+            self.assertEqual(edited.config.proposal, msgspec.structs.replace(
+                inputs.config.proposal, window_keyframes=50,
+                transport_window_yaw=True,
+                moving_resection_from_pairs=True,
+                precision_weighted_moving_resection=True,
+                fisher_covariance_moving_resection=True,
+                require_observable_recovery=True))
 
     def test_unknown_edit_identities_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -394,7 +445,8 @@ class EditsTest(unittest.TestCase):
             run_dir, _, data, _ = _harbor_run(tmp)
             victim = data.measurements[0].tracklet_id
             result = replay_mod.replay(
-                run_dir, edits=replay_mod.Edits(drop_tracklets=(victim,)))
+                run_dir, edits=replay_mod.Edits(
+                    drop_tracklets=(victim,), disable_proposal=True))
             self.assertIsNone(result.hash_match)
             self.assertTrue(result.baseline_hash_match)
             self.assertFalse(result.faithful)
@@ -403,6 +455,7 @@ class EditsTest(unittest.TestCase):
             replay_mod.write_counterfactual(ghost_dir, run_dir, result)
             ghost = run_io.read_run(ghost_dir)
             self.assertEqual(ghost.manifest.run_kind, "synthetic")
+            self.assertFalse(ghost.manifest.proposal_enabled)
             self.assertIn(victim, ghost.manifest.scenario_name)
             self.assertEqual(ghost.manifest.particle_history_sha256,
                              result.history.particle_history_sha256)
@@ -414,6 +467,11 @@ class EditsTest(unittest.TestCase):
             self.assertEqual(len(counterfactual["edit_digest"]), 64)
             # The ghost is itself replayable: forensics can recurse.
             self.assertTrue(replay_mod.replay(ghost_dir).hash_match)
+            nested = replay_mod.replay(
+                ghost_dir, edits=replay_mod.Edits(seed=17))
+            nested_dir = tmp / "nested_ghost"
+            replay_mod.write_counterfactual(nested_dir, ghost_dir, nested)
+            self.assertTrue(replay_mod.replay(nested_dir).hash_match)
 
 
 class AttributionTest(unittest.TestCase):

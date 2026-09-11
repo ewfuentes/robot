@@ -14,12 +14,14 @@ is the only assertion that can see the difference.
 
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
     filter as pf,
+    filter_catalog as catalog_mod,
     metrics,
     proposal,
     resection,
@@ -468,6 +470,328 @@ class HypothesisGenerationTest(unittest.TestCase):
 
 
 class InitTriggerTest(unittest.TestCase):
+    def test_rejected_recovery_does_not_consume_later_init(self):
+        catalog = catalog_mod.LandmarkCatalog(
+            ["a", "b", "c"], [-1000.0, 1000.0, 0.0],
+            [1000.0, 1000.0, -1000.0], max_visible_range_m=5000.0)
+        measurements = [
+            structs.TrackletMeasurement(f"T{kf}", kf, 0.0, 0.01)
+            for kf in range(3)]
+        tables = {
+            "T0": structs.CompatibilityTable(
+                "T0", "test", [], -4.0, -4.0, 4.0, "fast"),
+            **{f"T{index}": structs.CompatibilityTable(
+                f"T{index}", "test", [structs.CompatibilityEntry(
+                    landmark, 4.0)], -4.0, -4.0, 4.0, "fast")
+               for index, landmark in ((1, "b"), (2, "c"))},
+        }
+        config = structs.FilterConfig(
+            n_particles=128, seed=1,
+            init=structs.UniformBoxInit(-2000.0, 2000.0, -2000.0, 2000.0),
+            proposal=structs.ProposalConfig(
+                window_keyframes=2, min_tracklets_for_injection=3,
+                init_max_wait_keyframes=100,
+                null_share_window=1, null_share_min_fraction=1.0,
+                ess_floor_frac=0.0),
+            modes=structs.ModeConfig(enabled=False))
+        odometry = [structs.OdometryDelta(
+            kf, 0.0, 0.0, 0.0, 0.0, 0.0) for kf in (1, 2)]
+
+        history = pf.run_filter(
+            config, catalog, odometry, measurements, tables)
+
+        self.assertEqual(history.proposal_events[0].trigger, "null_share")
+        self.assertEqual(history.proposal_events[0].n_injected, 0)
+        init_events = [event for event in history.proposal_events
+                       if event.trigger == "init"]
+        self.assertEqual([event.keyframe_idx for event in init_events], [2])
+
+    def test_window_bearings_can_be_transported_to_trigger_yaw(self):
+        measurements = [
+            structs.TrackletMeasurement("old", 0, 10.0, 4.0, 125.0),
+            structs.TrackletMeasurement("now", 2, 20.0, 5.0),
+        ]
+        odometry = [
+            structs.OdometryDelta(1, 0.0, 0.0, math.radians(30.0), 1.0, 0.1),
+            structs.OdometryDelta(2, 0.0, 0.0, math.radians(20.0), 1.0, 0.1),
+        ]
+        window = pf._proposal_window(
+            measurements, odometry, 2, structs.ProposalConfig(
+                window_keyframes=2, transport_window_yaw=True))
+        self.assertAlmostEqual(window[0].bearing_forward_cw_deg, 320.0)
+        self.assertAlmostEqual(window[1].bearing_forward_cw_deg, 20.0)
+        self.assertEqual(window[0].range_max_m, 125.0)
+
+    def test_moving_point_fix_uses_each_bearings_anchor_pose(self):
+        odometry = [
+            structs.OdometryDelta(1, 100.0, 0.0, math.radians(30.0), 1.0,
+                                  0.1),
+            structs.OdometryDelta(2, 120.0, 0.0, math.radians(-10.0), 1.0,
+                                  0.1),
+        ]
+        catalog = catalog_mod.LandmarkCatalog(
+            ["a", "b", "c"], [-2000.0, 2500.0, 500.0],
+            [2000.0, 1500.0, -2500.0], max_visible_range_m=10000.0)
+        true_east, true_north = 100.0, -200.0
+        true_heading = math.radians(70.0)
+        path_east, path_north, path_yaw = \
+            pf._mean_odometry_trajectory(odometry)
+        frame_rotation = true_heading - path_yaw[2]
+        measurements, tables = [], {}
+        for anchor, landmark_id in enumerate(catalog.landmark_ids):
+            delta_east = path_east[anchor] - path_east[2]
+            delta_north = path_north[anchor] - path_north[2]
+            anchor_east = (true_east + math.cos(frame_rotation) * delta_east
+                           + math.sin(frame_rotation) * delta_north)
+            anchor_north = (true_north - math.sin(frame_rotation) * delta_east
+                            + math.cos(frame_rotation) * delta_north)
+            index = catalog.index_of(landmark_id)
+            anchor_heading = true_heading + path_yaw[anchor] - path_yaw[2]
+            bearing = geo.wrap_rad(geo.compass_bearing_rad(
+                catalog.east_m[index] - anchor_east,
+                catalog.north_m[index] - anchor_north) - anchor_heading)
+            tracklet_id = f"t{anchor}"
+            measurements.append(structs.TrackletMeasurement(
+                tracklet_id, anchor, math.degrees(float(bearing)), 100.0))
+            tables[tracklet_id] = structs.CompatibilityTable(
+                tracklet_id, "test", [structs.CompatibilityEntry(
+                    landmark_id, 4.0)], -4.0, -4.0, 4.0, "fast")
+
+        config = structs.ProposalConfig(
+            window_keyframes=2, transport_window_yaw=True)
+        window = pf._proposal_window(measurements, odometry, 2, config)
+        result = _propose(window, tables, catalog, config, 0, 2, "test")
+        refined = pf._refine_moving_point_fixes(
+            result, window, odometry, 2, catalog)
+        fixes = [hypothesis for hypothesis in refined.hypotheses
+                 if isinstance(hypothesis, proposal.PointHypothesis)]
+        self.assertGreater(len(fixes), 0)
+        best = min(fixes, key=lambda hypothesis: math.hypot(
+            hypothesis.east_m - true_east,
+            hypothesis.north_m - true_north))
+        self.assertLess(math.hypot(best.east_m - true_east,
+                                   best.north_m - true_north), 0.01)
+        self.assertLess(abs(float(geo.wrap_rad(
+            best.heading_rad - true_heading))), 1e-5)
+
+    def test_moving_point_fix_uses_repeated_epochs_not_only_latest(self):
+        odometry = [
+            structs.OdometryDelta(1, 100.0, 0.0, math.radians(20.0), 1.0,
+                                  0.1),
+            structs.OdometryDelta(2, 120.0, 0.0, math.radians(-15.0), 1.0,
+                                  0.1),
+        ]
+        catalog = catalog_mod.LandmarkCatalog(
+            ["a", "b", "c"], [-2000.0, 2500.0, 500.0],
+            [2000.0, 1500.0, -2500.0], max_visible_range_m=10000.0)
+        true_east, true_north = 100.0, -200.0
+        true_heading = math.radians(70.0)
+        path_east, path_north, path_yaw = \
+            pf._mean_odometry_trajectory(odometry)
+        frame_rotation = true_heading - path_yaw[2]
+        measurements, tables = [], {}
+        latest_noise_deg = (8.0, -6.0, 4.0)
+        for tracklet_index, landmark_id in enumerate(catalog.landmark_ids):
+            tracklet_id = f"t{tracklet_index}"
+            tables[tracklet_id] = structs.CompatibilityTable(
+                tracklet_id, "test", [structs.CompatibilityEntry(
+                    landmark_id, 4.0)], -4.0, -4.0, 4.0, "fast")
+            index = catalog.index_of(landmark_id)
+            for anchor in range(3):
+                delta_east = path_east[anchor] - path_east[2]
+                delta_north = path_north[anchor] - path_north[2]
+                anchor_east = (true_east
+                               + math.cos(frame_rotation) * delta_east
+                               + math.sin(frame_rotation) * delta_north)
+                anchor_north = (true_north
+                                - math.sin(frame_rotation) * delta_east
+                                + math.cos(frame_rotation) * delta_north)
+                anchor_heading = (
+                    true_heading + path_yaw[anchor] - path_yaw[2])
+                bearing = geo.wrap_rad(geo.compass_bearing_rad(
+                    catalog.east_m[index] - anchor_east,
+                    catalog.north_m[index] - anchor_north) - anchor_heading)
+                if anchor == 2:
+                    bearing += math.radians(latest_noise_deg[tracklet_index])
+                measurements.append(structs.TrackletMeasurement(
+                    tracklet_id, anchor, math.degrees(float(bearing)), 100.0))
+
+        config = structs.ProposalConfig(
+            window_keyframes=2, transport_window_yaw=True)
+        window = pf._proposal_window(measurements, odometry, 2, config)
+        result = _propose(window, tables, catalog, config, 0, 2, "test")
+        before = next(hypothesis for hypothesis in result.hypotheses
+                      if isinstance(hypothesis, proposal.PointHypothesis))
+        refined = pf._refine_moving_point_fixes(
+            result, window, odometry, 2, catalog)
+        after = next(hypothesis for hypothesis in refined.hypotheses
+                     if isinstance(hypothesis, proposal.PointHypothesis))
+        before_error = math.hypot(
+            before.east_m - true_east, before.north_m - true_north)
+        after_error = math.hypot(
+            after.east_m - true_east, after.north_m - true_north)
+        self.assertLess(after_error, before_error / 2.0)
+
+        pair_only = _proposal_result([
+            hypothesis for hypothesis in result.hypotheses
+            if isinstance(hypothesis, proposal.ArcHypothesis)], 20000)
+        belief = pf.ParticleBelief(
+            east_m=np.array([true_east + 30.0, 3000.0]),
+            north_m=np.array([true_north - 20.0, 3000.0]),
+            heading_rad=np.array([true_heading + 0.05, -1.0]),
+            log_weight=np.log(np.array([0.5, 0.5])))
+        recovered = pf._refine_moving_point_fixes(
+            pair_only, window, odometry, 2, catalog, belief,
+            structs.ProposalConfig(
+                window_keyframes=2, transport_window_yaw=True,
+                moving_resection_from_pairs=True),
+            structs.UniformBoxInit(-5000.0, 5000.0, -5000.0, 5000.0))
+        recovered_points = [
+            hypothesis for hypothesis in recovered.hypotheses
+            if isinstance(hypothesis, proposal.PointHypothesis)]
+        self.assertGreater(len(recovered_points), 0)
+        self.assertLess(min(
+            math.hypot(hypothesis.east_m - true_east,
+                       hypothesis.north_m - true_north)
+            for hypothesis in recovered_points), 250.0)
+
+        heteroscedastic_window = [structs.TrackletMeasurement(
+            measurement.tracklet_id, measurement.anchor_keyframe_idx,
+            measurement.bearing_forward_cw_deg,
+            1.0 if measurement.anchor_keyframe_idx == 2 else 100.0)
+            for measurement in window]
+        weighted = pf._refine_moving_point_fixes(
+            pair_only, heteroscedastic_window, odometry, 2, catalog, belief,
+            structs.ProposalConfig(
+                window_keyframes=2, transport_window_yaw=True,
+                moving_resection_from_pairs=True,
+                precision_weighted_moving_resection=True),
+            structs.UniformBoxInit(-5000.0, 5000.0, -5000.0, 5000.0))
+        weighted_points = [
+            hypothesis for hypothesis in weighted.hypotheses
+            if isinstance(hypothesis, proposal.PointHypothesis)]
+        self.assertLess(min(
+            math.hypot(hypothesis.east_m - true_east,
+                       hypothesis.north_m - true_north)
+            for hypothesis in weighted_points), min(
+                math.hypot(hypothesis.east_m - true_east,
+                           hypothesis.north_m - true_north)
+                for hypothesis in recovered_points))
+
+        fisher_config = structs.ProposalConfig(
+            precision_weighted_moving_resection=True,
+            fisher_covariance_moving_resection=True)
+        fisher_high = pf._refine_moving_point_fixes(
+            result, window, odometry, 2, catalog,
+            proposal_config=fisher_config)
+        quarter_precision = [structs.TrackletMeasurement(
+            measurement.tracklet_id, measurement.anchor_keyframe_idx,
+            measurement.bearing_forward_cw_deg, measurement.kappa / 4.0)
+            for measurement in window]
+        fisher_low = pf._refine_moving_point_fixes(
+            result, quarter_precision, odometry, 2, catalog,
+            proposal_config=fisher_config)
+        high_point = min(
+            (hypothesis for hypothesis in fisher_high.hypotheses
+             if isinstance(hypothesis, proposal.PointHypothesis)),
+            key=lambda hypothesis: math.hypot(
+                hypothesis.east_m - true_east,
+                hypothesis.north_m - true_north))
+        low_point = min(
+            (hypothesis for hypothesis in fisher_low.hypotheses
+             if isinstance(hypothesis, proposal.PointHypothesis)),
+            key=lambda hypothesis: math.hypot(
+                hypothesis.east_m - true_east,
+                hypothesis.north_m - true_north))
+        self.assertGreater(high_point.position_sigma_m, 0.0)
+        self.assertAlmostEqual(
+            low_point.position_sigma_m / high_point.position_sigma_m,
+            2.0, delta=0.02)
+
+        outside_belief = pf.ParticleBelief(
+            east_m=np.array([6000.0]), north_m=np.array([6000.0]),
+            heading_rad=np.array([true_heading]), log_weight=np.array([0.0]))
+        bounded = pf._refine_moving_point_fixes(
+            pair_only, heteroscedastic_window, odometry, 2, catalog,
+            outside_belief, structs.ProposalConfig(
+                window_keyframes=2, transport_window_yaw=True,
+                moving_resection_from_pairs=True,
+                precision_weighted_moving_resection=True),
+            structs.UniformBoxInit(-5000.0, 5000.0, -5000.0, 5000.0))
+        self.assertTrue(any(isinstance(hypothesis, proposal.PointHypothesis)
+                            for hypothesis in bounded.hypotheses))
+
+    def test_rejected_evidence_gate_is_rng_noop(self):
+        catalog = catalog_mod.LandmarkCatalog(
+            ["a", "b", "c"], [-1000.0, 1000.0, 0.0],
+            [1000.0, 1000.0, -1000.0], max_visible_range_m=5000.0)
+        measurements = [structs.TrackletMeasurement(
+            name, 0, bearing, 25.0)
+            for name, bearing in (("a", 45.0), ("b", 315.0), ("c", 180.0))]
+        tables = {name: structs.CompatibilityTable(
+            name, "test", [structs.CompatibilityEntry(name, 4.0)],
+            -4.0, -4.0, 4.0, "fast") for name in ("a", "b", "c")}
+        config = structs.FilterConfig(
+            n_particles=128, seed=1,
+            init=structs.GaussianInit(5000.0, 5000.0, 10.0),
+            proposal=structs.ProposalConfig(
+                on_init=False, null_share_threshold=0.0,
+                null_share_window=1, null_share_min_fraction=1.0,
+                ess_floor_frac=0.0, evidence_gate=True),
+            modes=structs.ModeConfig(enabled=False), checkpoint_every=1000)
+        odometry = [structs.OdometryDelta(
+            1, 1.0, 0.0, 0.0, 1.0, 0.1)]
+
+        with mock.patch.object(
+                pf, "_evidence_gate", return_value=(False, 0.0, 1.0)):
+            control = pf.run_filter(
+                config, catalog, odometry, measurements, tables)
+
+        def consume_rng_then_reject(*args):
+            args[4].random(100)
+            return False, 0.0, 1.0
+
+        with mock.patch.object(
+                pf, "_evidence_gate", side_effect=consume_rng_then_reject):
+            consumed = pf.run_filter(
+                config, catalog, odometry, measurements, tables)
+        self.assertEqual(control.proposal_events[0].n_injected, 0)
+        self.assertEqual(consumed.particle_history_sha256,
+                         control.particle_history_sha256)
+
+    def test_recovery_can_require_observable_window(self):
+        catalog = catalog_mod.LandmarkCatalog(
+            ["landmark"], [0.0], [1000.0], max_visible_range_m=5000.0)
+        measurements = [structs.TrackletMeasurement(
+            track, 0, 0.0, 25.0) for track in ("track", "empty1", "empty2")]
+        tables = {
+            "track": structs.CompatibilityTable(
+                "track", "test", [structs.CompatibilityEntry(
+                    "landmark", 4.0)], -4.0, -4.0, 4.0, "fast"),
+            **{track: structs.CompatibilityTable(
+                track, "test", [], -4.0, -4.0, 4.0, "fast")
+               for track in ("empty1", "empty2")},
+        }
+
+        def run(require_observable_recovery):
+            return pf.run_filter(structs.FilterConfig(
+                n_particles=128, seed=1,
+                init=structs.GaussianInit(5000.0, 5000.0, 10.0),
+                proposal=structs.ProposalConfig(
+                    on_init=False, null_share_threshold=0.0,
+                    null_share_window=1, null_share_min_fraction=1.0,
+                    ess_floor_frac=0.0, evidence_gate=False,
+                    require_observable_recovery=require_observable_recovery),
+                modes=structs.ModeConfig(enabled=False)),
+                catalog, [], measurements, tables)
+
+        self.assertGreater(run(False).proposal_events[0].n_injected, 0)
+        guarded = run(True).proposal_events[0]
+        self.assertEqual(guarded.trigger, "null_share")
+        self.assertEqual(guarded.n_tracklets_considered, 1)
+        self.assertFalse(guarded.gate_passed)
+        self.assertEqual(guarded.n_injected, 0)
+
     def test_fires_at_the_first_keyframe_with_bearings(self):
         """Real exports start observing several keyframes in; keying the
         initial proposal to keyframe 0 means it silently never fires and the

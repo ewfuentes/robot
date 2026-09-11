@@ -137,6 +137,18 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # with the truth triage, this is how a matcher-fault verdict gets tested
     # rather than asserted.
     force_landmark: dict[str, str] = {}
+    # Counterfactual proposal history length; useful for sparse observations.
+    proposal_window_keyframes: int | None = None
+    # Express proposal-window bearings in the trigger keyframe's yaw frame.
+    proposal_transport_yaw: bool = False
+    # Numerically resect consistent pair joins using repeated moving epochs.
+    proposal_moving_resection_from_pairs: bool = False
+    # Precision-weight moving-anchor resection and its particle seed ranking.
+    proposal_precision_weighted_moving_resection: bool = False
+    # Use the weighted moving solution's Fisher covariance for point spread.
+    proposal_fisher_covariance_moving_resection: bool = False
+    # Require the existing three-track observability minimum for recovery.
+    proposal_require_observable_recovery: bool = False
     # Filter knobs the console exposes directly.
     pi0: float | None = None
     matcher_recall: float | None = None
@@ -167,11 +179,17 @@ class Edits(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
                 f"{lid}={value:+.1f}"
                 for lid, value in sorted(overrides.items())) + "]")
         for name in ("pi0", "matcher_recall", "seed", "n_particles",
-                     "measurement_backend", "checkpoint_every"):
+                     "measurement_backend", "checkpoint_every",
+                     "proposal_window_keyframes"):
             value = getattr(self, name)
             if value is not None:
                 parts.append(f"{name}={value}")
-        for name in ("disable_proposal", "disable_persistence",
+        for name in ("proposal_transport_yaw",
+                     "proposal_moving_resection_from_pairs",
+                     "proposal_precision_weighted_moving_resection",
+                     "proposal_fisher_covariance_moving_resection",
+                     "proposal_require_observable_recovery",
+                     "disable_proposal", "disable_persistence",
                      "disable_modes"):
             if getattr(self, name):
                 parts.append(name)
@@ -230,7 +248,14 @@ def _missing_keys(stored: dict, struct_type, prefix: str = "") -> list:
     for field in info.fields:
         name = f"{prefix}{field.name}"
         if field.name not in stored:
-            missing.append(name)
+            # The feature did not exist in older runs, which is exactly its
+            # explicit disabled state; run_io performs the same migration.
+            if name not in ("proposal.transport_window_yaw",
+                            "proposal.moving_resection_from_pairs",
+                            "proposal.precision_weighted_moving_resection",
+                            "proposal.fisher_covariance_moving_resection",
+                            "proposal.require_observable_recovery"):
+                missing.append(name)
             continue
         value = stored[field.name]
         if not isinstance(value, dict):
@@ -416,7 +441,10 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
                 raise ValueError(
                     f"log_lr[{tracklet_id!r}][{landmark_id!r}] must be "
                     "finite numeric")
-
+    if (edits.proposal_window_keyframes is not None
+            and (isinstance(edits.proposal_window_keyframes, bool)
+                 or edits.proposal_window_keyframes <= 0)):
+        raise ValueError("proposal_window_keyframes must be a positive integer")
     config = inputs.config
     replacements = {}
     for name, field in (("pi0", "pi0"), ("matcher_recall", "matcher_recall"),
@@ -428,9 +456,29 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
             replacements[field] = value
     if edits.disable_persistence:
         replacements["association_persistence"] = False
+    proposal = config.proposal
+    if edits.proposal_window_keyframes is not None:
+        proposal = msgspec.structs.replace(
+            proposal, window_keyframes=edits.proposal_window_keyframes)
+    if edits.proposal_transport_yaw:
+        proposal = msgspec.structs.replace(
+            proposal, transport_window_yaw=True)
+    if edits.proposal_moving_resection_from_pairs:
+        proposal = msgspec.structs.replace(
+            proposal, moving_resection_from_pairs=True)
+    if edits.proposal_precision_weighted_moving_resection:
+        proposal = msgspec.structs.replace(
+            proposal, precision_weighted_moving_resection=True)
+    if edits.proposal_fisher_covariance_moving_resection:
+        proposal = msgspec.structs.replace(
+            proposal, fisher_covariance_moving_resection=True)
+    if edits.proposal_require_observable_recovery:
+        proposal = msgspec.structs.replace(
+            proposal, require_observable_recovery=True)
     if edits.disable_proposal:
-        replacements["proposal"] = msgspec.structs.replace(
-            config.proposal, enabled=False)
+        proposal = msgspec.structs.replace(proposal, enabled=False)
+    if proposal != config.proposal:
+        replacements["proposal"] = proposal
     if edits.disable_modes:
         replacements["modes"] = msgspec.structs.replace(
             config.modes, enabled=False)
@@ -451,8 +499,7 @@ def apply_edits(inputs: ReplayInputs, edits: Edits) -> ReplayInputs:
             table = tables[tracklet_id]
             tables[tracklet_id] = msgspec.structs.replace(
                 table, entries=[structs.CompatibilityEntry(
-                    landmark_id=landmark_id, log_lr=table.clip_hi)],
-                matcher_version=f"{table.matcher_version}+forced")
+                    landmark_id=landmark_id, log_lr=table.clip_hi)])
         for tracklet_id, overrides in edits.log_lr.items():
             tables[tracklet_id] = _edit_table(tables[tracklet_id], overrides)
 
@@ -497,6 +544,8 @@ class ReplayResult:
             lines.append(f"  counterfactual: {self.edits.describe()}")
             if self.baseline_hash_match:
                 lines.append("  unedited baseline hash MATCHES")
+            elif self.baseline_hash_match is None:
+                lines.append("  baseline verification SKIPPED")
         if self.hash_match is True:
             lines.append(f"  history hash MATCHES "
                          f"{self.recorded_sha256[:12]} — bit-exact "
@@ -612,6 +661,7 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
         scenario_name=f"{result.inputs.manifest.scenario_name}"
                       f" [{result.edits.describe()}]",
         filter_config=result.inputs.config,
+        proposal_enabled=result.inputs.config.proposal.enabled,
         max_visible_range_m=result.inputs.max_visible_range_m,
         particle_history_sha256=result.history.particle_history_sha256,
         run_kind=run_kind,
@@ -647,7 +697,8 @@ def write_counterfactual(output_dir: Path, source_run_dir: Path,
                      result.inputs.odometry, result.inputs.measurements,
                      consumed_tables, result.history,
                      dataset=manifest.dataset, version=output_dir.name,
-                     upstreams=(*source_artifact.upstreams, source_ref),
+                     upstreams=(*(ref for ref in source_artifact.upstreams
+                                  if ref.kind != run_io.RUN_KIND), source_ref),
                      artifact_config={
                          "run_kind": run_kind,
                          "source_run": source_ref.to_dict(),

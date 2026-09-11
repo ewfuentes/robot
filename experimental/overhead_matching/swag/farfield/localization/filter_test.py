@@ -544,6 +544,10 @@ class ValidationTest(unittest.TestCase):
                     n_particles=0, seed=1,
                     init=structs.GaussianInit(0.0, 0.0, 1.0)),
                 catalog, odometry, measurements, tables)
+        with self.assertRaisesRegex(ValueError, "precision-weighted"):
+            pf.run_filter(self._config(proposal=structs.ProposalConfig(
+                fisher_covariance_moving_resection=True)), catalog, odometry,
+                measurements, tables)
 
     def test_rejects_out_of_order_odometry(self):
         catalog, odometry, measurements, tables = self._inputs()

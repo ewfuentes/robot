@@ -160,6 +160,16 @@ def cmd_replay(args) -> int:
         matcher_recall=args.matcher_recall, seed=args.seed,
         n_particles=args.n_particles,
         measurement_backend=args.backend,
+        proposal_window_keyframes=args.proposal_window_keyframes,
+        proposal_transport_yaw=args.proposal_transport_yaw,
+        proposal_moving_resection_from_pairs=(
+            args.proposal_moving_resection_from_pairs),
+        proposal_precision_weighted_moving_resection=(
+            args.proposal_precision_weighted_moving_resection),
+        proposal_fisher_covariance_moving_resection=(
+            args.proposal_fisher_covariance_moving_resection),
+        proposal_require_observable_recovery=(
+            args.proposal_require_observable_recovery),
         disable_proposal=args.no_proposal,
         disable_persistence=args.no_persistence,
         disable_modes=args.no_modes)
@@ -419,6 +429,29 @@ def main() -> int:
                           "right?'")
     rep.add_argument("--set_log_lr", action="append",
                      metavar="TRACKLET:LANDMARK=VALUE")
+    rep.add_argument(
+        "--proposal_window_keyframes", type=int, default=None,
+        help="counterfactual proposal bearing-window length")
+    rep.add_argument(
+        "--proposal_transport_yaw", action="store_true",
+        help="express older proposal bearings in the trigger keyframe's "
+             "mean-odometry yaw frame")
+    rep.add_argument(
+        "--proposal_moving_resection_from_pairs", action="store_true",
+        help="join consistent pair hypotheses and resect them from repeated "
+             "moving-anchor bearings")
+    rep.add_argument(
+        "--proposal_precision_weighted_moving_resection",
+        action="store_true",
+        help="weight moving-anchor resection by recorded bearing precision")
+    rep.add_argument(
+        "--proposal_fisher_covariance_moving_resection",
+        action="store_true",
+        help="derive moving-point sampling spread from Fisher information")
+    rep.add_argument(
+        "--proposal_require_observable_recovery", action="store_true",
+        help="require the existing three-track minimum before recovery can "
+             "replace belief mass")
     rep.add_argument("--oracle_matcher", action="store_true",
                      help="[TRUTH-PRIVILEGED] endorse the geometrically "
                           "best-fitting landmark for every tracklet the real "

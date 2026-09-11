@@ -174,6 +174,21 @@ class ProposalConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     # simultaneous (staggered epochs rarely put two bearings on one
     # keyframe; the induced angular error is under the bearing noise).
     window_keyframes: int = 4
+    # Rotate earlier bearings into the trigger keyframe's mean-odometry
+    # heading frame. False preserves replay of runs recorded before this fix.
+    transport_window_yaw: bool = False
+    # Recover noisy triples from mutually consistent pair hypotheses, then
+    # solve them against repeated moving-anchor bearings.
+    moving_resection_from_pairs: bool = False
+    # Weight moving-anchor least squares by the measurements' recorded
+    # inverse angular variance. Raw residuals still control admission.
+    precision_weighted_moving_resection: bool = False
+    # Derive a full-rank moving fix's sampling spread from its weighted
+    # least-squares information instead of the least precise single epoch.
+    fisher_covariance_moving_resection: bool = False
+    # Do not replace posterior mass from a recovery window that cannot
+    # constrain an SE(2) pose under the existing three-track minimum.
+    require_observable_recovery: bool = False
 
     # Evidence gate on injection (§5.5): a fired trigger may displace belief
     # mass only when the proposal's best hypothesis explains the recent

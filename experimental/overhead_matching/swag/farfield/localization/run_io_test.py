@@ -386,6 +386,38 @@ class StrictReaderTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing fields"):
                 run_io.read_run(run_dir)
 
+    def test_old_proposal_manifest_decodes_new_controls_as_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            write_sample(run_dir)
+            document = msgspec.json.decode(
+                (run_dir / run_io.RUN_MANIFEST_NAME).read_bytes())
+            del document["filter_config"]["proposal"]["transport_window_yaw"]
+            del document["filter_config"]["proposal"][
+                "moving_resection_from_pairs"]
+            del document["filter_config"]["proposal"][
+                "precision_weighted_moving_resection"]
+            del document["filter_config"]["proposal"][
+                "fisher_covariance_moving_resection"]
+            del document["filter_config"]["proposal"][
+                "require_observable_recovery"]
+            replace_payload(
+                run_dir, run_io.RUN_MANIFEST_NAME,
+                msgspec.json.encode(document))
+
+            loaded = run_io.read_run(run_dir)
+
+        self.assertFalse(loaded.manifest.filter_config.proposal.
+                         transport_window_yaw)
+        self.assertFalse(loaded.manifest.filter_config.proposal.
+                         moving_resection_from_pairs)
+        self.assertFalse(loaded.manifest.filter_config.proposal.
+                         precision_weighted_moving_resection)
+        self.assertFalse(loaded.manifest.filter_config.proposal.
+                         fisher_covariance_moving_resection)
+        self.assertFalse(loaded.manifest.filter_config.proposal.
+                         require_observable_recovery)
+
     def test_required_health_cannot_silently_decode_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = self._mutated_run(

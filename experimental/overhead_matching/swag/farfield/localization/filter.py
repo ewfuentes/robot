@@ -28,11 +28,12 @@ NEES, error curves) live in metrics.py; this module only runs the filter.
 
 import dataclasses
 import hashlib
+import itertools
 import math
 
 import msgspec
 import numpy as np
-from scipy import special
+from scipy import optimize, special
 
 from experimental.overhead_matching.swag.farfield import geometry as geo
 from experimental.overhead_matching.swag.farfield.localization import (
@@ -40,6 +41,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     metrics,
     mode_tracker as mode_tracker_mod,
     proposal as proposal_mod,
+    resection,
     structs,
 )
 
@@ -1093,6 +1095,241 @@ def _init_window_is_observable(measurements, kf: int, first_bearing_kf,
             and kf - first_bearing_kf >= config.proposal.init_max_wait_keyframes)
 
 
+def _mean_odometry_trajectory(odometry):
+    """Mean poses in a local frame whose initial heading is north."""
+    east = np.zeros(len(odometry) + 1, dtype=np.float64)
+    north = np.zeros(len(odometry) + 1, dtype=np.float64)
+    yaw = np.zeros(len(odometry) + 1, dtype=np.float64)
+    for kf, step in enumerate(odometry, start=1):
+        yaw[kf] = yaw[kf - 1] + step.delta_yaw_cw_rad
+        east[kf] = (east[kf - 1] + step.forward_m * math.sin(yaw[kf])
+                    - step.left_m * math.cos(yaw[kf]))
+        north[kf] = (north[kf - 1] + step.forward_m * math.cos(yaw[kf])
+                     + step.left_m * math.sin(yaw[kf]))
+    return east, north, yaw
+
+
+def _proposal_window(measurements, odometry, kf: int,
+                     config: structs.ProposalConfig):
+    """Recent bearings, optionally rotated into keyframe ``kf``'s frame."""
+    window_start = kf - config.window_keyframes
+    window = [m for m in measurements
+              if window_start <= m.anchor_keyframe_idx <= kf]
+    if not config.transport_window_yaw:
+        return window
+    _, _, mean_yaw = _mean_odometry_trajectory(odometry)
+    return [structs.TrackletMeasurement(
+        tracklet_id=m.tracklet_id,
+        anchor_keyframe_idx=m.anchor_keyframe_idx,
+        bearing_forward_cw_deg=(
+            m.bearing_forward_cw_deg
+            - math.degrees(mean_yaw[kf] - mean_yaw[m.anchor_keyframe_idx]))
+        % 360.0,
+        kappa=m.kappa,
+        range_max_m=m.range_max_m)
+        for m in window]
+
+
+def _refine_moving_point_fixes(result, window, odometry, kf: int, catalog,
+                               belief=None, proposal_config=None, init=None):
+    """Refine or recover triple fixes from repeated moving-anchor bearings."""
+    by_tracklet = {}
+    for measurement in window:
+        by_tracklet.setdefault(measurement.tracklet_id, []).append(measurement)
+    path_east, path_north, path_yaw = _mean_odometry_trajectory(odometry)
+
+    def problem(hypothesis):
+        observations = []
+        landmark_positions = []
+        unique_positions = []
+        for tracklet_id, landmark_id in zip(
+                hypothesis.tracklet_ids, hypothesis.landmark_ids):
+            index = catalog.index_of(landmark_id)
+            landmark = (float(catalog.east_m[index]),
+                        float(catalog.north_m[index]))
+            unique_positions.append(landmark)
+            for measurement in by_tracklet[tracklet_id]:
+                observations.append(measurement)
+                landmark_positions.append(landmark)
+
+        def residual(pose):
+            east, north, heading = pose
+            frame_rotation = heading - path_yaw[kf]
+            sin_rotation = math.sin(frame_rotation)
+            cos_rotation = math.cos(frame_rotation)
+            values = []
+            for measurement, landmark in zip(
+                    observations, landmark_positions):
+                anchor = measurement.anchor_keyframe_idx
+                delta_east = path_east[anchor] - path_east[kf]
+                delta_north = path_north[anchor] - path_north[kf]
+                anchor_east = (east + cos_rotation * delta_east
+                               + sin_rotation * delta_north)
+                anchor_north = (north - sin_rotation * delta_east
+                                + cos_rotation * delta_north)
+                predicted = (geo.compass_bearing_rad(
+                    landmark[0] - anchor_east,
+                    landmark[1] - anchor_north) - heading)
+                values.append(float(geo.wrap_rad(
+                    predicted - math.radians(
+                        measurement.bearing_forward_cw_deg))))
+            return np.asarray(values)
+
+        return observations, landmark_positions, unique_positions, residual
+
+    def solve(hypothesis, start=None, bounds=(-np.inf, np.inf)):
+        observations, _, _, residual = problem(hypothesis)
+        if start is None:
+            start = [hypothesis.east_m, hypothesis.north_m,
+                     hypothesis.heading_rad]
+        start = np.clip(start, bounds[0], bounds[1])
+        if (proposal_config is not None
+                and proposal_config.precision_weighted_moving_resection):
+            weights = np.sqrt([item.kappa for item in observations])
+
+            def fit_residual(pose):
+                return weights * residual(pose)
+        else:
+            fit_residual = residual
+        solution = optimize.least_squares(fit_residual, start, bounds=bounds)
+        if not solution.success or not np.all(np.isfinite(solution.x)):
+            return None
+        updates = {
+            "east_m": float(solution.x[0]),
+            "north_m": float(solution.x[1]),
+            "heading_rad": float(geo.wrap_rad(solution.x[2])),
+            "residual_rad": float(np.max(np.abs(residual(solution.x)))),
+        }
+        if (proposal_config is not None
+                and proposal_config.fisher_covariance_moving_resection
+                and np.linalg.matrix_rank(solution.jac) == 3):
+            try:
+                covariance = np.linalg.inv(solution.jac.T @ solution.jac)
+            except np.linalg.LinAlgError:
+                covariance = None
+            if covariance is not None and np.all(np.isfinite(covariance)):
+                position_variance = float(np.max(
+                    np.linalg.eigvalsh(covariance[:2, :2])))
+                heading_variance = float(covariance[2, 2])
+                if position_variance > 0.0 and heading_variance > 0.0:
+                    updates["position_sigma_m"] = math.sqrt(
+                        position_variance)
+                    updates["heading_sigma_deg"] = math.degrees(
+                        math.sqrt(heading_variance))
+        return dataclasses.replace(hypothesis, **updates)
+
+    refined = []
+    for hypothesis in result.hypotheses:
+        if not isinstance(hypothesis, proposal_mod.PointHypothesis):
+            refined.append(hypothesis)
+            continue
+        refined.append(solve(hypothesis) or hypothesis)
+
+    if (belief is None or proposal_config is None
+            or not proposal_config.moving_resection_from_pairs):
+        return dataclasses.replace(result, hypotheses=refined)
+
+    pairs = [item for item in result.hypotheses
+             if isinstance(item, proposal_mod.ArcHypothesis)]
+    existing = {
+        tuple(sorted(zip(item.tracklet_ids, item.landmark_ids)))
+        for item in result.hypotheses
+        if isinstance(item, proposal_mod.PointHypothesis)}
+    joined = {}
+    for first, second in itertools.combinations(pairs, 2):
+        first_map = dict(zip(first.tracklet_ids, first.landmark_ids))
+        second_map = dict(zip(second.tracklet_ids, second.landmark_ids))
+        shared = set(first_map) & set(second_map)
+        if (not shared
+                or any(first_map[key] != second_map[key] for key in shared)):
+            continue
+        merged = first_map | second_map
+        key = tuple(sorted(merged.items()))
+        if (len(key) != 3 or len({item[1] for item in key}) != 3
+                or key in existing):
+            continue
+        joined[key] = max(joined.get(key, 0.0), min(
+            first.compatibility_mass, second.compatibility_mass))
+
+    candidates = sorted(joined.items(), key=lambda item: (-item[1], item[0]))
+    candidates = candidates[:proposal_config.evidence_gate_samples]
+    if isinstance(init, structs.UniformBoxInit):
+        bounds = (
+            [init.east_min_m, init.north_min_m, -np.inf],
+            [init.east_max_m, init.north_max_m, np.inf])
+    else:
+        bounds = (-np.inf, np.inf)
+
+    for joined_ids, compatibility_mass in candidates:
+        hypothesis = proposal_mod.PointHypothesis(
+            kind=proposal_mod.TRIPLE,
+            tracklet_ids=tuple(item[0] for item in joined_ids),
+            landmark_ids=tuple(item[1] for item in joined_ids),
+            compatibility_mass=compatibility_mass)
+        observations, landmark_positions, positions, residual = problem(
+            hypothesis)
+        frame_rotation = belief.heading_rad - path_yaw[kf]
+        sin_rotation = np.sin(frame_rotation)
+        cos_rotation = np.cos(frame_rotation)
+        score = np.zeros(belief.n, dtype=np.float64)
+        for measurement, landmark in zip(observations, landmark_positions):
+            anchor = measurement.anchor_keyframe_idx
+            delta_east = path_east[anchor] - path_east[kf]
+            delta_north = path_north[anchor] - path_north[kf]
+            anchor_east = (belief.east_m + cos_rotation * delta_east
+                           + sin_rotation * delta_north)
+            anchor_north = (belief.north_m - sin_rotation * delta_east
+                            + cos_rotation * delta_north)
+            delta = geo.wrap_rad(
+                geo.compass_bearing_rad(
+                    landmark[0] - anchor_east,
+                    landmark[1] - anchor_north)
+                - belief.heading_rad
+                - math.radians(measurement.bearing_forward_cw_deg))
+            weight = (measurement.kappa
+                      if proposal_config.precision_weighted_moving_resection
+                      else 1.0)
+            score += weight * delta * delta
+        best = int(np.argmin(score))
+        solved = solve(hypothesis, [
+            float(belief.east_m[best]), float(belief.north_m[best]),
+            float(belief.heading_rad[best])], bounds=bounds)
+        if solved is None:
+            continue
+        sigma = 1.0 / math.sqrt(max(
+            min(item.kappa for item in observations), 1e-9))
+        tolerance = min(
+            proposal_config.residual_tolerance_sigma * sigma,
+            math.radians(proposal_config.max_residual_tolerance_deg))
+        pose = resection.PoseHypothesis(
+            solved.east_m, solved.north_m, solved.heading_rad,
+            solved.residual_rad)
+        if (solved.residual_rad > tolerance
+                or not proposal_mod._point_is_visible(  # noqa: SLF001
+                    pose, positions, hypothesis.landmark_ids, catalog)
+                or any(math.hypot(position[0] - solved.east_m,
+                                  position[1] - solved.north_m)
+                       < resection.MIN_BASELINE_M for position in positions)
+                or resection._on_danger_circle(  # noqa: SLF001
+                    solved.east_m, solved.north_m, positions)):
+            continue
+        ranges = [math.hypot(position[0] - solved.east_m,
+                             position[1] - solved.north_m)
+                  for position in positions]
+        if (not proposal_config.fisher_covariance_moving_resection
+                or solved.position_sigma_m <= 0.0
+                or solved.heading_sigma_deg <= 0.0):
+            solved = dataclasses.replace(
+                solved, position_sigma_m=sigma * float(np.median(ranges)),
+                heading_sigma_deg=math.degrees(sigma))
+        refined.append(solved)
+
+    return dataclasses.replace(
+        result, hypotheses=refined,
+        represented_compatibility_mass=min(
+            1.0, sum(item.compatibility_mass for item in refined)))
+
+
 def _evidence_gate(tracker, result, window, config: structs.FilterConfig,
                    rng: np.random.Generator, score_fn, belief,
                    catalog) -> tuple:
@@ -1202,6 +1439,10 @@ def _validate(config: structs.FilterConfig, catalog, odometry,
                          f"{config.ess_resample_frac}")
     if config.checkpoint_every <= 0:
         raise ValueError("checkpoint_every must be positive")
+    if (config.proposal.fisher_covariance_moving_resection
+            and not config.proposal.precision_weighted_moving_resection):
+        raise ValueError("Fisher moving-resection covariance requires "
+                         "precision-weighted moving resection")
 
     for kf, delta in enumerate(odometry, start=1):
         if delta.keyframe_idx != kf:
@@ -1439,15 +1680,20 @@ def run_filter(
         if keyframe_measurements and first_bearing_kf is None:
             first_bearing_kf = kf
         if config.proposal.enabled and keyframe_measurements:
+            initialized = any(
+                event.trigger == "init" or event.n_injected
+                for event in proposal_events)
             refractory_ok = (
                 last_proposal_kf is None
                 or kf - last_proposal_kf >= config.proposal.refractory_keyframes)
-            if (config.proposal.on_init and not proposal_events
+            if (config.proposal.on_init and not initialized
                     and isinstance(config.init, structs.UniformBoxInit)
                     and _init_window_is_observable(
                         measurements, kf, first_bearing_kf, config)):
                 # Initialize only from a window with enough distinct tracklets
                 # to constrain a pose, subject to the bounded-wait fallback.
+                # A rejected recovery attempt is not initialization and must
+                # not suppress this later observable init.
                 # This path applies only to an uninformative uniform prior;
                 # informative local priors retain their declared authority.
                 trigger = "init"
@@ -1465,9 +1711,8 @@ def run_filter(
             # Staggered epochs mean one keyframe usually carries a single
             # bearing, so gather a short window and treat it as simultaneous
             # (proposal.py documents the translation/range error this costs).
-            window_start = kf - config.proposal.window_keyframes
-            window = [m for m in measurements
-                      if window_start <= m.anchor_keyframe_idx <= kf]
+            window = _proposal_window(
+                measurements, odometry, kf, config.proposal)
             particle_budget = min(
                 config.n_particles,
                 int(round(config.proposal.inject_fraction
@@ -1476,7 +1721,17 @@ def run_filter(
                 window, tables, catalog, config.proposal,
                 event_id=len(proposal_events), keyframe_idx=kf,
                 trigger=trigger, particle_budget=particle_budget)
+            if config.proposal.transport_window_yaw:
+                result = _refine_moving_point_fixes(
+                    result, window, odometry, kf, catalog, belief,
+                    config.proposal, config.init)
             gate_passed, gate_best, gate_ref = True, None, None
+            gate_rng_state = rng.bit_generator.state
+            if (config.proposal.require_observable_recovery
+                    and trigger != "init"
+                    and result.n_tracklets_considered
+                    < config.proposal.min_tracklets_for_injection):
+                gate_passed = False
             # The init trigger bypasses the gate: it only fires for an
             # uninformative prior (§5.5), and the only thing standing is
             # prior mass — which the mode tracker can still report as a
@@ -1484,13 +1739,17 @@ def run_filter(
             # mass threshold), leaving the gate defending a prior that
             # says nothing.
             if (config.proposal.evidence_gate and result.hypotheses
-                    and trigger != "init"):
+                    and trigger != "init" and gate_passed):
                 gate_passed, gate_best, gate_ref = _evidence_gate(
                     tracker, result, window, config, rng, score_fn, belief,
                     catalog)
             n_injected, kept_idx = ((0, None) if not gate_passed else
                                     inject_proposal(belief, result, config,
                                                     rng))
+            if not gate_passed:
+                # A rejected proposal is observational bookkeeping, not a
+                # stochastic intervention on later propagation/resampling.
+                rng.bit_generator.state = gate_rng_state
             proposal_events.append(_proposal_event_record(
                 result, n_injected, gate_passed, gate_best, gate_ref))
             # Health links every proposal attempt, including an attempt that
