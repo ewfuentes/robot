@@ -88,8 +88,17 @@ as a **derived** catalog, never by rebuilding the full catalog:
 3. `trim_catalog` runs on the result as on any other catalog, so added rows
    face the same far-field rules as OSM rows.
 
-`landmark_type` names the source (`osm`, `enc`, `overture`) and matcher
+`landmark_type` names the source (`osm`, `enc`, `overture`, `faa`) and matcher
 landmark ids are namespaced by it. See decisions.md, 2026-09-03.
+
+The FAA Digital Obstacle File follows the same path
+(`dataset_tools:extract_landmarks_from_faa_dof` → `add_catalog_source`), with
+one addition: obstacle rows are nameless, so `add_catalog_source
+--class_merge_radius_m` merges a row into the single same-class catalog row
+within radius (radius widened to twice the row's `faa:position_tolerance_m`)
+instead of appending a second copy of the tower; the catalog row keeps its
+identity and gains `height` and the `faa:*` facts. Ambiguous rows (two
+candidates) are skipped and recorded. See decisions.md, 2026-09-10.
 
 ## Data-root layout
 

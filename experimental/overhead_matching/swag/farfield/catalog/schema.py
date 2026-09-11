@@ -22,7 +22,7 @@ META_COLUMNS = ("id", "geometry", "landmark_type", TAGS_COLUMN)
 REQUIRED_COLUMNS = frozenset(META_COLUMNS)
 OPTIONAL_STRUCTURAL_COLUMNS = frozenset({"object_class"})
 ALLOWED_COLUMNS = REQUIRED_COLUMNS | OPTIONAL_STRUCTURAL_COLUMNS
-ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc", "overture"})
+ALLOWED_LANDMARK_TYPES = frozenset({"osm", "enc", "overture", "faa"})
 
 
 class CatalogSchemaError(ValueError):
@@ -196,6 +196,23 @@ def _as_list(name: str, values: Iterable) -> list:
         raise CatalogSchemaError(f"{name} must be iterable") from exc
 
 
+def encode_tags(mapping: Mapping, row_index=None) -> str:
+    """Encode one row's tag mapping exactly as the compact schema stores it.
+
+    Round-trips through the same strict decoder used by readers, so a
+    non-string value fails here rather than after a catalog reaches disk.
+    """
+    try:
+        encoded = json.dumps(dict(mapping), sort_keys=True,
+                             separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise CatalogSchemaError(
+            f"row {row_index} tags cannot be encoded as JSON: {exc}"
+        ) from exc
+    _decode_tags(encoded, row_index)
+    return encoded
+
+
 def build_frame(ids, geometries, landmark_types, tags,
                 crs="EPSG:4326") -> gpd.GeoDataFrame:
     """Build and validate a compact far-field catalog GeoDataFrame."""
@@ -233,17 +250,7 @@ def build_frame(ids, geometries, landmark_types, tags,
                 raise CatalogSchemaError(
                     f"row {row_index} tag {key!r} must have a string value, "
                     f"got {type(tag_value).__name__}")
-        # Round-trip through the same strict decoder used by readers. This
-        # catches non-string values before a catalog reaches disk.
-        try:
-            encoded = json.dumps(dict(mapping), sort_keys=True,
-                                 separators=(",", ":"), allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise CatalogSchemaError(
-                f"row {row_index} tags cannot be encoded as JSON: {exc}"
-            ) from exc
-        _decode_tags(encoded, row_index)
-        encoded_tags.append(encoded)
+        encoded_tags.append(encode_tags(mapping, row_index))
 
     try:
         frame = gpd.GeoDataFrame(

@@ -94,8 +94,9 @@ class ActiveCatalogsTest(unittest.TestCase):
             [scope.name for scope in subject.ACTIVE_SCOPES],
             ["boston_harbor_20260712", "charles_river_20260727",
              "mount_washington_20260815", "franconia_20260829",
-             "pohang_canal_04"])
-        boston, charles, washington, franconia, pohang = subject.ACTIVE_SCOPES
+             "pohang_canal_04", "portland_flight_20260906"])
+        (boston, charles, washington, franconia, pohang,
+         portland) = subject.ACTIVE_SCOPES
         self.assertEqual(boston.output_datasets, (
             "boston_harbor_leg1", "boston_harbor_leg2",
             "boston_harbor_leg3"))
@@ -113,6 +114,16 @@ class ActiveCatalogsTest(unittest.TestCase):
             "north-america/us/vermont-latest.osm.pbf"))
         self.assertIsNone(franconia.enc_state)
         self.assertEqual(pohang.output_datasets, ("pohang_canal_04",))
+        self.assertEqual(portland.output_datasets, (
+            "portland_flight_20260906_leg1",
+            "portland_flight_20260906_leg2",
+            "portland_flight_20260906_leg3"))
+        self.assertEqual(portland.output_datasets, portland.bbox_datasets)
+        self.assertEqual(portland.osm_specs,
+                         ("north-america/us/maine-latest.osm.pbf",))
+        self.assertEqual(portland.enc_state, "ME")
+        self.assertEqual(portland.bbox_buffer_km, 10.0)
+        self.assertEqual(pohang.bbox_buffer_km, subject.BBOX_BUFFER_KM)
         self.assertEqual(subject.BBOX_BUFFER_KM, 25.0)
         self.assertEqual(subject.ENC_BAND, 5)
         self.assertEqual(subject.OSM_GEOMETRY_INDEX_MODE,
