@@ -61,8 +61,8 @@ def main():
                         help="what the uniform prior spans. The retrieval "
                              "support is the scored lattice, so it is the "
                              "default; 'catalog' spans the catalog's "
-                             "declared fetch bbox through the same "
-                             "export_ingest.region_box the bearing runs "
+                             "declared region through the same "
+                             "export_ingest.prior_box the bearing runs "
                              "use, which is exact parity with them")
     parser.add_argument("--margin_m", type=float, default=None,
                         help="uniform prior margin past the chosen region "
@@ -136,7 +136,7 @@ def main():
                 north_min_m=float(fields.north_m.min()) - args.margin_m,
                 north_max_m=float(fields.north_m.max()) + args.margin_m)
         else:
-            init = export_ingest.region_box(data, args.margin_m)
+            init = export_ingest.prior_box(data, args.margin_m)
         print(f"prior       : uniform over "
               f"{(init.east_max_m - init.east_min_m) / 1000:.1f} x "
               f"{(init.north_max_m - init.north_min_m) / 1000:.1f} km, "
