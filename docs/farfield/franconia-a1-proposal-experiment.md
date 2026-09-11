@@ -43,7 +43,8 @@ proposal research direction and uses a separate window-joint architecture with
 multi-track identity persistence, site memory, soft range caps, and short/long
 windows. The exact A1 controls archived here do not exist there.
 
-The production-oriented work continuing on `franconia-iteration` instead
-loads the optional per-frame camera heading, aligns raw observations before
-epoch fusion, and derives tier-1 odometry before applying the existing #714
-IMU noise profile.
+The production-oriented work merged separately in PR #718 loads the optional
+per-frame camera heading and uses it to derive tier-1 odometry before applying
+the existing #714 IMU noise profile. Within-epoch observation alignment was
+measured during this experiment but deliberately excluded from that PR; the
+legacy measurement reducer remains unchanged.
