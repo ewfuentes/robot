@@ -81,6 +81,7 @@ class ExtractionFixture(unittest.TestCase):
                 "model": "gemini-test-model",
                 "prompt_type": "osm_tags_farfield_v2",
                 "pinhole_resolution": RESOLUTION,
+                "pinhole_pitch_deg": 0,
                 "media_resolution": "MEDIA_RESOLUTION_HIGH",
                 "thinking_level": "HIGH",
             },
@@ -130,11 +131,17 @@ class ExtractionFixture(unittest.TestCase):
         )
 
     def fake_render(self, input_dir, output_dir, fov_x, fov_y, res_x,
-                    res_y, num_workers):
+                    res_y, num_workers, pitch=0.0):
         self.assertEqual((res_x, res_y), (RESOLUTION, RESOLUTION))
         REAL_PROCESS_PANORAMAS(
             input_dir, output_dir, fov_x, fov_y, res_x, res_y,
-            num_workers=num_workers)
+            num_workers=num_workers, pitch=pitch)
+
+    def flat_selected(self, config=None):
+        config = config or self.config
+        return {f"{section}.{key}": value
+                for section, values in config.items()
+                for key, value in values.items()}
 
     def fake_success_transport(self, execution, input_path, output_path, *, tag):
         del execution, tag
@@ -154,6 +161,61 @@ class ExtractionFixture(unittest.TestCase):
                     ex.vbm, "run_requests",
                     side_effect=self.fake_success_transport):
             return ex.run(self.args, arguments=("extract_landmarks", "--test"))
+
+
+class FacePitchTest(ExtractionFixture):
+    def test_pitch_must_match_the_prompt(self):
+        selected = self.flat_selected()
+        ex._validate_selected(selected)  # level prompt, level render
+        selected["extraction.pinhole_pitch_deg"] = -30
+        with self.assertRaisesRegex(build_config.InvalidConfigValue,
+                                    "render and the prompt must agree"):
+            ex._validate_selected(selected)
+        selected["extraction.prompt_type"] = "osm_tags_farfield_v3_down30"
+        ex._validate_selected(selected)  # pitched prompt, pitched render
+        selected["extraction.pinhole_pitch_deg"] = 0
+        with self.assertRaises(build_config.InvalidConfigValue):
+            ex._validate_selected(selected)
+
+    def test_level_selection_is_comparable_to_a_predating_record(self):
+        selected = self.flat_selected()
+        recorded = dict(selected)
+        del recorded["extraction.pinhole_pitch_deg"]
+        self.assertEqual(ex._comparable_selected(recorded), selected)
+        pitched = {**recorded, "extraction.pinhole_pitch_deg": -30}
+        self.assertNotEqual(ex._comparable_selected(pitched), selected)
+
+    def test_pitched_render_is_validated_at_its_pitch_and_recorded(self):
+        # The fixture panoramas are flat colours, on which a pitched and a
+        # level face are identical; give these a sky/ground boundary.
+        self.dataset_base = testing.make_dataset(
+            self.tmp / "banded" / "testset", n_frames=self.N_FRAMES,
+            pano_size=(32, 16))
+        for path in (self.dataset_base / "panorama").glob("*.jpg"):
+            banded = Image.new("RGB", (32, 16), (40, 80, 200))
+            banded.paste((30, 120, 40), (0, 8, 32, 16))
+            banded.save(path)
+        level_args = self.make_recipe(self.tmp / "build_level", self.config)
+        config = copy.deepcopy(self.config)
+        config["extraction"]["prompt_type"] = "osm_tags_farfield_v3_down30"
+        config["extraction"]["pinhole_pitch_deg"] = -30
+        args = self.make_recipe(self.tmp / "build_pitched", config)
+        context = ex.load_context(args)
+        level = ex.load_context(level_args)
+        self.assertEqual(ex._selected_pitch_deg(context), -30.0)
+        self.assertEqual(ex._pinhole_config(context)["geometry"]["pitch_deg"],
+                         -30.0)
+        self.assertNotIn("pitch_deg", ex._pinhole_config(level)["geometry"])
+        self.assertEqual(
+            ex._request_media_settings(context)["pinhole_pitch_deg"], -30.0)
+        self.assertNotIn("pinhole_pitch_deg",
+                         ex._request_media_settings(level))
+        ref = ex.ensure_pinhole_artifact(args, context)
+        self.assertEqual(ref.kind, paths_lib.PINHOLE_IMAGES)
+        # Faces rendered pitched reproduce only at that pitch.
+        ex.validate_pinhole_images(Path(args.pinhole_output_dir), context)
+        with self.assertRaisesRegex(ValueError, "does not reproduce"):
+            ex.validate_pinhole_images(Path(args.pinhole_output_dir), level)
 
 
 class CliAndConfigTest(ExtractionFixture):
@@ -211,49 +273,52 @@ class CliAndConfigTest(ExtractionFixture):
             ex.load_context(self.args)
 
 
+SCHEMA = prompts.response_schema("osm_tags_farfield_v2")
+
+
 class ResponseValidationTest(unittest.TestCase):
     def test_schema_valid_response_is_canonicalized_for_ingest(self):
-        result = ex.validate_response(
+        result = ex.response_validator(SCHEMA)(
             "frame", response(provider_prediction(
                 landmarks=[provider_landmark()])))
         self.assertEqual(
             result["landmarks"][0]["bounding_boxes"][0]["yaw_angle"], 90)
         # The canonical payload is accepted by the final-artifact validator.
-        self.assertEqual(ex._validate_canonical_prediction(result), result)
+        self.assertEqual(ex._validate_canonical_prediction(result, SCHEMA), result)
 
     def test_legitimately_empty_prediction_is_successful(self):
         self.assertEqual(
-            ex.validate_response("frame", response(provider_prediction())),
+            ex.response_validator(SCHEMA)("frame", response(provider_prediction())),
             provider_prediction())
 
     def test_unknown_fields_and_fenced_json_are_not_compatibility_paths(self):
         extra = provider_prediction()
         extra["legacy"] = True
         with self.assertRaisesRegex(ValueError, "exact keys"):
-            ex.validate_response("frame", response(extra))
+            ex.response_validator(SCHEMA)("frame", response(extra))
         fenced = response(provider_prediction())
         fenced["candidates"][0]["content"]["parts"][0]["text"] = (
             "```json\n{}\n```")
         with self.assertRaisesRegex(ValueError, "invalid strict JSON"):
-            ex.validate_response("frame", fenced)
+            ex.response_validator(SCHEMA)("frame", fenced)
 
     def test_invalid_yaw_or_zero_width_box_is_not_successful(self):
         landmark = provider_landmark()
         landmark["bounding_boxes"][0]["yaw_angle"] = "45"
         with self.assertRaisesRegex(ValueError, "yaw_angle"):
-            ex.validate_response(
+            ex.response_validator(SCHEMA)(
                 "frame", response(provider_prediction(landmarks=[landmark])))
         landmark = provider_landmark()
         landmark["bounding_boxes"][0]["xmax"] = 200
         with self.assertRaisesRegex(ValueError, "positive width"):
-            ex.validate_response(
+            ex.response_validator(SCHEMA)(
                 "frame", response(provider_prediction(landmarks=[landmark])))
 
     def test_multiple_candidates_are_ambiguous(self):
         wrapped = response(provider_prediction())
         wrapped["candidates"].append(wrapped["candidates"][0])
         with self.assertRaisesRegex(ValueError, "exactly one candidate"):
-            ex.validate_response("frame", wrapped)
+            ex.response_validator(SCHEMA)("frame", wrapped)
 
 
 class TypedPublicationTest(ExtractionFixture):
@@ -558,10 +623,10 @@ class TypedPublicationTest(ExtractionFixture):
         context = ex.load_context(self.args)
 
         def corrupt_render(input_dir, output_dir, fov_x, fov_y, res_x,
-                           res_y, num_workers):
+                           res_y, num_workers, pitch=0.0):
             self.fake_render(
                 input_dir, output_dir, fov_x, fov_y, res_x, res_y,
-                num_workers)
+                num_workers, pitch=pitch)
             target = (
                 Path(output_dir) / self.stems[1] / "yaw_090.jpg")
             target.write_bytes(b"not a jpeg")
@@ -577,10 +642,10 @@ class TypedPublicationTest(ExtractionFixture):
         context = ex.load_context(self.args)
 
         def wrong_size_render(input_dir, output_dir, fov_x, fov_y, res_x,
-                              res_y, num_workers):
+                              res_y, num_workers, pitch=0.0):
             self.fake_render(
                 input_dir, output_dir, fov_x, fov_y, res_x, res_y,
-                num_workers)
+                num_workers, pitch=pitch)
             target = (
                 Path(output_dir) / self.stems[-1] / "yaw_270.jpg")
             Image.new("RGB", (res_x, res_y - 1)).save(target)

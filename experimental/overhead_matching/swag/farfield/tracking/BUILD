@@ -6,6 +6,7 @@ py_library(
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         "//experimental/overhead_matching/swag/farfield:geometry",
+            "//experimental/overhead_matching/swag/farfield:dataset",
     ],
 )
 

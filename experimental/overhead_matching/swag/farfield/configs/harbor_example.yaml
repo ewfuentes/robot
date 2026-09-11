@@ -19,6 +19,7 @@ extraction:
   model: gemini-3.1-pro-preview
   prompt_type: osm_tags_farfield
   pinhole_resolution: 2048
+  pinhole_pitch_deg: 0  # camera pitch, up-positive; must match the prompt (prompts.PROMPT_PITCH_DEG)
   media_resolution: MEDIA_RESOLUTION_ULTRA_HIGH
   thinking_level: HIGH
 

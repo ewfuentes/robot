@@ -248,5 +248,28 @@ class DatasetSourceDigestTest(unittest.TestCase):
                     path.write_bytes(original)
 
 
+
+class PinholeManifestConfigTest(unittest.TestCase):
+    DIGESTS = {key: "0" * 64 for key in paths_lib.DATASET_SOURCE_DIGEST_KEYS}
+
+    def test_level_render_records_no_pitch_key(self):
+        config = paths_lib.pinhole_manifest_config(
+            self.DIGESTS, resolution=64, panorama_keys=("f0000",))
+        self.assertNotIn("pitch_deg", config["geometry"])
+        self.assertEqual(config, paths_lib.pinhole_manifest_config(
+            self.DIGESTS, resolution=64, panorama_keys=("f0000",),
+            pitch_deg=0))
+
+    def test_pitched_render_records_its_pitch(self):
+        config = paths_lib.pinhole_manifest_config(
+            self.DIGESTS, resolution=64, panorama_keys=("f0000",),
+            pitch_deg=-30)
+        self.assertEqual(config["geometry"]["pitch_deg"], -30.0)
+        with self.assertRaises(ValueError):
+            paths_lib.pinhole_manifest_config(
+                self.DIGESTS, resolution=64, panorama_keys=("f0000",),
+                pitch_deg=95)
+
+
 if __name__ == "__main__":
     unittest.main()

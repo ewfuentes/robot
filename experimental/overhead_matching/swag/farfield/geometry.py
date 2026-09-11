@@ -15,6 +15,14 @@ Conventions:
   column x = ((180 - az_ccw) / 360 mod 1) * W, so faces sit left-to-right in
   the panorama as 180 | 90 | 0 | 270. `direction_from_face_px` is the exact,
   empirically verified inverse of that render.
+- A face may be pitched: `pitch_deg` is the renderer's camera pitch in
+  degrees, UP-positive, applied about the face's own horizontal axis before
+  the yaw (R = Ry(yaw) @ Rx(pitch)), so every face of one panorama shares it
+  and the horizon sits at row (0.5 - tan(pitch)/(2 tan(fov/2))) of the face.
+  0 (the horizon through the face centre) is what every render before
+  2026-09-10 used; -30 is the airborne setting. The same value is
+  `extraction.pinhole_pitch_deg` in a build config and
+  `prompts.PROMPT_PITCH_DEG[prompt_type]` in the prompt registry.
 - Pinhole bbox coordinates are normalized 0-1000 per face, y down (the VLM
   extraction convention).
 - Pano-space boxes may straddle the +-180 wrap; they are represented
@@ -86,21 +94,38 @@ def circular_mean_deg(angles_deg) -> float:
 # ---------------------------------------------------------------------------
 
 def direction_from_face_px(face_yaw_deg: float, x_norm: float, y_norm: float,
-                           fov_deg: float = 90.0):
-    """(az_cw_deg, el_up_deg) of a normalized pinhole-face pixel."""
+                           fov_deg: float = 90.0, pitch_deg: float = 0.0):
+    """(az_cw_deg, el_up_deg) of a normalized pinhole-face pixel.
+
+    pitch_deg is the camera pitch the face was rendered with (degrees,
+    up-positive; see the module docstring). At 0 this is the historical
+    inverse unchanged.
+    """
     half_tan = math.tan(math.radians(fov_deg) / 2.0)
     # Render ray in face frame, z normalized to 1: [c, r, 1], c right-negative.
     c = (1.0 - 2.0 * x_norm / BBOX_NORM_MAX) * half_tan
     r = (2.0 * y_norm / BBOX_NORM_MAX - 1.0) * half_tan
-    az_ccw_deg = face_yaw_deg + math.degrees(math.atan(c))
-    el_down_deg = math.degrees(math.atan2(r, math.hypot(c, 1.0)))
+    # The renderer pitches about the face's horizontal axis first (Rx), then
+    # yaws (Ry); yaw leaves elevation alone, so only Rx acts on (r, 1).
+    pitch = math.radians(pitch_deg)
+    y_pitched = math.cos(pitch) * r - math.sin(pitch)
+    z_pitched = math.sin(pitch) * r + math.cos(pitch)
+    az_ccw_deg = face_yaw_deg + math.degrees(math.atan2(c, z_pitched))
+    el_down_deg = math.degrees(
+        math.atan2(y_pitched, math.hypot(c, z_pitched)))
     return (-az_ccw_deg) % 360.0, -el_down_deg
 
 
 def bearing_camera_cw_deg(face_yaw_deg: float, x_norm: float,
-                       fov_deg: float = 90.0) -> float:
-    """Camera-frame azimuth of a normalized x coordinate on a pinhole face."""
-    return direction_from_face_px(face_yaw_deg, x_norm, 0.0, fov_deg)[0]
+                          fov_deg: float = 90.0, *, pitch_deg: float = 0.0,
+                          y_norm: float = BBOX_NORM_MAX / 2.0) -> float:
+    """Camera-frame azimuth of a normalized x coordinate on a pinhole face.
+
+    On a level face a column has one azimuth; on a pitched face it does not,
+    so the row (y_norm, default the face centre) is part of the question.
+    """
+    return direction_from_face_px(
+        face_yaw_deg, x_norm, y_norm, fov_deg, pitch_deg)[0]
 
 
 def pano_px_from_direction(az_cw_deg: float, el_up_deg: float,
@@ -133,7 +158,7 @@ def azimuth_of_pano_column(x: float, pano_w: int) -> float:
 
 
 def bbox_angles(face_yaw_deg: float, xmin: float, ymin: float, xmax: float,
-                ymax: float, fov_deg: float = 90.0):
+                ymax: float, fov_deg: float = 90.0, pitch_deg: float = 0.0):
     """Center azimuth, center elevation, and angular width of one face bbox.
 
     Elevation is evaluated at the bbox center (off-axis foreshortening
@@ -141,10 +166,13 @@ def bbox_angles(face_yaw_deg: float, xmin: float, ymin: float, xmax: float,
     difference of the edge bearings, so a full-width face box measures
     exactly fov_deg.
     """
+    y_center = (ymin + ymax) / 2.0
     center_az, center_el = direction_from_face_px(
-        face_yaw_deg, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0, fov_deg)
-    left = bearing_camera_cw_deg(face_yaw_deg, xmin, fov_deg)
-    right = bearing_camera_cw_deg(face_yaw_deg, xmax, fov_deg)
+        face_yaw_deg, (xmin + xmax) / 2.0, y_center, fov_deg, pitch_deg)
+    left = bearing_camera_cw_deg(face_yaw_deg, xmin, fov_deg,
+                                 pitch_deg=pitch_deg, y_norm=y_center)
+    right = bearing_camera_cw_deg(face_yaw_deg, xmax, fov_deg,
+                                  pitch_deg=pitch_deg, y_norm=y_center)
     width = abs(float(circular_diff_deg(right, left)))
     return center_az, center_el, width
 
@@ -165,7 +193,7 @@ def _edge_samples(xmin: float, ymin: float, xmax: float, ymax: float,
 def pano_bbox_from_face_bbox(face_yaw_deg: float, xmin: float, ymin: float,
                              xmax: float, ymax: float, pano_w: int,
                              pano_h: int, fov_deg: float = 90.0,
-                             n_per_edge: int = 9):
+                             n_per_edge: int = 9, pitch_deg: float = 0.0):
     """Pano-pixel bbox (x_min, y_min, x_max, y_max) of one pinhole-face bbox.
 
     Edge points are sampled because straight pinhole edges curve in the
@@ -173,10 +201,12 @@ def pano_bbox_from_face_bbox(face_yaw_deg: float, xmin: float, ymin: float,
     """
     pts = _edge_samples(xmin, ymin, xmax, ymax, n_per_edge)
     center_az, _ = direction_from_face_px(
-        face_yaw_deg, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0, fov_deg)
+        face_yaw_deg, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0, fov_deg,
+        pitch_deg)
     xs, ys = [], []
     for x_norm, y_norm in pts:
-        az, el = direction_from_face_px(face_yaw_deg, x_norm, y_norm, fov_deg)
+        az, el = direction_from_face_px(
+            face_yaw_deg, x_norm, y_norm, fov_deg, pitch_deg)
         # Unwrap azimuth to within +-180 of the box center, keep x unwrapped.
         az_unwrapped = center_az + (az - center_az + 180.0) % 360.0 - 180.0
         xs.append((az_unwrapped / 360.0 + 0.5) * pano_w)
@@ -210,11 +240,13 @@ def pano_bbox_for_observation(obs_boxes, pano_w: int, pano_h: int,
     """Pano bbox of an observation's (possibly seam-merged) box group.
 
     obs_boxes: iterable of objects with face_yaw_deg/xmin/ymin/xmax/ymax
-    attributes.
+    attributes and, for faces rendered pitched, face_pitch_deg (a box that
+    predates the attribute came off a level face).
     """
     boxes = [
         pano_bbox_from_face_bbox(b.face_yaw_deg, b.xmin, b.ymin, b.xmax,
-                                 b.ymax, pano_w, pano_h, fov_deg)
+                                 b.ymax, pano_w, pano_h, fov_deg,
+                                 pitch_deg=getattr(b, "face_pitch_deg", 0.0))
         for b in obs_boxes
     ]
     return pano_bbox_union(boxes, pano_w)

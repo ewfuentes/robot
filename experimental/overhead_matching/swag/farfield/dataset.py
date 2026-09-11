@@ -39,6 +39,17 @@ from experimental.overhead_matching.swag.farfield import (
 )
 
 VALID_FACE_YAWS = ("0", "90", "180", "270")
+# Extractor `distance_estimate` bucket -> upper edge in metres (`over_10km`
+# carries no finite cap). The one definition: the prompt schema's enum, the
+# ingest check and the tracking range cap all read it from here.
+DISTANCE_BUCKET_UPPER_M = {
+    "under_100m": 100.0,
+    "100m_to_500m": 500.0,
+    "500m_to_2km": 2000.0,
+    "2km_to_10km": 10000.0,
+    "over_10km": None,
+}
+DISTANCE_BUCKETS = tuple(DISTANCE_BUCKET_UPPER_M)
 PANO_ID_RE = re.compile(r"f[0-9]+\Z")
 PREDICTIONS_NAME = "predictions.jsonl"
 
@@ -280,6 +291,9 @@ class BBox:
     ymin: float
     xmax: float
     ymax: float
+    # Camera pitch the face was rendered with (degrees, up-positive;
+    # geometry.py). Read from the frame_landmarks manifest at ingest.
+    face_pitch_deg: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -475,8 +489,13 @@ def _box_edges_unwrapped(boxes: list, fov_deg: float):
     edges = []
     reference = None
     for box in boxes:
-        left = geo.bearing_camera_cw_deg(box.face_yaw_deg, box.xmin, fov_deg)
-        right = geo.bearing_camera_cw_deg(box.face_yaw_deg, box.xmax, fov_deg)
+        y_center = (box.ymin + box.ymax) / 2.0
+        left = geo.bearing_camera_cw_deg(
+            box.face_yaw_deg, box.xmin, fov_deg,
+            pitch_deg=box.face_pitch_deg, y_norm=y_center)
+        right = geo.bearing_camera_cw_deg(
+            box.face_yaw_deg, box.xmax, fov_deg,
+            pitch_deg=box.face_pitch_deg, y_norm=y_center)
         if right < left:
             right += 360.0
         if reference is None:
@@ -547,15 +566,38 @@ def _finite_number(value, where: str) -> float:
     return result
 
 
-def _validated_landmark(landmark, where: str) \
+def _validated_landmark(landmark, where: str, face_pitch_deg: float = 0.0) \
         -> tuple[dict, list[BBox], int]:
     if not isinstance(landmark, dict):
         raise ContractViolation(f"{where} must be an object")
-    _require_exact_keys(
-        landmark,
-        {"description", "confidence", "primary_tag", "additional_tags",
-         "bounding_boxes"},
-        where)
+    expected = {"description", "confidence", "primary_tag", "additional_tags",
+                "bounding_boxes"}
+    # Prompts from v3 on carry distance_estimate as a schema field rather than
+    # an additional tag. Ingest folds it into additional_tags so every
+    # downstream reader (range cap, audit, viewers) sees one representation.
+    if "distance_estimate" in landmark:
+        expected |= {"distance_estimate"}
+    _require_exact_keys(landmark, expected, where)
+    if "distance_estimate" in landmark:
+        bucket = landmark["distance_estimate"]
+        if bucket not in DISTANCE_BUCKETS:
+            raise ContractViolation(
+                f"{where}.distance_estimate must be one of "
+                f"{list(DISTANCE_BUCKETS)}, got {bucket!r}")
+        tags = landmark["additional_tags"]
+        if not isinstance(tags, list):
+            raise ContractViolation(f"{where}.additional_tags must be a list")
+        tagged = [t.get("value") for t in tags
+                  if isinstance(t, dict) and t.get("key") == "distance_estimate"]
+        if tagged and tagged != [bucket]:
+            raise ContractViolation(
+                f"{where}: distance_estimate field {bucket!r} disagrees with "
+                f"additional tag {tagged}")
+        landmark = dict(landmark)
+        del landmark["distance_estimate"]
+        if not tagged:
+            landmark["additional_tags"] = list(tags) + [
+                {"key": "distance_estimate", "value": bucket}]
     for key in ("description", "confidence"):
         if not isinstance(landmark[key], str):
             raise ContractViolation(f"{where}.{key} must be a string")
@@ -613,7 +655,8 @@ def _validated_landmark(landmark, where: str) \
         except ContractViolation:
             n_invalid += 1
             continue
-        boxes.append(BBox(face_yaw_deg=yaw, **coordinates))
+        boxes.append(BBox(face_yaw_deg=yaw, face_pitch_deg=face_pitch_deg,
+                          **coordinates))
     return landmark, boxes, n_invalid
 
 
@@ -633,7 +676,8 @@ def _observation_from_group(pano_id: str, frame_idx: int, landmark_idx: int,
     elevation = sum(
         geo.direction_from_face_px(
             box.face_yaw_deg, (box.xmin + box.xmax) / 2.0,
-            (box.ymin + box.ymax) / 2.0, params.fov_deg)[1]
+            (box.ymin + box.ymax) / 2.0, params.fov_deg,
+            box.face_pitch_deg)[1]
         for box in group) / len(group)
 
     primary_tag = landmark["primary_tag"]
@@ -675,6 +719,22 @@ def _observation_from_group(pano_id: str, frame_idx: int, landmark_idx: int,
     )
 
 
+def pinhole_pitch_deg(frame_landmarks_dir: Path) -> float:
+    """Camera pitch (degrees, up-positive) of the faces behind an artifact.
+
+    Read from the extraction selection the frame_landmarks manifest records,
+    so the inverse projection uses the render's own value rather than a
+    second copy in a later stage's config. A manifest that predates the
+    setting -- every render before 2026-09-10, and legacy-adopted artifacts,
+    which record no selection -- came from level faces.
+    """
+    config = artifact.load_manifest(Path(frame_landmarks_dir)).config
+    selected = config.get("selected_config")
+    if not isinstance(selected, dict):
+        return 0.0
+    return float(selected.get("extraction.pinhole_pitch_deg", 0.0))
+
+
 def run_ingest(dataset_base: Path, frame_landmarks_dir: Path,
                params: IngestParams) -> IngestResult:
     """Frames + camera-frame Observations for one dataset.
@@ -697,6 +757,8 @@ def run_ingest(dataset_base: Path, frame_landmarks_dir: Path,
             f"invalid frame_landmarks artifact {frame_landmarks_dir}: {exc}") \
             from exc
 
+    face_pitch_deg = pinhole_pitch_deg(frame_landmarks_dir)
+
     frames = load_frames(dataset_base)
     if not frames:
         raise FileNotFoundError(f"No panoramas under {dataset_base}/panorama")
@@ -713,7 +775,8 @@ def run_ingest(dataset_base: Path, frame_landmarks_dir: Path,
             stats.n_raw_landmark_entries += 1
             landmark, boxes, n_invalid = _validated_landmark(
                 landmark,
-                f"prediction[{frame.pano_stem!r}].landmarks[{landmark_idx}]")
+                f"prediction[{frame.pano_stem!r}].landmarks[{landmark_idx}]",
+                face_pitch_deg)
             stats.n_boxes_invalid_geometry += n_invalid
             if not boxes:
                 stats.n_landmarks_without_valid_boxes += 1

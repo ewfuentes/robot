@@ -67,14 +67,20 @@ py_library(
     deps = [
         requirement("pydantic"),
         requirement("tqdm"),
+        "//experimental/overhead_matching/swag/farfield:dataset",
         "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/catalog:catalog",
     ],
 )
 
 py_test(
     name = "prompts_test",
     srcs = ["prompts_test.py"],
-    deps = [":prompts"],
+    deps = [
+        ":prompts",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield/catalog:catalog",
+    ],
 )
 
 py_library(

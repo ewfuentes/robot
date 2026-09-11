@@ -874,8 +874,11 @@ class RuleFingerprintTest(unittest.TestCase):
         self.assertNotEqual(changed, tc.rule_fingerprint(2000.0, 6.0))
 
     def test_current_no_clip_rules_have_stable_fingerprint(self):
+        # 4568b3825d1fe2af until 2026-09-10, when `aerialway` joined
+        # catalog.STRUCTURAL_KEYS (shared with the extraction prompt's
+        # primary-tag enum); every trim before that records the old value.
         self.assertEqual(tc.rule_fingerprint(2000.0, 6.0),
-                         "4568b3825d1fe2af")
+                         "6e3fac613f070f7e")
 
     def test_changes_with_exact_spatial_boundary_and_plan(self):
         first = tc.rule_fingerprint(

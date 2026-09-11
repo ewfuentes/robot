@@ -20,6 +20,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from experimental.overhead_matching.swag.farfield import dataset
 from experimental.overhead_matching.swag.farfield import geometry as geo
 
 
@@ -150,15 +151,9 @@ class Measurement:
         _validate_range_cap(self.range_max_m, "measurement")
 
 
-# Extractor `distance_estimate` bucket -> upper edge in metres. `over_10km`
-# carries no finite cap.
-DISTANCE_BUCKET_UPPER_M = {
-    "under_100m": 100.0,
-    "100m_to_500m": 500.0,
-    "500m_to_2km": 2000.0,
-    "2km_to_10km": 10000.0,
-    "over_10km": None,
-}
+# Extractor `distance_estimate` bucket -> upper edge in metres; owned by the
+# ingest contract (`dataset.py`) so the prompt enum, ingest and this cap agree.
+DISTANCE_BUCKET_UPPER_M = dataset.DISTANCE_BUCKET_UPPER_M
 
 # Recorded support classes whose detection counts as evidence for the track,
 # the same set `semantic_audit.collect_evidence` trusts (track_builder's

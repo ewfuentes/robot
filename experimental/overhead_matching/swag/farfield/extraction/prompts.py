@@ -14,6 +14,7 @@ JSONL keeps the text verbatim as it went out).
 """
 
 import base64
+import functools
 import hashlib
 import json
 from dataclasses import dataclass
@@ -25,7 +26,11 @@ from typing import Any, List, Mapping
 import tqdm
 from pydantic import BaseModel, Field
 
+from experimental.overhead_matching.swag.farfield import dataset as dataset_lib
 from experimental.overhead_matching.swag.farfield import paths as paths_lib
+from experimental.overhead_matching.swag.farfield.catalog import (
+    catalog as catalog_lib,
+)
 
 # ---------------------------------------------------------------------------
 # Prompt registry
@@ -308,7 +313,174 @@ Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (100
 """,
 }
 
+# v3 (2026-09-10) makes the prompt platform-neutral for the first airborne
+# collection without changing what a landmark is: the platform may be an
+# aircraft, anything on the vehicle can never be a landmark (no boat/car
+# furniture list), no list of settings or of places to scan, distance_estimate
+# is a required schema field (ground range from the point beneath the camera;
+# DISTANCE_FIELD) rather than an optional tag, shorter example lines, and the
+# tag guide lists every key the structural primary-tag enum admits. The camera-geometry sentence is the ONE
+# slot that differs between the level and pitched variants, so the pitched
+# prompt is exactly the level prompt plus what the renderer did differently.
+_V3_BODY = """<role>
+You are an expert at identifying distant landmarks in outdoor imagery and mapping them to OpenStreetMap (OSM) tags.
+</role>
+
+<context>
+The four images come from a camera on a moving platform — a boat, a road vehicle, a person on foot, or an aircraft.
+They show the same location at relative yaws 0°, 90°, 180°, and 270° (camera frame — NOT compass-aligned; do not assume any cardinal direction).
+__CAMERA_GEOMETRY__
+Much of each image is usually sky, water, vegetation or bare ground; the landmarks are the exceptions.
+Parts of the vehicle or platform the camera is travelling on appear in most images. Nothing on it can be a landmark — ignore it completely.
+</context>
+
+<instructions>
+Identify permanent, distinctive landmarks that plausibly appear in OpenStreetMap and classify them using OSM's key=value tagging system.
+
+Your workflow should be:
+ 1. Scan all four images for distinctive permanent features. Summarize what you have found.
+ 2. Identify what OSM tags are appropriate and justifiable for each identified landmark.
+
+For each landmark:
+- Assign a primary OSM tag (e.g., natural=peak, man_made=crane, man_made=silo, historic=fort, building=commercial, place=island)
+- Add relevant additional tags (name, height, colour, etc. Do not give 2 of the same tags to a single landmark). Include name=<name> ONLY under the naming rules below.
+- Set distance_estimate to exactly one of: "under_100m", "100m_to_500m", "500m_to_2km", "2km_to_10km", "over_10km". Distance is measured along the ground from the point directly beneath the camera, not along the line of sight.
+- Specify which yaw angle(s)/images the landmark appears in and provide bounding boxes for each. Boxes must be TIGHT around the landmark itself — never a whole skyline, ridgeline or shoreline in one box.
+- Rate your confidence (high/medium/low) using the rubric below
+- Provide a brief description following the description rules below
+
+If you cannot confidently identify any visually distinct landmarks, it is acceptable to return an empty list of landmarks.
+Based on the images, classify the location type in free text (e.g., open_water, inner_harbor, river_valley, alpine_ridge, forest_trail, open_farmland, high_desert, urban_waterfront).
+Finally, review your work and remove anything you cannot confidently make out from the images, along with any tag you cannot confidently justify.
+</instructions>
+
+<landmark_selection>
+A good far-field landmark is FIXED in place, VISIBLE from a long way off, DISTINCTIVE enough to tell from its neighbours, and plausibly mapped in OSM. There is no distance limit — far-away features are the primary target, as long as you are confident what they are. Prioritize by how strongly a feature identifies itself:
+
+1. Named or recognizable features — a summit you can name, a famous bridge or tower, a structure with a readable sign. These are worth the most; see the naming rules.
+2. Features whose category plus appearance narrows them down — a glaciated peak, a lighthouse, a red-and-white banded chimney, a grain elevator of six linked silos.
+3. Features that repeat and are individually generic — wind turbines, transmission pylons, silos. Report each one you can see as its own landmark; several weak detections combined with other evidence can still locate you. Where instances are so dense or numerous that they cannot be told apart at all, they are not useful landmarks.
+
+Examples across settings, not an exhaustive list:
+- Terrain: summits and named high points (natural=peak), ridges (natural=ridge), cairns (man_made=cairn), glaciers and permanent snowfields (natural=glacier), cliffs and rock faces (natural=cliff), buttes and mesas, islands (place=island)
+- Tall structures: radio and communications masts (man_made=mast, tower:type=communication), transmission pylons (power=tower), water towers, chimneys and smokestacks, church spires, clock towers, skyscrapers, silos and grain elevators (man_made=silo), storage tanks, wind turbines (power=generator with generator:source=wind), fire lookouts and summit huts
+- Water and coast: lighthouses and daybeacons on pilings or rocks (seamark:type=beacon_lateral), buoys (seamark:type=buoy_lateral or buoy_special_purpose), lakes and ponds (natural=water), dams and weirs (waterway=dam), locks, bridges (man_made=bridge), piers, wharves, breakwaters, marinas (leisure=marina)
+- Notable buildings: buildings ONLY if at least one of: a shape, colour or silhouette that sets it apart from its neighbours, a readable sign or name, or you recognize the specific building.
+- Land and industry: quarries and pits (landuse=quarry), solar arrays (power=generator with generator:source=solar), airfields and runways (aeroway=aerodrome, aeroway=runway), large industrial complexes (landuse=industrial)
+
+Identifying attributes — ALWAYS include the ones you can actually see, since these are what distinguish one instance from hundreds of its neighbours:
+- A number or letter painted or mounted on the structure (e.g. a buoy's "8", "13", "1SC"; a pylon's line number) → give it as name=<exactly as read>, ONLY if legible and not inferred
+- colour=<red|green|yellow|white|white;orange|...> for anything with a deliberate colour scheme (buoys, beacons, banded chimneys, painted tanks)
+- Shape, where the category has standard shapes — e.g. seamark:<type>:shape=<can|nun|pillar|spar> ("can" is a flat-topped cylinder, "nun" a cone)
+
+DO NOT include:
+- Anything that moves: watercraft (even docked or anchored), road and rail vehicles, aircraft, livestock, people. A marina is a landmark; the boats in it are not.
+- The platform the camera is on, or anything mounted on it
+- Wakes, waves, sun glare, clouds, snow patches that are plainly seasonal, birds
+- Generic shoreline, generic tree lines, generic forest, riprap, ordinary fields
+- Rows of visually identical generic buildings (e.g., condo blocks) with nothing to tell them apart
+
+Report each physical feature as its own landmark, including each member of a repeated group.
+</landmark_selection>
+
+<naming_rules>
+Two routes to a name are legitimate:
+- READING it: a sign, a summit marker, a building's name on its facade.
+- RECOGNIZING it: you know this specific item (e.g., mountain, bridge, tower, building) from its
+  own shape, profile and proportions. Name the landmarks you genuinely know, do not guess if there is ambiguity.
+
+A name must be justified by what you can see of
+that structure itself - its outline, its top, its proportions, its colour, its
+signage, its position relative to other features in the same image. It must NEVER
+rest on the overall view resembling a place you know. 
+
+Express your certainty through the `confidence` field rather than by staying silent.
+When you give a name, `confidence` describes your certainty in THE NAME, not merely
+in the category:
+- high: you are sure of the identity - read clearly, or recognized from this
+  structure's own form
+- medium: the identification is probable, but you would not stake a position fix on it
+- low: do not name it at all; report the category and description instead
+
+Never take a name from a billboard, advertising banner or other commercial signage.
+Never derive one from geographic context alone ("we are near X, so this must be X").
+Report what you know, and rate how sure you are.
+</naming_rules>
+
+<description_rules>
+Descriptions must be stable across viewpoints so the same landmark can be re-identified from other locations:
+- Describe intrinsic properties only: shape, colour, material, relative height, count of elements (e.g., "granite fort with sloped walls and a flagpole", "red-and-white banded smokestack", "glaciated pyramidal summit with a rocky north face").
+- If you recognize the landmark, lead with its canonical name.
+- NEVER mention: position in the image, direction relative to the observer, distance, lighting, weather, or nearby transient objects.
+</description_rules>
+
+<confidence_rubric>
+Rate the landmark as you have reported it — including its name, if you gave one:
+- high: an identity you are sure of (name read clearly or recognized unmistakably), or an unnamed feature whose category is unmistakable (a container crane, a lighthouse, a wind turbine)
+- medium: the category is clear but the instance is generic (an unnamed pier, an unnumbered buoy, one silo among several), or a name you believe but cannot confirm
+- low: category is uncertain — prefer omitting these unless the feature is very distinctive visually, and never attach a name to one
+</confidence_rubric>
+
+<osm_tag_guidelines>
+## Primary OSM Tag Categories
+
+- `natural`: terrain and natural features (peak, saddle, ridge, glacier, cliff, rock, beach, wood, water, coastline)
+- `man_made`: non-building structures (mast, tower, silo, storage_tank, chimney, water_tower, crane, lighthouse, pier, breakwater, bridge, cairn, survey_point)
+- `place`: islands and settlements (island, islet, village, town)
+- `historic`: historically significant features (fort, monument, memorial, lighthouse)
+- `building`: structures with a roof (commercial, church, industrial, farm, hotel). Use `building=yes` if unclear.
+- `power`: power infrastructure (tower for a transmission pylon, generator for a wind turbine or solar plant, plant, line)
+- `leisure`: recreation (marina, park, nature_reserve, sports_centre)
+- `tourism`: visitor attractions (hotels, museums, viewpoints, alpine_hut)
+- `amenity`: facilities providing services (ferry_terminal, shelter, restaurants)
+- `landuse`: land use areas (industrial, port, military, farmland, quarry)
+- `aerialway`: cable cars, chairlifts, gondolas
+- `aeroway`: airfields (aerodrome, runway, helipad)
+- `railway`: rail infrastructure
+- `waterway`: rivers, dams, weirs, locks (river, dam, weir, lock)
+- `bridge`: a bridge whose span is the landmark (bridge=yes; man_made=bridge is also accepted)
+- `military`: bases and installations (base, naval_base, airfield)
+- `industrial`: the kind of industrial site (port, refinery, shipyard)
+- `seamark:type`: navigational aids (buoy_lateral, buoy_special_purpose, beacon_lateral, light_major)
+
+## Key Distinctions
+
+- **man_made vs building**: Use building if it has walls and a roof for human use; man_made for towers, masts, silos, tanks, piers, cranes
+- **natural=peak vs natural=ridge**: peak for a distinct summit point; ridge for an extended crest
+- **power=tower vs man_made=mast/tower**: power=tower is a transmission pylon carrying lines; man_made=mast is a guyed communications mast; man_made=tower is a freestanding tower
+- **historic=fort vs building**: Use historic=fort for fortifications
+- **leisure vs tourism**: Use leisure for local recreation; tourism for visitor attractions
+</osm_tag_guidelines>
+
+
+<output_format>
+Provide your response as a JSON object conforming to the assigned schema.
+Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (1000,1000) is bottom-right.
+</output_format>
+"""
+_V3_CAMERA_LEVEL = (
+    "The camera is level, so the horizon runs through the middle of each "
+    "image.")
+_V3_CAMERA_DOWN30 = (
+    "The camera is pitched 30° below the horizon, so the horizon runs near "
+    "the top of each image and most of each image is the ground seen "
+    "obliquely from above.")
+SYSTEM_PROMPTS['osm_tags_farfield_v3'] = _V3_BODY.replace(
+    "__CAMERA_GEOMETRY__", _V3_CAMERA_LEVEL)
+SYSTEM_PROMPTS['osm_tags_farfield_v3_down30'] = _V3_BODY.replace(
+    "__CAMERA_GEOMETRY__", _V3_CAMERA_DOWN30)
+
 PROMPT_TYPES = tuple(sorted(SYSTEM_PROMPTS))
+
+# Camera pitch each prompt's text asserts for the faces it is shown, in the
+# renderer's convention (degrees, up-positive; geometry.py). A build's
+# `extraction.pinhole_pitch_deg` must equal this for its prompt.
+PROMPT_PITCH_DEG = {
+    'osm_tags_farfield': 0,
+    'osm_tags_farfield_v2': 0,
+    'osm_tags_farfield_v3': 0,
+    'osm_tags_farfield_v3_down30': -30,
+}
 
 USER_PROMPT = """
 Based on the four images above (which show the same location from yaws 0°, 90°, 180°, and 270° respectively), identify all landmarks and classify them using OSM tags.
@@ -347,31 +519,33 @@ class BoundingBox(BaseModel):
         ge=0, le=1000)
 
 
-class OSMPrimaryTagKey(str, Enum):
-    """Primary OSM tag keys"""
-    AMENITY = "amenity"
-    SHOP = "shop"
-    BUILDING = "building"
-    TOURISM = "tourism"
-    LEISURE = "leisure"
-    HIGHWAY = "highway"
-    MAN_MADE = "man_made"
-    HISTORIC = "historic"
-    NATURAL = "natural"
-    OFFICE = "office"
-    CRAFT = "craft"
-    RAILWAY = "railway"
-    POWER = "power"
-    LANDUSE = "landuse"
-    EMERGENCY = "emergency"
-    PUBLIC_TRANSPORT = "public_transport"
-    PLACE = "place"
-
-
-class OSMPrimaryTag(BaseModel):
-    """Primary OSM tag (key=value pair)"""
-    key: OSMPrimaryTagKey = Field(description="OSM tag key")
-    value: str = Field(description="OSM tag value")
+# Primary-tag key vocabularies. A prompt keeps the enum it was extracted
+# with -- every frame_landmarks artifact pins response_schema_sha256, so the
+# legacy list is frozen -- and v3 onward takes the catalog's structural keys
+# (one definition: catalog.STRUCTURAL_KEYS), so a primary key the model may
+# emit is one the trimmed catalog can carry, and vice versa.
+LEGACY_PRIMARY_TAG_KEYS = (
+    "amenity", "shop", "building", "tourism", "leisure", "highway",
+    "man_made", "historic", "natural", "office", "craft", "railway", "power",
+    "landuse", "emergency", "public_transport", "place",
+)
+STRUCTURAL_PRIMARY_TAG_KEYS = tuple(sorted(
+    catalog_lib.STRUCTURAL_KEYS - {"object_class"}))  # ENC-internal class
+PRIMARY_TAG_KEYS = {
+    'osm_tags_farfield': LEGACY_PRIMARY_TAG_KEYS,
+    'osm_tags_farfield_v2': LEGACY_PRIMARY_TAG_KEYS,
+    'osm_tags_farfield_v3': STRUCTURAL_PRIMARY_TAG_KEYS,
+    'osm_tags_farfield_v3_down30': STRUCTURAL_PRIMARY_TAG_KEYS,
+}
+# Whether the landmark object carries `distance_estimate` as a required enum
+# field (v3 on) or only asks for it as an additional tag, which the schema
+# cannot enforce (the legacy prompts, frozen by their recorded digests).
+DISTANCE_FIELD = {
+    'osm_tags_farfield': False,
+    'osm_tags_farfield_v2': False,
+    'osm_tags_farfield_v3': True,
+    'osm_tags_farfield_v3_down30': True,
+}
 
 
 class OSMAdditionalTag(BaseModel):
@@ -387,26 +561,62 @@ class Confidence(str, Enum):
     LOW = "low"
 
 
-class OSMLandmarkWithBBox(BaseModel):
-    """A landmark with OSM tags and bounding boxes"""
-    primary_tag: OSMPrimaryTag = Field(
-        description="Primary OSM tag categorizing this landmark")
-    additional_tags: List[OSMAdditionalTag] = Field(
-        description="Additional OSM tags (name, brand, cuisine, building:levels, etc.)")
-    confidence: Confidence = Field(
-        description="Confidence level for this identification")
-    bounding_boxes: List[BoundingBox] = Field(
-        description="List of bounding boxes showing where this landmark appears across different yaw angles")
-    description: str = Field(
-        description="Brief description for debugging purposes")
+DistanceEstimate = Enum(
+    "DistanceEstimate",
+    {bucket.upper(): bucket for bucket in dataset_lib.DISTANCE_BUCKETS},
+    type=str)
+DistanceEstimate.__doc__ = (
+    "Ground distance from the point beneath the camera to the landmark")
 
 
-class OSMTagExtraction(BaseModel):
-    """OSM tag extraction from panorama images"""
-    location_type: str = Field(
-        description="Scene type classification (e.g., 'urban_commercial', 'suburban', 'rural')")
-    landmarks: List[OSMLandmarkWithBBox] = Field(
-        description="List of landmarks with OSM tags")
+@functools.lru_cache(maxsize=None)
+def _extraction_model(primary_tag_keys: tuple[str, ...],
+                      distance_field: bool = False):
+    """The response model for one prompt contract.
+
+    Built per contract rather than declared once so the legacy schema stays
+    byte-identical (its digest is recorded in every existing artifact) while
+    later prompts can widen the enum or add the distance field.
+    """
+    key_enum = Enum(
+        "OSMPrimaryTagKey",
+        {key.upper().replace(":", "_"): key for key in primary_tag_keys},
+        type=str)
+    key_enum.__doc__ = "Primary OSM tag keys"
+
+    class OSMPrimaryTag(BaseModel):
+        """Primary OSM tag (key=value pair)"""
+        key: key_enum = Field(description="OSM tag key")
+        value: str = Field(description="OSM tag value")
+
+    class OSMLandmarkWithBBox(BaseModel):
+        """A landmark with OSM tags and bounding boxes"""
+        primary_tag: OSMPrimaryTag = Field(
+            description="Primary OSM tag categorizing this landmark")
+        additional_tags: List[OSMAdditionalTag] = Field(
+            description="Additional OSM tags (name, brand, cuisine, building:levels, etc.)")
+        confidence: Confidence = Field(
+            description="Confidence level for this identification")
+        bounding_boxes: List[BoundingBox] = Field(
+            description="List of bounding boxes showing where this landmark appears across different yaw angles")
+        description: str = Field(
+            description="Brief description for debugging purposes")
+
+    if distance_field:
+        class OSMLandmarkWithBBox(OSMLandmarkWithBBox):  # noqa: F811
+            """A landmark with OSM tags and bounding boxes"""
+            distance_estimate: DistanceEstimate = Field(
+                description="Ground distance bucket from the point directly "
+                            "beneath the camera to the landmark")
+
+    class OSMTagExtraction(BaseModel):
+        """OSM tag extraction from panorama images"""
+        location_type: str = Field(
+            description="Scene type classification (e.g., 'urban_commercial', 'suburban', 'rural')")
+        landmarks: List[OSMLandmarkWithBBox] = Field(
+            description="List of landmarks with OSM tags")
+
+    return OSMTagExtraction
 
 
 def _add_required_no_add_props(schema: dict) -> dict:
@@ -444,9 +654,15 @@ def _resolve_refs(schema, defs: dict = None):
     return schema
 
 
-def response_schema() -> dict:
-    """The Gemini responseSchema every farfield extraction request carries."""
-    schema = OSMTagExtraction.model_json_schema()
+def response_schema(prompt_type: str) -> dict:
+    """The Gemini responseSchema a farfield extraction request carries.
+
+    Keyed by prompt type because the primary-tag enum is part of the prompt
+    contract (see PRIMARY_TAG_KEYS).
+    """
+    schema = _extraction_model(
+        PRIMARY_TAG_KEYS[prompt_type],
+        DISTANCE_FIELD[prompt_type]).model_json_schema()
     schema = _resolve_refs(schema)
     schema = _add_required_no_add_props(schema)
     return schema
@@ -727,7 +943,7 @@ def build_request(key: str, images: list, *, prompt_type: str,
         key,
         system_instruction=SYSTEM_PROMPTS[prompt_type],
         parts=parts,
-        response_schema=response_schema(),
+        response_schema=response_schema(prompt_type),
         thinking_level=thinking_level,
         media_resolution=media_resolution,
     ))

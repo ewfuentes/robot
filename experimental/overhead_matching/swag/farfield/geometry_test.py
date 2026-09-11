@@ -8,10 +8,12 @@ from experimental.overhead_matching.swag.farfield import geometry as geo
 PANO_W, PANO_H = 7680, 3840
 
 
-def reference_direction(face_yaw_deg, x_norm, y_norm, fov_deg=90.0):
+def reference_direction(face_yaw_deg, x_norm, y_norm, fov_deg=90.0,
+                        pitch_deg=0.0):
     """Independent reimplementation of the panorama_to_pinhole.py ray math.
 
-    Returns (az_ccw_rad, el_down_rad) exactly as the render computes them.
+    Returns (az_ccw_rad, el_down_rad) exactly as the render computes them:
+    dirs @ (Ry @ Rx).T, i.e. pitch about the face's x axis, then yaw.
     """
     fov = math.radians(fov_deg)
     fx = fy = 1.0 / math.tan(fov / 2.0)
@@ -21,12 +23,18 @@ def reference_direction(face_yaw_deg, x_norm, y_norm, fov_deg=90.0):
     d = np.array([col_frac, row_frac * (fx / fy), fx])
     d /= np.linalg.norm(d)
     yaw = math.radians(face_yaw_deg)
+    pitch = math.radians(pitch_deg)
     ry = np.array([
         [math.cos(yaw), 0, math.sin(yaw)],
         [0, 1, 0],
         [-math.sin(yaw), 0, math.cos(yaw)],
     ])
-    d = ry @ d
+    rx = np.array([
+        [1, 0, 0],
+        [0, math.cos(pitch), -math.sin(pitch)],
+        [0, math.sin(pitch), math.cos(pitch)],
+    ])
+    d = (ry @ rx) @ d
     return math.atan2(d[0], d[2]), math.asin(d[1])
 
 
@@ -52,6 +60,48 @@ class DirectionFromFacePxTest(unittest.TestCase):
                         x % PANO_W, x_ref % PANO_W, places=6,
                         msg=f"yaw={face_yaw} x={x_norm} y={y_norm}")
                     self.assertAlmostEqual(y, y_ref, places=6)
+
+    def test_matches_render_reference_when_pitched(self):
+        for pitch in (-30.0, -12.5, 20.0):
+            for face_yaw in (0, 90, 180, 270):
+                for x_norm in (0, 137, 500, 862, 1000):
+                    for y_norm in (0, 250, 500, 750, 1000):
+                        az_cw, el_up = geo.direction_from_face_px(
+                            face_yaw, x_norm, y_norm, pitch_deg=pitch)
+                        x, y = geo.pano_px_from_direction(
+                            az_cw, el_up, PANO_W, PANO_H)
+                        az_ref, el_ref = reference_direction(
+                            face_yaw, x_norm, y_norm, pitch_deg=pitch)
+                        x_ref, y_ref = reference_pano_px(az_ref, el_ref)
+                        self.assertAlmostEqual(
+                            x % PANO_W, x_ref % PANO_W, places=6,
+                            msg=f"pitch={pitch} yaw={face_yaw} "
+                                f"x={x_norm} y={y_norm}")
+                        self.assertAlmostEqual(y, y_ref, places=6)
+
+    def test_pitch_moves_the_face_centre_and_keeps_its_azimuth(self):
+        for face_yaw in (0, 90, 180, 270):
+            az_level, el_level = geo.direction_from_face_px(face_yaw, 500, 500)
+            az_down, el_down = geo.direction_from_face_px(
+                face_yaw, 500, 500, pitch_deg=-30.0)
+            self.assertAlmostEqual(el_level, 0.0)
+            self.assertAlmostEqual(el_down, -30.0)
+            self.assertAlmostEqual(az_down, az_level)
+        # Pitch 0 is the historical inverse, exactly.
+        self.assertEqual(geo.direction_from_face_px(90, 137, 862),
+                         geo.direction_from_face_px(90, 137, 862, 90.0, 0.0))
+        # The horizon of a face pitched 30 deg down sits at the row the
+        # module docstring gives: 0.5 - tan(30)/(2 tan(45)).
+        horizon_row = (0.5 - math.tan(math.radians(30.0)) / 2.0) * 1000.0
+        _, el = geo.direction_from_face_px(0, 500, horizon_row, pitch_deg=-30.0)
+        self.assertAlmostEqual(el, 0.0, places=6)
+
+    def test_pitched_edge_bearing_depends_on_the_row(self):
+        top = geo.bearing_camera_cw_deg(0, 0, pitch_deg=-30.0, y_norm=0)
+        bottom = geo.bearing_camera_cw_deg(0, 0, pitch_deg=-30.0, y_norm=1000)
+        self.assertNotAlmostEqual(top, bottom)
+        self.assertAlmostEqual(geo.bearing_camera_cw_deg(0, 0, y_norm=0),
+                               geo.bearing_camera_cw_deg(0, 0, y_norm=1000))
 
     def test_face_centers_land_at_expected_pano_columns(self):
         # Pano layout left-to-right: 180 | 90 | 0 | 270.

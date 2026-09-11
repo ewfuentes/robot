@@ -573,6 +573,50 @@ so on) stay, because those are about the data.
 stage is given, a differing shared value fails; a key the artifact predates
 warns. Schema growth must not orphan artifacts.
 
+## 2026-09-10 · Extraction prompt v3 is platform-neutral; the primary-tag enum is the catalog's structural vocabulary
+
+The Portland flight is the first platform the prompt did not describe. Three
+decisions, one of them about the schema rather than the text:
+
+- **One prompt for every platform, one sentence for the render.** v3 keeps
+  v2's naming rules and changes only what was boat-shaped: the platform may
+  be an aircraft; "deck, railings, bonnet…" becomes *nothing on the vehicle
+  the camera travels on can be a landmark*; the scan includes the ground
+  below when the camera is above it; `distance_estimate` is ground range from
+  the point beneath the camera (that is what the range cap in the filter
+  measures); one "seen from a height" example line. The pitched variant
+  `osm_tags_farfield_v3_down30` is v3 with a single sentence swapped — the
+  camera-geometry sentence — and a test holds the diff to exactly that line.
+  `PROMPT_PITCH_DOWN_DEG` records the pitch each prompt asserts so the
+  pinhole render can be checked against it once the render carries a pitch.
+- **The primary-tag enum is derived, not typed.** The old enum admitted
+  `shop`, `highway`, `office`, `craft`, `emergency`, `public_transport` (none
+  structural in the trim) and lacked `aeroway`, `waterway`, `aerialway`,
+  `bridge`, `military`, `industrial`, `seamark:type` (all structural). From
+  v3 the enum is `catalog.STRUCTURAL_KEYS` minus the ENC-internal
+  `object_class`, and the trim imports the same set, so a primary key the
+  model may emit is one the trimmed catalog can carry. `aerialway` joined
+  the set (cable-car towers read from a valley), which moves the trim rule
+  fingerprint for trims made after this date.
+- **The response schema is part of the prompt contract.**
+  `response_schema(prompt_type)` is keyed like the prompt text, because every
+  `frame_landmarks` manifest pins `response_schema_sha256` and is re-validated
+  against the current code; changing one shared schema would have orphaned
+  every existing extraction. Legacy prompts keep their exact enum (a test
+  pins the legacy digest to the value recorded in the artifacts), and the
+  lifecycle validators judge a response by the schema recorded in its own
+  request set rather than by whichever prompt is current.
+
+The render side, same day: `extraction.pinhole_pitch_deg` (degrees,
+up-positive, the renderer's own sign) is a build setting; the extraction
+stage refuses a build whose pitch differs from `PROMPT_PITCH_DEG` for its
+prompt; `direction_from_face_px` takes the pitch (Rx before Ry, exactly as
+the renderer composes them) and every box carries the pitch of its face from
+ingest onward, read from the `frame_landmarks` manifest so no later stage
+holds a second copy. Level renders record no pitch key anywhere -- pinhole
+geometry, request media settings, or the comparable extraction selection --
+so every artifact made before this date keeps its identity.
+
 ## 2026-09-10 · FAA obstacles join the catalog by class merge, and a scope declares its own bbox pad
 
 The first airborne collection (`portland_flight_20260906`) sees tall
