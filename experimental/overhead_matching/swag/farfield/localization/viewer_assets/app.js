@@ -1121,8 +1121,7 @@ function drawInspector() {
         ? `<dt>review</dt><dd>${sourceReviewLinks(src)}</dd>` : ""}
       <dt>audit</dt><dd><span class="pill ${
         src.verdict === "drop" ? "bad" : src.verdict === "keep_partial"
-          ? "warn" : "ok"}">${esc(src.verdict)}</span>
-        ${esc(src.confidence)} confidence</dd>
+          ? "warn" : "ok"}">${esc(src.verdict)}</span></dd>
       <dt>name</dt><dd>${esc(src.name || "—")}</dd>
       <dt>supports</dt><dd>${src.nSupports}</dd>
       <dt>span</dt><dd>kf ${src.span[0]}–${src.span[1]}</dd>

@@ -169,7 +169,6 @@ def audit_payload(*, with_edits):
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": "high",
         "unresolved": "",
     }
     if with_edits:
@@ -290,6 +289,7 @@ class AuditReviewTest(unittest.TestCase):
         self.assertIn("test-model", self.page)
         self.assertIn("man_made=crane", self.page)
         self.assertNotIn("result errors", self.page)
+        self.assertNotIn("confidence:", self.page)
 
     def test_strike_gets_extra_chip_in_review_output(self):
         chip = self.review_dir / "chips" / "T1_t0002_extra.jpg"

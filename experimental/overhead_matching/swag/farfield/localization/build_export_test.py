@@ -71,7 +71,6 @@ def audit_payload():
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": "high",
         "unresolved": "",
     }
 

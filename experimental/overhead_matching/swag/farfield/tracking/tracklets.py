@@ -449,7 +449,6 @@ def build_accepted_tracklets(tracks: Mapping, audits: Mapping) \
             valid_segments=segments,
             provenance=provenance,
             quality={
-                "audit_confidence": audit.get("confidence"),
                 "n_records": len(track["records"]),
                 "n_valid_segments": len(segments),
                 "valid_segment_clips": segment_clips,

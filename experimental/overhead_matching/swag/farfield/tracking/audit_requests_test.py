@@ -222,7 +222,6 @@ def audit_payload(decision="keep_single", segments=None):
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": "high",
         "unresolved": "",
     }
 
@@ -404,11 +403,12 @@ class AuditRequestsTest(unittest.TestCase):
                                 ar._validate_audit_response(  # noqa: SLF001
                                     "T-contract", response)
 
-    def test_provider_shape_rejects_reintroduced_correlated_fields(self):
+    def test_provider_shape_rejects_reintroduced_output_fields(self):
         for field, value in (
                 ("verdict", "keep"),
                 ("single_object", True),
-                ("drop_reason", "none")):
+                ("drop_reason", "none"),
+                ("confidence", "high")):
             with self.subTest(field=field):
                 payload = audit_payload()
                 payload[field] = value

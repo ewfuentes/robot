@@ -13,8 +13,8 @@ Dossier contract:
   artifact alone. Keyframes are presented as relative time indices t0..tN.
 - Temporal structure is conveyed by run-length-encoded sequences, not by
   narrative ("X dominates early") which cannot be generated procedurally.
-- Tag votes cover ALL tags (primary and additional), with per-detector-
-  confidence counts instead of an opaque weighted score.
+- Tag votes cover ALL tags (primary and additional), with explicit counts
+  instead of an opaque weighted score.
 - The model outputs categorical judgments and matching keys, never scalar
   reliability scores - those are computed downstream from geometry.
 
@@ -49,9 +49,6 @@ from experimental.overhead_matching.swag.farfield.tracking.viz_common import (
 # Tags that are reported as additional_tags but are not identity evidence;
 # they get their own dossier sections instead of rows in the tag table.
 NON_IDENTITY_TAG_KEYS = ("name", "distance_estimate")
-
-CONFIDENCE_ORDER = ("high", "medium", "low")
-
 
 @dataclass
 class AuditConfig:
@@ -139,7 +136,6 @@ class TrackAudit(BaseModel):
     primary_object: PrimaryObject
     strike_votes: list[StrikeVote]
     secondary_objects: list[SecondaryObject]
-    confidence: Literal["low", "medium", "high"]
     unresolved: str               # "" if nothing remains ambiguous
 
 
@@ -168,7 +164,6 @@ class ProviderTrackAudit(BaseModel):
     primary_object: PrimaryObject
     strike_votes: list[StrikeVote]
     secondary_objects: list[SecondaryObject]
-    confidence: Literal["low", "medium", "high"]
     unresolved: str
 
 
@@ -312,7 +307,6 @@ def canonicalize_provider_audit(provider: ProviderTrackAudit) -> dict:
         "primary_object": value["primary_object"],
         "strike_votes": value["strike_votes"],
         "secondary_objects": value["secondary_objects"],
-        "confidence": value["confidence"],
         "unresolved": value["unresolved"],
     }
     return TrackAudit.model_validate(canonical).model_dump()
@@ -433,37 +427,33 @@ def run_length_encode(values: list) -> list[tuple]:
 
 
 def tag_vote_table(supports) -> list[dict]:
-    """Rows: tag, total, per-confidence counts, as_primary/as_additional.
+    """Rows: tag, total, as_primary/as_additional.
 
     Covers ALL identity tags (primary and additional), excluding
     NON_IDENTITY_TAG_KEYS which get their own sections.
     """
     rows = {}
 
-    def bump(tag, conf, role):
+    def bump(tag, role):
         row = rows.setdefault(tag, {"tag": tag, "total": 0, "as_primary": 0,
-                                    "as_additional": 0,
-                                    **{c: 0 for c in CONFIDENCE_ORDER}})
+                                    "as_additional": 0})
         row["total"] += 1
         row[role] += 1
-        if conf in row:
-            row[conf] += 1
 
     for e in supports:
         primary, extra = _obs_tags(e["obs"])
-        conf = e["obs"].confidence
-        bump(primary, conf, "as_primary")
+        bump(primary, "as_primary")
         for key, value in extra.items():
             if key not in NON_IDENTITY_TAG_KEYS:
-                bump(f"{key}={value}", conf, "as_additional")
+                bump(f"{key}={value}", "as_additional")
     return sorted(rows.values(), key=lambda r: (-r["total"], r["tag"]))
 
 
 def sample_descriptions(supports, max_samples: int) -> list:
     """Deterministic sample of support entries whose descriptions are quoted.
 
-    Even temporal stride including first and last, then any primary tag not
-    yet represented gets its highest-confidence instance appended.
+    Even temporal stride including first and last, then the earliest instance
+    of any primary tag not yet represented is appended.
     """
     if len(supports) <= max_samples:
         picked = list(supports)
@@ -472,12 +462,11 @@ def sample_descriptions(supports, max_samples: int) -> list:
         picked = [supports[int(i)] for i in idx]
 
     have_tags = {_obs_tags(e["obs"])[0] for e in picked}
-    conf_rank = {c: i for i, c in enumerate(CONFIDENCE_ORDER)}
     for tag in dict.fromkeys(_obs_tags(e["obs"])[0] for e in supports):
         if tag in have_tags:
             continue
         best = min((e for e in supports if _obs_tags(e["obs"])[0] == tag),
-                   key=lambda e: (conf_rank.get(e["obs"].confidence, 9), e["t"]))
+                   key=lambda e: e["t"])
         picked.append(best)
     return sorted(picked, key=lambda e: e["t"])
 
@@ -566,19 +555,13 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
     birth = track["birth_keyframe"]
     lifetime = track["end_keyframe"] - birth + 1
 
-    # Names sit outside the identity-tag table, so preserve their detector
-    # confidence explicitly alongside their vote counts.
+    # Names sit outside the identity-tag table, so count them separately.
     name_votes = {}
-    name_confidence = {}
     for e in detections:
         _, extra = _obs_tags(e["obs"])
         name = extra.get("name", "")
         if name:
             name_votes[name] = name_votes.get(name, 0) + 1
-            by_conf = name_confidence.setdefault(
-                name, {c: 0 for c in CONFIDENCE_ORDER})
-            if e["obs"].confidence in by_conf:
-                by_conf[e["obs"].confidence] += 1
 
     reanchors = sum(1 for r in track["records"]
                     if r["action"] == "reanchor_clean")
@@ -601,7 +584,6 @@ def build_dossier(track: dict, obs_by_id: dict, cfg: AuditConfig) -> dict:
         "close_text": _close_reason_text(track),
         "tag_table": tag_vote_table(detections),
         "name_votes": sorted(name_votes.items(), key=lambda kv: -kv[1]),
-        "name_confidence": name_confidence,
         "primary_tag_rle": run_length_encode(
             [_obs_tags(e["obs"])[0] for e in detections]),
         "distance_rle": run_length_encode(
@@ -677,8 +659,6 @@ def build_evidence(track: dict, dossier: dict, pano_w: int) -> dict:
         "n_distinct_tags": len(tag_rows),
         "tag_top_share": (tag_rows[0]["total"] / tag_total
                           if tag_total else 0.0),
-        "confidence_counts": {
-            c: sum(r[c] for r in tag_rows) for c in CONFIDENCE_ORDER},
         "name_votes": name_votes,
         "n_named_supports": total_named,
         "n_distinct_names": len(name_votes),
@@ -702,8 +682,8 @@ canonical landmark record per track.
 
 <provenance>
 A camera on a moving robot produced landmark detections at each
-keyframe: a bounding box, an OpenStreetMap-style tag (key=value), a detector
-confidence (high/medium/low), and a one-sentence description. Separately, a
+keyframe: a bounding box, an OpenStreetMap-style tag (key=value), and a
+one-sentence description. Separately, a
 mask tracker propagated the object's mask between keyframes, and detections
 were associated to the track PURELY GEOMETRICALLY (box-to-mask overlap).
 Semantic labels played no role in the association. Your job is to audit the
@@ -771,12 +751,12 @@ be small in the frame; judge only what is visible.
   a single track collecting many different building names is expected; report
   the spread rather than hiding it behind a winner.
   CALIBRATE THE WEIGHT AGAINST THE SUPPORT. The dossier gives each name's
-  detection count and the detector's own confidence in that name, against the
-  track's total detection count. A name asserted by one detection out of
+  detection count against the track's total detection count. A name asserted
+  by one detection out of
   dozens is worth listing, but it is not worth a high weight: reserve weights
   above 0.7 for names carried by a substantial share of the detections or
   corroborated by what you can see in the images, and keep a name reported
-  once, or reported at `medium` confidence, below 0.3. A downstream matcher
+  once below 0.3. A downstream matcher
   treats a high-weighted name as near-decisive and will place this object at
   the map row of that name however far away it is, so an over-weighted name
   is worse than no name at all.
@@ -815,13 +795,11 @@ landmark record. Answer with the JSON schema.
 
 
 def _format_tag_table(rows) -> str:
-    lines = ["tag votes from all associated detections (every tag, by "
-             "detector confidence)",
-             f"  {'tag':<40} total  high  med  low  as_primary  as_addl"]
+    lines = ["tag votes from all associated detections (every tag)",
+             f"  {'tag':<40} total  as_primary  as_addl"]
     for r in rows:
         lines.append(
-            f"  {r['tag']:<40} {r['total']:>5} {r['high']:>5} "
-            f"{r['medium']:>4} {r['low']:>4} {r['as_primary']:>11} "
+            f"  {r['tag']:<40} {r['total']:>5} {r['as_primary']:>11} "
             f"{r['as_additional']:>8}")
     return "\n".join(lines)
 
@@ -853,18 +831,8 @@ def render_dossier_text(dossier: dict) -> str:
 
     parts.append("")
     if dossier["name_votes"]:
-        conf = dossier.get("name_confidence") or {}
-
-        def _one(name, n):
-            by = conf.get(name)
-            if not by:
-                return f"'{name}' x{n}"
-            split = ", ".join(f"{by[c]} {c}" for c in CONFIDENCE_ORDER if by[c])
-            return f"'{name}' x{n} ({split})" if split else f"'{name}' x{n}"
-
-        parts.append("names reported, with the detector's confidence in each "
-                     "name: " + ", ".join(
-                         _one(name, n) for name, n in dossier["name_votes"]))
+        parts.append("names reported: " + ", ".join(
+            f"'{name}' x{n}" for name, n in dossier["name_votes"]))
     else:
         parts.append("names reported: (none)")
 
@@ -880,8 +848,8 @@ def render_dossier_text(dossier: dict) -> str:
     parts.append("detection descriptions (verbatim, time order, sampled):")
     for e in dossier["description_samples"]:
         primary, _ = _obs_tags(e["obs"])
-        parts.append(f"  [t{e['t']}] {primary} ({e['obs'].confidence}) "
-                     f"\"{e['obs'].description}\"")
+        parts.append(
+            f"  [t{e['t']}] {primary} \"{e['obs'].description}\"")
 
     if dossier["context"]:
         parts.append("")
@@ -894,7 +862,7 @@ def render_dossier_text(dossier: dict) -> str:
             primary, _ = _obs_tags(e["obs"])
             frac = e["support"]["inter_over_box"]
             parts.append(
-                f"  [t{e['t']}] {primary} ({e['obs'].confidence}) mask fills "
+                f"  [t{e['t']}] {primary} mask fills "
                 f"{frac:.0%} of the box \"{e['obs'].description}\"")
 
     n_chips = len(dossier["chip_entries"])
@@ -909,15 +877,14 @@ def render_dossier_text(dossier: dict) -> str:
 def chip_caption(entry, index: int) -> str:
     primary, _ = _obs_tags(entry["obs"])
     if entry.get("is_founding"):
-        return (f"[IMAGE {index}] t0 FOUNDING detection: {primary} "
-                f"({entry['obs'].confidence})")
+        return f"[IMAGE {index}] t0 FOUNDING detection: {primary}"
     s = entry["support"]
     if entry.get("is_context"):
         return (f"[IMAGE {index}] t{entry['t']} CONTEXT detection: {primary} "
-                f"({entry['obs'].confidence}); the tracked mask (red) fills "
-                f"{s['inter_over_box']:.0%} of this box")
+                f"the tracked mask (red) fills {s['inter_over_box']:.0%} of "
+                "this box")
     return (f"[IMAGE {index}] t{entry['t']} detection: {primary} "
-            f"({entry['obs'].confidence}), iou={s['iou']:.2f}")
+            f"iou={s['iou']:.2f}")
 
 
 def chip_boxes_for_entry(entry, obs, pano_w, pano_h, fov_deg):

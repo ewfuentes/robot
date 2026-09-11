@@ -103,7 +103,6 @@ def audit(verdict="keep", name="Graves Light") -> dict:
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": "high",
     }
 
 

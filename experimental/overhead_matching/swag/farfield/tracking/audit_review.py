@@ -278,8 +278,7 @@ def track_section(key, audit, meta_entry, track, texts, extra_chips,
         f"</h2>")
     parts.append(
         f"<p>{esc(audit['landmark_kind'])} | extent: {esc(po['extent'])} | "
-        f"confidence: {esc(audit['confidence'])} | single_object: "
-        f"{audit['single_object']} | drop_reason: "
+        f"single_object: {audit['single_object']} | drop_reason: "
         f"{esc(audit['drop_reason'])} | supports: "
         f"{meta_entry['n_supports']} | "
         f"range: {esc(range_name)} | "
