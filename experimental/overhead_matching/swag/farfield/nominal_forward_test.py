@@ -35,6 +35,11 @@ class NominalForwardTest(unittest.TestCase):
             nominal_forward.camera_to_forward_cw_deg(120.0, calibration),
             30.0)
 
+    def test_rotation_never_rounds_to_360(self):
+        calibration = nominal_forward.parse(record())
+        self.assertEqual(nominal_forward.camera_to_forward_cw_deg(
+            89.99999999999999, calibration), 0.0)
+
     def test_diagnostic_is_not_authority(self):
         with self.assertRaisesRegex(ValueError, "approved"):
             nominal_forward.parse(record(approved=False))

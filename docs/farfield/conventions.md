@@ -113,7 +113,7 @@ heading estimate into pixels where an error cannot be recalibrated.
 | quantity | convention | owner |
 |---|---|---|
 | heading / course | degrees **clockwise from north**, `atan2(east, north)` | `geometry.compass_bearing_deg` / `compass_bearing_rad` |
-| pipeline heading | derived from **GPS course over ground**, never from `intrinsics.csv:heading_deg` | `calibration/heading.py` |
+| pipeline heading | per-frame dataset camera heading when explicitly recorded; otherwise derived from **GPS course over ground** | `frames_gps.csv` / `calibration/heading.py` |
 | serialized bearings (`bearing_forward_cw_deg` etc.) | stored in **[0, 360)**; compare with the wrap helpers, never by subtraction | `localization/structs.py`, validated by localization-input ingest |
 | Mapillary `computed_compass_angle` | bearing of the **LEFT EDGE**, not the centre (incident 1) | recorded per dataset |
 

@@ -46,6 +46,12 @@ filter consumes, the way §5.2 specifies:
   The default Epson profile uses this function only for clean nominal
   geometry, then applies its calibrated time-domain sensor model elsewhere.
 
+  When a per-keyframe nominal-forward heading is available, it replaces GPS
+  chord course as the orientation source. GPS still supplies displacement,
+  which is projected into the arrival keyframe's forward/left frame. This
+  naturally retains sideways and reverse motion, while heading changes remain
+  observable even when the displacement gate suppresses GPS jitter.
+
 The serialized noise realization is deterministic (fixed noise_seed), so a
 rebuilt export reproduces byte-identical increments.
 
@@ -106,6 +112,7 @@ def derive_increments(east_m, north_m, *,
                       slow_yaw_sigma_deg: float,
                       course_yaw_drift_sigma_deg: float,
                       reverse_keyframe_ranges,
+                      forward_world_cw_deg=None,
                       imu_translation_noise_frac: float = 0.0,
                       imu_yaw_noise_frac: float = 0.0,
                       noise_seed: int = 0) -> list:
@@ -118,6 +125,8 @@ def derive_increments(east_m, north_m, *,
     producer emulating the deployed IMU, not a lying one). The retained
     legacy profile config requires them positive; zero remains valid here for
     exact geometry and for the calibrated Epson profile's nominal increments.
+    Reverse annotations apply only to the GPS-course fallback; explicit
+    headings make their sign/180-degree correction unnecessary.
     """
     east_m = np.asarray(east_m, dtype=np.float64)
     north_m = np.asarray(north_m, dtype=np.float64)
@@ -145,6 +154,18 @@ def derive_increments(east_m, north_m, *,
     if isinstance(noise_seed, bool) or not isinstance(noise_seed, int):
         raise ValueError("noise_seed must be an integer")
     reverse = _reverse_keyframes(reverse_keyframe_ranges, east_m.size - 1)
+    if forward_world_cw_deg is not None:
+        forward_world_cw_deg = np.asarray(
+            forward_world_cw_deg, dtype=np.float64)
+        if (forward_world_cw_deg.shape != east_m.shape
+                or not np.all(np.isfinite(forward_world_cw_deg))
+                or np.any((forward_world_cw_deg < 0.0)
+                          | (forward_world_cw_deg >= 360.0))):
+            raise ValueError(
+                "forward_world_cw_deg must be canonical and match GPS fixes")
+        forward_world_cw_rad = np.radians(forward_world_cw_deg)
+    else:
+        forward_world_cw_rad = None
 
     rng = np.random.default_rng(noise_seed)
     slow_sigma_rad = math.radians(slow_yaw_sigma_deg)
@@ -160,7 +181,21 @@ def derive_increments(east_m, north_m, *,
 
         delta_yaw_cw_rad = 0.0
         sigma_yaw_rad = slow_sigma_rad
-        if step_m >= displacement_gate_m:
+        if forward_world_cw_rad is not None:
+            heading_rad = forward_world_cw_rad[kf]
+            delta_yaw_cw_rad = float(geo.wrap_rad(
+                heading_rad - forward_world_cw_rad[kf - 1]))
+            if step_m >= displacement_gate_m:
+                sin_heading = math.sin(heading_rad)
+                cos_heading = math.cos(heading_rad)
+                forward_m = d_east * sin_heading + d_north * cos_heading
+                left_m = -d_east * cos_heading + d_north * sin_heading
+                sigma_m = sigma_pair_m
+                sigma_yaw_rad = drift_sigma_rad
+            else:
+                forward_m = left_m = 0.0
+                sigma_m = stationary_sigma_m
+        elif step_m >= displacement_gate_m:
             course_rad = math.atan2(d_east, d_north)
             if kf in reverse:
                 # A reverse chord points aft; rotate it to the platform's
@@ -172,17 +207,23 @@ def derive_increments(east_m, north_m, *,
             prev_course_rad = course_rad
 
             forward_m = -step_m if kf in reverse else step_m
+            left_m = 0.0
             sigma_m = sigma_pair_m
         else:
             forward_m = 0.0
+            left_m = 0.0
             sigma_m = stationary_sigma_m
-        left_m = 0.0
         if inject:
-            sqrt_travel = math.sqrt(abs(forward_m))
+            travel_m = (math.hypot(forward_m, left_m)
+                        if forward_world_cw_rad is not None
+                        else abs(forward_m))
+            sqrt_travel = math.sqrt(travel_m)
             translation_noise = imu_translation_noise_frac * sqrt_travel
             yaw_noise = imu_yaw_noise_frac * sqrt_travel
             forward_m += float(rng.normal(0.0, translation_noise)) \
                 if translation_noise else 0.0
+            if translation_noise and forward_world_cw_rad is not None:
+                left_m += float(rng.normal(0.0, translation_noise))
             delta_yaw_cw_rad = float(geo.wrap_rad(
                 delta_yaw_cw_rad + rng.normal(0.0, yaw_noise))) \
                 if yaw_noise else delta_yaw_cw_rad

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import shutil
 import tempfile
 import types
@@ -260,10 +261,12 @@ def write_nominal_forward(path: Path):
 
 def build_fixture(
         root: Path, upstream_identity: str = None,
-        odometry_profile: str = odometry_profiles.PLANAR_IMU_PROFILE):
+        odometry_profile: str = odometry_profiles.PLANAR_IMU_PROFILE,
+        camera_headings=None):
     base = testing.make_dataset(
         root / "datasets" / DATASET, n_frames=4,
-        pano_size=(PANO_W, PANO_W // 2))
+        pano_size=(PANO_W, PANO_W // 2),
+        camera_headings=camera_headings)
     catalog_dir, catalog_ref = write_catalog(root)
     calibration = write_nominal_forward(base / "nominal_forward.json")
     config = {
@@ -347,6 +350,15 @@ def build_fixture(
 
 
 class ReducerTest(unittest.TestCase):
+    def test_camera_heading_requires_explicit_dataset_metadata(self):
+        with self.assertRaisesRegex(
+                build_export.LocalizationInputError, "pipeline_metadata"):
+            build_export._require_camera_heading_metadata({}, True)
+        with self.assertRaisesRegex(
+                build_export.LocalizationInputError, "both be"):
+            build_export._require_camera_heading_metadata(
+                {"camera_heading": {}}, False)
+
     def test_rotation_uses_approved_nominal_forward(self):
         record = nominal_forward.parse({
             "schema": nominal_forward.SCHEMA,
@@ -375,6 +387,36 @@ class ReducerTest(unittest.TestCase):
 
 
 class EndToEndTest(unittest.TestCase):
+    def test_camera_heading_drives_clean_actions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args, _ = build_fixture(
+                root / "headed",
+                camera_headings=(0.0, 10.0, 20.0, 30.0))
+            fallback_args, _ = build_fixture(root / "fallback")
+            build_export.build(args)
+            build_export.build(fallback_args)
+
+            exported = export_ingest.load(
+                args.output_dir, expected_dataset=DATASET)
+            fallback = export_ingest.load(
+                fallback_args.output_dir, expected_dataset=DATASET)
+            manifest = artifact.load_manifest(args.output_dir)
+            self.assertIn(
+                "camera_heading_world_cw_deg",
+                manifest.config["odometry"]["clean_heading_source"])
+            self.assertEqual(exported.measurements, fallback.measurements)
+            self.assertAlmostEqual(math.degrees(float(geo.wrap_rad(
+                exported.odometry[0].delta_yaw_cw_rad
+                - fallback.odometry[0].delta_yaw_cw_rad))), 10.0)
+            self.assertIn(
+                "camera_heading_world_cw_deg",
+                (args.output_dir / "motion_source.csv").read_text()
+                .splitlines()[0])
+            rederived, _ = odometry_profiles.derive(
+                args.output_dir, exported, odometry_profiles.PLANAR_IMU_PROFILE)
+            self.assertEqual(rederived, exported.odometry)
+
     def test_export_defaults_to_epson_and_retains_legacy_profile(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

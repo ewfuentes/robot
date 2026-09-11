@@ -3,7 +3,8 @@
 A farfield dataset directory is a frozen problem definition:
 
     panorama/f####,<lat>,<lon>,.jpg   equirectangular frames (GPS in the name)
-    frames_gps.csv                    idx, latitude, longitude, dist_m, video_t_s
+    frames_gps.csv                    idx, latitude, longitude, dist_m,
+                                      video_t_s[, camera_heading_world_cw_deg]
     intrinsics.csv / extraction_log.csv / pano_id_mapping.csv
     pipeline_metadata.json            conventions and source-video pointer
 
@@ -61,6 +62,7 @@ class Frame:
     y_m: float = 0.0
     dist_along_m: float | None = None
     time_s: float | None = None
+    camera_heading_world_cw_deg: float | None = None
     n_observations: int = 0
 
 
@@ -83,11 +85,16 @@ def load_frames(dataset_base: Path) -> list[Frame]:
         if reader.fieldnames is None or not required.issubset(reader.fieldnames):
             raise ContractViolation(
                 f"{gps_csv} must contain columns {sorted(required)}")
+        has_camera_heading = (
+            "camera_heading_world_cw_deg" in reader.fieldnames)
         for row_number, row in enumerate(reader, start=2):
             try:
                 idx = int(row["idx"])
                 values = [float(row[name]) for name in
                           ("latitude", "longitude", "dist_m", "video_t_s")]
+                camera_heading = (
+                    float(row["camera_heading_world_cw_deg"])
+                    if has_camera_heading else None)
             except (TypeError, ValueError) as exc:
                 raise ContractViolation(
                     f"{gps_csv}:{row_number}: invalid numeric field") from exc
@@ -95,6 +102,13 @@ def load_frames(dataset_base: Path) -> list[Frame]:
                 raise ContractViolation(
                     f"{gps_csv}:{row_number}: indices must be nonnegative and "
                     "numeric fields finite")
+            if (camera_heading is not None
+                    and (not math.isfinite(camera_heading)
+                         or not 0.0 <= camera_heading < 360.0)):
+                raise ContractViolation(
+                    f"{gps_csv}:{row_number}: "
+                    "camera_heading_world_cw_deg must be finite and within "
+                    "[0, 360)")
             if idx in gps_rows:
                 raise ContractViolation(f"{gps_csv}: duplicate idx {idx}")
             gps_rows[idx] = row
@@ -139,6 +153,9 @@ def load_frames(dataset_base: Path) -> list[Frame]:
             lon=lon,
             dist_along_m=float(gps["dist_m"]),
             time_s=float(gps["video_t_s"]),
+            camera_heading_world_cw_deg=(
+                float(gps["camera_heading_world_cw_deg"])
+                if has_camera_heading else None),
         ))
     extra_gps = sorted(set(gps_rows) - used_gps)
     if extra_gps:

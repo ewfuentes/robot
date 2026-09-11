@@ -29,6 +29,24 @@ class FramesTest(unittest.TestCase):
         self.assertEqual(frames[2].pano_id, "f0002")
         self.assertEqual(frames[2].dist_along_m, 20.0)
         self.assertEqual(frames[2].time_s, 4.0)
+        self.assertIsNone(frames[2].camera_heading_world_cw_deg)
+
+    def test_optional_camera_heading_is_complete_and_canonical(self):
+        base = testing.make_dataset(
+            Path(self.tmp.name) / "headed", n_frames=4,
+            camera_headings=(0.0, 90.0, 180.0, 359.9))
+        self.assertEqual(
+            [frame.camera_heading_world_cw_deg
+             for frame in ds_lib.load_frames(base)],
+            [0.0, 90.0, 180.0, 359.9])
+
+        for index, bad in enumerate(("", "nan", -1.0, 360.0)):
+            with self.subTest(bad=bad):
+                invalid = testing.make_dataset(
+                    Path(self.tmp.name) / f"invalid-{index}", n_frames=2,
+                    camera_headings=(0.0, bad))
+                with self.assertRaises(ds_lib.ContractViolation):
+                    ds_lib.load_frames(invalid)
 
     def test_fill_enu_anchors_at_mean(self):
         frames = ds_lib.load_frames(self.base)
