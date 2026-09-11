@@ -60,7 +60,7 @@ PLAN_SCHEMA = "farfield.active_catalog_plan/v1"
 GENERATOR = ("//experimental/overhead_matching/swag/farfield/"
              "collection:active_catalogs (stage 5)")
 OSM_GEOMETRY_INDEX_MODE = "full_pbf_complete_geometry_index"
-BBOX_BUFFER_KM = 25.0
+BBOX_BUFFER_KM = 25.0  # default; a scope may declare its own bbox_buffer_km
 ENC_BAND = 5
 COLLISION_RADIUS_M = 150.0
 MAPPING_COLUMNS = ("pano_id", "lat", "lon", "filename")
@@ -78,6 +78,9 @@ class ActiveCatalogScope:
     bbox_datasets: tuple[str, ...]
     osm_specs: tuple[str, ...]
     enc_state: str | None
+    # Metric pad around the trajectory union. The 25 km default is the
+    # harbour scale; an airborne collection that sees 10 km declares 10.
+    bbox_buffer_km: float = BBOX_BUFFER_KM
 
 
 ACTIVE_SCOPES = (
@@ -149,6 +152,22 @@ ACTIVE_SCOPES = (
         bbox_datasets=("pohang_canal_04",),
         osm_specs=("asia/south-korea-latest.osm.pbf",),
         enc_state=None,
+    ),
+    ActiveCatalogScope(
+        name="portland_flight_20260906",
+        output_datasets=(
+            "portland_flight_20260906_leg1",
+            "portland_flight_20260906_leg2",
+            "portland_flight_20260906_leg3",
+        ),
+        bbox_datasets=(
+            "portland_flight_20260906_leg1",
+            "portland_flight_20260906_leg2",
+            "portland_flight_20260906_leg3",
+        ),
+        osm_specs=("north-america/us/maine-latest.osm.pbf",),
+        enc_state="ME",
+        bbox_buffer_km=10.0,
     ),
 )
 SCOPE_BY_NAME = {scope.name: scope for scope in ACTIVE_SCOPES}
@@ -654,7 +673,7 @@ def build_plan(*, farfield_root: Path, scope_names: list[str] | tuple[str, ...],
         raise ActiveCatalogError(
             "dedupe_tolerance_m must be a finite non-negative number")
     if any(scope.enc_state for scope in scopes) and enc_root is None:
-        raise ActiveCatalogError("--enc_root is required for MA ENC scopes")
+        raise ActiveCatalogError("--enc_root is required for ENC scopes")
     resolved_root = root.resolve()
     resolved_poly_cache = Path(poly_cache_dir).resolve()
     try:
@@ -678,7 +697,7 @@ def build_plan(*, farfield_root: Path, scope_names: list[str] | tuple[str, ...],
             lats.extend(table_lats)
             lons.extend(table_lons)
         bbox = geometry_helpers.padded_bbox_wsen(
-            lats, lons, BBOX_BUFFER_KM)
+            lats, lons, scope.bbox_buffer_km)
         pbf_paths = [Path(pbf_identities[spec]["path"])
                      for spec in scope.osm_specs]
         ok, message, details = pbf_coverage.check_coverage(
@@ -699,7 +718,7 @@ def build_plan(*, farfield_root: Path, scope_names: list[str] | tuple[str, ...],
             "name": scope.name,
             "output_datasets": list(scope.output_datasets),
             "bbox_datasets": list(scope.bbox_datasets),
-            "bbox_buffer_km": BBOX_BUFFER_KM,
+            "bbox_buffer_km": scope.bbox_buffer_km,
             "bbox_wsen": list(bbox),
             "dataset_tables": dataset_tables,
             "osm_specs": list(scope.osm_specs),
