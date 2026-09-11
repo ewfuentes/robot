@@ -113,6 +113,30 @@ py_binary(
 )
 
 py_library(
+    name = "lidar_dsm",
+    srcs = ["lidar_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":terrain",
+        requirement("laspy"),
+        requirement("lazrs"),
+        requirement("numpy"),
+        requirement("pyproj"),
+    ],
+)
+
+py_binary(
+    name = "build_dsm",
+    srcs = ["build_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":lidar_dsm",
+        ":terrain",
+        requirement("numpy"),
+    ],
+)
+
+py_library(
     name = "viz",
     srcs = ["viz.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -154,6 +178,93 @@ py_binary(
         requirement("torch"),
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_library(
+    name = "truth_strips",
+    srcs = ["truth_strips.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        "//experimental/overhead_matching/swag/farfield/calibration:heading",
+    ],
+)
+
+py_binary(
+    name = "export_truth_compare",
+    srcs = ["export_truth_compare.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_truth_video",
+    srcs = ["export_truth_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_likelihood_video",
+    srcs = ["export_likelihood_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_retrieval_forensics",
+    srcs = ["export_retrieval_forensics.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":depth_render",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield/viewers:page",
     ],
 )
@@ -255,6 +366,21 @@ py_test(
         ":lattice",
         ":terrain",
     ],
+)
+
+py_test(
+    name = "lidar_dsm_test",
+    srcs = ["lidar_dsm_test.py"],
+    deps = [
+        ":lidar_dsm",
+        ":terrain",
+    ],
+)
+
+py_test(
+    name = "truth_strips_test",
+    srcs = ["truth_strips_test.py"],
+    deps = [":truth_strips"],
 )
 
 py_test(

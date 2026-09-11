@@ -18,6 +18,7 @@ Run via bazel:
 import argparse
 import json
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
@@ -39,13 +40,15 @@ def build_database(hf: terrain.HeightField, lat: lattice_lib.Lattice,
                    sky_fill_m: float, device: str = "cuda",
                    views_per_batch: int = 24,
                    progress_every: int = 200,
-                   sample_render_indices: tuple[int, ...] = ()) -> dict:
+                   sample_render_indices: tuple[int, ...] = (),
+                   backgrounds: Sequence[terrain.HeightField] = ()) -> dict:
     """Render + embed every lattice location.
 
     Returns {"descriptors": (N, n_theta, D) float16 array, "coverage":
     (N, n_theta) float32, "sample_renders": {loc_idx: (n_theta, H, W) f16}}.
     """
-    tt = depth_render.TerrainTensor.from_height_field(hf, device=device)
+    tt = depth_render.TerrainTensor.chain_from_height_fields(
+        [hf, *backgrounds], device=device)
     model = model.to(device).eval()
     n_theta = render_config.n_yaw
     descriptors = np.zeros((len(lat), n_theta, crosslocate_net.DESCRIPTOR_DIM),
@@ -139,6 +142,12 @@ def load_database(db_dir: Path, device: str = "cpu") -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--background", type=Path, action="append",
+                        default=[],
+                        help="Coarse HeightField consulted where the main "
+                             "surface has no data (far field beyond its box, "
+                             "and interior holes); base path, no suffix. "
+                             "Repeatable, fine to coarse.")
     parser.add_argument("--height_field", type=Path, required=True,
                         help="Base path of a saved HeightField (no suffix)")
     parser.add_argument("--weights", type=Path, required=True,
@@ -159,9 +168,11 @@ def main() -> None:
     args = parser.parse_args()
 
     hf = terrain.HeightField.load(args.height_field)
+    backgrounds = [terrain.HeightField.load(p) for p in args.background]
     lat = lattice_lib.build_lattice(
         hf, spacing_m=args.spacing_m,
-        bounds_xy=tuple(args.bounds_xy) if args.bounds_xy else None)
+        bounds_xy=tuple(args.bounds_xy) if args.bounds_xy else None,
+        backgrounds=backgrounds)
     print(f"lattice: {len(lat)} locations "
           f"({lat.n_dropped_nodata} dropped for nodata)")
 
@@ -176,9 +187,11 @@ def main() -> None:
                                     args.n_sample_renders).round())
     result = build_database(hf, lat, model, render_config,
                             sky_fill_m=args.sky_fill_m, device=args.device,
-                            sample_render_indices=sample_indices)
+                            sample_render_indices=sample_indices,
+                            backgrounds=backgrounds)
     save_database(args.output_dir, result, lat, render_config, {
         "height_field": str(args.height_field),
+        "backgrounds": [str(p) for p in args.background],
         "weights": str(args.weights),
         "sky_fill_m": args.sky_fill_m,
         "argv_bounds_xy": args.bounds_xy,
