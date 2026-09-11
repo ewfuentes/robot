@@ -573,6 +573,39 @@ so on) stay, because those are about the data.
 stage is given, a differing shared value fails; a key the artifact predates
 warns. Schema growth must not orphan artifacts.
 
+## 2026-09-10 · FAA obstacles join the catalog by class merge, and a scope declares its own bbox pad
+
+The first airborne collection (`portland_flight_20260906`) sees tall
+structures a vessel catalog is thinnest on, and the FAA Digital Obstacle File
+(public domain, 56-day cycle) has every charted one with a surveyed height.
+Two decisions:
+
+- **A scope carries its own bbox buffer.** `BBOX_BUFFER_KM = 25` was a
+  module constant sized for a harbour. `ActiveCatalogScope.bbox_buffer_km`
+  (default 25) lets Portland declare 10 km around the three-leg union
+  (52.6 × 72.5 km, 3,814 km²); the plan records the value, so a catalog still
+  says what it covers. With the extraction box already the intended area the
+  trim runs without a clip plan (`osm_20260910_trim_v1`).
+- **Nameless sources merge by class, not by name.** `add_catalog_source`
+  dedupes by normalised name, which cannot see that an FAA `TOWER` at
+  ±76 m is the OSM `man_made=communications_tower` next to it. With
+  `--class_merge_radius_m` a source row whose `structure_class` (tower,
+  chimney, tank, building, solar, power_tower, ...) matches exactly one
+  catalog row within `max(radius, 2 × faa:position_tolerance_m)` is merged
+  into that row: OSM keeps identity, geometry, name and every tag it has;
+  FAA adds `height` and `faa:*`. Two candidates is ambiguous — neither merged
+  nor added, and recorded — because a third copy of a transmission tower is
+  worse than a missing height. Every merge and every skip is in the manifest
+  config for review.
+
+What the DOF is not: half its Maine rows are unverified filings at ±76 m;
+`POLE`, `ELEC SYS`, `FENCE`, `SIGN`, `NAVAID` are airport obstruction-survey
+furniture (86-100 % within 3 km of a runway, the ELEC SYS rows are the
+Jetport's approach-light bars) and are dropped by type. Every `SOLAR PANELS`
+row in the box is unverified, so verified-only means no FAA solar; OSM maps
+Maine's solar farms as `power=plant`/`generator` polygons, which the class
+merge treats as the same class should that change.
+
 ## 2026-09-03 · A second source enters the catalog as a derived artifact, under the OSM vocabulary
 
 Overture Places (Meta, Microsoft, Foursquare, AllThePlaces; no OSM content)

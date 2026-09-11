@@ -630,6 +630,38 @@ py_test(
 )
 
 py_library(
+    name = "extract_landmarks_from_faa_dof_lib",
+    srcs = ["extract_landmarks_from_faa_dof.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("geopandas"),
+        requirement("shapely"),
+        ":source_publication",
+        FARFIELD + ":artifact",
+        FARFIELD + ":provenance",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_binary(
+    name = "extract_landmarks_from_faa_dof",
+    srcs = ["extract_landmarks_from_faa_dof.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":extract_landmarks_from_faa_dof_lib"],
+)
+
+py_test(
+    name = "extract_landmarks_from_faa_dof_test",
+    srcs = ["extract_landmarks_from_faa_dof_test.py"],
+    deps = [
+        ":extract_landmarks_from_faa_dof_lib",
+        ":source_publication",
+        FARFIELD + "/catalog:catalog",
+        FARFIELD + "/catalog:schema",
+    ],
+)
+
+py_library(
     name = "add_catalog_source_lib",
     srcs = ["add_catalog_source.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
