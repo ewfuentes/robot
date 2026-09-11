@@ -218,6 +218,11 @@ def _frame_viewer_links(data_root: Path) -> dict[str, dict[tuple[str, str], Path
     return links
 
 
+# Superseded versions live under <lane>/<dataset>/retired/ beside a
+# RETIRED.md; they are records, not versions to index.
+RETIRED_DIRECTORY = "retired"
+
+
 def _dirs(path: Path) -> list[Path]:
     if not _require_directory(path, allow_missing=True):
         return []

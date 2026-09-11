@@ -63,6 +63,12 @@ and the recorded localization section of `build_config.json`. Scientific
 settings cannot be overridden at the run command. The run records the build,
 input artifact, backend, replay inputs, and complete resolved configuration.
 
+The uniform prior spans the catalog's recorded region (`region_bbox_wsen`,
+written by `trim_catalog` and copied into `export_meta.prior_region`), padded
+by `localization.margin_m`. It is never derived from the catalog rows, and an
+export without a recorded region cannot run a uniform prior
+(decisions.md, 2026-09-10).
+
 **Only a uniform-prior, bearing-enabled run is a primary evaluation.** A
 truth-centered initialization, odometry-only run, oracle association, or
 other privileged input is a labeled diagnostic. These controls are valuable

@@ -732,3 +732,43 @@ summits, which the cap leaves unconstrained. Flevoland polder on the Gemini
 region) stays at 0.000 with and without the cap: only 4 of 169 tracks have
 an instance match at ≥ 0.8, so nearly every bearing is identity-free and a
 cap on it binds nothing. That is a matching problem, not a filter one.
+
+## 2026-09-10 · The uniform prior is the catalog's declared region, and catalog geometry stops at its edge
+
+The whole-map prior was never read from any box. `export_ingest.region_box`
+took the min/max of the catalog rows' centroids in ENU and padded it by
+`localization.margin_m`. Three consequences were measured on the pinned
+paper runs:
+
+- every 625 km² clip-plan dataset ran a 741–753 km² prior, almost all of it
+  the 1 km pad on each side;
+- the trim clipped rows by `representative_point()` while the export placed
+  them by centroid, so edge rows leaked a few hundred metres past the box;
+- on catalogs with no spatial clip, OSM's any-vertex-in-bbox selection keeps
+  whole pipelines, power lines, rivers and lakes whose centroids lie 20–40 km
+  outside the fetch bbox. Mount Washington's prior was 6,256 km² against a
+  2,639 km² fetch box, Pohang's 4,975 km² against 2,738 km².
+
+Two changes, both on the catalog side of the seam:
+
+1. `trim_catalog` clips every geometry to one **region box** and records it
+   as `region_bbox_wsen` / `region_source`: the reviewed clip bbox when one
+   is used, the metric square's bounds for the legacy path, otherwise the
+   full catalog's fetch `bbox_wsen` found by walking the catalog lineage. A
+   row survives iff some of its geometry lies inside the box (rule
+   `outside_region`, replacing the representative-point rule); what survives
+   is only the part inside, so a pipeline entering the box at one corner is
+   a short segment there, not a 40 km line with a far-away centroid. Rows
+   fully inside are untouched byte for byte.
+2. `build_export` copies that box into `export_meta.prior_region` (WGS84 and
+   the ENU bounding box of its corners); `run_export` builds the uniform
+   `UniformBoxInit` from it plus `margin_m`. An export with no recorded
+   region refuses a uniform-prior run instead of falling back to row extents,
+   per the no-defaults rule. `region_box` remains as a diagnostic of the
+   catalog span.
+
+So "no clip" now means exactly what it says: the region is the fetch bbox,
+the catalog holds what is inside it, and the prior is that box. Landmarks
+outside the region are not in the catalog on either policy; that trade was
+already made by the clip-plan datasets and is now uniform.
+

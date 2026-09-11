@@ -171,7 +171,7 @@ def _filter_config(localization: dict,
                    data: export_ingest.ExportData) -> structs.FilterConfig:
     init_kind = localization["init"]
     if init_kind == "uniform":
-        init = export_ingest.region_box(data, localization["margin_m"])
+        init = export_ingest.prior_box(data, localization["margin_m"])
     elif init_kind == "truth_position":
         if not data.truth:
             raise ValueError(

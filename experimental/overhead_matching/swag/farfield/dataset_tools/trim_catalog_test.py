@@ -350,9 +350,12 @@ def catalog(rows, crs="EPSG:4326") -> gpd.GeoDataFrame:
 DATASET = "test_dataset"
 
 
+FETCH_BBOX_WSEN = [-73.0, 41.0, -69.0, 44.0]
+
+
 def publish_catalog(root: Path, rows, version: str = "v1",
                     upstreams=(), dataset=DATASET,
-                    crs="EPSG:4326") -> Path:
+                    crs="EPSG:4326", config=None) -> Path:
     output_dir = Path(root) / version
     with artifact.ArtifactDirectoryBuilder(
             output_dir,
@@ -362,6 +365,7 @@ def publish_catalog(root: Path, rows, version: str = "v1",
             generator="trim_catalog_test",
             git_commit="test",
             upstreams=upstreams,
+            config={"bbox_wsen": FETCH_BBOX_WSEN} if config is None else config,
             declared_outputs=("catalog.feather",)) as builder:
         catalog(rows, crs=crs).to_feather(
             builder.output_path("catalog.feather"))
@@ -912,7 +916,7 @@ class ClipBoxTest(unittest.TestCase):
         self.assertEqual(tc.clip_mask(gdf, 42.36, -71.08, 20.0).tolist(),
                          [True, False])      # half-box 10 km: east one only
 
-    def test_exact_bbox_is_inclusive_and_uses_representative_points(self):
+    def test_geometry_is_clipped_to_the_region_and_edges_are_inclusive(self):
         crossing = LineString([(-71.2, 42.35), (-71.0, 42.35)])
         gdf = catalog([
             ("west", {"man_made": "tower"}, Point(-71.1, 42.3)),
@@ -920,8 +924,31 @@ class ClipBoxTest(unittest.TestCase):
             ("outside", {"man_made": "tower"}, Point(-70.9, 42.3)),
             ("crossing", {"man_made": "pier"}, crossing),
         ])
-        mask = tc.clip_bbox_mask(gdf, (-71.1, 42.3, -71.0, 42.4))
-        self.assertEqual(mask.tolist(), [True, True, False, True])
+        clipped, empty, n_cut = tc.clip_geometry(
+            gdf, (-71.1, 42.3, -71.0, 42.4))
+        self.assertEqual(empty.tolist(), [False, False, True, False])
+        self.assertEqual(n_cut, 1)
+        # Only the in-region half of the crossing line survives, so its
+        # centroid now lies inside the box rather than 5 km west of it.
+        self.assertAlmostEqual(clipped.iloc[3].bounds[0], -71.1)
+        self.assertAlmostEqual(clipped.iloc[3].bounds[2], -71.0)
+        self.assertTrue(clipped.iloc[0].equals(gdf.geometry.iloc[0]))
+
+    def test_unclipped_trim_uses_the_full_catalog_fetch_bbox_as_region(self):
+        far = LineString([(-71.0, 42.3), (-60.0, 42.3)])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            source = publish_catalog(
+                tmp, [("pipe", {"man_made": "pipeline"}, far),
+                      ("gone", {"man_made": "tower"}, Point(-50.0, 42.3))])
+            out = tc.main(source, tmp / "v2", None, 2000.0, 6.0, False)
+            record = trim_config(tmp / "v2")
+        self.assertEqual(record["region_source"], "full_catalog_bbox_wsen")
+        self.assertEqual(record["region_bbox_wsen"], FETCH_BBOX_WSEN)
+        self.assertEqual(record["geometry_clipped_rows"], 1)
+        self.assertEqual(record["drops_per_rule"]["outside_region"], 1)
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out.geometry.iloc[0].bounds[2], -69.0)
 
     def test_invalid_or_mixed_bbox_configuration_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -993,7 +1020,9 @@ class ClipBoxTest(unittest.TestCase):
         self.assertEqual(record["clip_plan_digest"], digest)
         self.assertEqual(record["clip_plan_source_verification"],
                          expected_sources)
-        self.assertEqual(record["drops_per_rule"]["outside_clip_bbox"], 1)
+        self.assertEqual(record["drops_per_rule"]["outside_region"], 1)
+        self.assertEqual(record["region_source"], "clip_bbox_wsen")
+        self.assertEqual(record["region_bbox_wsen"], list(bbox))
         self.assertEqual(record["rows_out"], 1)
         self.assertEqual(
             record["rule_fingerprint"],

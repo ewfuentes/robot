@@ -761,3 +761,22 @@ py_test(
         FARFIELD + ":artifact",
     ],
 )
+
+py_library(
+    name = "retire_versions_lib",
+    srcs = ["retire_versions.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_binary(
+    name = "retire_versions",
+    srcs = ["retire_versions.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":retire_versions_lib"],
+)
+
+py_test(
+    name = "retire_versions_test",
+    srcs = ["retire_versions_test.py"],
+    deps = [":retire_versions_lib"],
+)

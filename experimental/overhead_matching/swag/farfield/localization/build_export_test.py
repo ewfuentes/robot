@@ -171,6 +171,11 @@ def write_catalog(root: Path, *, node_id="node:1"):
     with artifact.ArtifactDirectoryBuilder(
             catalog_dir, kind=paths_lib.CATALOGS, dataset=DATASET,
             version="v1", generator="test", git_commit="test", arguments=(),
+            config={"region_source": "clip_bbox_wsen",
+                    "region_bbox_wsen": [testing.ANCHOR_LON - 0.1,
+                                         testing.ANCHOR_LAT - 0.1,
+                                         testing.ANCHOR_LON + 0.1,
+                                         testing.ANCHOR_LAT + 0.1]},
             declared_outputs=("catalog.feather",)) as builder:
         schema.build_frame(
             ids=[node_id],
