@@ -106,7 +106,6 @@ def passthrough_audit(obs) -> dict:
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": obs.confidence,
         "unresolved": "",
     }
     return sa.TrackAudit.model_validate(audit).model_dump()

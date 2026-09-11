@@ -345,7 +345,6 @@ def _tracklet_dossiers(data, cache, triage, bundle, viewer_dir: Path,
                 "validSegments": [
                     list(segment) for segment in source.valid_segments],
                 "verdict": source.verdict,
-                "confidence": source.confidence,
                 "chip": source.chip_data_uri,
                 "frameBearings": [{
                     "kf": keyframe,

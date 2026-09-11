@@ -40,7 +40,6 @@ def audit_for(track, verdict="keep", segments=None):
         "single_object": verdict == "keep",
         "drop_reason": ("dynamic_object" if verdict == "drop" else "none"),
         "valid_segments": segments,
-        "confidence": "high",
     }
 
 
@@ -146,6 +145,7 @@ class AcceptedTrackletTest(unittest.TestCase):
         self.assertEqual(
             accepted[0].provenance["source_track_sha256"],
             tracklets._canonical_sha256(self.track1))
+        self.assertNotIn("audit_confidence", accepted[0].quality)
 
     def test_orphaned_audit_is_an_error(self):
         with self.assertRaisesRegex(

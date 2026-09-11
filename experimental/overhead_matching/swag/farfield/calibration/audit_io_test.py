@@ -50,7 +50,6 @@ def valid_audit(verdict="keep", segments=None):
         },
         "strike_votes": [],
         "secondary_objects": [],
-        "confidence": "high",
         "unresolved": "",
     }
 

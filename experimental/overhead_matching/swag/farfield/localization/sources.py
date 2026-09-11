@@ -39,7 +39,6 @@ class TrackletSource:
     keyframe_span: tuple[int, int]
     n_supports: int
     verdict: str
-    confidence: str
     valid_segments: tuple[tuple[int, int], ...]
     name: str | None
     tags: tuple[str, ...]
@@ -276,7 +275,6 @@ def load(run_dir: Path, tracks_dir: Path, audit_dir: Path, tracklet_ids,
             keyframe_span=(min(keyframes), max(keyframes)),
             n_supports=support_count,
             verdict=audit["verdict"],
-            confidence=audit["confidence"],
             valid_segments=tuple(
                 (segment.start_keyframe_idx, segment.end_keyframe_idx)
                 for segment in item.valid_segments),

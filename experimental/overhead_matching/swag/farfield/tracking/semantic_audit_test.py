@@ -150,7 +150,7 @@ class DossierTest(unittest.TestCase):
         ])
         return track, obs
 
-    def test_dossier_counts_rle_and_name_confidence(self):
+    def test_dossier_counts_rle_and_tag_roles(self):
         track, obs = self._track_and_obs()
         d = sa.build_dossier(track, obs, make_cfg())
         self.assertEqual(d["n_supports"], 4)
@@ -161,26 +161,27 @@ class DossierTest(unittest.TestCase):
         self.assertEqual(d["primary_tag_rle"],
                          [("man_made=tower", 4), ("man_made=lighthouse", 1)])
         self.assertEqual(d["name_votes"], [("Graves Light", 3)])
-        self.assertEqual(d["name_confidence"]["Graves Light"],
-                         {"high": 2, "medium": 1, "low": 0})
         # `name` is not an identity tag: only the primaries reach the table.
         self.assertEqual({r["tag"] for r in d["tag_table"]},
                          {"man_made=tower", "man_made=lighthouse"})
         tower = next(r for r in d["tag_table"] if r["tag"] == "man_made=tower")
-        self.assertEqual((tower["total"], tower["as_primary"], tower["high"],
-                          tower["medium"]), (4, 4, 3, 1))
+        self.assertEqual(tower, {
+            "tag": "man_made=tower", "total": 4,
+            "as_primary": 4, "as_additional": 0,
+        })
 
     def test_dossier_text_renders_every_section(self):
         track, obs = self._track_and_obs()
         d = sa.build_dossier(track, obs, make_cfg())
         text = sa.render_dossier_text(d)
         self.assertIn("TRACK EVIDENCE", text)
-        self.assertIn("'Graves Light' x3 (2 high, 1 medium)", text)
+        self.assertIn("'Graves Light' x3", text)
         self.assertIn("man_made=tower x4", text)
         self.assertIn("1 founding detection at t0 + 4 post-birth", text)
         self.assertIn("unreported x5", text)  # distance_estimate RLE
         self.assertIn("the founding tower", text)
         self.assertIn(sa.QUESTIONS_TEXT, text)
+        self.assertNotIn("confidence", text.lower())
 
     def test_evidence_math(self):
         track, obs = self._track_and_obs()
@@ -197,8 +198,6 @@ class DossierTest(unittest.TestCase):
         self.assertAlmostEqual(ev["name_top_share"], 1.0)
         self.assertEqual(ev["name_margin"], 3.0)
         self.assertFalse(ev["name_contested"])
-        self.assertEqual(ev["confidence_counts"],
-                         {"high": 4, "medium": 1, "low": 0})
         # All mask boxes identical -> no azimuth sweep.
         self.assertEqual(ev["camera_azimuth_span_deg"], 0.0)
 
@@ -266,6 +265,23 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(picked[0]["t"], 0)
         self.assertEqual(picked[-1]["t"], 11)
 
+    def test_sample_descriptions_uses_time_not_detector_confidence(self):
+        supports = []
+        for i in range(12):
+            primary = (("natural", "cliff") if i in (5, 6)
+                       else ("man_made", "tower"))
+            confidence = "low" if i == 5 else "high"
+            oid = f"o{i}"
+            supports.append({
+                "t": i, "keyframe": i,
+                "obs": make_obs(
+                    oid, primary=primary, confidence=confidence, frame_idx=i),
+                "support": support(oid, **CLEAN), "rec": record(i),
+            })
+        picked = sa.sample_descriptions(supports, max_samples=4)
+        self.assertIn(5, [entry["t"] for entry in picked])
+        self.assertNotIn(6, [entry["t"] for entry in picked])
+
     def test_select_chip_entries_first_last_cap_and_context(self):
         cfg = make_cfg(max_support_chips=3, max_context_chips=1)
         supports, context = [], []
@@ -322,6 +338,8 @@ class SchemaTest(unittest.TestCase):
     def test_schema_is_inlined_and_required_everywhere(self):
         schema = sa.get_provider_audit_schema()
         self.assertNotIn("$ref", json.dumps(schema))
+        self.assertNotIn("confidence", json.dumps(schema).lower())
+        self.assertNotIn("confidence", sa.SYSTEM_PROMPT.lower())
         self.assertEqual(set(schema), {"anyOf"})
         for variant in schema["anyOf"]:
             self.assertEqual(set(variant["required"]),
@@ -408,7 +426,6 @@ def valid_audit_payload(**overrides):
             extent="point_like"),
         strike_votes=[sa.StrikeVote(t=2, reason="different building")],
         secondary_objects=[],
-        confidence="high",
         unresolved="").model_dump()
     payload.update(overrides)
     return payload

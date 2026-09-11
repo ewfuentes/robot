@@ -57,6 +57,7 @@ class DetectionsAsTracksTest(unittest.TestCase):
             ["Graves Light"])
         self.assertEqual(audits[1]["primary_object"]["name_candidates"], [])
         self.assertEqual(audits[0]["verdict"], "keep")
+        self.assertNotIn("confidence", audits[0])
 
         accepted = tracklets.build_accepted_tracklets(tracks, audits)
         self.assertEqual(len(accepted), 3)
