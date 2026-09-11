@@ -37,7 +37,18 @@ py_binary(
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
     "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+    "//experimental/overhead_matching/swag/scripts:export_correspondence_similarity",
   ]
+)
+
+py_test(
+  name="correspondence_explorer_test",
+  srcs=["correspondence_explorer_test.py"],
+  deps=[
+    ":correspondence_explorer",
+    requirement("numpy"),
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+  ],
 )
 
 py_binary(

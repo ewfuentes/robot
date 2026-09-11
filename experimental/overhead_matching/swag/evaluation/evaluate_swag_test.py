@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 import common.torch.load_torch_deps
 import torch
 from pathlib import Path
@@ -10,6 +11,7 @@ from experimental.overhead_matching.swag.evaluation.evaluate_swag import evaluat
 from common.math.haversine import find_d_on_unit_circle
 import torch.nn as nn
 import experimental.overhead_matching.swag.data.satellite_embedding_database as sed
+import experimental.overhead_matching.swag.evaluation.evaluate_swag as evaluate_swag
 import enum
 
 
@@ -68,6 +70,18 @@ class EvaluateSwagTest(unittest.TestCase):
         overhead_view = dataset.get_sat_patch_view()
         sat_dataloader = vd.get_dataloader(overhead_view, batch_size=BATCH_SIZE, shuffle=False)
         satellite_embedding_database = sed.build_satellite_db(sat_model, sat_dataloader, device="cpu")
+
+        with mock.patch.object(
+                sed, "build_satellite_db",
+                side_effect=AssertionError("satellite model should be bypassed")), \
+                mock.patch.object(
+                    evaluate_swag, "compute_combined_hash",
+                    side_effect=AssertionError("similarity cache should be bypassed")):
+            _, precomputed_similarities = evaluate_prediction_top_k(
+                sat_model, ego_model, dataset, device="cpu",
+                satellite_embeddings=satellite_embedding_database.double())
+        self.assertTrue(torch.allclose(
+            all_similarities, precomputed_similarities, atol=1e-6))
 
         # Create panorama dataloader for testing
         pano_dataloader = vd.get_dataloader(dataset.get_pano_view(), batch_size=BATCH_SIZE, shuffle=False)

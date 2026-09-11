@@ -1,7 +1,9 @@
 """Adaptive aggregators for computing observation log-likelihoods."""
 
 import abc
+import json
 from pathlib import Path
+import warnings
 import msgspec
 import common.torch.load_torch_deps
 import torch
@@ -22,6 +24,7 @@ class SingleSimilarityMatrixAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OP
 
     similarity_matrix_path: Path
     sigma: float
+    allow_legacy_similarity_identity: bool = False
 
 
 class ImageLandmarkPrivilegedInformationFusionConfig(
@@ -33,6 +36,7 @@ class ImageLandmarkPrivilegedInformationFusionConfig(
     landmark_similarity_matrix_path: Path
     sigma: float
     include_semipositive: bool = True
+    allow_legacy_similarity_identity: bool = False
 
 
 class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
@@ -41,6 +45,7 @@ class EntropyAdaptiveAggregatorConfig(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     image_similarity_matrix_path: Path
     landmark_similarity_matrix_path: Path
     sigma: float
+    allow_legacy_similarity_identity: bool = False
 
 
 class SafaPlusNormalizedLandmarkAggregatorConfig(
@@ -78,6 +83,7 @@ class SafaPlusNormalizedLandmarkAggregatorConfig(
     image_sigma: float
     landmark_sigma: float
     landmark_use_raw_residual: bool = False
+    allow_legacy_similarity_identity: bool = False
 
     def __post_init__(self):
         if not (self.image_sigma > 0):
@@ -139,8 +145,10 @@ def _assert_matrix_aligned(
     panorama_metadata: pd.DataFrame,
     satellite_metadata: pd.DataFrame,
     matrix_path: Path,
+    allow_legacy_identity: bool = False,
+    require_identity: bool = False,
 ) -> None:
-    """Verify a similarity matrix's shape matches the current dataset.
+    """Verify a similarity matrix's shape and ordered identity.
 
     Rows are indexed positionally via the panorama_metadata pano_id list and
     columns via the satellite_metadata satellite-patch index (e.g. through
@@ -166,6 +174,49 @@ def _assert_matrix_aligned(
             f"dataset's satellite_metadata has {n_sat} entries. The matrix is "
             f"misaligned with the current satellite set (likely stale relative "
             f"to a satellite trim). Regenerate it from the current satellites."
+        )
+
+    identity_path = Path(matrix_path).with_suffix(".json")
+    if identity_path.exists():
+        try:
+            metadata = json.loads(identity_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Could not read similarity identity sidecar {identity_path}: "
+                f"{exc}") from exc
+        actual_identity = (
+            metadata.get("matrix_identity")
+            if isinstance(metadata, dict) else None)
+    else:
+        actual_identity = None
+
+    if actual_identity is not None and not isinstance(actual_identity, dict):
+        raise ValueError(
+            f"Similarity identity in {identity_path} must be a JSON object")
+
+    if actual_identity is None:
+        message = (
+            f"Similarity matrix at {matrix_path} has no ordered identity "
+            f"contract in {identity_path}. Shape alone cannot detect reordered "
+            "panoramas or satellites. Regenerate the matrix, or explicitly set "
+            "allow_legacy_similarity_identity: true to use this legacy artifact."
+        )
+        if require_identity and not allow_legacy_identity:
+            raise ValueError(message)
+        if allow_legacy_identity:
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return
+
+    expected_identity = vd.similarity_matrix_identity(
+        panorama_metadata, satellite_metadata)
+    if actual_identity != expected_identity:
+        mismatches = sorted(
+            key for key in set(actual_identity) | set(expected_identity)
+            if actual_identity.get(key) != expected_identity.get(key))
+        raise ValueError(
+            f"Similarity matrix at {matrix_path} is positionally misaligned "
+            f"with the current dataset; identity fields differ: {mismatches}. "
+            "Regenerate it from the current ordered panoramas and satellites."
         )
 
 
@@ -227,6 +278,7 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
         config: SingleSimilarityMatrixAggregatorConfig,
         vigor_dataset: vd.VigorDataset,
         device: torch.device,
+        require_similarity_identity: bool = False,
     ) -> "SingleSimilarityMatrixAggregator":
         similarity_matrix = _load_similarity_matrix(config.similarity_matrix_path)
         _assert_matrix_aligned(
@@ -234,6 +286,8 @@ class SingleSimilarityMatrixAggregator(ObservationLogLikelihoodAggregator):
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         return cls(
             similarity_matrix, vigor_dataset._panorama_metadata, config.sigma, device
@@ -294,6 +348,7 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
         config: ImageLandmarkPrivilegedInformationFusionConfig,
         vigor_dataset: vd.VigorDataset,
         device: torch.device,
+        require_similarity_identity: bool = False,
     ) -> "ImageLandmarkPrivilegedInformationFusion":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
@@ -302,12 +357,16 @@ class ImageLandmarkPrivilegedInformationFusion(ObservationLogLikelihoodAggregato
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.image_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         return cls(
             image_sim,
@@ -388,6 +447,7 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
         config: EntropyAdaptiveAggregatorConfig,
         vigor_dataset: vd.VigorDataset,
         device: torch.device,
+        require_similarity_identity: bool = False,
     ) -> "EntropyAdaptiveAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
@@ -396,12 +456,16 @@ class EntropyAdaptiveAggregator(ObservationLogLikelihoodAggregator):
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.image_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         return cls(
             image_sim,
@@ -522,6 +586,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
         config: SafaPlusNormalizedLandmarkAggregatorConfig,
         vigor_dataset: vd.VigorDataset,
         device: torch.device,
+        require_similarity_identity: bool = False,
     ) -> "SafaPlusNormalizedLandmarkAggregator":
         image_sim = _load_similarity_matrix(config.image_similarity_matrix_path)
         landmark_sim = _load_similarity_matrix(config.landmark_similarity_matrix_path)
@@ -530,12 +595,16 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.image_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         _assert_matrix_aligned(
             landmark_sim,
             vigor_dataset._panorama_metadata,
             vigor_dataset._satellite_metadata,
             config.landmark_similarity_matrix_path,
+            config.allow_legacy_similarity_identity,
+            require_similarity_identity,
         )
         return cls(
             image_similarity_matrix=image_sim,
@@ -552,6 +621,7 @@ def aggregator_from_config(
     config: AggregatorConfig,
     vigor_dataset: vd.VigorDataset,
     device: torch.device,
+    require_similarity_identity: bool = False,
 ) -> ObservationLogLikelihoodAggregator:
     """Factory function to create aggregator from config.
 
@@ -559,20 +629,22 @@ def aggregator_from_config(
         config: Aggregator configuration
         vigor_dataset: Full VIGOR dataset (passed to inner from_config methods)
         device: Torch device for computation
+        require_similarity_identity: Fail if a matrix lacks an identity sidecar
     """
     if isinstance(config, SingleSimilarityMatrixAggregatorConfig):
         return SingleSimilarityMatrixAggregator.from_config(
-            config, vigor_dataset, device
+            config, vigor_dataset, device, require_similarity_identity
         )
     elif isinstance(config, ImageLandmarkPrivilegedInformationFusionConfig):
         return ImageLandmarkPrivilegedInformationFusion.from_config(
-            config, vigor_dataset, device
+            config, vigor_dataset, device, require_similarity_identity
         )
     elif isinstance(config, EntropyAdaptiveAggregatorConfig):
-        return EntropyAdaptiveAggregator.from_config(config, vigor_dataset, device)
+        return EntropyAdaptiveAggregator.from_config(
+            config, vigor_dataset, device, require_similarity_identity)
     elif isinstance(config, SafaPlusNormalizedLandmarkAggregatorConfig):
         return SafaPlusNormalizedLandmarkAggregator.from_config(
-            config, vigor_dataset, device
+            config, vigor_dataset, device, require_similarity_identity
         )
     else:
         raise ValueError(f"Unknown config type: {type(config)}")

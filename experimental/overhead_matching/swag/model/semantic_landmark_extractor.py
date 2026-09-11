@@ -652,7 +652,7 @@ Finally, review your work, and confirm that you have not included any informatio
 
 <constraints>
 - Focus on buildings, monuments, parks, infrastructure, or other landmarks likely in OpenStreetMaps.
-- Do not include very distant objects (more than a few hundred meters away). 
+- Do not include very distant objects (more than a few hundred meters away).
 - Never include landmarks or proper nouns from temporary objects like cars, trucks, or advertisements.
 - Do not mention the location of landmarks in the image or relative to other landmarks (e.g., "on the left", "on the right side of the street").
 - DO not make up details not present in the images.

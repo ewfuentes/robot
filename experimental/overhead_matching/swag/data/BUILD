@@ -26,6 +26,7 @@ py_library(
     "//common/torch:load_torch_deps",
     "//common/math:haversine",
     "//common/gps:web_mercator",
+    "//experimental/overhead_matching/swag/farfield/catalog:schema",
     "//experimental/overhead_matching/swag/scripts:distances",
     "//experimental/overhead_matching/swag/model:swag_model_input_output",
     "//experimental/overhead_matching/swag/model:swag_config_types",
@@ -72,6 +73,17 @@ py_test(
     ":vigor_dataset",
     "//experimental/overhead_matching/swag/scripts:distances",
   ]
+)
+
+py_test(
+  name = "vigor_dataset_external_inputs_test",
+  srcs = ["vigor_dataset_external_inputs_test.py"],
+  deps = [
+    requirement("Pillow"),
+    requirement("geopandas"),
+    requirement("shapely"),
+    ":vigor_dataset",
+  ],
 )
 
 py_library(

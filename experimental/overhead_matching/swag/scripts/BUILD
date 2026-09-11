@@ -333,6 +333,7 @@ py_binary(
     requirement("pandas"),
     requirement("pyarrow"),
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
     "//common/gps:web_mercator",
   ]
 )
@@ -399,6 +400,7 @@ py_library(
 py_binary(
   name="panorama_to_pinhole",
   srcs=["panorama_to_pinhole.py"],
+  visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
     requirement("numpy"),
     requirement("scipy"),
@@ -637,11 +639,48 @@ py_binary(
     "//experimental/overhead_matching/swag/evaluation:convergence_metrics",
     "//experimental/overhead_matching/swag/evaluation:wag_config_proto_py",
     "//experimental/overhead_matching/swag/evaluation:odometry_noise",
+    "//experimental/overhead_matching/swag/farfield:artifact",
+    "//experimental/overhead_matching/swag/farfield:paths",
+    "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    "//experimental/overhead_matching/swag/farfield/localization:run_io",
+    "//experimental/overhead_matching/swag/farfield/localization:structs",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
+)
+
+py_test(
+  name="evaluate_histogram_on_paths_test",
+  srcs=["evaluate_histogram_on_paths_test.py"],
+  deps=[
+    ":evaluate_histogram_on_paths",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ],
+)
+
+py_binary(
+  name="summarize_loci_position_mass",
+  srcs=["summarize_loci_position_mass.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/farfield:artifact",
+    "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    requirement("torch"),
+  ],
+)
+
+py_test(
+  name="summarize_loci_position_mass_test",
+  srcs=["summarize_loci_position_mass_test.py"],
+  deps=[
+    ":summarize_loci_position_mass",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/farfield/localization:metrics",
+    requirement("torch"),
+  ],
 )
 
 py_binary(
@@ -684,7 +723,7 @@ py_binary(
     "//common/torch:load_and_save_models",
     "//common/gps:web_mercator",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:evaluate_swag",
+    ":evaluate_histogram_on_paths",
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:particle_filter",
@@ -709,6 +748,16 @@ py_binary(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
   ]
+)
+
+py_test(
+  name="export_similarity_matrix_test",
+  srcs=["export_similarity_matrix_test.py"],
+  deps=[
+    ":export_similarity_matrix",
+    "//common/torch:load_torch_deps",
+    requirement("torch"),
+  ],
 )
 
 py_binary(
@@ -926,6 +975,16 @@ py_binary(
   ]
 )
 
+py_test(
+  name="precompute_value_embeddings_test",
+  srcs=["precompute_value_embeddings_test.py"],
+  deps=[
+    ":precompute_value_embeddings",
+    requirement("pandas"),
+    requirement("pyarrow"),
+  ],
+)
+
 py_library(
   name = "correspondence_configs",
   srcs = ["correspondence_configs.py"],
@@ -998,6 +1057,7 @@ py_binary(
 py_binary(
   name="export_correspondence_similarity",
   srcs=["export_correspondence_similarity.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
     requirement("torch"),
     requirement("numpy"),
@@ -1012,6 +1072,18 @@ py_binary(
     "//experimental/overhead_matching/swag/model:additional_panorama_extractors",
     ":landmark_pairing_cli_lib",
   ]
+)
+
+py_test(
+  name="export_correspondence_similarity_test",
+  srcs=["export_correspondence_similarity_test.py"],
+  deps=[
+    ":export_correspondence_similarity",
+    "//common/torch:load_torch_deps",
+    requirement("pandas"),
+    requirement("numpy"),
+    requirement("torch"),
+  ],
 )
 
 py_binary(
