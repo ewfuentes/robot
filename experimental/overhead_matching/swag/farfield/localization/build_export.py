@@ -2,10 +2,10 @@
 
 This is an artifact-to-artifact boundary.  It consumes lossless camera-frame
 bearing observations, a completely aggregated landmark-matching artifact, and
-one catalog artifact.  Camera bearings are rotated only by a human-approved,
-dataset-bound nominal-forward calibration.  GPS is used to manufacture an
-explicitly labelled dead-reckoning input and diagnostic truth; it is never a
-camera calibration source.
+one catalog artifact. Camera bearings are rotated by a human-approved,
+dataset-bound nominal-forward calibration. GPS supplies position and
+diagnostic course; when the motion table carries per-frame camera heading,
+that heading supplies body-frame odometry.
 
 There is deliberately no ``run_dir`` discovery, mount-offset override, or
 sidecar fallback.  Every scientific input is explicit and every published
@@ -107,6 +107,32 @@ def _finite(value, name: str, *, positive: bool = False) -> float:
         qualifier = "finite and positive" if positive else "finite"
         raise LocalizationInputError(f"{name} must be {qualifier}")
     return value
+
+
+def _require_camera_heading_metadata(
+        metadata: dict, has_camera_heading: bool) -> None:
+    if ("camera_heading" in metadata) != has_camera_heading:
+        raise LocalizationInputError(
+            "pipeline_metadata.camera_heading and the "
+            "frames_gps.csv camera-heading column must either both be "
+            "present or both be absent")
+    if not has_camera_heading:
+        return
+    descriptor = metadata.get("camera_heading")
+    expected = {
+        "field": "frames_gps.csv:camera_heading_world_cw_deg",
+        "units": "degrees_clockwise_from_true_north",
+        "range": "[0,360)",
+        "camera_axis": "panorama_center_column",
+        "synthetic_imu_noise_applied": False,
+    }
+    if (not isinstance(descriptor, dict)
+            or any(descriptor.get(key) != value
+                   for key, value in expected.items())):
+        raise LocalizationInputError(
+            "camera-heading motion requires pipeline_metadata.camera_heading "
+            "to describe a clean panorama-center heading in canonical "
+            "clockwise degrees from true north")
 
 
 def _exact_upstream(manifest: artifact.ArtifactManifest,
@@ -748,6 +774,15 @@ def build(args) -> artifact.ArtifactRef:
 
     calibration = nominal_forward.load(
         args.nominal_forward_calibration, expected_dataset=args.dataset)
+    camera_headings = (
+        np.asarray([frame.camera_heading_world_cw_deg for frame in frames],
+                   dtype=np.float64)
+        if frames[0].camera_heading_world_cw_deg is not None else None)
+    forward_headings = (
+        (camera_headings + calibration.bearing_camera_cw_deg) % 360.0
+        if camera_headings is not None else None)
+    _require_camera_heading_metadata(
+        metadata, camera_headings is not None)
     panorama_width = _panorama_width(dataset_base, frames)
     if calibration.panorama_width != panorama_width:
         raise LocalizationInputError(
@@ -859,7 +894,8 @@ def build(args) -> artifact.ArtifactRef:
         profile=_config(document, "localization_inputs.odometry_profile"),
         noise_seed=_config(
             document, "localization_inputs.odometry_noise_seed"),
-        stream_id=args.dataset, motion_sha256=motion_sha)
+        stream_id=args.dataset, motion_sha256=motion_sha,
+        forward_world_cw_deg=forward_headings)
     course_model = heading.gps_course_model_from_positions(
         east, north, times,
         min_displacement_m=course_min_displacement_m,

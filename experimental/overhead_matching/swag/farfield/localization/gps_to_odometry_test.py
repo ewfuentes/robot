@@ -112,6 +112,37 @@ class DeriveIncrementsTest(unittest.TestCase):
             positions.append((reconstructed_east, reconstructed_north))
         np.testing.assert_allclose(positions, list(zip(east, north)), atol=1e-9)
 
+    def test_explicit_heading_produces_turn_and_sideways_motion(self):
+        increments = derive(
+            [0.0, 10.0, 10.0], [0.0, 0.0, 10.0],
+            forward_world_cw_deg=[0.0, 90.0, 90.0])
+        self.assertAlmostEqual(
+            math.degrees(increments[0].delta_yaw_cw_rad), 90.0)
+        self.assertAlmostEqual(increments[0].forward_m, 10.0)
+        self.assertAlmostEqual(increments[0].left_m, 0.0)
+        self.assertAlmostEqual(increments[1].delta_yaw_cw_rad, 0.0)
+        self.assertAlmostEqual(increments[1].forward_m, 0.0, places=9)
+        self.assertAlmostEqual(increments[1].left_m, 10.0)
+
+    def test_explicit_heading_retains_stationary_rotation(self):
+        increment = derive(
+            [0.0, 0.0], [0.0, 0.0],
+            forward_world_cw_deg=[10.0, 55.0])[0]
+        self.assertEqual((increment.forward_m, increment.left_m), (0.0, 0.0))
+        self.assertAlmostEqual(
+            math.degrees(increment.delta_yaw_cw_rad), 45.0)
+
+    def test_explicit_heading_legacy_noise_perturbs_both_body_axes(self):
+        clean = derive(
+            [0.0, 0.0], [0.0, 10.0],
+            forward_world_cw_deg=[0.0, 0.0])
+        noisy = derive(
+            [0.0, 0.0], [0.0, 10.0],
+            forward_world_cw_deg=[0.0, 0.0],
+            imu_translation_noise_frac=0.02)
+        self.assertNotEqual(noisy[0].forward_m, clean[0].forward_m)
+        self.assertNotEqual(noisy[0].left_m, clean[0].left_m)
+
     def test_noise_injection_declares_itself(self):
         east = np.arange(20) * 40.0
         north = np.zeros(20)
@@ -149,6 +180,9 @@ class DeriveIncrementsTest(unittest.TestCase):
                    reverse_keyframe_ranges=((0, 1),))
         with self.assertRaises(ValueError):
             derive([0.0, float("nan")], [0.0, 1.0])
+        with self.assertRaises(ValueError):
+            derive([0.0, 1.0], [0.0, 1.0],
+                   forward_world_cw_deg=[0.0, 360.0])
 
     def test_modeling_knobs_are_required(self):
         with self.assertRaises(TypeError):

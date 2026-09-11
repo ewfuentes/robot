@@ -30,6 +30,31 @@ class AuditTest(unittest.TestCase):
         self.assertFalse(a.failed,
                          msg="\n".join(f"{k}: {m}" for k, m in a.rows))
 
+    def test_invalid_optional_camera_heading_fails(self):
+        base = testing.make_dataset(
+            self.root / "ds", camera_headings=(0.0, 10.0, "", 30.0))
+        a = run_audit(base)
+        self.assertTrue(a.failed)
+        self.assertTrue(any("camera_heading_world_cw_deg" in message
+                            for kind, message in a.rows if kind == "FAIL"))
+
+    def test_camera_heading_without_metadata_authority_fails(self):
+        base = testing.make_dataset(
+            self.root / "ds", camera_headings=(0.0, 10.0, 20.0, 30.0))
+        path = base / "pipeline_metadata.json"
+        metadata = json.loads(path.read_text())
+        del metadata["camera_heading"]
+        path.write_text(json.dumps(metadata))
+        self.assertTrue(run_audit(base).failed)
+
+    def test_stale_camera_heading_metadata_without_column_fails(self):
+        base = testing.make_dataset(self.root / "ds")
+        path = base / "pipeline_metadata.json"
+        metadata = json.loads(path.read_text())
+        metadata["camera_heading"] = {}
+        path.write_text(json.dumps(metadata))
+        self.assertTrue(run_audit(base).failed)
+
     def test_missing_tables_fail(self):
         base = testing.make_dataset(self.root / "ds")
         (base / "intrinsics.csv").unlink()

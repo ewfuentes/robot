@@ -45,7 +45,8 @@ def default_metadata() -> dict:
 
 def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
                  metadata: dict | None = None,
-                 skip_pano_numbers: tuple = ()) -> Path:
+                 skip_pano_numbers: tuple = (),
+                 camera_headings=None) -> Path:
     """A contract-satisfying synthetic dataset under `base`.
 
     `skip_pano_numbers` omits those panorama files (but keeps their CSV rows)
@@ -57,6 +58,8 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
     pano = base / "panorama"
     pano.mkdir(parents=True)
 
+    if camera_headings is not None and len(camera_headings) != n_frames:
+        raise ValueError("camera_headings must match n_frames")
     rows = []
     for i in range(n_frames):
         lat = ANCHOR_LAT + 1e-4 * i
@@ -65,6 +68,8 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
             "idx": i, "latitude": f"{lat:.7f}", "longitude": f"{lon:.7f}",
             "dist_m": f"{10.0 * i:.1f}", "video_t_s": f"{2.0 * i:.2f}",
         })
+        if camera_headings is not None:
+            rows[-1]["camera_heading_world_cw_deg"] = camera_headings[i]
         if i in skip_pano_numbers:
             continue
         stem = f"f{i:04d},{lat:.7f},{lon:.7f},"
@@ -73,7 +78,9 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
 
     kept = [r for r in rows if int(r["idx"]) not in skip_pano_numbers]
     _write_csv(base / "frames_gps.csv",
-               ["idx", "latitude", "longitude", "dist_m", "video_t_s"], kept)
+               ["idx", "latitude", "longitude", "dist_m", "video_t_s"]
+               + (["camera_heading_world_cw_deg"]
+                  if camera_headings is not None else []), kept)
     # Reindex so idx stays 0..N-1 contiguous, matching the kept panoramas.
     for new_idx, row in enumerate(kept):
         row["idx"] = new_idx
@@ -101,6 +108,14 @@ def make_dataset(base: Path, n_frames: int = 4, pano_size=(64, 32),
     resolved_metadata = dict(
         metadata if metadata is not None else default_metadata())
     resolved_metadata["dataset_name"] = base.name
+    if camera_headings is not None:
+        resolved_metadata["camera_heading"] = {
+            "field": "frames_gps.csv:camera_heading_world_cw_deg",
+            "units": "degrees_clockwise_from_true_north",
+            "range": "[0,360)",
+            "camera_axis": "panorama_center_column",
+            "synthetic_imu_noise_applied": False,
+        }
     (base / "pipeline_metadata.json").write_text(
         json.dumps(resolved_metadata, indent=1))
     return base

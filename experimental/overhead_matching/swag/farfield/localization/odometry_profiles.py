@@ -55,18 +55,33 @@ def _selected_config(data):
     return _odometry_config(selected)
 
 
-def load_timestamps(input_dir: Path, n_keyframes: int):
+def _load_motion(input_dir: Path, n_keyframes: int):
     path = Path(input_dir) / "motion_source.csv"
     try:
         with path.open(newline="") as stream:
             rows = list(csv.DictReader(stream))
         indices = [int(row["idx"]) for row in rows]
         timestamps = [float(row["video_t_s"]) for row in rows]
+        raw_headings = [row.get("camera_heading_world_cw_deg")
+                        for row in rows]
+        camera_headings = (
+            None if all(value is None for value in raw_headings)
+            else [float(value) for value in raw_headings])
     except (OSError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"cannot read timestamps from {path}: {exc}") from exc
+        raise ValueError(f"cannot read motion from {path}: {exc}") from exc
     if indices != list(range(n_keyframes)):
         raise ValueError("motion_source.csv indices do not match keyframes")
-    return timestamps
+    if (camera_headings is not None
+            and (not all(math.isfinite(value) for value in camera_headings)
+                 or not all(0.0 <= value < 360.0
+                            for value in camera_headings))):
+        raise ValueError(
+            "camera_heading_world_cw_deg must be finite and within [0, 360)")
+    return timestamps, camera_headings
+
+
+def load_timestamps(input_dir: Path, n_keyframes: int):
+    return _load_motion(input_dir, n_keyframes)[0]
 
 
 def _derive_planar_imu_v1(nominal, timestamps, noise_seed, stream_id):
@@ -199,7 +214,7 @@ def _derive_planar_imu_v1(nominal, timestamps, noise_seed, stream_id):
 
 def derive_from_motion(east_m, north_m, timestamps, configured, *,
                        profile: str, noise_seed: int, stream_id: str,
-                       motion_sha256: str):
+                       motion_sha256: str, forward_world_cw_deg=None):
     """Build a configured odometry stream from one complete motion source."""
     if profile not in PIPELINE_PROFILE_CHOICES:
         raise ValueError(f"unknown pipeline odometry profile {profile!r}")
@@ -216,6 +231,7 @@ def derive_from_motion(east_m, north_m, timestamps, configured, *,
         course_yaw_drift_sigma_deg=(
             selected["course_yaw_drift_sigma_deg"]),
         reverse_keyframe_ranges=selected["reverse_keyframe_ranges"],
+        forward_world_cw_deg=forward_world_cw_deg,
         imu_translation_noise_frac=(
             selected["imu_translation_noise_frac"]
             if profile == LEGACY_PROFILE else 0.0),
@@ -224,7 +240,7 @@ def derive_from_motion(east_m, north_m, timestamps, configured, *,
             if profile == LEGACY_PROFILE else 0.0),
         noise_seed=noise_seed)
     if profile == LEGACY_PROFILE:
-        return nominal, {
+        metadata = {
             "name": profile,
             "schema": "gps_course_distance_wiener/v1",
             "source": "synthetic_from_motion_source_gps_course",
@@ -234,12 +250,21 @@ def derive_from_motion(east_m, north_m, timestamps, configured, *,
                 "generation_scope": "full_trajectory",
             },
         }
+        if forward_world_cw_deg is not None:
+            metadata.update({
+                "source": "synthetic_from_motion_source_camera_heading",
+                "clean_heading_source": (
+                    "motion_source.csv:camera_heading_world_cw_deg plus "
+                    "approved nominal-forward calibration"),
+                "reverse_keyframe_ranges_applied": False,
+            })
+        return nominal, metadata
 
     odometry, realization = _derive_planar_imu_v1(
         nominal, timestamps, noise_seed, stream_id)
     accel_bias_sigma_mps2 = (
         EPSON_ACCEL_BIAS_SIGMA_MICRO_G * 1e-6 * STANDARD_GRAVITY_MPS2)
-    return odometry, {
+    metadata = {
         "name": profile,
         "schema": "epson_mg570_calibrated_planar/v1",
         "source": "synthetic_from_motion_source_planar_inertial_error_model",
@@ -309,6 +334,14 @@ def derive_from_motion(east_m, north_m, timestamps, configured, *,
         "reverse_keyframe_ranges": selected["reverse_keyframe_ranges"],
         "reverse_annotation_source": selected["reverse_annotation_source"],
     }
+    if forward_world_cw_deg is not None:
+        metadata.update({
+            "clean_heading_source": (
+                "motion_source.csv:camera_heading_world_cw_deg plus approved "
+                "nominal-forward calibration"),
+            "reverse_keyframe_ranges_applied": False,
+        })
+    return odometry, metadata
 
 
 def derive(input_dir: Path, data, profile: str,
@@ -327,13 +360,18 @@ def derive(input_dir: Path, data, profile: str,
     truth_indices = [pose.keyframe_idx for pose in data.truth]
     if truth_indices != list(range(len(data.truth))):
         raise ValueError("Epson odometry profile requires contiguous truth")
-    timestamps = load_timestamps(input_dir, len(data.truth))
+    timestamps, camera_headings = _load_motion(input_dir, len(data.truth))
+    forward_headings = (
+        [(value + data.meta.nominal_forward["bearing_camera_cw_deg"]) % 360.0
+         for value in camera_headings]
+        if camera_headings is not None else None)
     if profile == PLANAR_IMU_PROFILE:
         return derive_from_motion(
             [pose.east_m for pose in data.truth],
             [pose.north_m for pose in data.truth], timestamps, configured,
             profile=profile, noise_seed=noise_seed,
             stream_id=data.artifact_ref.dataset,
-            motion_sha256=data.meta.motion["content_sha256"])
+            motion_sha256=data.meta.motion["content_sha256"],
+            forward_world_cw_deg=forward_headings)
 
     raise AssertionError("unreachable")

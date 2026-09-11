@@ -201,4 +201,5 @@ def camera_to_forward_cw_deg(bearing_camera_cw_deg: float,
                              calibration: NominalForward) -> float:
     """Rotate a camera-frame bearing into the fixed nominal-forward frame."""
     bearing = _real(bearing_camera_cw_deg, "bearing_camera_cw_deg")
-    return (bearing - calibration.bearing_camera_cw_deg) % 360.0
+    result = (bearing - calibration.bearing_camera_cw_deg) % 360.0
+    return 0.0 if result >= 360.0 else result

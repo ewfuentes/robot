@@ -275,6 +275,41 @@ def _audit(ds: Path, a: Audit) -> None:
         a.fail(f"row counts disagree: {counts}")
 
     # -- frames_gps contract (idx / dist_m / video_t_s) --------------------------
+    has_camera_heading = bool(
+        gps and "camera_heading_world_cw_deg" in gps[0])
+    if "camera_heading" in meta and not has_camera_heading:
+        a.fail("pipeline_metadata.camera_heading exists but frames_gps.csv "
+               "has no camera-heading column")
+    if has_camera_heading:
+        descriptor = meta.get("camera_heading")
+        expected_descriptor = {
+            "field": "frames_gps.csv:camera_heading_world_cw_deg",
+            "units": "degrees_clockwise_from_true_north",
+            "range": "[0,360)",
+            "camera_axis": "panorama_center_column",
+            "synthetic_imu_noise_applied": False,
+        }
+        if (not isinstance(descriptor, dict)
+                or any(descriptor.get(key) != value
+                       for key, value in expected_descriptor.items())):
+            a.fail("pipeline_metadata.camera_heading does not describe the "
+                   "clean panorama-center heading column")
+        else:
+            a.ok("pipeline_metadata describes camera-heading authority")
+        try:
+            camera_headings = [
+                float(row["camera_heading_world_cw_deg"]) for row in gps]
+        except (KeyError, TypeError, ValueError):
+            a.fail("camera_heading_world_cw_deg must be numeric on every row")
+        else:
+            if (not all(math.isfinite(value) for value in camera_headings)
+                    or not all(0.0 <= value < 360.0
+                               for value in camera_headings)):
+                a.fail("camera_heading_world_cw_deg must be finite and within "
+                       "[0, 360) on every row")
+            else:
+                a.ok("camera_heading_world_cw_deg is complete and canonical")
+
     idxs = [int(r["idx"]) for r in gps]
     if idxs != list(range(len(gps))):
         a.fail("frames_gps idx is not 0..N-1 contiguous")
