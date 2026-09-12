@@ -56,6 +56,19 @@ read as independent identity claims. Regression checks emphasize request and
 tracklet coverage, retained instance identity, null mass, and calibrated
 uncertainty—not raw category-expanded row count alone.
 
+`matching.set2_layout` chooses how the catalog is presented to the matcher.
+`digest_chunks` (every artifact through `promatch_20260911_v1`) lists
+signatures in digest order, so the rows of one kind are scattered across every
+slice and a category match is a per-slice lottery: the model endorses a few
+rows of the right kind per slice at a confidence that describes the *kind*,
+and the true row is often not among them. `category_chunks` groups rows under
+a header per kind, lets the model endorse the kind once (`category_matches`),
+and expands that endorsement deterministically to every signature of that kind
+in the whole catalog; numbered-entry matches are then identity claims only.
+The per-entry `in_map_confidence` the model reports in this layout is recorded
+in `matches.json` and not yet consumed by the filter. Category-mode
+aggregation follows `settings.json["category_expansion_rule"]`.
+
 ## Running the filter
 
 `localization:run_export` consumes an immutable `localization_inputs` artifact

@@ -139,8 +139,123 @@ name being a longer or shorter variant of another; tags present on one side only
 
 SYSTEM_PROMPT = _PROMPT_HEAD + _TRACK_EVIDENCE + _PROMPT_TAIL
 DETECTION_SYSTEM_PROMPT = _PROMPT_HEAD + _DETECTION_EVIDENCE + _PROMPT_TAIL
+
+# ---------------------------------------------------------------------------
+# `category_chunks` layout. Motivation (2026-09-12 Portland/Flevoland review):
+# with Set 2 ordered by signature digest, the rows of one kind (178 school
+# signatures, 350 wind turbines) are scattered over every chunk. Asked
+# chunk-by-chunk, the model endorses a few rows of the right kind per chunk at
+# high confidence and misses the true one - a lottery, not a judgement - and
+# its "confidence" on those rows is confidence in the KIND, not the row. The
+# filter then treats each as an instance claim. Here rows of one kind are
+# contiguous under a category header, a match to the kind is reported ONCE
+# against the header and expanded deterministically to every row of that kind
+# in the whole catalog, and row-level matches are reserved for identity.
+_SET2_CATEGORY_LAYOUT = """
+Set 2 is grouped: a header line like "[C3] amenity=school (11 entries, 12 map rows)" introduces
+every entry of that kind present in this slice, and the numbered lines under it are the individual
+map entries. The same kind may continue in another slice you will not see.
+
+"""
+_PROMPT_TAIL_CATEGORY = """Report two different things, and keep them apart:
+
+  - set_2_matches: this exact physical object is THIS numbered entry. Use it only when something
+    identifies the instance - a matching name, a read designator, or a tag combination no other
+    entry of that kind shares. confidence 0.0-1.0 is how sure you are of THAT ENTRY. A distinctive
+    kind with several look-alike entries is not an instance match to any of them.
+  - category_matches: the object is of THIS KIND, but the evidence cannot say which entry. Report the
+    header id ONCE. It stands for every entry of that kind in the whole map, including entries not
+    shown here, so never also list that kind's individual entries. confidence 0.0-1.0 is how sure you
+    are that the object is of that kind AND that this kind of object is what the map would record it
+    as. Report every kind that fits; equally plausible kinds get equal confidence.
+
+Also report, once per Set 1 landmark:
+  - no_match_confidence 0.0-1.0 - how sure you are that neither an instance nor a kind SHOWN HERE
+    fits this landmark. It is about this slice only and will often be high.
+  - in_map_confidence 0.0-1.0 - independent of this slice: how likely an object of this kind, at
+    this apparent prominence, is mapped in OpenStreetMap at all. A radio mast or a named lake almost
+    always is; a self-storage yard, a gravel pit, a solar field or an unnamed shed often is not.
+  - uniqueness_score 1-5 - how distinctive the SET 1 landmark is on its own, independent of any
+    match: 1 generic (building=yes), 3 moderately specific (man_made=water_tower), 5 unmistakable
+    (a named lighthouse).
+
+Not evidence against a match: small numeric differences (height 40 vs 45 - the observer is often
+off); different tag specificity for the same thing (man_made=tower vs man_made=water_tower); one
+name being a longer or shorter variant of another; tags present on one side only.
+"""
+CATEGORY_SYSTEM_PROMPT = (_PROMPT_HEAD + _TRACK_EVIDENCE
+                          + _SET2_CATEGORY_LAYOUT + _PROMPT_TAIL_CATEGORY)
+CATEGORY_DETECTION_SYSTEM_PROMPT = (
+    _PROMPT_HEAD + _DETECTION_EVIDENCE + _SET2_CATEGORY_LAYOUT
+    + _PROMPT_TAIL_CATEGORY)
 SET1_SOURCES = {SYSTEM_PROMPT: "audit_dossier",
-                DETECTION_SYSTEM_PROMPT: "single_detection_tags"}
+                DETECTION_SYSTEM_PROMPT: "single_detection_tags",
+                CATEGORY_SYSTEM_PROMPT: "audit_dossier_category_v3",
+                CATEGORY_DETECTION_SYSTEM_PROMPT:
+                    "single_detection_tags_category_v3"}
+CATEGORY_PROMPTS = frozenset(
+    {CATEGORY_SYSTEM_PROMPT, CATEGORY_DETECTION_SYSTEM_PROMPT})
+
+SET2_LAYOUTS = ("digest_chunks", "category_chunks")
+DEFAULT_SET2_LAYOUT = "digest_chunks"
+# First present key names a signature's kind. Ordered so that a wind turbine
+# tagged building=yes is a generator, not a building, and a bridge carrying a
+# highway is a bridge.
+CATEGORY_KEYS = (
+    "generator:source", "power", "man_made", "aeroway", "natural", "water",
+    "landuse", "leisure", "amenity", "tourism", "historic", "railway",
+    "waterway", "industrial", "bridge", "highway", "military", "building",
+    "place", "seamark:type", "object_class")
+UNCATEGORISED = "other"
+
+
+def signature_category(tags: dict) -> str:
+    """The kind a category match to this signature expands over."""
+    for key in CATEGORY_KEYS:
+        if key in tags:
+            return f"{key}={tags[key]}"
+    return UNCATEGORISED
+
+
+def category_members(signatures) -> dict:
+    """category -> signature ids of that kind, in display order."""
+    members = defaultdict(list)
+    for signature_id in signature_order(signatures, "category_chunks"):
+        members[signature_category(
+            signatures[signature_id]["canonical_tags"])].append(signature_id)
+    return dict(members)
+
+
+def signature_order(signatures, layout: str) -> list:
+    """Deterministic Set 2 order for a layout."""
+    if layout == "digest_chunks":
+        return sorted(signatures)
+    if layout == "category_chunks":
+        return sorted(signatures, key=lambda sid: (
+            signature_category(signatures[sid]["canonical_tags"]),
+            signatures[sid]["display_label"], sid))
+    raise ValueError(f"unknown set2 layout {layout!r}")
+
+
+def signature_chunks(signatures, layout: str, chunk_size: int) -> list:
+    ordered = signature_order(signatures, layout)
+    return [ordered[i:i + chunk_size]
+            for i in range(0, len(ordered), chunk_size)]
+
+
+def layout_of(selected) -> str:
+    return selected.get("matching.set2_layout", DEFAULT_SET2_LAYOUT)
+
+
+def response_schema_for(layout: str):
+    return CATEGORY_SCHEMA if layout == "category_chunks" else SCHEMA
+
+
+def prompt_for(layout: str, detection_mode: bool) -> str:
+    if layout == "category_chunks":
+        return (CATEGORY_DETECTION_SYSTEM_PROMPT if detection_mode
+                else CATEGORY_SYSTEM_PROMPT)
+    return DETECTION_SYSTEM_PROMPT if detection_mode else SYSTEM_PROMPT
 
 
 SCHEMA = {
@@ -165,6 +280,40 @@ SCHEMA = {
                                    "maximum": 1}}}},
             "no_match_confidence": {"type": "number", "minimum": 0,
                                     "maximum": 1},
+            "uniqueness_score": {"type": "integer", "minimum": 1,
+                                 "maximum": 5}}}}}}
+
+CATEGORY_SCHEMA = {
+    "type": "object", "required": ["matches"],
+    "additionalProperties": False,
+    "properties": {"matches": {"type": "array", "items": {
+        "type": "object",
+        "required": ["set_1_id", "set_2_matches", "category_matches",
+                     "no_match_confidence", "in_map_confidence",
+                     "uniqueness_score"],
+        "additionalProperties": False,
+        "properties": {
+            "set_1_id": {"type": "integer", "minimum": 0},
+            "set_2_matches": {"type": "array", "items": {
+                "type": "object",
+                "required": ["set_2_id", "confidence"],
+                "additionalProperties": False,
+                "properties": {
+                    "set_2_id": {"type": "integer", "minimum": 0},
+                    "confidence": {"type": "number", "minimum": 0,
+                                   "maximum": 1}}}},
+            "category_matches": {"type": "array", "items": {
+                "type": "object",
+                "required": ["category_id", "confidence"],
+                "additionalProperties": False,
+                "properties": {
+                    "category_id": {"type": "integer", "minimum": 0},
+                    "confidence": {"type": "number", "minimum": 0,
+                                   "maximum": 1}}}},
+            "no_match_confidence": {"type": "number", "minimum": 0,
+                                    "maximum": 1},
+            "in_map_confidence": {"type": "number", "minimum": 0,
+                                  "maximum": 1},
             "uniqueness_score": {"type": "integer", "minimum": 1,
                                  "maximum": 5}}}}}}
 
@@ -196,6 +345,7 @@ MATCHING_CONFIG_KEYS = (
     "matching.thinking_level",
     "matching.confidence_floor",
     "matching.instance_max_rows",
+    "matching.set2_layout",
     "execution.llm_transport",
     "execution.batch_gcs_prefix",
     "execution.approve_cost",
@@ -206,6 +356,13 @@ MATCHING_CONFIG_KEYS = (
 # The affine seam the design doc SS6 specifies for an uncalibrated matcher:
 # clipped log odds. Mirrors structs.CompatibilityTable's clip contract.
 DEFAULT_CLIP = 4.0
+# In the category layout a kind endorsed at confidence c is spread over the
+# kind's N catalog rows at c/N each, so the kind's rows collectively carry ~c
+# under the filter's odds split and a row-level identity claim keeps its
+# weight. c/N for a large kind sits far below logit(0.05) = -2.9, so the table
+# floor must drop or the whole expansion would collapse onto the default and
+# read as "unendorsed".
+CATEGORY_CLIP_LO = -12.0
 SCORE_CONTRACT = {
     "per_call_candidate_score_semantics":
         "self_reported_model_score_0_to_1",
@@ -396,8 +553,36 @@ def detection_query_bundles(tracks: dict, audits: dict) -> tuple[dict, dict]:
     return queries, {key: sorted(ids) for key, ids in members.items()}
 
 
-def build_requests(queries, sig_chunks, signatures, query_batch, thinking):
+def format_category_chunk(chunk, signatures):
+    """Grouped Set 2 text plus the header order the model indexes by."""
+    lines = []
+    categories = []
+    current = None
+    for i, s in enumerate(chunk):
+        entry = signatures[s]
+        category = signature_category(entry["canonical_tags"])
+        if category != current:
+            current = category
+            group = [t for t in chunk if signature_category(
+                signatures[t]["canonical_tags"]) == category]
+            rows = sum(len(signatures[t]["landmark_ids"]) for t in group)
+            lines.append(f" [C{len(categories)}] {category} "
+                         f"({len(group)} entries, {rows} map rows)")
+            categories.append(category)
+        rows = len(entry["landmark_ids"])
+        suffix = f"  (x{rows} map rows)" if rows > 1 else ""
+        lines.append(f"   {i}. {entry['display_label']}{suffix}")
+    return "\n".join(lines), categories
+
+
+def build_requests(queries, sig_chunks, signatures, query_batch, thinking,
+                   layout=DEFAULT_SET2_LAYOUT, system_prompt=None):
     """One request per (tracklet batch x map chunk)."""
+    if layout not in SET2_LAYOUTS:
+        raise ValueError(f"unknown set2 layout {layout!r}")
+    category_mode = layout == "category_chunks"
+    if system_prompt is None:
+        system_prompt = CATEGORY_SYSTEM_PROMPT if category_mode else SYSTEM_PROMPT
     keys = sorted(queries)
     records = []
     for qi in range(0, len(keys), query_batch):
@@ -409,22 +594,31 @@ def build_requests(queries, sig_chunks, signatures, query_batch, thinking):
                 set1_parts.append(f" {i}. {block[0]}")
                 set1_parts += [f"    {line}" for line in block[1:]]
             set1 = "\n".join(set1_parts)
-            set2 = "\n".join(
-                f" {i}. {signatures[s]['display_label']}"
-                for i, s in enumerate(chunk))
-            user = (f"Set 1 (observed from the vessel):\n{set1}\n\n"
-                    f"Set 2 (map database, arbitrary slice):\n{set2}")
+            metadata = {}
+            if category_mode:
+                set2, categories = format_category_chunk(chunk, signatures)
+                metadata["chunk_category_ids"] = categories
+                user = (f"Set 1 (observed from the vessel):\n{set1}\n\n"
+                        f"Set 2 (map database, one slice, grouped by kind):\n"
+                        f"{set2}")
+            else:
+                set2 = "\n".join(
+                    f" {i}. {signatures[s]['display_label']}"
+                    for i, s in enumerate(chunk))
+                user = (f"Set 1 (observed from the vessel):\n{set1}\n\n"
+                        f"Set 2 (map database, arbitrary slice):\n{set2}")
             records.append({
                 "key": f"q{qi:04d}_c{ci:04d}",
                 "batch_keys": batch,
                 "chunk_index": ci,
                 "chunk_signature_ids": list(chunk),
+                **metadata,
                 "request": {
                     "contents": [{"parts": [{"text": user}], "role": "user"}],
-                    "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "generationConfig": {
                         "responseMimeType": "application/json",
-                        "responseSchema": SCHEMA,
+                        "responseSchema": response_schema_for(layout),
                         "thinkingConfig": {"thinkingLevel": thinking}}}})
     return records
 
@@ -512,12 +706,19 @@ def validate_matching_response(key, response, metadata):
         raise ValueError(
             f"request {key!r} must return exactly {len(batch_keys)} Set 1 "
             f"entries; found {len(entries) if isinstance(entries, list) else '?'}")
+    categories = metadata.get("chunk_category_ids")
+    category_mode = categories is not None
+    entry_keys = ({"set_1_id", "set_2_matches", "category_matches",
+                   "no_match_confidence", "in_map_confidence",
+                   "uniqueness_score"} if category_mode else
+                  {"set_1_id", "set_2_matches", "no_match_confidence",
+                   "uniqueness_score"})
+    match_keys = ({"set_2_id", "confidence"} if category_mode
+                  else {"set_2_id", "match_type", "confidence"})
     validated = []
     seen_set1 = set()
     for entry_index, entry in enumerate(entries):
-        _exact_keys(entry, {"set_1_id", "set_2_matches",
-                            "no_match_confidence", "uniqueness_score"},
-                    f"matches[{entry_index}]")
+        _exact_keys(entry, entry_keys, f"matches[{entry_index}]")
         set1_id = _integer(entry["set_1_id"],
                            f"matches[{entry_index}].set_1_id",
                            minimum=0, maximum=len(batch_keys) - 1)
@@ -530,8 +731,7 @@ def validate_matching_response(key, response, metadata):
         set2_matches = []
         seen_set2 = set()
         for match_index, match in enumerate(raw_matches):
-            _exact_keys(match, {"set_2_id", "match_type", "confidence"},
-                        f"set_2_matches[{match_index}]")
+            _exact_keys(match, match_keys, f"set_2_matches[{match_index}]")
             set2_id = _integer(
                 match["set_2_id"], f"set_2_matches[{match_index}].set_2_id",
                 minimum=0, maximum=len(chunk) - 1)
@@ -539,7 +739,8 @@ def validate_matching_response(key, response, metadata):
                 raise ValueError(
                     f"duplicate set_2_id {set2_id} for set_1_id {set1_id}")
             seen_set2.add(set2_id)
-            match_type = match["match_type"]
+            # In the category layout a numbered entry is an identity claim.
+            match_type = "instance" if category_mode else match["match_type"]
             if match_type not in ("instance", "category"):
                 raise ValueError(f"invalid match_type {match_type!r}")
             set2_matches.append({
@@ -549,7 +750,7 @@ def validate_matching_response(key, response, metadata):
                     match["confidence"],
                     f"set_2_matches[{match_index}].confidence"),
             })
-        validated.append({
+        item = {
             "set_1_id": set1_id,
             "set_2_matches": set2_matches,
             "no_match_confidence": _probability(
@@ -559,7 +760,35 @@ def validate_matching_response(key, response, metadata):
                 entry["uniqueness_score"],
                 f"matches[{entry_index}].uniqueness_score",
                 minimum=1, maximum=5),
-        })
+        }
+        if category_mode:
+            raw_categories = entry["category_matches"]
+            if not isinstance(raw_categories, list):
+                raise ValueError("category_matches must be a list")
+            category_matches = []
+            seen_categories = set()
+            for cat_index, match in enumerate(raw_categories):
+                _exact_keys(match, {"category_id", "confidence"},
+                            f"category_matches[{cat_index}]")
+                category_id = _integer(
+                    match["category_id"],
+                    f"category_matches[{cat_index}].category_id",
+                    minimum=0, maximum=len(categories) - 1)
+                if category_id in seen_categories:
+                    raise ValueError(
+                        f"duplicate category_id {category_id} for set_1_id "
+                        f"{set1_id}")
+                seen_categories.add(category_id)
+                category_matches.append({
+                    "category_id": category_id,
+                    "confidence": _probability(
+                        match["confidence"],
+                        f"category_matches[{cat_index}].confidence")})
+            item["category_matches"] = category_matches
+            item["in_map_confidence"] = _probability(
+                entry["in_map_confidence"],
+                f"matches[{entry_index}].in_map_confidence")
+        validated.append(item)
     if seen_set1 != set(range(len(batch_keys))):
         raise ValueError(f"request {key!r} does not cover every Set 1 entry")
     return {"matches": sorted(validated, key=lambda item: item["set_1_id"])}
@@ -596,41 +825,65 @@ def aggregate(canonical_results, records_by_key, signatures):
     per_tracklet = defaultdict(dict)
     no_match = defaultdict(list)
     uniqueness = defaultdict(list)
+    in_map = defaultdict(list)
+    category_calls = defaultdict(dict)  # tid -> category -> best confidence
     expanded = defaultdict(int)
+    members = None
+
+    def fold(tid, signature_id, confidence, match_type, from_kind=False):
+        for landmark_id in signatures[signature_id]["landmark_ids"]:
+            previous = per_tracklet[tid].get(landmark_id)
+            if previous is None:
+                per_tracklet[tid][landmark_id] = {
+                    "aggregate_confidence": confidence,
+                    "per_call_candidate_scores": [confidence],
+                    "match_type": match_type,
+                    "signature_id": signature_id,
+                }
+                continue
+            if previous["signature_id"] != signature_id:
+                raise ValueError(
+                    f"landmark {landmark_id!r} appears in more "
+                    "than one canonical signature")
+            previous["per_call_candidate_scores"].append(confidence)
+            if confidence > previous["aggregate_confidence"]:
+                previous["aggregate_confidence"] = confidence
+                # A kind endorsement may lift a row's confidence but never
+                # relabels an identity claim on it; a model-labelled match
+                # keeps the historical "type of the best call" rule.
+                if not (from_kind and previous["match_type"] == "instance"):
+                    previous["match_type"] = match_type
+
     for record in canonical_results:
         meta = records_by_key[record.key]
         chunk = meta["chunk_signature_ids"]
+        categories = meta.get("chunk_category_ids")
         for entry in record.result["matches"]:
             tid = meta["batch_keys"][entry["set_1_id"]]
             no_match[tid].append(entry["no_match_confidence"])
             uniqueness[tid].append(entry["uniqueness_score"])
+            if "in_map_confidence" in entry:
+                in_map[tid].append(entry["in_map_confidence"])
             for match in entry["set_2_matches"]:
                 signature_id = chunk[match["set_2_id"]]
-                signature_entry = signatures[signature_id]
-                for landmark_id in signature_entry["landmark_ids"]:
-                    expanded[tid] += 1
-                    previous = per_tracklet[tid].get(landmark_id)
-                    if previous is None:
-                        previous = {
-                            "aggregate_confidence": match["confidence"],
-                            "per_call_candidate_scores": [
-                                match["confidence"]],
-                            "match_type": match["match_type"],
-                            "signature_id": signature_id,
-                        }
-                        per_tracklet[tid][landmark_id] = previous
-                    else:
-                        if previous["signature_id"] != signature_id:
-                            raise ValueError(
-                                f"landmark {landmark_id!r} appears in more "
-                                "than one canonical signature")
-                        previous["per_call_candidate_scores"].append(
-                            match["confidence"])
-                        if match["confidence"] > previous[
-                                "aggregate_confidence"]:
-                            previous["aggregate_confidence"] = match[
-                                "confidence"]
-                            previous["match_type"] = match["match_type"]
+                expanded[tid] += len(signatures[signature_id]["landmark_ids"])
+                fold(tid, signature_id, match["confidence"],
+                     match["match_type"])
+            for match in entry.get("category_matches", ()):
+                # A kind endorsed in one slice stands for that kind everywhere:
+                # the expansion is over the whole catalog, so recall of a
+                # category match no longer depends on which slice the true
+                # row happened to land in.
+                if members is None:
+                    members = category_members(signatures)
+                category = categories[match["category_id"]]
+                best = category_calls[tid].get(category)
+                if best is None or match["confidence"] > best:
+                    category_calls[tid][category] = match["confidence"]
+    for tid, by_category in category_calls.items():
+        for category, confidence in by_category.items():
+            for signature_id in members.get(category, ()):
+                fold(tid, signature_id, confidence, "category", from_kind=True)
     catalog_size = sum(
         len(entry["landmark_ids"]) for entry in signatures.values())
     max_calls = len(records_by_key)
@@ -644,7 +897,8 @@ def aggregate(canonical_results, records_by_key, signatures):
     if max_calls and any(len(values) > max_calls
                          for values in uniqueness.values()):
         raise ValueError("uniqueness aggregation exceeded request count")
-    return per_tracklet, no_match, uniqueness
+    return per_tracklet, no_match, uniqueness, {
+        "in_map": dict(in_map), "categories": dict(category_calls)}
 
 
 def global_no_match(matches, per_slice):
@@ -661,17 +915,20 @@ def global_no_match(matches, per_slice):
     return 1.0
 
 
-def to_log_lr(confidence, clip=DEFAULT_CLIP):
+def to_log_lr(confidence, clip=DEFAULT_CLIP, clip_lo=None):
     """Confidence -> log odds, clipped. The seam the design doc specifies is
     an uncalibrated matcher behind a tuned transform; this is that transform,
-    and the clip is what keeps a confident-but-wrong match survivable."""
-    c = min(max(confidence, 1e-4), 1 - 1e-4)
-    return max(-clip, min(clip, math.log(c / (1 - c))))
+    and the clip is what keeps a confident-but-wrong match survivable.
+    `clip_lo` lowers the floor below -clip for tables that spread a kind
+    endorsement thinly over many rows (see CATEGORY_CLIP_LO)."""
+    lo = -clip if clip_lo is None else clip_lo
+    c = min(max(confidence, 1e-4 if clip_lo is None else 1e-7), 1 - 1e-4)
+    return max(lo, min(clip, math.log(c / (1 - c))))
 
 
 def to_compatibility_table(tracklet_id, scores, matcher_version,
                            scale=1.0, offset=0.0, clip=DEFAULT_CLIP,
-                           default_log_lr=-2.0, status="fast"):
+                           default_log_lr=-2.0, status="fast", clip_lo=None):
     """Raw scores -> the filter's structs.CompatibilityTable.
 
     Built as the struct itself (not a lookalike dict) and msgspec-encoded, so
@@ -681,8 +938,9 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
     that struct's contract.
     """
     entries = []
+    lo = -clip if clip_lo is None else clip_lo
     for landmark_id, raw in scores.items():
-        log_lr = max(-clip, min(clip, scale * raw + offset))
+        log_lr = max(lo, min(clip, scale * raw + offset))
         if abs(log_lr - default_log_lr) > 1e-9:
             entries.append(structs.CompatibilityEntry(
                 landmark_id=landmark_id, log_lr=float(log_lr)))
@@ -692,7 +950,7 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
         matcher_version=matcher_version,
         entries=entries,
         default_log_lr=float(default_log_lr),
-        clip_lo=float(-clip),
+        clip_lo=float(lo),
         clip_hi=float(clip),
         status=status,
     )
@@ -701,7 +959,7 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
 
 def make_request_set(records, *, model, thinking_level, build_identity,
                      orchestration_config_digest, upstreams,
-                     system_prompt=SYSTEM_PROMPT):
+                     system_prompt=SYSTEM_PROMPT, response_schema=SCHEMA):
     """Bind the complete matching workload, including ordered unit context."""
     input_digests = {
         "build_identity": build_identity,
@@ -715,13 +973,15 @@ def make_request_set(records, *, model, thinking_level, build_identity,
             "batch_keys": record["batch_keys"],
             "chunk_index": record["chunk_index"],
             "chunk_signature_ids": record["chunk_signature_ids"],
+            **({"chunk_category_ids": record["chunk_category_ids"]}
+               if "chunk_category_ids" in record else {}),
         },
     ) for record in records)
     return llm_lifecycle.RequestSet.create(
         stage="landmark_matching",
         model=model,
         system_prompt=system_prompt,
-        response_schema=SCHEMA,
+        response_schema=response_schema,
         media_settings={
             "response_mime_type": "application/json",
             "thinking_level": thinking_level,
@@ -739,6 +999,9 @@ def _request_metadata(request_set):
             "chunk_index": unit.metadata["chunk_index"],
             "chunk_signature_ids": list(
                 unit.metadata["chunk_signature_ids"]),
+            **({"chunk_category_ids": list(
+                unit.metadata["chunk_category_ids"])}
+               if "chunk_category_ids" in unit.metadata else {}),
         }
         for unit in request_set.units
     }
@@ -815,8 +1078,11 @@ def validate_work_snapshot(value):
     if not Path(value["target_build_path"]).is_absolute():
         raise ValueError("matching work snapshot target_build_path is relative")
     selected = value["resolved_stage_config"]
-    _exact_keys(selected, MATCHING_CONFIG_KEYS,
-                "matching work resolved_stage_config")
+    legacy_keys = tuple(key for key in MATCHING_CONFIG_KEYS
+                        if key != "matching.set2_layout")
+    if set(selected) != set(legacy_keys):
+        _exact_keys(selected, MATCHING_CONFIG_KEYS,
+                    "matching work resolved_stage_config")
     validate_selected_config(selected)
     if value["output_version"] != selected[
             "artifacts.landmark_matches_version"]:
@@ -836,9 +1102,13 @@ def validate_work_snapshot(value):
     if request_set.stage != "landmark_matching":
         raise ValueError("matching snapshot has the wrong request-set stage")
     request_document = request_set.to_dict()
+    layout = layout_of(selected)
     if (request_set.model != selected["matching.model"]
             or request_set.system_prompt not in SET1_SOURCES
-            or request_document["response_schema"] != SCHEMA
+            or ((request_set.system_prompt in CATEGORY_PROMPTS)
+                != (layout == "category_chunks"))
+            or request_document["response_schema"]
+            != response_schema_for(layout)
             or request_document["media_settings"] != {
                 "response_mime_type": "application/json",
                 "thinking_level": selected["matching.thinking_level"],
@@ -920,11 +1190,19 @@ def validate_work_snapshot(value):
     seen_by_tracklet = {key: [] for key in queries}
     for unit in request_set.units:
         metadata = dict(unit.metadata)
-        _exact_keys(metadata,
-                    {"batch_keys", "chunk_index", "chunk_signature_ids"},
-                    f"request unit {unit.key!r} metadata")
+        unit_keys = {"batch_keys", "chunk_index", "chunk_signature_ids"}
+        if layout == "category_chunks":
+            unit_keys.add("chunk_category_ids")
+        _exact_keys(metadata, unit_keys, f"request unit {unit.key!r} metadata")
         batch_keys = list(metadata["batch_keys"])
         chunk_ids = list(metadata["chunk_signature_ids"])
+        if layout == "category_chunks":
+            expected_categories = format_category_chunk(
+                chunk_ids, signatures)[1]
+            if list(metadata["chunk_category_ids"]) != expected_categories:
+                raise ValueError(
+                    f"request unit {unit.key!r} category headers do not "
+                    "match its signature chunk")
         if (not batch_keys or len(batch_keys) != len(set(batch_keys))
                 or any(key not in queries for key in batch_keys)):
             raise ValueError(f"request unit {unit.key!r} has invalid batch keys")
@@ -942,21 +1220,21 @@ def validate_work_snapshot(value):
             raise ValueError(
                 f"request snapshot does not cover every signature exactly "
                 f"once for tracklet {key!r}")
-    signature_ids = sorted(signatures)
     chunk_size = selected["matching.chunk_size"]
     expected_records = build_requests(
-        queries,
-        [signature_ids[index:index + chunk_size]
-         for index in range(0, len(signature_ids), chunk_size)],
+        queries, signature_chunks(signatures, layout, chunk_size),
         signatures, selected["matching.query_batch"],
-        selected["matching.thinking_level"])
+        selected["matching.thinking_level"], layout=layout,
+        system_prompt=(request_set.system_prompt
+                       if layout == "category_chunks" else None))
     expected_request_set = make_request_set(
         expected_records, model=selected["matching.model"],
         thinking_level=selected["matching.thinking_level"],
         build_identity=value["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
         upstreams=request_set.upstreams,
-        system_prompt=request_set.system_prompt)
+        system_prompt=request_set.system_prompt,
+        response_schema=response_schema_for(layout))
     if expected_request_set.fingerprint != request_set.fingerprint:
         raise ValueError(
             "matching request units do not exactly encode the frozen queries, "
@@ -1028,6 +1306,8 @@ def validate_selected_config(selected):
             (int, float), minimum=0.0, maximum=1.0),
         "matching.instance_max_rows": build_config.ValueSpec(
             (int,), minimum=1),
+        "matching.set2_layout": build_config.ValueSpec(
+            (str,), choices=SET2_LAYOUTS),
         "execution.llm_transport": build_config.ValueSpec(
             (str,), choices=("batch", "on_demand")),
         "execution.batch_gcs_prefix": build_config.ValueSpec(
@@ -1039,6 +1319,8 @@ def validate_selected_config(selected):
             (str,), nonempty=True),
     }
     for key, spec in specs.items():
+        if key == "matching.set2_layout" and key not in selected:
+            continue  # recipes sealed before the key exist; digest layout
         spec.validate(key, selected[key])
 
 
@@ -1062,8 +1344,13 @@ def load_matching_config(args):
                 args.dataset_base).resolve():
             raise ValueError(
                 "--dataset_base does not match build_config inputs.dataset_base")
-    selected = {key: build_config.value(document, key)
-                for key in MATCHING_CONFIG_KEYS}
+    selected = {}
+    for key in MATCHING_CONFIG_KEYS:
+        try:
+            selected[key] = build_config.value(document, key)
+        except build_config.MissingConfigValue:
+            if key != "matching.set2_layout":
+                raise
     validate_selected_config(selected)
     actual_digest = artifact.sha256_json(selected)
     if args.orchestration_config_digest != actual_digest:
@@ -1120,6 +1407,13 @@ def settings_document(*, snapshot, request_set):
         "chunk_size": selected["matching.chunk_size"],
         "confidence_floor": selected["matching.confidence_floor"],
         "instance_max_rows": selected["matching.instance_max_rows"],
+        "set2_layout": layout_of(selected),
+        "category_expansion_rule": (
+            "category_match_expands_to_every_catalog_signature_of_kind_v1"
+            if layout_of(selected) == "category_chunks" else "none"),
+        "n_categories": (len(category_members(snapshot["signatures"]))
+                         if layout_of(selected) == "category_chunks"
+                         else None),
         "n_set1": len(snapshot["queries"]),
         "n_requests": len(request_set.units),
         "n_signatures": len(snapshot["signatures"]),
@@ -1215,13 +1509,11 @@ def _build_snapshot(args, parser):
             f"catalog artifact lacks regular catalog.feather: {catalog_path}")
 
     signatures = build_map_signatures(catalog_path)
-    signature_ids = sorted(signatures)
-    if not signature_ids:
+    if not signatures:
         raise SystemExit("catalog contains no far-field signature to match")
     chunk_size = selected["matching.chunk_size"]
-    signature_chunks = [
-        signature_ids[i:i + chunk_size]
-        for i in range(0, len(signature_ids), chunk_size)]
+    layout = layout_of(selected)
+    sig_chunks = signature_chunks(signatures, layout, chunk_size)
     # A passthrough audit says so in its manifest; the Set 1 prompt and format
     # follow the evidence the audit actually holds.
     audit_manifest = artifact.load_manifest(args.audit_dir)
@@ -1229,25 +1521,27 @@ def _build_snapshot(args, parser):
                       == audit_io.DETECTION_PASSTHROUGH_SOURCE)
     if detection_mode:
         queries, members = detection_query_bundles(audits.source_tracks, audits)
-        system_prompt = DETECTION_SYSTEM_PROMPT
     else:
         queries = query_bundles(audits.source_tracks, audits)
         members = {key: [key] for key in queries}
-        system_prompt = SYSTEM_PROMPT
+    system_prompt = prompt_for(layout, detection_mode)
     if not queries:
         raise SystemExit(
             "no matchable tracklet: every audited track was dropped; "
             "nothing to match")
     records = build_requests(
-        queries, signature_chunks, signatures,
+        queries, sig_chunks, signatures,
         selected["matching.query_batch"],
-        selected["matching.thinking_level"])
+        selected["matching.thinking_level"], layout=layout,
+        system_prompt=(system_prompt if layout == "category_chunks"
+                       else None))
     request_set = make_request_set(
         records, model=selected["matching.model"],
         thinking_level=selected["matching.thinking_level"],
         build_identity=document["build_identity"],
         orchestration_config_digest=orchestration["config_digest"],
-        upstreams=upstreams, system_prompt=system_prompt)
+        upstreams=upstreams, system_prompt=system_prompt,
+        response_schema=response_schema_for(layout))
     snapshot = make_work_snapshot(
         dataset=args.dataset,
         output_version=selected["artifacts.landmark_matches_version"],
@@ -1259,7 +1553,9 @@ def _build_snapshot(args, parser):
         target_build_path=build_dir)
     print(f"map: {sum(len(v['landmark_ids']) for v in signatures.values())} "
           f"landmarks -> {len(signatures)} signatures in "
-          f"{len(signature_chunks)} chunks")
+          f"{len(sig_chunks)} chunks ({layout})")
+    if layout == "category_chunks":
+        print(f"categories: {len(category_members(signatures))} kinds")
     print(f"queries: {len(queries)} Set 1 entries "
           f"({SET1_SOURCES[system_prompt]}) for "
           f"{sum(len(ids) for ids in members.values())} tracklets in "
@@ -1453,7 +1749,7 @@ def main():
         lambda key, response: validate_matching_response(
             key, response, metadata[key]),
     )
-    per_tracklet, no_match, uniqueness = aggregate(
+    per_tracklet, no_match, uniqueness, extras = aggregate(
         canonical_results, metadata, signatures)
     print(f"validated complete coverage: {len(canonical_results)}/"
           f"{len(request_set.units)} requests; aggregated "
@@ -1466,6 +1762,15 @@ def main():
                  for unit in request_set.units)
         for tid in queries
     }
+    category_layout = layout_of(selected) == "category_chunks"
+    matcher_version = (
+        f"llm_category_chunks_v3_{thinking_level.lower()}" if category_layout
+        else f"llm_chunked_v2_{thinking_level.lower()}")
+    kind_rows = defaultdict(int)
+    if category_layout:
+        for entry in signatures.values():
+            kind_rows[signature_category(entry["canonical_tags"])] += len(
+                entry["landmark_ids"])
     for tid in sorted(queries):
         if (len(no_match.get(tid, ())) != expected_calls[tid]
                 or len(uniqueness.get(tid, ())) != expected_calls[tid]):
@@ -1511,6 +1816,18 @@ def main():
             "n_signatures": len({
                 v["signature_id"] for v in kept.values()}),
             "n_downgraded_to_category": downgraded,
+            "in_map_confidence": {
+                "n": len(extras["in_map"].get(tid, ())),
+                "mean": (round(sum(extras["in_map"][tid])
+                               / len(extras["in_map"][tid]), 3)
+                         if extras["in_map"].get(tid) else None),
+                "scores": list(extras["in_map"].get(tid, ())),
+                "semantics": ("model prior that an object of this kind is "
+                              "mapped at all; recorded, not yet consumed"),
+            },
+            "category_matches": {
+                category: confidence for category, confidence in sorted(
+                    extras["categories"].get(tid, {}).items())},
             "matches": [{
                          "landmark_id": lid,
                          "per_call_candidate_scores": v[
@@ -1527,17 +1844,31 @@ def main():
                         for lid, v in sorted(kept.items(),
                                              key=lambda kv: -kv[1][
                                                  "aggregate_confidence"])]}
-        log_lrs = {lid: to_log_lr(v["aggregate_confidence"])
+        if category_layout:
+            def row_confidence(v):
+                if v["match_type"] != "category":
+                    return v["aggregate_confidence"]
+                kind = signature_category(
+                    signatures[v["signature_id"]]["canonical_tags"])
+                return v["aggregate_confidence"] / max(1, kind_rows[kind])
+            clip_lo = CATEGORY_CLIP_LO
+        else:
+            def row_confidence(v):
+                return v["aggregate_confidence"]
+            clip_lo = -DEFAULT_CLIP
+        log_lrs = {lid: to_log_lr(row_confidence(v), clip_lo=clip_lo)
                    for lid, v in kept.items()}
         default_log_lr = to_log_lr(
-            max(1e-4, 1.0 - nm) / max(1, len(signature_ids)))
+            max(1e-4, 1.0 - nm) / max(1, len(signature_ids)),
+            clip_lo=clip_lo)
         # Every tracklet behind this Set 1 entry receives the same answer.
         for tracklet_id in members[tid]:
             matches[tracklet_id] = dict(record)
             tables.append(to_compatibility_table(
                 tracklet_id, log_lrs,
-                matcher_version=f"llm_chunked_v2_{thinking_level.lower()}",
-                scale=1.0, offset=0.0, default_log_lr=default_log_lr))
+                matcher_version=matcher_version,
+                scale=1.0, offset=0.0, default_log_lr=default_log_lr,
+                clip_lo=clip_lo))
     expected_tracklets = {tracklet_id for ids in members.values()
                           for tracklet_id in ids}
     if (set(matches) != expected_tracklets
