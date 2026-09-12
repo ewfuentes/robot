@@ -1,0 +1,1046 @@
+"""Exact grid-HMM localization with causal delayed-track replay.
+
+This experiment applies the current independent-epoch bearing mixture on an
+exact (heading, north, east) grid and scores the current posterior at each
+keyframe.
+
+The observation input remains ``epoch_fused_compat_v1``. In ``natural``
+availability mode an audited track arrives atomically at its recorded close
+keyframe, its measurements retain their historical anchors, and the current
+prefix is replayed from the last unaffected checkpoint. Previously emitted
+current-state scores are never revised.
+
+The full belief history is too large on Pohang, so causal replay keeps one
+host checkpoint every ``--checkpoint_keyframes``.
+"""
+
+import argparse
+import dataclasses
+import json
+import math
+import time
+from pathlib import Path
+
+import numpy as np
+
+import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
+import torch
+
+from experimental.overhead_matching.swag.farfield.localization import (
+    export_ingest,
+    filter as filter_lib,
+    odometry_profiles,
+    release_schedule as release_schedule_lib,
+)
+
+MAX_KAPPA = filter_lib.MAX_KAPPA
+RADII_M = (50.0, 100.0, 250.0, 500.0, 1000.0)
+
+
+class Grid:
+    """Cell geometry: index zero of each axis is at the box minimum."""
+
+    def __init__(self, east_min, east_max, north_min, north_max, cell_m):
+        self.cell_m = float(cell_m)
+        self.east_min = float(east_min)
+        self.north_min = float(north_min)
+        self.n_east = int(math.ceil((east_max - east_min) / cell_m))
+        self.n_north = int(math.ceil((north_max - north_min) / cell_m))
+
+    def centers(self):
+        east = self.east_min + (np.arange(self.n_east) + 0.5) * self.cell_m
+        north = self.north_min + (np.arange(self.n_north) + 0.5) * self.cell_m
+        return east, north
+
+
+def shift2d(t: torch.Tensor, di: int, dj: int) -> torch.Tensor:
+    """Integer zero-fill shift of the trailing (north, east) axes."""
+    if di == 0 and dj == 0:
+        return t
+    out = torch.zeros_like(t)
+    ni, nj = t.shape[-2], t.shape[-1]
+    if abs(di) >= ni or abs(dj) >= nj:
+        return out
+    src_i = slice(max(0, -di), ni - max(0, di))
+    dst_i = slice(max(0, di), ni - max(0, -di))
+    src_j = slice(max(0, -dj), nj - max(0, dj))
+    dst_j = slice(max(0, dj), nj - max(0, -dj))
+    out[..., dst_i, dst_j] = t[..., src_i, src_j]
+    return out
+
+
+def heading_kernel(shift_rad: float, sigma_rad: float, n_heading: int):
+    """Wrapped-Gaussian weights over integer heading-bin offsets."""
+    binw = 2.0 * math.pi / n_heading
+    half = min(
+        n_heading // 2,
+        int(math.ceil((4.0 * sigma_rad + abs(shift_rad)) / binw)) + 1)
+    offsets = np.arange(-half, half + 1)
+    sigma = max(sigma_rad, 1e-6)
+    weights = np.zeros(offsets.shape)
+    for wrap in (-1, 0, 1):
+        delta = offsets * binw - shift_rad + wrap * 2.0 * math.pi
+        weights += np.exp(-0.5 * (delta / sigma) ** 2)
+    return offsets, weights / weights.sum()
+
+
+def gaussian_taps(sigma_cells: float):
+    half = max(1, int(math.ceil(3.0 * sigma_cells)))
+    offsets = np.arange(-half, half + 1)
+    weights = np.exp(-0.5 * (offsets / max(sigma_cells, 1e-6)) ** 2)
+    return offsets, weights / weights.sum()
+
+
+@dataclasses.dataclass(frozen=True)
+class MotionPlan:
+    """The discrete linear operations chosen for one odometry increment."""
+
+    heading_offsets: tuple[int, ...] = ()
+    heading_weights: tuple[float, ...] = ()
+    cell_shifts: tuple[tuple[int, int], ...] = ()
+    weighted_cell_shifts: tuple[
+        tuple[tuple[int, int, float], ...], ...] = ()
+    diffusion_offsets: tuple[int, ...] = ()
+    diffusion_weights: tuple[float, ...] = ()
+
+
+def apply_motion(t: torch.Tensor, plan: MotionPlan) -> torch.Tensor:
+    """Apply a recorded forward motion operator."""
+    if plan.cell_shifts:
+        shifted = t.clone()
+        for heading, (di, dj) in enumerate(plan.cell_shifts):
+            if di or dj:
+                shifted[heading] = shift2d(t[heading], di, dj)
+        t = shifted
+
+    if plan.weighted_cell_shifts:
+        shifted = torch.zeros_like(t)
+        for heading, shifts in enumerate(plan.weighted_cell_shifts):
+            for di, dj, weight in shifts:
+                shifted[heading] += weight * shift2d(
+                    t[heading], di, dj)
+        t = shifted
+
+    if plan.heading_offsets:
+        acc = torch.zeros_like(t)
+        for offset, weight in zip(
+                plan.heading_offsets, plan.heading_weights, strict=True):
+            acc += weight * torch.roll(t, offset, dims=0)
+        t = acc
+
+    if plan.diffusion_offsets:
+        for axis in (-2, -1):
+            acc = torch.zeros_like(t)
+            for offset, weight in zip(
+                    plan.diffusion_offsets, plan.diffusion_weights,
+                    strict=True):
+                acc += weight * shift2d(
+                    t,
+                    offset if axis == -2 else 0,
+                    offset if axis == -1 else 0)
+            t = acc
+    return t
+
+
+def _normalized(t: torch.Tensor) -> torch.Tensor:
+    total = t.sum()
+    if not bool(torch.isfinite(total)) or not float(total) > 0.0:
+        raise ValueError("grid message has non-finite or zero total mass")
+    return t / total
+
+
+class GridBelief:
+    """Linear-space belief over (heading, north, east) on one device."""
+
+    def __init__(self, grid: Grid, n_heading: int, device: str):
+        self.grid = grid
+        self.n_heading = n_heading
+        self.device = device
+        self.belief = torch.full(
+            (n_heading, grid.n_north, grid.n_east),
+            1.0 / (n_heading * grid.n_north * grid.n_east),
+            dtype=torch.float32,
+            device=device)
+        east, north = grid.centers()
+        jj, ii = np.meshgrid(east, north)
+        self.cell_east = torch.tensor(
+            jj.ravel(), dtype=torch.float32, device=device)
+        self.cell_north = torch.tensor(
+            ii.ravel(), dtype=torch.float32, device=device)
+        self.bin_rad = 2.0 * math.pi * np.arange(n_heading) / n_heading
+        self.pending_yaw = 0.0
+        self.pending_yaw_var = 0.0
+        self.pending_de = np.zeros(n_heading)
+        self.pending_dn = np.zeros(n_heading)
+        self.pending_pos_var = 0.0
+        self.leaked_mass = 0.0
+
+    def plan_motion(self, delta, yaw_sigma_scale: float,
+                    heading_rw_rad: float, diffusion_m: float) -> MotionPlan:
+        """Advance sub-cell accumulators and record the operations triggered."""
+        binw = 2.0 * math.pi / self.n_heading
+        sigma_h = math.hypot(
+            delta.sigma_yaw_rad * yaw_sigma_scale, heading_rw_rad)
+        self.pending_yaw += delta.delta_yaw_cw_rad
+        self.pending_yaw_var += sigma_h * sigma_h
+        heading_offsets = ()
+        heading_weights = ()
+        heading_convolution = (
+            math.sqrt(self.pending_yaw_var) >= 0.35 * binw)
+        heading_steps = 0
+        if heading_convolution:
+            offsets, weights = heading_kernel(
+                self.pending_yaw, math.sqrt(self.pending_yaw_var),
+                self.n_heading)
+            heading_offsets = tuple(int(value) for value in offsets)
+            heading_weights = tuple(float(value) for value in weights)
+        elif abs(self.pending_yaw) >= 0.5 * binw:
+            heading_steps = int(round(self.pending_yaw / binw))
+            heading_offsets = (heading_steps,)
+            heading_weights = (1.0,)
+
+        # Accumulate translation in the source bin at its continuous post-yaw
+        # heading.  Spatial motion is materialized before relabeling/mixing the
+        # heading bins, which keeps its source-heading history intact.
+        heading_rad = self.bin_rad + self.pending_yaw
+        self.pending_de += (
+            delta.forward_m * np.sin(heading_rad)
+            - delta.left_m * np.cos(heading_rad))
+        self.pending_dn += (
+            delta.forward_m * np.cos(heading_rad)
+            + delta.left_m * np.sin(heading_rad))
+        cell = self.grid.cell_m
+        shifts = ()
+        weighted_shifts = ()
+        if heading_convolution:
+            materialized = []
+            for heading in range(self.n_heading):
+                east_cells = self.pending_de[heading] / cell
+                north_cells = self.pending_dn[heading] / cell
+                east_lo = math.floor(east_cells)
+                north_lo = math.floor(north_cells)
+                east_fraction = east_cells - east_lo
+                north_fraction = north_cells - north_lo
+                heading_shifts = []
+                for di, north_weight in (
+                        (north_lo, 1.0 - north_fraction),
+                        (north_lo + 1, north_fraction)):
+                    for dj, east_weight in (
+                            (east_lo, 1.0 - east_fraction),
+                            (east_lo + 1, east_fraction)):
+                        weight = north_weight * east_weight
+                        if weight > 0.0:
+                            heading_shifts.append((di, dj, weight))
+                materialized.append(tuple(heading_shifts))
+            weighted_shifts = tuple(materialized)
+            self.pending_de.fill(0.0)
+            self.pending_dn.fill(0.0)
+            self.pending_yaw = 0.0
+            self.pending_yaw_var = 0.0
+        else:
+            integer_shifts = []
+            for heading in range(self.n_heading):
+                dj = int(round(self.pending_de[heading] / cell))
+                di = int(round(self.pending_dn[heading] / cell))
+                integer_shifts.append((di, dj))
+                self.pending_de[heading] -= dj * cell
+                self.pending_dn[heading] -= di * cell
+            shifts = tuple(integer_shifts)
+            if heading_steps:
+                self.pending_de = np.roll(self.pending_de, heading_steps)
+                self.pending_dn = np.roll(self.pending_dn, heading_steps)
+                self.pending_yaw -= heading_steps * binw
+
+        self.pending_pos_var += delta.sigma_m ** 2 + diffusion_m ** 2
+        diffusion_offsets = ()
+        diffusion_weights = ()
+        if math.sqrt(self.pending_pos_var) >= 0.25 * cell:
+            offsets, weights = gaussian_taps(
+                math.sqrt(self.pending_pos_var) / cell)
+            diffusion_offsets = tuple(int(value) for value in offsets)
+            diffusion_weights = tuple(float(value) for value in weights)
+            self.pending_pos_var = 0.0
+
+        return MotionPlan(
+            heading_offsets=heading_offsets,
+            heading_weights=heading_weights,
+            cell_shifts=shifts,
+            weighted_cell_shifts=weighted_shifts,
+            diffusion_offsets=diffusion_offsets,
+            diffusion_weights=diffusion_weights)
+
+    def motion(self, delta, yaw_sigma_scale: float, heading_rw_rad: float,
+               diffusion_m: float) -> MotionPlan:
+        plan = self.plan_motion(
+            delta, yaw_sigma_scale, heading_rw_rad, diffusion_m)
+        self.belief = apply_motion(self.belief, plan)
+        return plan
+
+    def track_likelihood(self, observed_rad: float, base_var: float,
+                         cand_east: torch.Tensor,
+                         cand_north: torch.Tensor,
+                         cand_weight: torch.Tensor,
+                         sigma_pos: float,
+                         pi0: float,
+                         tail_mass: float,
+                         *,
+                         quantization_comp: bool = True,
+                         chunk: int = 256,
+                         range_max_m=None,
+                         range_softness: float = 0.25) -> torch.Tensor:
+        """PF-equivalent independent-epoch mixture likelihood on the grid."""
+        n_cells = self.cell_east.shape[0]
+        two_pi = 2.0 * math.pi
+        like = torch.zeros(
+            (self.n_heading, n_cells), dtype=torch.float32,
+            device=self.device)
+        binw = two_pi / self.n_heading
+        for start in range(0, cand_east.shape[0], chunk):
+            sl = slice(start, min(start + chunk, cand_east.shape[0]))
+            d_east = cand_east[sl][None, :] - self.cell_east[:, None]
+            d_north = cand_north[sl][None, :] - self.cell_north[:, None]
+            distance = torch.sqrt(d_east * d_east + d_north * d_north)
+            world_bearing = torch.atan2(d_east, d_north)
+            safe_distance = torch.clamp(distance, min=1.0)
+            gate = cand_weight[sl][None, :].expand_as(distance)
+            if range_max_m is not None:
+                excess = torch.clamp(distance - range_max_m, min=0.0)
+                gate = gate * torch.exp(-0.5 * torch.square(
+                    excess / (range_softness * range_max_m)))
+            quant_var = 0.0
+            if quantization_comp:
+                quant_var = (
+                    binw * binw / 12.0
+                    + (self.grid.cell_m / math.sqrt(12.0)
+                       / safe_distance) ** 2)
+            variance = (
+                base_var + (sigma_pos / safe_distance) ** 2 + quant_var)
+            kappa_eff = 1.0 / variance
+            log_denom = torch.log(torch.special.i0e(kappa_eff))
+            cos_world = torch.cos(world_bearing)
+            sin_world = torch.sin(world_bearing)
+            for heading in range(self.n_heading):
+                angle = self.bin_rad[heading] + observed_rad
+                cos_delta = (
+                    cos_world * math.cos(angle)
+                    + sin_world * math.sin(angle))
+                exponent = -log_denom + kappa_eff * (cos_delta - 1.0)
+                like[heading] += (torch.exp(exponent) * gate).sum(dim=1)
+        # Scaled by 2*pi relative to a normalized bearing density; the common
+        # factor cancels in every posterior normalization.
+        like = pi0 + (1.0 - pi0) * (like + tail_mass)
+        return like.view(
+            self.n_heading, self.grid.n_north, self.grid.n_east)
+
+    def renormalize(self):
+        total = self.belief.sum()
+        self.leaked_mass = 1.0 - float(total)
+        self.belief = _normalized(self.belief)
+
+    def position_marginal(self) -> torch.Tensor:
+        return self.belief.sum(dim=0).reshape(-1)
+
+
+def truth_masks(grid: Grid, truth, radii, subgrid: int = 8):
+    """Area-weighted truth-radius masks for coarse grid cells."""
+    east, north = grid.centers()
+    sub = (np.arange(subgrid) + 0.5) / subgrid - 0.5
+    sub_e, sub_n = np.meshgrid(sub * grid.cell_m, sub * grid.cell_m)
+    masks = {}
+    for pose in truth:
+        for radius in radii:
+            reach = radius + 0.75 * grid.cell_m
+            east_idx = np.nonzero(np.abs(east - pose.east_m) <= reach)[0]
+            north_idx = np.nonzero(np.abs(north - pose.north_m) <= reach)[0]
+            idx, fraction = [], []
+            for i in north_idx:
+                for j in east_idx:
+                    de = east[j] + sub_e - pose.east_m
+                    dn = north[i] + sub_n - pose.north_m
+                    inside = float(
+                        (de * de + dn * dn <= radius * radius).mean())
+                    if inside > 0.0:
+                        idx.append(i * grid.n_east + j)
+                        fraction.append(inside)
+            masks[(pose.keyframe_idx, radius)] = (
+                np.asarray(idx, dtype=np.int64),
+                np.asarray(fraction, dtype=np.float32))
+    return masks
+
+
+def _score_message(message, keyframe, masks, truth_by_kf, grid, device):
+    marginal = message.sum(dim=0).reshape(-1)
+    mass = {}
+    for radius in RADII_M:
+        idx, fraction = masks[(keyframe, radius)]
+        if idx.size:
+            cells = marginal[torch.as_tensor(idx, device=device)]
+            mass[radius] = float(
+                (cells * torch.as_tensor(fraction, device=device)).sum())
+        else:
+            mass[radius] = 0.0
+    state = _online_map_state(message, marginal, grid)
+    pose = truth_by_kf[keyframe]
+    map_error = math.hypot(
+        state["east_m"] - pose.east_m,
+        state["north_m"] - pose.north_m)
+    return mass, map_error, state
+
+
+def _online_map_state(message, position_marginal, grid):
+    """Position-marginal MAP with conditional heading at that grid cell."""
+    cell_idx = int(torch.argmax(position_marginal))
+    north_idx, east_idx = divmod(cell_idx, grid.n_east)
+    heading_idx = int(torch.argmax(message[:, north_idx, east_idx]))
+    east, north = grid.centers()
+    return {
+        "east_m": float(east[east_idx]),
+        "north_m": float(north[north_idx]),
+        "heading_world_cw_deg": 360.0 * heading_idx / message.shape[0],
+    }
+
+
+def _summary(series, map_errors, truth_by_kf, n_keyframes):
+    distance = np.zeros(n_keyframes)
+    for keyframe in range(1, n_keyframes):
+        previous = truth_by_kf[keyframe - 1]
+        current = truth_by_kf[keyframe]
+        distance[keyframe] = distance[keyframe - 1] + math.hypot(
+            current.east_m - previous.east_m,
+            current.north_m - previous.north_m)
+    result = {}
+    for radius in RADII_M:
+        values = np.asarray(series[radius])
+        result[f"tn_mass_{radius:g}"] = float(
+            np.sum(0.5 * (values[:-1] + values[1:]))
+            / (n_keyframes - 1))
+        result[f"dn_mass_{radius:g}"] = float(
+            np.sum(
+                0.5 * (values[:-1] + values[1:]) * np.diff(distance))
+            / max(distance[-1], 1e-9))
+    result["final_map_error_m"] = float(map_errors[-1])
+    return result
+
+
+def causal_replay(initial_message, motion_plans, releases,
+                  apply_measurements, score, checkpoint_keyframes):
+    """Replay delayed whole-track factors and score only the current belief.
+
+    A release makes all of one track's historical measurements available at
+    once.  The current prefix is recomputed from the last unaffected
+    checkpoint; scores already published for earlier keyframes are untouched.
+    """
+    if checkpoint_keyframes <= 0:
+        raise ValueError("checkpoint_keyframes must be positive")
+    n_keyframes = len(motion_plans)
+    if n_keyframes == 0 or motion_plans[0] is not None:
+        raise ValueError("motion_plans must start with the keyframe-0 sentinel")
+
+    release_by_keyframe = {}
+    previous = (-1, "")
+    for release in releases:
+        key = (release.release_keyframe_idx, release.tracklet_id)
+        if key <= previous:
+            raise ValueError("track releases must be strictly sorted")
+        previous = key
+        if not 0 <= release.release_keyframe_idx < n_keyframes:
+            raise ValueError("track release is outside the trajectory")
+        if not release.measurements:
+            raise ValueError("track release has no measurements")
+        if any(not 0 <= item.anchor_keyframe_idx
+               <= release.release_keyframe_idx
+               for item in release.measurements):
+            raise ValueError("track release contains an invalid anchor")
+        release_by_keyframe.setdefault(
+            release.release_keyframe_idx, []).append(release)
+
+    device = initial_message.device
+    available_by_anchor = {}
+    checkpoints = {}
+    current = initial_message
+    scores = []
+    replay_steps = 0
+    max_rollback = 0
+    released_tracks = 0
+
+    def advance(message, start, stop):
+        nonlocal replay_steps
+        for keyframe in range(start, stop + 1):
+            if keyframe > 0:
+                message = apply_motion(message, motion_plans[keyframe])
+            message = apply_measurements(
+                message, keyframe,
+                available_by_anchor.get(keyframe, ()))
+            message = _normalized(message)
+            if keyframe % checkpoint_keyframes == 0:
+                checkpoints[keyframe] = message.detach().cpu().clone()
+            replay_steps += 1
+        return message
+
+    for keyframe in range(n_keyframes):
+        if keyframe == 0:
+            current = apply_measurements(
+                current, keyframe,
+                available_by_anchor.get(keyframe, ()))
+        else:
+            current = apply_motion(current, motion_plans[keyframe])
+            current = apply_measurements(
+                current, keyframe,
+                available_by_anchor.get(keyframe, ()))
+        current = _normalized(current)
+        if keyframe % checkpoint_keyframes == 0:
+            checkpoints[keyframe] = current.detach().cpu().clone()
+
+        arriving = release_by_keyframe.get(keyframe, ())
+        if arriving:
+            earliest_anchor = keyframe
+            for release in arriving:
+                released_tracks += 1
+                for measurement in release.measurements:
+                    earliest_anchor = min(
+                        earliest_anchor, measurement.anchor_keyframe_idx)
+                    available_by_anchor.setdefault(
+                        measurement.anchor_keyframe_idx, []).append(measurement)
+            for measurements in available_by_anchor.values():
+                measurements.sort(key=lambda item: item.tracklet_id)
+
+            candidates = [saved for saved in checkpoints
+                          if saved < earliest_anchor]
+            checkpoint = max(candidates, default=-1)
+            start = checkpoint + 1
+            max_rollback = max(max_rollback, keyframe - start + 1)
+            current = (initial_message.clone() if checkpoint < 0 else
+                       checkpoints[checkpoint].to(device).clone())
+            current = advance(current, start, keyframe)
+        scores.append(score(current, keyframe))
+
+    return current, scores, {
+        "n_track_releases": released_tracks,
+        "n_release_keyframes": len(release_by_keyframe),
+        "n_replay_keyframe_steps": replay_steps,
+        "max_rollback_keyframes": max_rollback,
+        "checkpoint_keyframes": checkpoint_keyframes,
+    }
+
+
+def _top_modes(message, grid, limit, position_nms_m, heading_nms_deg):
+    """Highest-mass final grid states after greedy SE(2) non-max suppression."""
+    if limit <= 0:
+        return []
+    flat = message.reshape(-1)
+    pool = min(flat.numel(), max(4096, 16 * limit))
+    heading_step = 2.0 * math.pi / message.shape[0]
+    east_centers, north_centers = grid.centers()
+    chosen = []
+    while True:
+        values, indices = torch.topk(flat, pool, sorted=True)
+        values = values.detach().cpu().numpy()
+        indices = indices.detach().cpu().numpy()
+        chosen = []
+        chosen_east = []
+        chosen_north = []
+        chosen_heading = []
+        cells_per_heading = grid.n_north * grid.n_east
+        for value, index in zip(values, indices, strict=True):
+            heading_idx, cell_idx = divmod(int(index), cells_per_heading)
+            north_idx, east_idx = divmod(cell_idx, grid.n_east)
+            east = float(east_centers[east_idx])
+            north = float(north_centers[north_idx])
+            heading = heading_idx * heading_step
+            if chosen:
+                distance = np.hypot(
+                    np.asarray(chosen_east) - east,
+                    np.asarray(chosen_north) - north)
+                angle = np.abs(
+                    (np.asarray(chosen_heading) - heading + math.pi)
+                    % (2.0 * math.pi) - math.pi)
+                if np.any(
+                        (distance <= position_nms_m)
+                        & (angle <= math.radians(heading_nms_deg))):
+                    continue
+            chosen_east.append(east)
+            chosen_north.append(north)
+            chosen_heading.append(heading)
+            chosen.append({
+                "source_rank": len(chosen) + 1,
+                "source_probability": float(value),
+                "east_m": east,
+                "north_m": north,
+                "heading_world_cw_deg": math.degrees(heading),
+                "heading_index": heading_idx,
+                "north_index": north_idx,
+                "east_index": east_idx,
+            })
+            if len(chosen) == limit:
+                return chosen
+        if pool == flat.numel():
+            return chosen
+        pool = min(flat.numel(), 4 * pool)
+
+
+def _map_state(message, grid):
+    """Joint grid-state MAP pose (unlike the position-marginal score MAP)."""
+    index = int(torch.argmax(message))
+    cells_per_heading = grid.n_north * grid.n_east
+    heading_idx, cell_idx = divmod(index, cells_per_heading)
+    north_idx, east_idx = divmod(cell_idx, grid.n_east)
+    east, north = grid.centers()
+    return {
+        "east_m": float(east[east_idx]),
+        "north_m": float(north[north_idx]),
+        "heading_world_cw_deg": 360.0 * heading_idx / message.shape[0],
+    }
+
+
+def _release_top_mode_snapshot(message, grid, limit, position_nms_m,
+                               heading_nms_deg, keyframe, tracklet_ids):
+    """Build one sparse handoff after an atomic co-release replay."""
+    if limit <= 0 or not tracklet_ids:
+        return None
+    modes = _top_modes(
+        message, grid, limit, position_nms_m, heading_nms_deg)
+    return {
+        "keyframe_idx": keyframe,
+        "released_tracklet_ids": sorted(tracklet_ids),
+        "returned": len(modes),
+        "modes": modes,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input_dir", required=True)
+    parser.add_argument(
+        "--odometry_profile", choices=odometry_profiles.PROFILE_CHOICES,
+        default="recorded")
+    parser.add_argument("--odometry_seed", type=int, default=0)
+    parser.add_argument(
+        "--availability", choices=("eager", "natural", "none"),
+        default="natural",
+        help="when audited track measurements become visible")
+    parser.add_argument(
+        "--release_schedule", default=None,
+        help="bound natural-closure sidecar; required by natural mode")
+    parser.add_argument(
+        "--like_run", default=None,
+        help="run whose manifest supplies the init box, pi0 and recall")
+    parser.add_argument("--cell_m", type=float, default=200.0)
+    parser.add_argument("--n_heading", type=int, default=18)
+    parser.add_argument("--yaw_sigma_scale", type=float, default=1.0)
+    parser.add_argument("--heading_rw_deg", type=float, default=1.0)
+    parser.add_argument("--diffusion_m", type=float, default=5.0)
+    parser.add_argument("--pi0", type=float, default=None)
+    parser.add_argument("--matcher_recall", type=float, default=None)
+    parser.add_argument(
+        "--init_truth_sigma_m", type=float, default=0.0,
+        help="diagnostic only; zero is uniform evaluation initialization")
+    parser.add_argument("--kappa_scale", type=float, default=1.0)
+    parser.add_argument("--quantization_comp", type=int, default=1)
+    parser.add_argument(
+        "--tail", choices=("exact", "uniform"), default="exact")
+    parser.add_argument("--range_cap", type=int, default=1)
+    parser.add_argument("--range_softness", type=float, default=0.25)
+    parser.add_argument("--margin_m", type=float, default=1000.0)
+    parser.add_argument("--checkpoint_keyframes", type=int, default=32)
+    parser.add_argument("--top_modes", type=int, default=400)
+    parser.add_argument(
+        "--release_top_modes", type=int, default=0,
+        help="natural mode only: sparse top modes after each track release")
+    parser.add_argument("--top_mode_position_nms_m", type=float, default=200.0)
+    parser.add_argument("--top_mode_heading_nms_deg", type=float, default=10.0)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args()
+    if args.checkpoint_keyframes <= 0:
+        parser.error("--checkpoint_keyframes must be positive")
+    if args.top_modes < 0:
+        parser.error("--top_modes must be nonnegative")
+    if args.release_top_modes < 0:
+        parser.error("--release_top_modes must be nonnegative")
+    if args.release_top_modes and args.availability != "natural":
+        parser.error("--release_top_modes requires natural availability")
+    if args.top_mode_position_nms_m < 0.0 \
+            or args.top_mode_heading_nms_deg < 0.0:
+        parser.error("top-mode NMS radii must be nonnegative")
+
+    data = export_ingest.load(Path(args.input_dir))
+    if len(data.truth) != data.n_keyframes:
+        raise ValueError("grid localization requires truth at every keyframe")
+    data.odometry, odometry_profile = odometry_profiles.derive(
+        Path(args.input_dir), data, args.odometry_profile,
+        noise_seed=args.odometry_seed)
+    n_keyframes = len(data.truth)
+    catalog = data.catalog
+    sigma_pos = float(catalog.position_sigma_m[0])
+
+    region = export_ingest.prior_box(data, args.margin_m)
+    declared_box = (
+        region.east_min_m, region.east_max_m,
+        region.north_min_m, region.north_max_m)
+    if args.like_run:
+        manifest = json.loads(
+            (Path(args.like_run) / "run_manifest.json").read_text())
+        filter_config = manifest["filter_config"]
+        init = filter_config["init"]
+        if init["kind"] != "UniformBoxInit":
+            raise ValueError("--like_run must use UniformBoxInit")
+        box = (
+            init["east_min_m"], init["east_max_m"],
+            init["north_min_m"], init["north_max_m"])
+        if box != declared_box:
+            raise ValueError(
+                "--like_run prior differs from this export's declared region")
+        if args.pi0 is None:
+            args.pi0 = filter_config["pi0"]
+        if args.matcher_recall is None:
+            args.matcher_recall = filter_config["matcher_recall"]
+    else:
+        box = declared_box
+    if args.pi0 is None:
+        args.pi0 = 0.2
+    if args.matcher_recall is None:
+        args.matcher_recall = 0.5
+
+    grid = Grid(*box, args.cell_m)
+    belief = GridBelief(grid, args.n_heading, args.device)
+    if args.init_truth_sigma_m > 0.0:
+        pose0 = data.truth[0]
+        distance2 = (
+            (belief.cell_east - pose0.east_m) ** 2
+            + (belief.cell_north - pose0.north_m) ** 2)
+        gaussian = torch.exp(
+            -0.5 * distance2 / args.init_truth_sigma_m ** 2)
+        belief.belief = (
+            gaussian / gaussian.sum() / args.n_heading).expand(
+                args.n_heading, -1).reshape(belief.belief.shape).clone()
+
+    n_states = args.n_heading * grid.n_north * grid.n_east
+    print(
+        f"grid: {grid.n_east} x {grid.n_north} x {args.n_heading} = "
+        f"{n_states / 1e6:.1f}M states, cell {grid.cell_m:g} m; "
+        f"pi0={args.pi0} recall={args.matcher_recall} "
+        f"yaw_scale={args.yaw_sigma_scale} rw={args.heading_rw_deg} deg "
+        f"tail={args.tail}")
+
+    catalog_east = torch.tensor(
+        catalog.east_m, dtype=torch.float32, device=args.device)
+    catalog_north = torch.tensor(
+        catalog.north_m, dtype=torch.float32, device=args.device)
+    weight_cache = {}
+
+    def candidate_set(tracklet_id):
+        if tracklet_id not in weight_cache:
+            table = data.tables[tracklet_id]
+            log_weight = filter_lib._identity_log_weights(  # noqa: SLF001
+                table, catalog, args.matcher_recall)
+            weights = np.exp(log_weight)
+            if args.tail == "exact":
+                idx = np.arange(catalog.n)
+                tail_mass = 0.0
+            else:
+                endorsed = ~filter_lib._surprise_mask(  # noqa: SLF001
+                    table,
+                    filter_lib._clipped_log_lr(table, catalog))  # noqa: SLF001
+                idx = np.nonzero(endorsed)[0]
+                tail_mass = float(weights[~endorsed].sum())
+            idx_tensor = torch.as_tensor(idx, device=args.device)
+            weight_cache[tracklet_id] = (
+                catalog_east[idx_tensor],
+                catalog_north[idx_tensor],
+                torch.tensor(
+                    weights[idx], dtype=torch.float32, device=args.device),
+                tail_mass)
+        return weight_cache[tracklet_id]
+
+    by_keyframe = {}
+    for measurement in data.measurements:
+        by_keyframe.setdefault(
+            measurement.anchor_keyframe_idx, []).append(measurement)
+    if args.availability == "none":
+        by_keyframe.clear()
+    odometry = {item.keyframe_idx: item for item in data.odometry}
+
+    def apply_likelihoods(message, keyframe, measurements=None):
+        if measurements is None:
+            measurements = by_keyframe.get(keyframe, ())
+        for measurement in measurements:
+            candidate_east, candidate_north, candidate_weight, tail_mass = (
+                candidate_set(measurement.tracklet_id))
+            kappa = min(
+                float(measurement.kappa) * args.kappa_scale, MAX_KAPPA)
+            likelihood = belief.track_likelihood(
+                math.radians(measurement.bearing_forward_cw_deg),
+                1.0 / kappa,
+                candidate_east,
+                candidate_north,
+                candidate_weight,
+                sigma_pos,
+                args.pi0,
+                tail_mass,
+                quantization_comp=bool(args.quantization_comp),
+                range_max_m=(measurement.range_max_m
+                             if args.range_cap else None),
+                range_softness=args.range_softness)
+            message = _normalized(message * likelihood)
+        return message
+
+    masks = truth_masks(grid, data.truth, RADII_M)
+    truth_by_kf = {pose.keyframe_idx: pose for pose in data.truth}
+    heading_rw_rad = math.radians(args.heading_rw_deg)
+    filtered_series = {radius: [] for radius in RADII_M}
+    filtered_map_error = []
+    online_map_states = []
+    motion_plans = [None] * n_keyframes
+
+    if args.availability == "natural":
+        if args.release_schedule is None:
+            parser.error("natural availability requires --release_schedule")
+        releases = release_schedule_lib.load_sidecar(
+            Path(args.release_schedule), data)
+        release_counts = {}
+        release_tracklets = {}
+        for release in releases:
+            release_counts[release.release_keyframe_idx] = (
+                release_counts.get(release.release_keyframe_idx, 0) + 1)
+            release_tracklets.setdefault(
+                release.release_keyframe_idx, []).append(release.tracklet_id)
+
+        planner = GridBelief(grid, args.n_heading, args.device)
+        for keyframe in range(1, n_keyframes):
+            motion_plans[keyframe] = planner.plan_motion(
+                odometry[keyframe], args.yaw_sigma_scale,
+                heading_rw_rad, args.diffusion_m)
+
+        started = time.time()
+        release_mode_snapshots = []
+        map_states = []
+
+        def score_current(message, keyframe):
+            if args.release_top_modes:
+                map_states.append(_map_state(message, grid))
+                snapshot = _release_top_mode_snapshot(
+                    message, grid, args.release_top_modes,
+                    args.top_mode_position_nms_m,
+                    args.top_mode_heading_nms_deg, keyframe,
+                    release_tracklets.get(keyframe, ()))
+                if snapshot is not None:
+                    release_mode_snapshots.append(snapshot)
+            mass, map_error, state = _score_message(
+                message, keyframe, masks, truth_by_kf, grid, args.device)
+            online_map_states.append(state)
+            if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
+                print(
+                    f"causal kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
+                    f"mass100 {mass[100.0]:.4f} "
+                    f"map_err {map_error:8.1f} m "
+                    f"released {release_counts.get(keyframe, 0)} "
+                    f"({time.time() - started:.0f}s)")
+            return mass, map_error
+
+        final_filtered, scored, replay_stats = causal_replay(
+            belief.belief, motion_plans, releases, apply_likelihoods,
+            score_current, args.checkpoint_keyframes)
+        forward_seconds = time.time() - started
+        for mass, map_error in scored:
+            for radius in RADII_M:
+                filtered_series[radius].append(mass[radius])
+            filtered_map_error.append(map_error)
+        filtered_summary = _summary(
+            filtered_series, filtered_map_error, truth_by_kf, n_keyframes)
+        final_top_modes = _top_modes(
+            final_filtered, grid, args.top_modes,
+            args.top_mode_position_nms_m,
+            args.top_mode_heading_nms_deg)
+        print(
+            "causal:",
+            {key: round(value, 4)
+             for key, value in filtered_summary.items()})
+        print("replay:", replay_stats, f"runtime {forward_seconds:.0f}s")
+
+        if args.out:
+            payload = {
+                "schema": "farfield_causal_grid/v1",
+                "localization_inputs": data.artifact_ref.to_dict(),
+                "config": {
+                    key: value for key, value in vars(args).items()
+                    if key != "release_top_modes" or value
+                },
+                "odometry_profile": odometry_profile,
+                "episode": None,
+                "availability": {
+                    "policy": "natural_track_close_with_eof_flush",
+                    "post_closure_processing_delay_s": 0.0,
+                    "release_schedule": str(args.release_schedule),
+                    "historical_measurements_keep_original_anchors": True,
+                    "past_scores_revised_after_replay": False,
+                },
+                "grid": {
+                    "n_east": grid.n_east,
+                    "n_north": grid.n_north,
+                    "n_heading": args.n_heading,
+                    "cell_m": grid.cell_m,
+                    "box": box,
+                },
+                "summary": filtered_summary,
+                "mass_by_keyframe": {
+                    f"{radius:g}": filtered_series[radius]
+                    for radius in RADII_M
+                },
+                "map_error_m_by_keyframe": filtered_map_error,
+                "online_map_state_by_keyframe": {
+                    "source": (
+                        "online_current_position_marginal_grid_cell_argmax_"
+                        "with_conditional_heading"),
+                    "keyframe_order": "list_index_equals_keyframe_idx",
+                    "trajectory_semantics": "not_a_joint_trajectory",
+                    "position_semantics": (
+                        "same_position_argmax_as_map_error_m_by_keyframe"),
+                    "heading_semantics": (
+                        "conditional_heading_argmax_at_selected_position_cell"),
+                    "states": online_map_states,
+                },
+                "replay": replay_stats,
+                "filtered_final_top_modes": {
+                    "source": "causal_current_posterior_at_final_keyframe",
+                    "reference_keyframe_idx": n_keyframes - 1,
+                    "pose_frame": (
+                        "region_enu_heading_world_cw_from_north"),
+                    "source_rank_semantics": (
+                        "one_based_probability_order_after_se2_nms"),
+                    "source_probability_semantics": (
+                        "single_grid_state_mass_not_integrated_mode_mass"),
+                    "position_nms_m": args.top_mode_position_nms_m,
+                    "heading_nms_deg": args.top_mode_heading_nms_deg,
+                    "requested": args.top_modes,
+                    "returned": len(final_top_modes),
+                    "modes": final_top_modes,
+                },
+                "runtime_seconds": {"causal_forward_replay": forward_seconds},
+            }
+            if args.release_top_modes:
+                payload["release_top_modes"] = {
+                    "source": (
+                        "causal_current_posterior_after_atomic_corelease_replay"),
+                    "pose_frame": "region_enu_heading_world_cw_from_north",
+                    "source_rank_semantics": (
+                        "one_based_probability_order_after_se2_nms"),
+                    "source_probability_semantics": (
+                        "single_grid_state_mass_not_integrated_mode_mass"),
+                    "position_nms_m": args.top_mode_position_nms_m,
+                    "heading_nms_deg": args.top_mode_heading_nms_deg,
+                    "requested_per_release": args.release_top_modes,
+                    "snapshots": release_mode_snapshots,
+                }
+                payload["map_state_by_keyframe"] = {
+                    "source": "causal_current_joint_grid_state_argmax",
+                    "keyframe_order": "list_index_equals_keyframe_idx",
+                    "score_map_difference": (
+                        "map_error_m_by_keyframe uses the position-marginal "
+                        "argmax; these poses use the joint SE2-state argmax"),
+                    "states": map_states,
+                }
+            Path(args.out).write_text(json.dumps(payload, indent=1))
+            print("wrote", args.out)
+        return
+
+    started = time.time()
+    for keyframe in range(n_keyframes):
+        if keyframe > 0:
+            motion_plans[keyframe] = belief.motion(
+                odometry[keyframe], args.yaw_sigma_scale, heading_rw_rad,
+                args.diffusion_m)
+        belief.belief = apply_likelihoods(belief.belief, keyframe)
+        belief.renormalize()
+
+        mass, map_error, state = _score_message(
+            belief.belief, keyframe, masks, truth_by_kf, grid, args.device)
+        online_map_states.append(state)
+        for radius in RADII_M:
+            filtered_series[radius].append(mass[radius])
+        filtered_map_error.append(map_error)
+        if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
+            print(
+                f"filter kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
+                f"mass100 {mass[100.0]:.4f} map_err {map_error:8.1f} m "
+                f"n_meas {len(by_keyframe.get(keyframe, ()))} "
+                f"({time.time() - started:.0f}s)")
+
+    forward_seconds = time.time() - started
+    filtered_summary = _summary(
+        filtered_series, filtered_map_error, truth_by_kf, n_keyframes)
+    final_filtered = belief.belief
+    final_top_modes = _top_modes(
+        final_filtered,
+        grid,
+        args.top_modes,
+        args.top_mode_position_nms_m,
+        args.top_mode_heading_nms_deg)
+
+    print(
+        f"{args.availability}:",
+        {key: round(value, 4) for key, value in filtered_summary.items()},
+        f"runtime {forward_seconds:.0f}s")
+
+    if args.out:
+        payload = {
+            "schema": "farfield_causal_grid/v1",
+            "localization_inputs": data.artifact_ref.to_dict(),
+            "config": {
+                key: value for key, value in vars(args).items()
+                if key != "release_top_modes" or value
+            },
+            "odometry_profile": odometry_profile,
+            "episode": None,
+            "availability": {
+                "policy": (
+                    "oracle_measurement_visible_at_original_anchor"
+                    if args.availability == "eager" else "odometry_only"),
+                "past_scores_revised": False,
+            },
+            "grid": {
+                "n_east": grid.n_east,
+                "n_north": grid.n_north,
+                "n_heading": args.n_heading,
+                "cell_m": grid.cell_m,
+                "box": box,
+            },
+            "summary": filtered_summary,
+            "mass_by_keyframe": {
+                f"{radius:g}": filtered_series[radius]
+                for radius in RADII_M
+            },
+            "map_error_m_by_keyframe": filtered_map_error,
+            "online_map_state_by_keyframe": {
+                "source": (
+                    "online_current_position_marginal_grid_cell_argmax_"
+                    "with_conditional_heading"),
+                "keyframe_order": "list_index_equals_keyframe_idx",
+                "trajectory_semantics": "not_a_joint_trajectory",
+                "position_semantics": (
+                    "same_position_argmax_as_map_error_m_by_keyframe"),
+                "heading_semantics": (
+                    "conditional_heading_argmax_at_selected_position_cell"),
+                "states": online_map_states,
+            },
+            "filtered_final_top_modes": {
+                "source": "online_current_posterior_at_final_keyframe",
+                "reference_keyframe_idx": n_keyframes - 1,
+                "pose_frame": "region_enu_heading_world_cw_from_north",
+                "source_rank_semantics": (
+                    "one_based_probability_order_after_se2_nms"),
+                "source_probability_semantics": (
+                    "single_grid_state_mass_not_integrated_mode_mass"),
+                "position_nms_m": args.top_mode_position_nms_m,
+                "heading_nms_deg": args.top_mode_heading_nms_deg,
+                "requested": args.top_modes,
+                "returned": len(final_top_modes),
+                "modes": final_top_modes,
+            },
+            "runtime_seconds": {"online_forward": forward_seconds},
+        }
+        Path(args.out).write_text(json.dumps(payload, indent=1))
+        print("wrote", args.out)
+
+
+if __name__ == "__main__":
+    main()
