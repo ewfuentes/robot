@@ -83,10 +83,6 @@ matching:
   thinking_level: HIGH
   confidence_floor: 0.05
   instance_max_rows: 5
-  # digest_chunks: Set 2 in signature-digest order (the 2026-09-11 batch).
-  # category_chunks: rows grouped by kind under category headers; a kind is
-  # endorsed once and expands to every row of that kind in the catalog.
-  set2_layout: digest_chunks
 
 bearing_observations:
   bearing_sigma_deg: 1.0

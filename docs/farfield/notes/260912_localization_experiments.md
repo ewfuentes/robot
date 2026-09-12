@@ -14,8 +14,9 @@ prior over the catalog region, no heading, no truth in the filter,
    instance claims keep their weight. Built by `matching:reaggregate_tables
    --policy catexpand_divided` (ported from Harel's scratch `reaggregate.py`,
    verified identical on all four artifacts) and injected with the new
-   `--tables_override` flag; the same rule is implemented in the matcher's new
-   `category_chunks` layout.
+   `--tables_override` flag; the same rule is implemented in the
+   `category_chunks` matcher layout on Harel's `harel/loc-experiments` branch
+   (not in this PR; matching was not re-run).
 2. **One identity vote per track**: Ethan's `--track_joint 1 --joint_slack 1`.
 3. **Smoothing**: `--smoother fixed_interval --smooth_lag N --smooth_lags ...`
    adds a forward-backward pass over the same grid HMM (adjoint motion
@@ -64,8 +65,8 @@ truth-course heading + divided tables 0.449 (Portland).
 
 ## Matcher
 
-`matching.set2_layout: category_chunks` (new config key, default
-`digest_chunks` byte-stable): Set 2 grouped by kind, `category_matches` +
-`in_map_confidence` in the response schema, kind endorsements expanded
-catalog-wide and encoded at c/N. Request sets sealed, unsubmitted:
-`artifacts/landmark_matches/{portland_flight_20260906_leg1,flevoland_polder}/catmatch_20260912_v1.llm-work`.
+No matching was re-run for these results. Harel's `harel/loc-experiments`
+branch also carries a `matching.set2_layout: category_chunks` layout (Set 2
+grouped by kind, `category_matches` + `in_map_confidence` in the schema, kind
+endorsements expanded catalog-wide at c/N) with sealed, unsubmitted request
+sets for Portland and Flevoland. It is not part of this PR.

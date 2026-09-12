@@ -57,7 +57,7 @@ class ReaggregateTablesTest(unittest.TestCase):
         self.assertAlmostEqual(log_lr["s2"], math.log(0.3 / 0.7), places=6)
         self.assertAlmostEqual(log_lr["u"], math.log(0.3 / 0.7), places=6)
         self.assertNotIn("m", log_lr)
-        self.assertEqual(table.clip_lo, ml.CATEGORY_CLIP_LO)
+        self.assertEqual(table.clip_lo, rt.CATEGORY_CLIP_LO)
         self.assertLess(table.default_log_lr, min(log_lr.values()))
         self.assertEqual(table.matcher_version, "v+reagg_catexpand_divided")
 

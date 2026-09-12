@@ -187,7 +187,7 @@ class CausalReplayTest(unittest.TestCase):
         torch.testing.assert_close(scores[3], scores[2])
 
 
-class ReleaseModeHandoffTest(unittest.TestCase):
+class OnlineMapStateTest(unittest.TestCase):
     def test_online_map_uses_position_marginal_and_conditional_heading(self):
         grid = grid_filter.Grid(0.0, 20.0, 0.0, 10.0, 10.0)
         message = torch.tensor([
@@ -205,27 +205,6 @@ class ReleaseModeHandoffTest(unittest.TestCase):
             "north_m": 5.0,
             "heading_world_cw_deg": 180.0,
         })
-        self.assertEqual(
-            grid_filter._map_state(message, grid)["east_m"],  # noqa: SLF001
-            15.0)
-
-    def test_snapshot_is_release_only_and_sorts_corelease_ids(self):
-        grid = grid_filter.Grid(0.0, 20.0, 0.0, 10.0, 10.0)
-        message = torch.tensor([[[0.25, 0.75]]])
-
-        self.assertIsNone(grid_filter._release_top_mode_snapshot(  # noqa: SLF001
-            message, grid, 1, 0.0, 0.0, 3, ()))
-        snapshot = grid_filter._release_top_mode_snapshot(  # noqa: SLF001
-            message, grid, 1, 0.0, 0.0, 3, ("z", "a"))
-
-        self.assertEqual(snapshot["keyframe_idx"], 3)
-        self.assertEqual(snapshot["released_tracklet_ids"], ["a", "z"])
-        self.assertEqual(snapshot["returned"], 1)
-        self.assertEqual(snapshot["modes"][0]["east_m"], 15.0)
-        self.assertEqual(
-            grid_filter._map_state(message, grid),  # noqa: SLF001
-            {"east_m": 15.0, "north_m": 5.0,
-             "heading_world_cw_deg": 0.0})
 
 
 if __name__ == "__main__":

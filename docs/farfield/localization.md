@@ -56,27 +56,17 @@ read as independent identity claims. Regression checks emphasize request and
 tracklet coverage, retained instance identity, null mass, and calibrated
 uncertainty—not raw category-expanded row count alone.
 
-`matching.set2_layout` chooses how the catalog is presented to the matcher.
-`digest_chunks` (every artifact through `promatch_20260911_v1`) lists
-signatures in digest order, so the rows of one kind are scattered across every
-slice and a category match is a per-slice lottery: the model endorses a few
-rows of the right kind per slice at a confidence that describes the *kind*,
-and the true row is often not among them. `category_chunks` groups rows under
-a header per kind, lets the model endorse the kind once (`category_matches`),
-and expands that endorsement deterministically to every signature of that kind
-in the whole catalog; numbered-entry matches are then identity claims only.
-The per-entry `in_map_confidence` the model reports in this layout is recorded
-in `matches.json` and not yet consumed by the filter. Category-mode
-aggregation follows `settings.json["category_expansion_rule"]`.
-
-The same rule can be applied to an already-published `digest_chunks` artifact
-with no model call: `matching:reaggregate_tables --policy catexpand_divided`
-reads its `matches.json` / `signatures.json` / `compatibility.json`, expands
-each `category`-labelled match to every catalog row of its kind at c/N, and
-writes a table list for `localization:grid_filter --tables_override`. Recall
-is then limited to kinds the model endorsed in some slice; the
-`category_chunks` layout removes that limit. `--policy baseline` must rebuild
-`compatibility.json` unchanged (the plumbing check).
+The published `digest_chunks` matcher labels each endorsed row `instance` or
+`category`, but a category-labelled row carries the model's kind confidence
+as if it were an identity claim, and only the rows of that kind the model
+happened to endorse in some slice carry it at all (the per-slice lottery).
+`matching:reaggregate_tables --policy catexpand_divided` re-reads a published
+artifact's `matches.json` / `signatures.json` / `compatibility.json` with no
+model call, expands each category-labelled match to every catalog row of its
+kind at c/N under a -12 clip floor, keeps instance rows at their confidence,
+and writes a table list for `localization:grid_filter --tables_override`.
+`--policy baseline` must rebuild `compatibility.json` unchanged (the plumbing
+check).
 
 ## Running the filter
 

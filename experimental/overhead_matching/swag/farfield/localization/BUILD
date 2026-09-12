@@ -929,6 +929,7 @@ py_library(
         ":filter",
         ":odometry_profiles",
         ":release_schedule",
+        ":structs",
         "//common/torch:load_torch_deps",
     ],
 )
@@ -943,21 +944,7 @@ py_binary(
         ":filter",
         ":odometry_profiles",
         ":release_schedule",
-        "//common/torch:load_torch_deps",
-    ],
-)
-
-py_binary(
-    name = "grid_truth_attrib",
-    srcs = ["grid_truth_attrib.py"],
-    deps = [
-        requirement("numpy"),
-        requirement("scipy"),
-        requirement("torch"),
-        ":export_ingest",
-        ":grid_filter_lib",
-        ":odometry_profiles",
-        ":release_schedule",
+        ":structs",
         "//common/torch:load_torch_deps",
     ],
 )
@@ -1001,46 +988,5 @@ py_test(
     deps = [
         ":grid_viewer_lib",
         "//experimental/overhead_matching/swag/farfield:artifact",
-    ],
-)
-
-py_library(
-    name = "causal_rigid_reranker_lib",
-    srcs = ["causal_rigid_reranker.py"],
-    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [
-        requirement("numpy"),
-        ":export_ingest",
-        ":filter",
-        ":metrics",
-        ":odometry_profiles",
-        "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:geometry",
-    ],
-)
-
-py_binary(
-    name = "causal_rigid_reranker",
-    srcs = ["causal_rigid_reranker.py"],
-    deps = [
-        requirement("numpy"),
-        ":export_ingest",
-        ":filter",
-        ":metrics",
-        ":odometry_profiles",
-        ":release_schedule",
-        "//experimental/overhead_matching/swag/farfield:artifact",
-        "//experimental/overhead_matching/swag/farfield:geometry",
-    ],
-)
-
-py_test(
-    name = "causal_rigid_reranker_test",
-    srcs = ["causal_rigid_reranker_test.py"],
-    deps = [
-        requirement("numpy"),
-        ":causal_rigid_reranker_lib",
-        ":filter_catalog",
-        ":structs",
     ],
 )

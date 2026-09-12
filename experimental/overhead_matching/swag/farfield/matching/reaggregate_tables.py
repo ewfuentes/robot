@@ -13,9 +13,7 @@ rebuilds compatibility.json unchanged and is the plumbing check.
 
 Output is a JSON list of CompatibilityTable for
 ``localization:grid_filter --tables_override``. This is the 2026-09-12
-experiment's table path (Harel's scratch ``reaggregate.py``); the rule is the
-one ``match_landmarks`` applies when ``matching.set2_layout`` is
-``category_chunks``.
+experiment's table path (ported from Harel's scratch ``reaggregate.py``).
 """
 
 import argparse
@@ -31,6 +29,30 @@ from experimental.overhead_matching.swag.farfield.matching import (
 )
 
 POLICIES = ("baseline", "catexpand_divided")
+# A kind endorsed at confidence c is spread over the kind's N catalog rows at
+# c/N each, so the kind's rows collectively carry ~c under the filter's odds
+# split and a row-level identity claim keeps its weight. c/N for a large kind
+# sits far below logit(0.05) = -2.9, so the table floor must drop below the
+# matcher's -4 or the whole expansion would collapse onto the default and read
+# as "unendorsed".
+CATEGORY_CLIP_LO = -12.0
+# First present key names a signature's kind. Ordered so that a wind turbine
+# tagged building=yes is a generator, not a building, and a bridge carrying a
+# highway is a bridge.
+CATEGORY_KEYS = (
+    "generator:source", "power", "man_made", "aeroway", "natural", "water",
+    "landuse", "leisure", "amenity", "tourism", "historic", "railway",
+    "waterway", "industrial", "bridge", "highway", "military", "building",
+    "place", "seamark:type", "object_class")
+UNCATEGORISED = "other"
+
+
+def signature_category(tags: dict) -> str:
+    """The kind a category match to this signature expands over."""
+    for key in CATEGORY_KEYS:
+        if key in tags:
+            return f"{key}={tags[key]}"
+    return UNCATEGORISED
 
 
 def reaggregate(matches: dict, signatures: dict,
@@ -39,14 +61,14 @@ def reaggregate(matches: dict, signatures: dict,
         raise ValueError(f"unknown policy {policy!r}")
     divided = policy == "catexpand_divided"
     by_tracklet = {table.tracklet_id: table for table in tables}
-    kind_of = {sid: ml.signature_category(entry["canonical_tags"])
+    kind_of = {sid: signature_category(entry["canonical_tags"])
                for sid, entry in signatures.items()}
     kind_signatures = defaultdict(list)
     kind_rows = Counter()
     for sid, kind in kind_of.items():
         kind_signatures[kind].append(sid)
         kind_rows[kind] += len(signatures[sid]["landmark_ids"])
-    clip_lo = ml.CATEGORY_CLIP_LO if divided else -ml.DEFAULT_CLIP
+    clip_lo = CATEGORY_CLIP_LO if divided else -ml.DEFAULT_CLIP
     out = []
     for tracklet_id, record in matches.items():
         base = by_tracklet[tracklet_id]
@@ -58,7 +80,7 @@ def reaggregate(matches: dict, signatures: dict,
             # A category row of an unrecognised kind has nothing to expand
             # over and is kept as the model reported it.
             if (divided and match["match_type"] == "category"
-                    and kind != ml.UNCATEGORISED):
+                    and kind != UNCATEGORISED):
                 kinds[kind] = max(kinds.get(kind, 0.0), confidence)
             else:
                 rows[match["landmark_id"]] = max(

@@ -160,8 +160,6 @@ CONFIG_SCHEMA = {
     "matching.thinking_level": _text(),
     "matching.confidence_floor": _number(maximum=1.0),
     "matching.instance_max_rows": _integer(minimum=1),
-    "matching.set2_layout": _text(choices=("digest_chunks",
-                                           "category_chunks")),
     "bearing_observations.bearing_sigma_deg": _positive_number(),
     "gps_course.min_displacement_m": _positive_number(),
     "gps_course.smooth_window_s": _number(),
