@@ -347,7 +347,13 @@ def merge_tracks(artifacts: dict):
 def effective_class(support: dict, cfg: AuditConfig) -> str:
     """Recompute the support class under cfg.classifier -- the RECORDED
     TrackBuilderConfig of the track's own artifact, so the classes the audit
-    reasons about are the classes that run actually used."""
+    reasons about are the classes that run actually used.
+
+    "rebirth" and "duplicate" are seeding-time decisions rather than geometry
+    (their metrics would classify as none/context by construction), so they
+    are honoured as recorded."""
+    if support.get("class") in ("rebirth", "duplicate"):
+        return support["class"]
     return tb.classify_support(
         {"iou": support["iou"], "inter_over_mask": support["inter_over_mask"],
          "inter_over_box": support["inter_over_box"]}, cfg.classifier)

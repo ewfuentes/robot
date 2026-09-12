@@ -112,12 +112,16 @@ class TrackBuilderConfig:
 
 
 SUPPORT_PRIORITY = ["continue_clean", "merge_superset", "split_child", "weak",
-                    "context"]
+                    "rebirth", "duplicate", "context"]
 # Classes that count as support: vote on semantics, reset patience, extend
 # end_keyframe, claim their detection, and feed window sizing. "context"
-# (contained-but-incoherent) and "none" do none of those.
+# (contained-but-incoherent) and "none" do none of those. "rebirth" and
+# "duplicate" are seeding-time decisions (see seed_unassigned): a same-class
+# detection that re-anchored an unsupported track, or was absorbed into a
+# supported one, is a detection OF that object and counts as evidence.
 SUPPORT_CLASSES = frozenset(
-    ("continue_clean", "merge_superset", "split_child", "weak"))
+    ("continue_clean", "merge_superset", "split_child", "weak",
+     "rebirth", "duplicate"))
 
 
 def _box_area(box) -> float:

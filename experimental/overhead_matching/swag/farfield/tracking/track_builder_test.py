@@ -344,6 +344,11 @@ class TrackBuilderTest(unittest.TestCase):
         self.assertEqual(rebirths[0]["supports"][-1]["class"], "rebirth")
         self.assertEqual(track.end_keyframe, 4)
         self.assertEqual(track.drift_streak, 0)
+        # The re-anchoring detection is evidence of the object downstream.
+        self.assertIn("rebirth", tb.SUPPORT_CLASSES)
+        self.assertIn("duplicate", tb.SUPPORT_CLASSES)
+        for key in ("iou", "inter_over_mask", "inter_over_box"):
+            self.assertIn(key, rebirths[0]["supports"][-1])
 
     def test_other_tag_near_detection_still_seeds(self):
         # The duplicate rule needs semantic agreement: a different-class

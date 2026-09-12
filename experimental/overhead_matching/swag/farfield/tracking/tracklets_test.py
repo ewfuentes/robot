@@ -388,6 +388,20 @@ class RangeCapTest(unittest.TestCase):
         # 13 has a detection without a bucket; 14 has no detection at all.
         self.assertEqual(caps, {10: 500.0, 11: 100.0, 12: 2000.0})
 
+    def test_rebirth_and_duplicate_supports_are_evidence(self):
+        track = self._track()
+        track["records"][4] = {
+            "keyframe": 14, "action": "reanchor_rebirth",
+            "supports": [{"class": "rebirth", "obs_id": "r"},
+                         {"class": "duplicate", "obs_id": "d"}]}
+        obs = {"b": _Detection("100m_to_500m"), "s1": _Detection("under_100m"),
+               "ignored": _Detection("under_100m"),
+               "s2a": _Detection("2km_to_10km"), "s2b": _Detection("500m_to_2km"),
+               "s3": _Detection(None), "r": _Detection("500m_to_2km"),
+               "d": _Detection("2km_to_10km")}
+        caps = tracklets.range_caps_by_keyframe(track, obs)
+        self.assertEqual(caps[14], 2000.0)
+
     def test_over_10km_is_no_cap_and_unknown_bucket_is_an_error(self):
         obs = {"b": _Detection("over_10km"), "s1": _Detection("over_10km"),
                "s2a": _Detection(None), "s2b": _Detection(None),

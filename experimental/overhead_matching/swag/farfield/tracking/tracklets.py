@@ -160,7 +160,8 @@ DISTANCE_BUCKET_UPPER_M = dataset.DISTANCE_BUCKET_UPPER_M
 # SUPPORT_CLASSES; duplicated here so this contract module stays free of the
 # tracker's numpy dependency).
 EVIDENCE_SUPPORT_CLASSES = frozenset(
-    ("continue_clean", "merge_superset", "split_child", "weak"))
+    ("continue_clean", "merge_superset", "split_child", "weak",
+     "rebirth", "duplicate"))
 
 
 def _distance_bucket(observation) -> str | None:
