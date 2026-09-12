@@ -947,6 +947,21 @@ py_binary(
     ],
 )
 
+py_binary(
+    name = "grid_truth_attrib",
+    srcs = ["grid_truth_attrib.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("scipy"),
+        requirement("torch"),
+        ":export_ingest",
+        ":grid_filter_lib",
+        ":odometry_profiles",
+        ":release_schedule",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
 py_test(
     name = "grid_filter_test",
     srcs = ["grid_filter_test.py"],
