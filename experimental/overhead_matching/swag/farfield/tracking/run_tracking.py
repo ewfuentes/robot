@@ -240,8 +240,15 @@ class MediaSink:
 
 def explain_support(s, cfg, near_miss):
     """cfg is the RECORDED config dict from the range's tracks_*.json."""
-    c, iou = s["class"], s["iou"]
-    iom, iob = s["inter_over_mask"], s["inter_over_box"]
+    c, iou = s["class"], s.get("iou", 0.0)
+    iom, iob = s.get("inter_over_mask", 0.0), s.get("inter_over_box", 0.0)
+    if c == "rebirth":
+        return (f"same-class detection over an unsupported track (inter/mask "
+                f"{iom:.2f}): re-anchored the track instead of seeding a "
+                "duplicate")
+    if c == "duplicate":
+        return (f"same-class detection over a supported track (inter/mask "
+                f"{iom:.2f}): absorbed as a vote, not seeded")
     if c == "continue_clean":
         return (f"included, clean 1:1: iou {iou:.2f} >= {cfg['clean_iou']}; "
                 "eligible to re-anchor the track")
