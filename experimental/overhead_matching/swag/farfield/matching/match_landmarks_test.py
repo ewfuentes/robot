@@ -663,6 +663,27 @@ class DetectionModeTest(unittest.TestCase):
             hashlib.sha256(ml.SYSTEM_PROMPT.encode()).hexdigest(),
             self.BASELINE_PROMPT_SHA256)
 
+    def test_category_sets_variant_is_registered_and_embedded(self):
+        v3 = ml.PROMPT_VARIANTS["dossier_category_sets_v3"]
+        self.assertEqual(ml.SET1_SOURCES[v3], "audit_dossier")
+        self.assertIn("EVERY same-kind row", v3)
+        self.assertNotIn("Returning no\nmatch is the expected outcome", v3)
+        self.assertTrue(v3.endswith(ml._PROMPT_TAIL_V3))
+        # Legacy variants keep embedding the byte-stable v2 prompt.
+        self.assertEqual(ml._request_prompt(ml.SYSTEM_PROMPT), ml.SYSTEM_PROMPT)
+        self.assertEqual(ml._request_prompt(ml.DETECTION_SYSTEM_PROMPT),
+                         ml.SYSTEM_PROMPT)
+        self.assertEqual(ml._request_prompt(v3), v3)
+        records = ml.build_requests(
+            {"t": "tags: man_made=mast (1.00)\nkind: fixed_structure"},
+            [["s0"]], {"s0": {"display_label": "man_made=mast"}}, 10, "HIGH",
+            system_prompt=v3)
+        self.assertEqual(
+            records[0]["request"]["systemInstruction"]["parts"][0]["text"], v3)
+        self.assertEqual(ml.prompt_variant_of({}), "dossier_conservative_v2")
+        with self.assertRaises(ValueError):
+            ml.prompt_variant_of({ml.PROMPT_VARIANT_KEY: "nope"})
+
     def test_detection_prompt_drops_review_stage_language(self):
         self.assertNotIn("review stage", ml.DETECTION_SYSTEM_PROMPT)
         self.assertNotIn("belief", ml.DETECTION_SYSTEM_PROMPT)

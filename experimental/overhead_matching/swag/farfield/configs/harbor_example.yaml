@@ -66,6 +66,10 @@ tracking:
   drift_patience: 3
   fragment_min_dominant_cc: 0.6
   fragment_patience: 3
+  # Duplicate suppression at seeding (same-keyframe twins, near-miss re-anchor).
+  dup_min_inter_over_mask: 0.5
+  seed_dup_iou: 0.5
+  seed_dup_containment: 0.8
 
 audit:
   model: gemini-3-flash-preview
@@ -83,6 +87,9 @@ matching:
   thinking_level: HIGH
   confidence_floor: 0.05
   instance_max_rows: 5
+  # dossier_conservative_v2: no-match is the expected answer (Pohang-tuned).
+  # dossier_category_sets_v3: list every same-kind row for nameless objects.
+  prompt_variant: dossier_conservative_v2
 
 bearing_observations:
   bearing_sigma_deg: 1.0

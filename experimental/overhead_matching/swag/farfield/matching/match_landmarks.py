@@ -139,8 +139,99 @@ name being a longer or shorter variant of another; tags present on one side only
 
 SYSTEM_PROMPT = _PROMPT_HEAD + _TRACK_EVIDENCE + _PROMPT_TAIL
 DETECTION_SYSTEM_PROMPT = _PROMPT_HEAD + _DETECTION_EVIDENCE + _PROMPT_TAIL
+
+# Variant v3 ("category sets"): the v2 head tells the model that no match is
+# the expected answer and never to settle for the closest thing, which was the
+# right defence against confident wrong INSTANCE matches on Pohang but starves
+# nameless objects entirely -- on the Portland flight the correct row sat in
+# the slice for a school, two named radio masts, a pond, an overpass and a
+# quarry and the model returned an empty list at no-match 0.9-1.0. v3 asks for
+# every same-kind row as a category match with probability-like confidence,
+# and keeps "never settle" for instance matches only. The downstream identity
+# posterior reads those confidences as probabilities (noisy-OR share, uniform
+# within the set), so over-listing cannot dominate the filter.
+_PROMPT_HEAD_V3 = """You are a landmark matching expert. Given two sets of OpenStreetMap-style tag
+bundles, identify which landmarks in Set 1 (observed in images) are the same physical object as a
+landmark in Set 2 (a map database). Both use key=value notation.
+
+Set 2 is one arbitrary slice of a much larger map, so for many Set 1 landmarks nothing here is the
+object. Two kinds of answer are useful and expected:
+  - an "instance" match when a name or a tag combination singles out one row;
+  - "category" matches when the observed object has no identifying name but Set 2 holds rows of the
+    same kind of object (a communications mast, a school, a pond, a quarry, a road bridge). List
+    EVERY same-kind row in this slice as a category match. Do not withhold them because you cannot
+    tell which one it is: deciding which one is the job of a later geometric stage, and a list of
+    the right kind of rows is exactly what it needs.
+Report no match only when no row of the observed object's kind is present, or when the observed
+object contradicts every same-kind row (wrong shape, size class, or setting).
+
+Match the observed object ITSELF, not what it stands on, contains, or sits beside. A structure on an
+island is not the island; a light on a pier is not the pier. When only the container, the contents,
+or a neighbour appears in Set 2, that is a no match - not a weaker match. Never promote a category
+match to an instance match because it is the closest thing present.
+
+A Set 1 landmark may match several Set 2 entries when the map holds more than one row for the same
+physical object. Several rows for one object is a real multiple match. Several related-but-distinct
+objects of the same kind are several category matches.
+
+"""
+
+_PROMPT_TAIL_V3 = """For each match report:
+  - match_type:
+      "instance" - this exact physical object, identified uniquely by a matching name or by a tag
+        combination no other candidate shares. A matching name (allowing spelling variants and
+        longer or shorter forms of the same name) is sufficient for an instance match.
+      "category" - the right kind of object, but the tags cannot say WHICH one.
+  - confidence 0.0-1.0 - the probability that THIS Set 2 entry is the observed object. For an
+    instance match this is your belief in the identification. For category matches spread belief
+    over the same-kind rows you list: about 1 divided by their number, never below 0.05 (five masts
+    -> about 0.2 each; forty ponds -> 0.05 each), giving more to rows whose extra tags (height,
+    material, colour, size, setting) agree with the observation and less to rows they contradict.
+
+Also report, once per Set 1 landmark:
+  - no_match_confidence 0.0-1.0 - the probability that none of the Set 2 entries SHOWN HERE is this
+    landmark. Keep it consistent with the matches you list: with several plausible same-kind rows
+    it is low; it is high only when nothing of this kind is here.
+  - uniqueness_score 1-5 - how distinctive the SET 1 landmark is on its own, independent of any match
+    and of your confidence: 1 generic (building=yes), 3 moderately specific (man_made=water_tower),
+    5 unmistakable (a named lighthouse).
+
+Not evidence against a match: small numeric differences (height 40 vs 45 - the observer is often
+off); different tag specificity for the same thing (man_made=tower vs man_made=water_tower); one
+name being a longer or shorter variant of another; tags present on one side only."""
+
+CATEGORY_SETS_SYSTEM_PROMPT = _PROMPT_HEAD_V3 + _TRACK_EVIDENCE + _PROMPT_TAIL_V3
+
 SET1_SOURCES = {SYSTEM_PROMPT: "audit_dossier",
-                DETECTION_SYSTEM_PROMPT: "single_detection_tags"}
+                DETECTION_SYSTEM_PROMPT: "single_detection_tags",
+                CATEGORY_SETS_SYSTEM_PROMPT: "audit_dossier"}
+PROMPT_VARIANT_KEY = "matching.prompt_variant"
+DEFAULT_PROMPT_VARIANT = "dossier_conservative_v2"
+PROMPT_VARIANTS = {
+    DEFAULT_PROMPT_VARIANT: SYSTEM_PROMPT,
+    "dossier_category_sets_v3": CATEGORY_SETS_SYSTEM_PROMPT,
+}
+
+
+def _request_prompt(system_prompt: str) -> str:
+    """The systemInstruction text embedded in every request.
+
+    Published v2 artifacts embedded SYSTEM_PROMPT verbatim (also in detection
+    mode), and their request fingerprints are re-derived on read, so only the
+    new variant may change what is embedded.
+    """
+    if system_prompt == CATEGORY_SETS_SYSTEM_PROMPT:
+        return system_prompt
+    return SYSTEM_PROMPT
+
+
+def prompt_variant_of(selected) -> str:
+    variant = selected.get(PROMPT_VARIANT_KEY, DEFAULT_PROMPT_VARIANT)
+    if variant not in PROMPT_VARIANTS:
+        raise ValueError(
+            f"{PROMPT_VARIANT_KEY} must be one of {sorted(PROMPT_VARIANTS)}, "
+            f"got {variant!r}")
+    return variant
 
 
 SCHEMA = {
@@ -396,7 +487,8 @@ def detection_query_bundles(tracks: dict, audits: dict) -> tuple[dict, dict]:
     return queries, {key: sorted(ids) for key, ids in members.items()}
 
 
-def build_requests(queries, sig_chunks, signatures, query_batch, thinking):
+def build_requests(queries, sig_chunks, signatures, query_batch, thinking,
+                   system_prompt=SYSTEM_PROMPT):
     """One request per (tracklet batch x map chunk)."""
     keys = sorted(queries)
     records = []
@@ -421,7 +513,7 @@ def build_requests(queries, sig_chunks, signatures, query_batch, thinking):
                 "chunk_signature_ids": list(chunk),
                 "request": {
                     "contents": [{"parts": [{"text": user}], "role": "user"}],
-                    "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "generationConfig": {
                         "responseMimeType": "application/json",
                         "responseSchema": SCHEMA,
@@ -815,7 +907,8 @@ def validate_work_snapshot(value):
     if not Path(value["target_build_path"]).is_absolute():
         raise ValueError("matching work snapshot target_build_path is relative")
     selected = value["resolved_stage_config"]
-    _exact_keys(selected, MATCHING_CONFIG_KEYS,
+    _exact_keys({key: item for key, item in selected.items()
+                 if key != PROMPT_VARIANT_KEY}, MATCHING_CONFIG_KEYS,
                 "matching work resolved_stage_config")
     validate_selected_config(selected)
     if value["output_version"] != selected[
@@ -949,7 +1042,8 @@ def validate_work_snapshot(value):
         [signature_ids[index:index + chunk_size]
          for index in range(0, len(signature_ids), chunk_size)],
         signatures, selected["matching.query_batch"],
-        selected["matching.thinking_level"])
+        selected["matching.thinking_level"],
+        system_prompt=_request_prompt(request_set.system_prompt))
     expected_request_set = make_request_set(
         expected_records, model=selected["matching.model"],
         thinking_level=selected["matching.thinking_level"],
@@ -1064,6 +1158,12 @@ def load_matching_config(args):
                 "--dataset_base does not match build_config inputs.dataset_base")
     selected = {key: build_config.value(document, key)
                 for key in MATCHING_CONFIG_KEYS}
+    try:
+        selected[PROMPT_VARIANT_KEY] = build_config.value(
+            document, PROMPT_VARIANT_KEY)
+    except build_config.MissingConfigValue:
+        pass  # builds that predate the variant use the v2 prompt
+    prompt_variant_of(selected)
     validate_selected_config(selected)
     actual_digest = artifact.sha256_json(selected)
     if args.orchestration_config_digest != actual_digest:
@@ -1110,6 +1210,9 @@ def settings_document(*, snapshot, request_set):
         "system_prompt_sha256": hashlib.sha256(
             request_set.system_prompt.encode()).hexdigest(),
         "set1_source": SET1_SOURCES[request_set.system_prompt],
+        "prompt_variant": next(
+            (name for name, text in PROMPT_VARIANTS.items()
+             if text == request_set.system_prompt), "detection"),
         "thinking_level": selected["matching.thinking_level"],
         "support_gate": ("audit membership: a track without a semantic audit "
                          "has no Set 1 entry, and verdict=drop is excluded "
@@ -1233,7 +1336,7 @@ def _build_snapshot(args, parser):
     else:
         queries = query_bundles(audits.source_tracks, audits)
         members = {key: [key] for key in queries}
-        system_prompt = SYSTEM_PROMPT
+        system_prompt = PROMPT_VARIANTS[prompt_variant_of(selected)]
     if not queries:
         raise SystemExit(
             "no matchable tracklet: every audited track was dropped; "
@@ -1241,7 +1344,8 @@ def _build_snapshot(args, parser):
     records = build_requests(
         queries, signature_chunks, signatures,
         selected["matching.query_batch"],
-        selected["matching.thinking_level"])
+        selected["matching.thinking_level"],
+        system_prompt=_request_prompt(system_prompt))
     request_set = make_request_set(
         records, model=selected["matching.model"],
         thinking_level=selected["matching.thinking_level"],
