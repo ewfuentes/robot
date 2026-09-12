@@ -515,9 +515,11 @@ class TrackBuilder:
                         for s in record.get("supports", []))
         origin = track.last_origin
         box_window = self._box_in_window(pano_box, origin)
+        metrics = mask_box_metrics(track.last_mask, box_window)
         entry = {"obs_id": obs.obs_id,
                  "class": "duplicate" if supported else "rebirth",
-                 "box_window": [round(v, 1) for v in box_window]}
+                 "box_window": [round(v, 1) for v in box_window],
+                 **{k: round(v, 3) for k, v in metrics.items()}}
         record.setdefault("supports", []).append(entry)
         self._vote(track, obs)
         if supported:
