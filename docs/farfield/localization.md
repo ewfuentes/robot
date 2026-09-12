@@ -69,6 +69,15 @@ The per-entry `in_map_confidence` the model reports in this layout is recorded
 in `matches.json` and not yet consumed by the filter. Category-mode
 aggregation follows `settings.json["category_expansion_rule"]`.
 
+The same rule can be applied to an already-published `digest_chunks` artifact
+with no model call: `matching:reaggregate_tables --policy catexpand_divided`
+reads its `matches.json` / `signatures.json` / `compatibility.json`, expands
+each `category`-labelled match to every catalog row of its kind at c/N, and
+writes a table list for `localization:grid_filter --tables_override`. Recall
+is then limited to kinds the model endorsed in some slice; the
+`category_chunks` layout removes that limit. `--policy baseline` must rebuild
+`compatibility.json` unchanged (the plumbing check).
+
 ## Running the filter
 
 `localization:run_export` consumes an immutable `localization_inputs` artifact

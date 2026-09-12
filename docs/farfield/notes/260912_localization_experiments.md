@@ -11,9 +11,11 @@ prior over the catalog region, no heading, no truth in the filter,
 1. **Table encoding (offline re-aggregation of the shipped matcher responses).**
    A category match is expanded to every catalog row of its kind and encoded at
    c/N per row with a -12 clip floor, so the kind collectively carries c while
-   instance claims keep their weight. Built by `reaggregate.py` (policy
-   `catexpand_divided`) and injected with the new `--tables_override` flag; the
-   same rule is implemented in the matcher's new `category_chunks` layout.
+   instance claims keep their weight. Built by `matching:reaggregate_tables
+   --policy catexpand_divided` (ported from Harel's scratch `reaggregate.py`,
+   verified identical on all four artifacts) and injected with the new
+   `--tables_override` flag; the same rule is implemented in the matcher's new
+   `category_chunks` layout.
 2. **One identity vote per track**: Ethan's `--track_joint 1 --joint_slack 1`.
 3. **Smoothing**: `--smoother fixed_interval --smooth_lag N --smooth_lags ...`
    adds a forward-backward pass over the same grid HMM (adjoint motion

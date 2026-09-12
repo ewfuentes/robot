@@ -925,10 +925,10 @@ def main():
              "measure the value of a corrected matcher")
     parser.add_argument(
         "--tables_override", default=None,
-        help="DIAGNOSTIC ONLY: JSON list of CompatibilityTable documents "
-             "(compatibility.json schema) replacing the export's tables for "
-             "the tracklets they name, to evaluate an alternative "
-             "matcher aggregation without republishing inputs")
+        help="JSON list of CompatibilityTable documents (compatibility.json "
+             "schema, e.g. from matching:reaggregate_tables) replacing the "
+             "export's tables for the tracklets they name: an alternative "
+             "aggregation of the same matcher responses, not privileged")
     parser.add_argument(
         "--mixture", choices=("sum", "max"), default="sum",
         help="combine candidates by sum (mixture) or max (max-mixture)")
@@ -1129,7 +1129,7 @@ def main():
                 data.tables[tracklet_id] = msgspec.structs.replace(
                     forced_table, tracklet_id=tracklet_id)
                 replaced += 1
-        print(f"DIAGNOSTIC tables override: replaced {replaced} of "
+        print(f"tables override: replaced {replaced} of "
               f"{len(data.tables)} tables from {args.tables_override}")
 
     identity_override = {}
