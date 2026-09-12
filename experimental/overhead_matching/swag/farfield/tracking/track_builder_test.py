@@ -321,25 +321,91 @@ class TrackBuilderTest(unittest.TestCase):
         # patience_keyframes=3 -> supported at birth k=0, closed at k=3.
         self.assertEqual(track.end_keyframe, 0)
 
-    def test_drift_alarm_closes_early(self):
+    def test_near_miss_reanchors_instead_of_seeding_duplicate(self):
+        # A same-tag detection ~100 px from an unsupported track's mask used
+        # to count a drift strike while seeding a duplicate track beside it
+        # (the T369/T380/T381 splinter). It now re-anchors the identity.
         good = rect_mask(108, 88, 148, 168)
         _, builder = self._mk([good] * 6)
         obs0 = FakeObs("f0000__lm0__box0", tag=("man_made", "tower"))
         pano_box = centered_pano_box(1000, 1920, 40, 80)
         builder.seed_unassigned(0, [obs0], {obs0.obs_id: pano_box})
         for k in range(4):
-            # Same-tag detection ~100 px away from the mask: near miss.
             det = FakeObs(f"f{k + 1:04d}__lmX__box0", tag=("man_made", "tower"))
             near_box = centered_pano_box(1000 + 115, 1920, 20, 60)
             builder.step(k, crops_fn_factory(builder), [det],
                          {det.obs_id: near_box})
-            if builder.tracks[0].status == "closed":
-                break
         track = builder.tracks[0]
-        self.assertEqual(track.status, "closed")
-        self.assertEqual(track.close_reason, "drift_alarm")
-        # But the near-miss detections themselves seeded new tracks.
-        self.assertGreater(len(builder.tracks), 1)
+        self.assertEqual(track.status, "alive")
+        self.assertEqual(len(builder.tracks), 1)
+        rebirths = [r for r in track.records
+                    if r["action"] == "reanchor_rebirth"]
+        self.assertTrue(rebirths, [r["action"] for r in track.records])
+        self.assertEqual(rebirths[0]["supports"][-1]["class"], "rebirth")
+        self.assertEqual(track.end_keyframe, 4)
+        self.assertEqual(track.drift_streak, 0)
+
+    def test_other_tag_near_detection_still_seeds(self):
+        # The duplicate rule needs semantic agreement: a different-class
+        # object next to an eroded mask is a new track, not a re-anchor.
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good] * 4)
+        obs0 = FakeObs("f0000__lm0__box0", tag=("man_made", "tower"))
+        pano_box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(0, [obs0], {obs0.obs_id: pano_box})
+        det = FakeObs("f0001__lmX__box0", tag=("building", "yes"))
+        near_box = centered_pano_box(1000 + 115, 1920, 20, 60)
+        builder.step(0, crops_fn_factory(builder), [det],
+                     {det.obs_id: near_box})
+        self.assertEqual(len(builder.tracks), 2)
+
+    def test_same_keyframe_overlapping_detections_seed_one_track(self):
+        # One landmark predicted with boxes in two faces (or two entries for
+        # one building) arrives as two unclaimed detections: one seed, the
+        # twin votes on it and is recorded in the birth record.
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good])
+        a = FakeObs("f0000__lm3__box0", tag=("building", "commercial"))
+        b = FakeObs("f0000__lm3__box1", tag=("building", "commercial"),
+                    name="Mall")
+        box_a = [1000, 1900, 1200, 2000]
+        box_b = [1010, 1905, 1190, 1990]   # nested inside box_a
+        builder.seed_unassigned(0, [a, b], {a.obs_id: box_a, b.obs_id: box_b})
+        self.assertEqual(len(builder.tracks), 1)
+        track = builder.tracks[0]
+        self.assertEqual(track.birth_obs_id, a.obs_id)  # larger box seeds
+        self.assertEqual(track.tag_votes["building=commercial"], 2)
+        self.assertEqual(track.name_votes["Mall"], 1)
+        builder.step(0, crops_fn_factory(builder), [], {})
+        self.assertEqual(track.records[0]["seed_duplicates"], [b.obs_id])
+
+    def test_disjoint_same_keyframe_detections_both_seed(self):
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good, good])
+        a = FakeObs("f0000__lm0__box0")
+        b = FakeObs("f0000__lm1__box0")
+        builder.seed_unassigned(0, [a, b], {a.obs_id: [1000, 1900, 1100, 2000],
+                                            b.obs_id: [3000, 1900, 3100, 2000]})
+        self.assertEqual(len(builder.tracks), 2)
+
+    def test_superset_detection_over_supported_track_is_absorbed(self):
+        # A big box covering a track's mask while the track is already
+        # cleanly supported by another detection: vote, do not seed.
+        good = rect_mask(108, 88, 148, 168)
+        _, builder = self._mk([good, good])
+        obs0 = FakeObs("f0000__lm0__box0", tag=("building", "yes"))
+        pano_box = centered_pano_box(1000, 1920, 40, 80)
+        builder.seed_unassigned(0, [obs0], {obs0.obs_id: pano_box})
+        clean = FakeObs("f0001__lm0__box0", tag=("building", "yes"))
+        big = FakeObs("f0001__lm7__box0", tag=("building", "yes"))
+        big_box = centered_pano_box(1000, 1920, 400, 400)  # context-class
+        builder.step(0, crops_fn_factory(builder), [clean, big],
+                     {clean.obs_id: pano_box, big.obs_id: big_box})
+        self.assertEqual(len(builder.tracks), 1)
+        classes = [s["class"] for s in builder.tracks[0].records[-1]["supports"]]
+        self.assertIn("duplicate", classes)
+        self.assertEqual(builder.tracks[0].records[-1]["action"],
+                         "reanchor_clean")
 
     def test_never_supported_track_uses_short_patience(self):
         good = rect_mask(108, 88, 148, 168)
@@ -381,8 +447,10 @@ class TrackBuilderTest(unittest.TestCase):
         m2 = rect_mask(98, 100, 158, 200)
         backend = FakeBackend([m1, m2])
         builder = tb.TrackBuilder(backend, cfg(), PANO_W, PANO_H)
-        obs_a = FakeObs("f0000__lm0__box0")
-        obs_b = FakeObs("f0000__lm1__box0")
+        # Different classes: same-class boxes overlapping this much would
+        # now be folded into one seed (see the seed-dedup tests).
+        obs_a = FakeObs("f0000__lm0__box0", tag=("man_made", "tower"))
+        obs_b = FakeObs("f0000__lm1__box0", tag=("building", "yes"))
         boxes = {obs_a.obs_id: centered_pano_box(1000, 1920, 60, 100),
                  obs_b.obs_id: centered_pano_box(1020, 1920, 60, 100)}
         builder.seed_unassigned(0, [obs_a, obs_b], boxes)
