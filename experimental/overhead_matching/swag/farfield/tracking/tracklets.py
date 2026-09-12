@@ -16,7 +16,7 @@ import dataclasses
 import hashlib
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -28,18 +28,55 @@ class TrackletContractError(ValueError):
     """A track/audit join cannot be represented without guessing."""
 
 
+RANGE_CAP_REDUCTIONS = frozenset({"min", "mode", "max", "track_median"})
+
+
+def reduce_range_caps(caps: list, rule: str, track_caps: list | None = None):
+    """One range cap for an epoch from its keyframes' buckets (see
+    TrackletParams.range_cap_reduction). ``track_caps`` is every bucket of the
+    whole track, used by ``track_median``."""
+    if not caps:
+        return None
+    if rule == "min":
+        return min(caps)
+    if rule == "max":
+        return max(caps)
+    if rule == "mode":
+        counts = Counter(caps)
+        best = max(counts.values())
+        return max(value for value, count in counts.items() if count == best)
+    if rule == "track_median":
+        pool = sorted(track_caps if track_caps else caps)
+        return pool[len(pool) // 2]
+    raise TrackletContractError(f"unknown range_cap_reduction {rule!r}")
+
+
 @dataclass(frozen=True)
 class TrackletParams:
     """Recorded compatibility-reducer and observation-noise parameters."""
 
     epoch_keyframes: int
     bearing_sigma_deg: float
+    # How one epoch's per-keyframe range buckets become its range cap.
+    #   min          - the tightest bucket (the original rule; "under_100m was
+    #                  never wrong on the labelled Pohang tracks")
+    #   mode         - the most common bucket in the epoch, ties to the looser
+    #   max          - the loosest bucket
+    #   track_median - the (upper) median bucket over the whole track, on the
+    #                  grounds that a track cannot move from 2 km to 500 m in
+    #                  a few keyframes: bucket disagreement is estimator noise
+    range_cap_reduction: str = "min"
 
     def __post_init__(self):
         if (isinstance(self.epoch_keyframes, bool)
                 or not isinstance(self.epoch_keyframes, int)
                 or self.epoch_keyframes <= 0):
             raise TrackletContractError("epoch_keyframes must be a positive int")
+        if self.range_cap_reduction not in RANGE_CAP_REDUCTIONS:
+            raise TrackletContractError(
+                "range_cap_reduction must be one of "
+                f"{sorted(RANGE_CAP_REDUCTIONS)}, got "
+                f"{self.range_cap_reduction!r}")
         if (isinstance(self.bearing_sigma_deg, bool)
                 or not isinstance(self.bearing_sigma_deg, (int, float))
                 or not math.isfinite(self.bearing_sigma_deg)
@@ -541,10 +578,13 @@ def build_camera_bearing_observations(
 
 
 def _fuse_group(observations: list[CameraBearingObservation],
-                epoch_keyframes: int) -> list[Measurement]:
+                epoch_keyframes: int,
+                range_cap_reduction: str = "min") -> list[Measurement]:
     fused = []
     bucket = []
     start_keyframe = observations[0].keyframe_idx
+    track_caps = [obs.range_max_m for obs in observations
+                  if obs.range_max_m is not None]
 
     def flush():
         if not bucket:
@@ -557,8 +597,6 @@ def _fuse_group(observations: list[CameraBearingObservation],
         mean_sigma = sum(obs.sigma_deg for obs in bucket) / len(bucket)
         anchor = bucket[len(bucket) // 2].keyframe_idx
         sigma = math.hypot(mean_sigma, mean_width / 4.0)
-        # The tightest cap in the epoch: under_100m was never wrong on the
-        # labelled Pohang tracks, so the minimum is the honest fusion.
         caps = [obs.range_max_m for obs in bucket
                 if obs.range_max_m is not None]
         fused.append(Measurement(
@@ -566,7 +604,8 @@ def _fuse_group(observations: list[CameraBearingObservation],
             anchor_keyframe_idx=anchor,
             bearing_camera_cw_deg=mean_azimuth,
             kappa=1.0 / math.radians(sigma) ** 2,
-            range_max_m=min(caps) if caps else None))
+            range_max_m=reduce_range_caps(
+                caps, range_cap_reduction, track_caps)))
 
     for observation in observations:
         if observation.keyframe_idx - start_keyframe >= epoch_keyframes:
@@ -600,7 +639,8 @@ def epoch_fused_compat_v1(
         if len({obs.keyframe_idx for obs in group}) != len(group):
             raise TrackletContractError(
                 f"duplicate keyframe in correlation group {key!r}")
-        fused.extend(_fuse_group(group, params.epoch_keyframes))
+        fused.extend(_fuse_group(group, params.epoch_keyframes,
+                                 params.range_cap_reduction))
     fused.sort(key=lambda measurement: (
         measurement.anchor_keyframe_idx, measurement.tracklet_id))
     return fused

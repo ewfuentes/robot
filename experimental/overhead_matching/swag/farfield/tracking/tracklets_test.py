@@ -388,6 +388,25 @@ class RangeCapTest(unittest.TestCase):
         # 13 has a detection without a bucket; 14 has no detection at all.
         self.assertEqual(caps, {10: 500.0, 11: 100.0, 12: 2000.0})
 
+    def test_range_cap_reduction_rules(self):
+        caps = [500.0, 2000.0, 2000.0, 10000.0]
+        track = [100.0, 500.0, 2000.0, 2000.0, 10000.0, 10000.0]
+        self.assertEqual(tracklets.reduce_range_caps(caps, "min"), 500.0)
+        self.assertEqual(tracklets.reduce_range_caps(caps, "max"), 10000.0)
+        self.assertEqual(tracklets.reduce_range_caps(caps, "mode"), 2000.0)
+        # ties go to the looser bucket
+        self.assertEqual(
+            tracklets.reduce_range_caps([500.0, 2000.0], "mode"), 2000.0)
+        # upper median over the whole track, not the epoch
+        self.assertEqual(
+            tracklets.reduce_range_caps(caps, "track_median", track), 2000.0)
+        self.assertIsNone(tracklets.reduce_range_caps([], "mode"))
+        with self.assertRaises(tracklets.TrackletContractError):
+            tracklets.reduce_range_caps(caps, "median")
+        with self.assertRaises(tracklets.TrackletContractError):
+            tracklets.TrackletParams(epoch_keyframes=5, bearing_sigma_deg=1.0,
+                                     range_cap_reduction="median")
+
     def test_over_10km_is_no_cap_and_unknown_bucket_is_an_error(self):
         obs = {"b": _Detection("over_10km"), "s1": _Detection("over_10km"),
                "s2a": _Detection(None), "s2b": _Detection(None),

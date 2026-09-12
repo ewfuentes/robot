@@ -190,6 +190,8 @@ CONFIG_SCHEMA = {
         (int, float)),
     "localization_inputs.compatibility_clip": _positive_number(),
     "localization_inputs.reducer_epoch_keyframes": _integer(minimum=1),
+    "localization_inputs.range_cap_reduction": _text(choices=(
+        "min", "mode", "max", "track_median")),
     "localization_inputs.odometry_profile": _text(
         choices=odometry_profiles.PIPELINE_PROFILE_CHOICES),
     "localization_inputs.odometry_noise_seed": _integer(),

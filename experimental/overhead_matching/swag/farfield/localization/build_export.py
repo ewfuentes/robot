@@ -313,7 +313,8 @@ def load_observations(observations_dir: Path, *, dataset_name: str,
 
 def reduce_observations(
         observations: list[tracklets.CameraBearingObservation],
-        epoch_keyframes: int) -> list[tracklets.Measurement]:
+        epoch_keyframes: int,
+        range_cap_reduction: str = "min") -> list[tracklets.Measurement]:
     """Apply the named epoch_fused_compat_v1 reducer once, at this seam."""
     if isinstance(epoch_keyframes, bool) or not isinstance(epoch_keyframes, int) \
             or epoch_keyframes <= 0:
@@ -327,7 +328,8 @@ def reduce_observations(
             "epoch_fused_compat_v1 requires one recorded observation sigma")
     params = tracklets.TrackletParams(
         epoch_keyframes=epoch_keyframes,
-        bearing_sigma_deg=next(iter(sigmas)))
+        bearing_sigma_deg=next(iter(sigmas)),
+        range_cap_reduction=range_cap_reduction)
     return tracklets.epoch_fused_compat_v1(observations, params)
 
 
@@ -842,7 +844,14 @@ def build(args) -> artifact.ArtifactRef:
     config = dict(document["config"]["localization_inputs"])
     epoch_keyframes = _config(
         document, "localization_inputs.reducer_epoch_keyframes")
-    camera_measurements = reduce_observations(observations, epoch_keyframes)
+    # Builds recorded before the rule existed used the original minimum.
+    range_cap_reduction = config.get("range_cap_reduction", "min")
+    if range_cap_reduction not in tracklets.RANGE_CAP_REDUCTIONS:
+        raise LocalizationInputError(
+            "localization_inputs.range_cap_reduction must be one of "
+            f"{sorted(tracklets.RANGE_CAP_REDUCTIONS)}")
+    camera_measurements = reduce_observations(
+        observations, epoch_keyframes, range_cap_reduction)
     measurements = forward_frame_measurements(
         camera_measurements, calibration)
 
@@ -968,6 +977,7 @@ def build(args) -> artifact.ArtifactRef:
             "epoch_keyframes": epoch_keyframes,
             "input_frame": "camera_cw_deg",
             "output_frame": "nominal_forward_cw_deg",
+            "range_cap_reduction": range_cap_reduction,
         },
     }
     outputs = [

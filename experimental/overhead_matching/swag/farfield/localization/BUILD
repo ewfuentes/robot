@@ -117,6 +117,7 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:nominal_forward",
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield/matching:identity_review_lib",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
     ],
 )
 

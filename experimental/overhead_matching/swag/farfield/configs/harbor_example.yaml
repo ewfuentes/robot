@@ -122,6 +122,8 @@ localization_inputs:
   default_log_compatibility: 0.0
   compatibility_clip: 4.0
   reducer_epoch_keyframes: 5
+  # epoch range cap from per-keyframe buckets: min (original) | mode | max | track_median
+  range_cap_reduction: min
   odometry_profile: epson_mg570_calibrated_planar_v1
   odometry_noise_seed: 0
   # The Epson profile uses the displacement gate and reverse annotations to
