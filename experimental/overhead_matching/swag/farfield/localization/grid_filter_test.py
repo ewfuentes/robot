@@ -75,6 +75,31 @@ class MotionPlanningTest(unittest.TestCase):
         self.assertFalse(belief.pending_dn.any())
 
 
+class SmootherAdjointTest(unittest.TestCase):
+    def test_transposed_motion_is_the_adjoint(self):
+        torch.manual_seed(0)
+        belief = grid_filter.GridBelief(
+            grid_filter.Grid(0.0, 80.0, 0.0, 80.0, 10.0), 6, "cpu")
+        # a noisy turn (weighted shifts + heading kernel + diffusion), then a
+        # clean straight step (integer shifts only): every operator covered
+        turn = belief.plan_motion(
+            structs.OdometryDelta(
+                1, 14.0, 3.0, math.radians(50.0), 4.0, 0.4),
+            1.0, math.radians(2.0), 3.0)
+        straight = belief.plan_motion(
+            structs.OdometryDelta(2, 10.0, 0.0, 0.0, 0.0, 0.0),
+            1.0, 0.0, 0.0)
+        self.assertTrue(turn.weighted_cell_shifts and turn.heading_offsets
+                        and turn.diffusion_offsets)
+        self.assertTrue(straight.cell_shifts and not straight.heading_offsets)
+        for plan in (turn, straight):
+            x = torch.rand_like(belief.belief)
+            y = torch.rand_like(belief.belief)
+            lhs = (grid_filter.apply_motion(x, plan) * y).sum()
+            rhs = (x * grid_filter.apply_motion_transposed(y, plan)).sum()
+            torch.testing.assert_close(lhs, rhs)
+
+
 class CausalReplayTest(unittest.TestCase):
     def test_delayed_factors_change_only_current_and_future_scores(self):
         first = structs.TrackletMeasurement("a", 0, 0.0, 1.0)

@@ -143,6 +143,91 @@ def apply_motion(t: torch.Tensor, plan: MotionPlan) -> torch.Tensor:
     return t
 
 
+def apply_motion_transposed(t: torch.Tensor, plan: MotionPlan) -> torch.Tensor:
+    """Adjoint of `apply_motion`: the backward (smoothing) message operator.
+
+    Forward is D(H(W(S(x)))) - integer shifts, weighted shifts, heading
+    convolution, diffusion - so the adjoint applies D^T, H^T, W^T, S^T in that
+    order. A zero-fill shift's adjoint is the opposite shift, a roll's adjoint
+    is the opposite roll, and the Gaussian taps are symmetric.
+    """
+    if plan.diffusion_offsets:
+        for axis in (-1, -2):
+            acc = torch.zeros_like(t)
+            for offset, weight in zip(
+                    plan.diffusion_offsets, plan.diffusion_weights,
+                    strict=True):
+                acc += weight * shift2d(
+                    t,
+                    -offset if axis == -2 else 0,
+                    -offset if axis == -1 else 0)
+            t = acc
+
+    if plan.heading_offsets:
+        acc = torch.zeros_like(t)
+        for offset, weight in zip(
+                plan.heading_offsets, plan.heading_weights, strict=True):
+            acc += weight * torch.roll(t, -offset, dims=0)
+        t = acc
+
+    if plan.weighted_cell_shifts:
+        shifted = torch.zeros_like(t)
+        for heading, shifts in enumerate(plan.weighted_cell_shifts):
+            for di, dj, weight in shifts:
+                shifted[heading] += weight * shift2d(
+                    t[heading], -di, -dj)
+        t = shifted
+
+    if plan.cell_shifts:
+        shifted = t.clone()
+        for heading, (di, dj) in enumerate(plan.cell_shifts):
+            if di or dj:
+                shifted[heading] = shift2d(t[heading], -di, -dj)
+        t = shifted
+    return t
+
+
+class LikelihoodCache:
+    """Host-memory cache of measurement likelihood tensors.
+
+    A likelihood depends only on the measurement, its table and the grid,
+    never on the belief, so causal replay (which recomputes each prefix from
+    a checkpoint) and the smoother's second forward pass can reuse it. Tensors
+    are stored in pinned host memory in their original dtype, so a cached hit
+    is bit-identical to a recompute; entries beyond `budget_bytes` are simply
+    not cached.
+    """
+
+    def __init__(self, budget_bytes: float, device: str):
+        self.budget = budget_bytes
+        self.device = device
+        self.store = {}
+        self.bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.skipped = 0
+
+    def get(self, key, compute):
+        cached = self.store.get(key)
+        if cached is not None:
+            self.hits += 1
+            return cached.to(self.device)
+        value = compute()
+        self.misses += 1
+        size = value.numel() * value.element_size()
+        if self.bytes + size <= self.budget:
+            self.store[key] = value.detach().to("cpu")
+            self.bytes += size
+        else:
+            self.skipped += 1
+        return value
+
+    def describe(self) -> str:
+        return (f"likelihood cache: {len(self.store)} tensors, "
+                f"{self.bytes / 1e9:.1f} GB, {self.hits} hits, "
+                f"{self.misses} misses, {self.skipped} uncached")
+
+
 def _normalized(t: torch.Tensor) -> torch.Tensor:
     total = t.sum()
     if not bool(torch.isfinite(total)) or not float(total) > 0.0:
@@ -454,6 +539,8 @@ def identity_log_weights(table, catalog, matcher_recall: float,
       receives the same endorsed mass as one whose best entry is 0.95.
     * ``max_conf``: recall * max_j c_j, the complement of the matcher's
       derived global no-match confidence.
+    * ``sum_conf``: recall * min(1, sum_j c_j), the total probability the
+      table places on its endorsed rows (kind expansions at c/N sum to c).
 
     ``within`` distributes that mass among endorsed entries:
     * ``odds``: softmax of the clipped log-odds (w_j proportional to
@@ -476,6 +563,11 @@ def identity_log_weights(table, catalog, matcher_recall: float,
             np.sum(np.log1p(-confidence)))))
     elif share_mode == "max_conf":
         share = matcher_recall * float(confidence.max())
+    elif share_mode == "sum_conf":
+        # the probability the table puts on "the object is one of these rows":
+        # a kind spread thinly over N rows at c/N still sums to c, a lone 0.05
+        # hedge stays 0.05, a named instance at 1.0 votes fully
+        share = matcher_recall * min(1.0, float(confidence.sum()))
     else:
         raise ValueError(f"unknown identity share mode {share_mode!r}")
     share = min(max(share, 1e-6), matcher_recall)
@@ -818,7 +910,8 @@ def main():
     parser.add_argument("--pi0", type=float, default=None)
     parser.add_argument("--matcher_recall", type=float, default=None)
     parser.add_argument(
-        "--identity_share", choices=("constant", "noisy_or", "max_conf"),
+        "--identity_share",
+        choices=("constant", "noisy_or", "max_conf", "sum_conf"),
         default="constant",
         help="how a table's endorsed identity mass is set from its entries")
     parser.add_argument(
@@ -830,6 +923,12 @@ def main():
         help="DIAGNOSTIC ONLY (privileged): JSON {track_suffix: [landmark "
              "ids]} replacing those tables' endorsed sets at clip_hi, to "
              "measure the value of a corrected matcher")
+    parser.add_argument(
+        "--tables_override", default=None,
+        help="DIAGNOSTIC ONLY: JSON list of CompatibilityTable documents "
+             "(compatibility.json schema) replacing the export's tables for "
+             "the tracklets they name, to evaluate an alternative "
+             "matcher aggregation without republishing inputs")
     parser.add_argument(
         "--mixture", choices=("sum", "max"), default="sum",
         help="combine candidates by sum (mixture) or max (max-mixture)")
@@ -853,6 +952,37 @@ def main():
     parser.add_argument(
         "--extent_sigma", type=int, default=0,
         help="add each candidate's hull radius / range to bearing variance")
+    parser.add_argument(
+        "--likelihood_cache_gb", type=float, default=12.0,
+        help="pinned host memory for caching per-measurement likelihood "
+             "tensors across causal replays and the smoother pass "
+             "(bit-identical results; zero disables)")
+    parser.add_argument(
+        "--smoother", choices=("none", "fixed_interval"), default="none",
+        help="after the causal run, also compute the fixed-interval smoothed "
+             "trajectory (forward-backward over the same grid HMM with every "
+             "factor at its anchor, or at its release keyframe in joint mode) "
+             "and score it alongside; this is what an incremental smoother "
+             "reports once the run has ended")
+    parser.add_argument(
+        "--smooth_lag", type=int, default=0,
+        help="with --smoother: also score the fixed-lag estimate of pose k "
+             "available at keyframe k+lag (online smoothing with a latency "
+             "of lag keyframes); zero skips it")
+    parser.add_argument(
+        "--smooth_lags", default="",
+        help="comma-separated extra lags scored in the same backward chain "
+             "(the online lag curve); the largest sets the alpha window")
+    parser.add_argument(
+        "--heading_meas_sigma_deg", type=float, default=0.0,
+        help="diagnostic only: at EVERY keyframe multiply the belief by a "
+             "wrapped-Gaussian heading likelihood centred on that keyframe's "
+             "GPS course (a continuous 'rough heading' sensor); zero is off")
+    parser.add_argument(
+        "--init_heading_sigma_deg", type=float, default=0.0,
+        help="diagnostic only: wrapped-Gaussian heading prior centred on the "
+             "keyframe-0 GPS course (a 'rough heading' assumption); zero is "
+             "the uniform heading prior")
     parser.add_argument(
         "--init_truth_sigma_m", type=float, default=0.0,
         help="diagnostic only; zero is uniform evaluation initialization")
@@ -884,6 +1014,13 @@ def main():
     if args.top_mode_position_nms_m < 0.0 \
             or args.top_mode_heading_nms_deg < 0.0:
         parser.error("top-mode NMS radii must be nonnegative")
+    if (args.smooth_lag > 0 or args.smooth_lags.strip()) \
+            and not args.track_joint:
+        parser.error(
+            "--smooth_lag/--smooth_lags need --track_joint 1: the "
+            "independent-epoch smoother places each epoch at its anchor "
+            "before its track has closed, so a fixed-lag estimate would use "
+            "tracks not yet released at k+lag and is not an online result")
 
     data = export_ingest.load(Path(args.input_dir))
     if len(data.truth) != data.n_keyframes:
@@ -935,7 +1072,24 @@ def main():
         belief.belief = (
             gaussian / gaussian.sum() / args.n_heading).expand(
                 args.n_heading, -1).reshape(belief.belief.shape).clone()
+    if args.init_heading_sigma_deg > 0.0:
+        course0 = data.truth[0].course_world_cw_deg
+        if course0 is None or not math.isfinite(float(course0)):
+            raise ValueError("init_heading_sigma_deg needs a keyframe-0 course")
+        centre = math.radians(float(course0))
+        sigma = math.radians(args.init_heading_sigma_deg)
+        delta = (np.asarray(belief.bin_rad) - centre + math.pi) % (
+            2 * math.pi) - math.pi
+        heading_prior = np.exp(-0.5 * (delta / sigma) ** 2)
+        heading_prior = torch.tensor(
+            heading_prior / heading_prior.sum(), dtype=torch.float32,
+            device=args.device)
+        belief.belief = _normalized(
+            belief.belief * heading_prior.reshape(-1, 1, 1))
+        print(f"DIAGNOSTIC heading prior: course0={float(course0):.1f} deg, "
+              f"sigma={args.init_heading_sigma_deg:g} deg (not an evaluation)")
 
+    initial_belief = belief.belief.clone()
     n_states = args.n_heading * grid.n_north * grid.n_east
     print(
         f"grid: {grid.n_east} x {grid.n_north} x {args.n_heading} = "
@@ -961,6 +1115,22 @@ def main():
                 np.asarray(entry.hull_north_m) - catalog.north_m[index])))
         catalog_extent = torch.tensor(
             extent, dtype=torch.float32, device=args.device)
+
+    if args.tables_override:
+        from experimental.overhead_matching.swag.farfield.localization import structs  # noqa: E501
+        override_tables = msgspec.json.decode(
+            Path(args.tables_override).read_bytes(),
+            type=list[structs.CompatibilityTable])
+        by_suffix = {t.tracklet_id.split("#")[-1]: t for t in override_tables}
+        replaced = 0
+        for tracklet_id in list(data.tables):
+            forced_table = by_suffix.get(tracklet_id.split("#")[-1])
+            if forced_table is not None:
+                data.tables[tracklet_id] = msgspec.structs.replace(
+                    forced_table, tracklet_id=tracklet_id)
+                replaced += 1
+        print(f"DIAGNOSTIC tables override: replaced {replaced} of "
+              f"{len(data.tables)} tables from {args.tables_override}")
 
     identity_override = {}
     if args.identity_override:
@@ -1012,15 +1182,48 @@ def main():
         by_keyframe.clear()
     odometry = {item.keyframe_idx: item for item in data.odometry}
 
+    heading_meas = {}
+    if args.heading_meas_sigma_deg > 0.0:
+        sigma = math.radians(args.heading_meas_sigma_deg)
+        for pose in data.truth:
+            course = pose.course_world_cw_deg
+            if course is None or not math.isfinite(float(course)):
+                continue
+            delta = (np.asarray(belief.bin_rad) - math.radians(float(course))
+                     + math.pi) % (2 * math.pi) - math.pi
+            lik = np.exp(-0.5 * (delta / sigma) ** 2)
+            heading_meas[pose.keyframe_idx] = torch.tensor(
+                lik / lik.sum(), dtype=torch.float32,
+                device=args.device).reshape(-1, 1, 1)
+        print(f"DIAGNOSTIC heading measurement: sigma="
+              f"{args.heading_meas_sigma_deg:g} deg at {len(heading_meas)} "
+              "keyframes from GPS course (not an evaluation)")
+
     def apply_likelihoods(message, keyframe, measurements=None):
         if measurements is None:
             measurements = by_keyframe.get(keyframe, ())
+        # One heading factor per keyframe per pass: this closure is called
+        # exactly once per keyframe by the forward loop, by causal replay,
+        # and by the eager path.
+        heading_factor = heading_meas.get(keyframe)
+        if heading_factor is not None:
+            message = _normalized(message * heading_factor)
         for measurement in measurements:
+            message = _normalized(
+                message * epoch_likelihood(measurement, belief))
+        return message
+
+    likelihood_cache = LikelihoodCache(
+        args.likelihood_cache_gb * 1e9, args.device)
+
+    def epoch_likelihood(measurement, grid_belief):
+        """One fused epoch's likelihood over the grid (cached)."""
+        def compute():
             (candidate_east, candidate_north, candidate_weight, tail_mass,
              candidate_extent) = candidate_set(measurement.tracklet_id)
             kappa = min(
                 float(measurement.kappa) * args.kappa_scale, MAX_KAPPA)
-            likelihood = belief.track_likelihood(
+            return grid_belief.track_likelihood(
                 math.radians(measurement.bearing_forward_cw_deg),
                 1.0 / kappa,
                 candidate_east,
@@ -1036,12 +1239,205 @@ def main():
                 range_floor=args.range_floor,
                 cand_extent=candidate_extent,
                 mixture=args.mixture)
-            message = _normalized(message * likelihood)
-        return message
+        return likelihood_cache.get(
+            ("epoch", measurement.tracklet_id,
+             measurement.anchor_keyframe_idx), compute)
 
     masks = truth_masks(grid, data.truth, RADII_M)
     truth_by_kf = {pose.keyframe_idx: pose for pose in data.truth}
     heading_rw_rad = math.radians(args.heading_rw_deg)
+    smoothing_releases = None
+    joint_release_likelihood = None
+
+    def keyframe_likelihood(keyframe, grid_belief):
+        """Product of every factor anchored at `keyframe`, or None."""
+        factor = None
+        heading_factor = heading_meas.get(keyframe)
+        if heading_factor is not None:
+            factor = heading_factor.expand_as(grid_belief.belief).clone()
+        if args.track_joint:
+            releases_at = {}
+            for release in smoothing_releases or ():
+                releases_at.setdefault(
+                    release.release_keyframe_idx, []).append(release)
+            factors = [joint_release_likelihood(r, keyframe, grid_belief)
+                       for r in releases_at.get(keyframe, ())]
+        else:
+            factors = [epoch_likelihood(measurement, grid_belief)
+                       for measurement in by_keyframe.get(keyframe, ())]
+        for likelihood in factors:
+            factor = likelihood if factor is None else factor * likelihood
+        return factor
+
+    def smoothing_pass():
+        """Fixed-interval (and optional fixed-lag) smoothing on the grid HMM.
+
+        Forward: every factor at its anchor (independent epochs) or at its
+        release keyframe (joint mode). Backward: beta_{k-1} = M_k^T (L_k *
+        beta_k); smoothed_k ~ alpha_k * beta_k. Memory is bounded by
+        checkpointing alpha every `stride` keyframes and recomputing each
+        segment during the backward sweep; factors come from the likelihood
+        cache. The fixed-lag estimate for pose k is computed online at
+        keyframe k + lag from a rolling window, exactly as a causal
+        incremental smoother would report it.
+        """
+        if args.smoother == "none":
+            return None
+        started = time.time()
+        device = args.device
+        stride = max(1, args.checkpoint_keyframes)
+        lags = sorted({int(v) for v in args.smooth_lags.split(",") if v.strip()}
+                      | ({args.smooth_lag} if args.smooth_lag > 0 else set()))
+        lags = [v for v in lags if v > 0]
+        lag = max(lags) if lags else 0
+        planner = GridBelief(grid, args.n_heading, device)
+        planner.belief = initial_belief.clone()
+        plans = [None] * n_keyframes
+        checkpoints = {}
+        window = {}  # keyframe -> alpha on host, only the last `lag` + 1
+        lag_series = {v: {radius: [None] * n_keyframes for radius in RADII_M}
+                      for v in lags}
+        lag_error = {v: [None] * n_keyframes for v in lags}
+        lag_states = {v: [None] * n_keyframes for v in lags}
+        message = planner.belief
+
+        def backward_step(beta, keyframe):
+            factor = keyframe_likelihood(keyframe, planner)
+            incoming = beta if factor is None else beta * factor
+            return _normalized(
+                apply_motion_transposed(incoming, plans[keyframe]))
+
+        for keyframe in range(n_keyframes):
+            if keyframe > 0:
+                plans[keyframe] = planner.plan_motion(
+                    odometry[keyframe], args.yaw_sigma_scale,
+                    heading_rw_rad, args.diffusion_m)
+                message = apply_motion(message, plans[keyframe])
+            factor = keyframe_likelihood(keyframe, planner)
+            if factor is not None:
+                message = message * factor
+            message = _normalized(message)
+            if keyframe % stride == 0:
+                checkpoints[keyframe] = message.detach().cpu()
+            if lag > 0:
+                window[keyframe] = message.detach().cpu()
+                # one backward chain from this keyframe serves every lag:
+                # after `v` adjoint steps it is beta for pose keyframe - v
+                beta = torch.ones_like(message)
+                for steps in range(1, lag + 1):
+                    target = keyframe - steps
+                    if target < 0:
+                        break
+                    beta = backward_step(beta, target + 1)
+                    if steps in lag_series:
+                        smoothed = _normalized(
+                            window[target].to(device) * beta)
+                        mass, map_error, state = _score_message(
+                            smoothed, target, masks, truth_by_kf, grid, device)
+                        for radius in RADII_M:
+                            lag_series[steps][radius][target] = mass[radius]
+                        lag_error[steps][target] = map_error
+                        lag_states[steps][target] = state
+                window.pop(keyframe - lag, None)
+            if keyframe % 50 == 0:
+                print(f"smoother forward kf {keyframe:4d} "
+                      f"({time.time() - started:.0f}s)")
+        forward_seconds = time.time() - started
+
+        smoothed_series = {radius: [0.0] * n_keyframes for radius in RADII_M}
+        smoothed_error = [0.0] * n_keyframes
+        smoothed_states = [None] * n_keyframes
+        beta = torch.ones_like(message)
+        segment_starts = sorted(checkpoints, reverse=True)
+        for seg_start in segment_starts:
+            seg_end = min(seg_start + stride, n_keyframes)
+            # recompute this segment's alphas from its checkpoint
+            alphas = []
+            current = checkpoints[seg_start].to(device)
+            alphas.append(current)
+            for keyframe in range(seg_start + 1, seg_end):
+                current = apply_motion(current, plans[keyframe])
+                factor = keyframe_likelihood(keyframe, planner)
+                if factor is not None:
+                    current = current * factor
+                current = _normalized(current)
+                alphas.append(current)
+            for keyframe in range(seg_end - 1, seg_start - 1, -1):
+                smoothed = _normalized(alphas[keyframe - seg_start] * beta)
+                mass, map_error, state = _score_message(
+                    smoothed, keyframe, masks, truth_by_kf, grid, device)
+                for radius in RADII_M:
+                    smoothed_series[radius][keyframe] = mass[radius]
+                smoothed_error[keyframe] = map_error
+                smoothed_states[keyframe] = state
+                if keyframe > 0:
+                    beta = backward_step(beta, keyframe)
+            del alphas
+            if seg_start % (stride * 10) == 0:
+                print(f"smoother backward kf {seg_start:4d} "
+                      f"({time.time() - started:.0f}s)")
+        result = {
+            "method": ("fixed_interval_forward_backward_on_grid_hmm_"
+                       + ("joint_release_factors" if args.track_joint
+                          else "independent_epoch_factors_at_anchors")),
+            "checkpoint_stride": stride,
+            "summary": _summary(smoothed_series, smoothed_error,
+                                truth_by_kf, n_keyframes),
+            "mass_by_keyframe": {
+                f"{radius:g}": smoothed_series[radius] for radius in RADII_M},
+            "map_error_m_by_keyframe": smoothed_error,
+            "map_state_by_keyframe": smoothed_states,
+        }
+        print("smoothed:", {key: round(value, 4)
+                            for key, value in result["summary"].items()})
+        for v in lags:
+            # poses inside the last `v` keyframes carry the fixed-interval
+            # value, which is what is available once the run has ended
+            for radius in RADII_M:
+                for keyframe in range(n_keyframes):
+                    if lag_series[v][radius][keyframe] is None:
+                        lag_series[v][radius][keyframe] = smoothed_series[
+                            radius][keyframe]
+            for keyframe in range(n_keyframes):
+                if lag_error[v][keyframe] is None:
+                    lag_error[v][keyframe] = smoothed_error[keyframe]
+                if lag_states[v][keyframe] is None:
+                    lag_states[v][keyframe] = smoothed_states[keyframe]
+            entry = {
+                "lag_keyframes": v,
+                "computed": "online_at_keyframe_k_plus_lag",
+                "tail_semantics": ("the last `lag` poses carry the "
+                                   "fixed-interval value available at the end "
+                                   "of the run"),
+                "summary": _summary(lag_series[v], lag_error[v], truth_by_kf,
+                                    n_keyframes),
+                "mass_by_keyframe": {
+                    f"{radius:g}": lag_series[v][radius] for radius in RADII_M},
+                "map_error_m_by_keyframe": lag_error[v],
+                "map_state_by_keyframe": lag_states[v],
+            }
+            result.setdefault("fixed_lags", {})[str(v)] = entry
+            if v == (args.smooth_lag if args.smooth_lag > 0 else lags[0]):
+                result["fixed_lag"] = entry
+            print(f"fixed-lag {v}:",
+                  {key: round(value, 4)
+                   for key, value in entry["summary"].items()})
+        result["runtime_seconds"] = {
+            "forward_with_fixed_lag": forward_seconds,
+            "total": time.time() - started}
+        print(likelihood_cache.describe())
+        return result
+
+    def finish_payload(payload):
+        smoothing = smoothing_pass()
+        if smoothing is not None:
+            payload["smoothing"] = smoothing
+            for key, value in smoothing["summary"].items():
+                payload["summary"][f"sm_{key}"] = value
+            for v, entry in smoothing.get("fixed_lags", {}).items():
+                for key, value in entry["summary"].items():
+                    payload["summary"][f"lag{v}_{key}"] = value
+        return payload
     filtered_series = {radius: [] for radius in RADII_M}
     filtered_map_error = []
     online_map_states = []
@@ -1060,6 +1456,55 @@ def main():
             release_tracklets.setdefault(
                 release.release_keyframe_idx, []).append(release.tracklet_id)
 
+        def joint_release_likelihood(release, keyframe, grid_belief=None):
+            grid_belief = belief if grid_belief is None else grid_belief
+            return likelihood_cache.get(
+                ("joint", release.tracklet_id, keyframe),
+                lambda: _joint_release_likelihood(
+                    release, keyframe, grid_belief))
+
+        def _joint_release_likelihood(release, keyframe, grid_belief):
+            (candidate_east, candidate_north, candidate_weight,
+             tail_mass, candidate_extent) = candidate_set(
+                release.tracklet_id)
+            anchors = sorted({m.anchor_keyframe_idx
+                              for m in release.measurements})
+            rel = relative_epoch_poses(odometry, anchors, keyframe)
+            epochs = []
+            for m in release.measurements:
+                d_fwd, d_left, d_head = rel[m.anchor_keyframe_idx]
+                kappa = min(float(m.kappa) * args.kappa_scale, MAX_KAPPA)
+                head_slack_var = 0.0
+                pos_slack_var = 0.0
+                if args.joint_slack:
+                    # the same slack the motion model grants between this
+                    # anchor and the release keyframe
+                    for step in range(m.anchor_keyframe_idx + 1, keyframe + 1):
+                        delta = odometry[step]
+                        head_slack_var += (
+                            heading_rw_rad ** 2
+                            + (delta.sigma_yaw_rad * args.yaw_sigma_scale) ** 2)
+                        pos_slack_var += (
+                            args.diffusion_m ** 2 + delta.sigma_m ** 2)
+                epochs.append((
+                    d_fwd, d_left, d_head,
+                    math.radians(m.bearing_forward_cw_deg),
+                    1.0 / kappa,
+                    m.range_max_m if args.range_cap else None,
+                    head_slack_var, math.sqrt(pos_slack_var)))
+            return grid_belief.track_joint_likelihood(
+                epochs, candidate_east, candidate_north,
+                candidate_weight, sigma_pos, args.pi0, tail_mass,
+                quantization_comp=bool(args.quantization_comp),
+                range_softness=args.range_softness,
+                range_floor=args.range_floor,
+                cand_extent=candidate_extent,
+                temper=args.joint_temper,
+                mixture=args.mixture,
+                cap=args.joint_cap)
+
+        smoothing_releases = releases
+
         if args.track_joint:
             releases_at = {}
             for release in releases:
@@ -1071,48 +1516,11 @@ def main():
                     belief.motion(
                         odometry[keyframe], args.yaw_sigma_scale,
                         heading_rw_rad, args.diffusion_m)
+                heading_factor = heading_meas.get(keyframe)
+                if heading_factor is not None:
+                    belief.belief = _normalized(belief.belief * heading_factor)
                 for release in releases_at.get(keyframe, ()):
-                    (candidate_east, candidate_north, candidate_weight,
-                     tail_mass, candidate_extent) = candidate_set(
-                        release.tracklet_id)
-                    anchors = sorted({m.anchor_keyframe_idx
-                                      for m in release.measurements})
-                    rel = relative_epoch_poses(odometry, anchors, keyframe)
-                    epochs = []
-                    for m in release.measurements:
-                        d_fwd, d_left, d_head = rel[m.anchor_keyframe_idx]
-                        kappa = min(float(m.kappa) * args.kappa_scale,
-                                    MAX_KAPPA)
-                        head_slack_var = 0.0
-                        pos_slack_var = 0.0
-                        if args.joint_slack:
-                            # the same slack the motion model grants between
-                            # this anchor and the release keyframe
-                            for step in range(m.anchor_keyframe_idx + 1,
-                                              keyframe + 1):
-                                delta = odometry[step]
-                                head_slack_var += (
-                                    heading_rw_rad ** 2
-                                    + (delta.sigma_yaw_rad
-                                       * args.yaw_sigma_scale) ** 2)
-                                pos_slack_var += (
-                                    args.diffusion_m ** 2 + delta.sigma_m ** 2)
-                        epochs.append((
-                            d_fwd, d_left, d_head,
-                            math.radians(m.bearing_forward_cw_deg),
-                            1.0 / kappa,
-                            m.range_max_m if args.range_cap else None,
-                            head_slack_var, math.sqrt(pos_slack_var)))
-                    likelihood = belief.track_joint_likelihood(
-                        epochs, candidate_east, candidate_north,
-                        candidate_weight, sigma_pos, args.pi0, tail_mass,
-                        quantization_comp=bool(args.quantization_comp),
-                        range_softness=args.range_softness,
-                        range_floor=args.range_floor,
-                        cand_extent=candidate_extent,
-                        temper=args.joint_temper,
-                        mixture=args.mixture,
-                        cap=args.joint_cap)
+                    likelihood = joint_release_likelihood(release, keyframe)
                     belief.belief = _normalized(belief.belief * likelihood)
                 belief.renormalize()
                 mass, map_error, state = _score_message(
@@ -1139,6 +1547,7 @@ def main():
             print("joint:", {key: round(value, 4)
                              for key, value in filtered_summary.items()},
                   f"runtime {forward_seconds:.0f}s")
+            print(likelihood_cache.describe())
             if args.out:
                 payload = {
                     "schema": "farfield_causal_grid/v1",
@@ -1189,7 +1598,8 @@ def main():
                     },
                     "runtime_seconds": {"joint_forward": forward_seconds},
                 }
-                Path(args.out).write_text(json.dumps(payload, indent=1))
+                Path(args.out).write_text(
+                    json.dumps(finish_payload(payload), indent=1))
                 print("wrote", args.out)
             return
 
@@ -1244,6 +1654,7 @@ def main():
             {key: round(value, 4)
              for key, value in filtered_summary.items()})
         print("replay:", replay_stats, f"runtime {forward_seconds:.0f}s")
+        print(likelihood_cache.describe())
 
         if args.out:
             payload = {
@@ -1327,7 +1738,8 @@ def main():
                         "argmax; these poses use the joint SE2-state argmax"),
                     "states": map_states,
                 }
-            Path(args.out).write_text(json.dumps(payload, indent=1))
+            Path(args.out).write_text(
+                json.dumps(finish_payload(payload), indent=1))
             print("wrote", args.out)
         return
 
@@ -1368,6 +1780,7 @@ def main():
         f"{args.availability}:",
         {key: round(value, 4) for key, value in filtered_summary.items()},
         f"runtime {forward_seconds:.0f}s")
+    print(likelihood_cache.describe())
 
     if args.out:
         payload = {
@@ -1426,7 +1839,8 @@ def main():
             },
             "runtime_seconds": {"online_forward": forward_seconds},
         }
-        Path(args.out).write_text(json.dumps(payload, indent=1))
+        Path(args.out).write_text(
+            json.dumps(finish_payload(payload), indent=1))
         print("wrote", args.out)
 
 
