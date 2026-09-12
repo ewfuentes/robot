@@ -336,6 +336,22 @@ def _run_page_links(run: Path) -> list[tuple[str, str]]:
     return links
 
 
+def _nested_viewer_rows(experiment: Path) -> list[list[str]]:
+    """Viewer rows for ``<policy>/<seed>/<dataset>.viewer`` layouts."""
+    rows = []
+    for viewer_page in sorted(
+            experiment.glob("*/*/*.viewer/viewer.html")):
+        if not _regular_page(viewer_page):
+            continue
+        relative = viewer_page.relative_to(experiment)
+        label = relative.parent.with_suffix("").as_posix()
+        rows.append([
+            pg.esc(label),
+            f'<a href="{pg.esc(relative.as_posix())}">filter viewer</a>',
+        ])
+    return rows
+
+
 def refresh(data_root: Path) -> dict:
     """Regenerate a snapshot under one lock, replacing each page atomically.
 
@@ -468,6 +484,7 @@ def _refresh_locked(data_root: Path) -> dict:
                 for relative, label in _run_page_links(run))
             run_rows.append([pg.esc(run.name),
                              links or "<span class='muted'>no pages</span>"])
+        run_rows.extend(_nested_viewer_rows(experiment))
         body_parts.append(pg.table(["run", "pages"], run_rows))
         emit(experiment, experiment.name, "\n".join(body_parts),
              [("farfield", "../../index.html"), ("runs", "../index.html"),

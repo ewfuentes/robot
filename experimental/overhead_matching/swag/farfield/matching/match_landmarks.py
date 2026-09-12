@@ -661,17 +661,20 @@ def global_no_match(matches, per_slice):
     return 1.0
 
 
-def to_log_lr(confidence, clip=DEFAULT_CLIP):
+def to_log_lr(confidence, clip=DEFAULT_CLIP, clip_lo=None):
     """Confidence -> log odds, clipped. The seam the design doc specifies is
     an uncalibrated matcher behind a tuned transform; this is that transform,
-    and the clip is what keeps a confident-but-wrong match survivable."""
-    c = min(max(confidence, 1e-4), 1 - 1e-4)
-    return max(-clip, min(clip, math.log(c / (1 - c))))
+    and the clip is what keeps a confident-but-wrong match survivable.
+    `clip_lo` lowers the floor below -clip for tables that spread a kind
+    endorsement thinly over many rows (reaggregate_tables.CATEGORY_CLIP_LO)."""
+    lo = -clip if clip_lo is None else clip_lo
+    c = min(max(confidence, 1e-4 if clip_lo is None else 1e-7), 1 - 1e-4)
+    return max(lo, min(clip, math.log(c / (1 - c))))
 
 
 def to_compatibility_table(tracklet_id, scores, matcher_version,
                            scale=1.0, offset=0.0, clip=DEFAULT_CLIP,
-                           default_log_lr=-2.0, status="fast"):
+                           default_log_lr=-2.0, status="fast", clip_lo=None):
     """Raw scores -> the filter's structs.CompatibilityTable.
 
     Built as the struct itself (not a lookalike dict) and msgspec-encoded, so
@@ -681,8 +684,9 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
     that struct's contract.
     """
     entries = []
+    lo = -clip if clip_lo is None else clip_lo
     for landmark_id, raw in scores.items():
-        log_lr = max(-clip, min(clip, scale * raw + offset))
+        log_lr = max(lo, min(clip, scale * raw + offset))
         if abs(log_lr - default_log_lr) > 1e-9:
             entries.append(structs.CompatibilityEntry(
                 landmark_id=landmark_id, log_lr=float(log_lr)))
@@ -692,7 +696,7 @@ def to_compatibility_table(tracklet_id, scores, matcher_version,
         matcher_version=matcher_version,
         entries=entries,
         default_log_lr=float(default_log_lr),
-        clip_lo=float(-clip),
+        clip_lo=float(lo),
         clip_hi=float(clip),
         status=status,
     )

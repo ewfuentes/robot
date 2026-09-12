@@ -56,6 +56,18 @@ read as independent identity claims. Regression checks emphasize request and
 tracklet coverage, retained instance identity, null mass, and calibrated
 uncertainty—not raw category-expanded row count alone.
 
+The published `digest_chunks` matcher labels each endorsed row `instance` or
+`category`, but a category-labelled row carries the model's kind confidence
+as if it were an identity claim, and only the rows of that kind the model
+happened to endorse in some slice carry it at all (the per-slice lottery).
+`matching:reaggregate_tables --policy catexpand_divided` re-reads a published
+artifact's `matches.json` / `signatures.json` / `compatibility.json` with no
+model call, expands each category-labelled match to every catalog row of its
+kind at c/N under a -12 clip floor, keeps instance rows at their confidence,
+and writes a table list for `localization:grid_filter --tables_override`.
+`--policy baseline` must rebuild `compatibility.json` unchanged (the plumbing
+check).
+
 ## Running the filter
 
 `localization:run_export` consumes an immutable `localization_inputs` artifact

@@ -11,6 +11,41 @@ py_library(
 )
 
 py_library(
+    name = "release_schedule",
+    srcs = ["release_schedule.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":export_ingest",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/calibration:audit_io",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_binary(
+    name = "build_release_schedule",
+    srcs = ["release_schedule.py"],
+    main = "release_schedule.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":release_schedule"],
+)
+
+py_test(
+    name = "release_schedule_test",
+    srcs = ["release_schedule_test.py"],
+    deps = [
+        ":export_ingest",
+        ":release_schedule",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_library(
     name = "filter_catalog",
     srcs = ["filter_catalog.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -880,5 +915,78 @@ py_test(
     deps = [
         ":odometry_profiles",
         ":structs",
+    ],
+)
+
+py_library(
+    name = "grid_filter_lib",
+    srcs = ["grid_filter.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        ":export_ingest",
+        ":filter",
+        ":odometry_profiles",
+        ":release_schedule",
+        ":structs",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_binary(
+    name = "grid_filter",
+    srcs = ["grid_filter.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        ":export_ingest",
+        ":filter",
+        ":odometry_profiles",
+        ":release_schedule",
+        ":structs",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_test(
+    name = "grid_filter_test",
+    srcs = ["grid_filter_test.py"],
+    deps = [
+        requirement("torch"),
+        ":grid_filter_lib",
+        ":structs",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_library(
+    name = "grid_viewer_lib",
+    srcs = ["grid_viewer.py"],
+    data = ["viewer_assets/style.css"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":export_ingest",
+        ":forensics_lib",
+        ":release_schedule",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "grid_viewer",
+    srcs = ["grid_viewer.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":grid_viewer_lib"],
+)
+
+py_test(
+    name = "grid_viewer_test",
+    srcs = ["grid_viewer_test.py"],
+    deps = [
+        ":grid_viewer_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
