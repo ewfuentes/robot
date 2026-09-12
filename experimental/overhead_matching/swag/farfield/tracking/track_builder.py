@@ -98,6 +98,17 @@ class TrackBuilderConfig:
     # pole, or other occluder does not kill an otherwise healthy track.
     fragment_min_dominant_cc: float = 0.6
     fragment_patience: int = 3
+    # Duplicate suppression at seeding. An unclaimed detection is the SAME
+    # object as an alive track when it shares the track's modal tag and
+    # either covers this fraction of the track's current mask bbox or lands
+    # within drift_gate_px of the mask centroid (the near-miss geometry);
+    # such a detection re-anchors an unsupported track instead of seeding a
+    # duplicate. Two unclaimed detections at one keyframe are one object when
+    # their pano boxes overlap this much (one landmark predicted with boxes
+    # in several faces, or two entries for one building).
+    dup_min_inter_over_mask: float = 0.5
+    seed_dup_iou: float = 0.5
+    seed_dup_containment: float = 0.8
 
 
 SUPPORT_PRIORITY = ["continue_clean", "merge_superset", "split_child", "weak",
@@ -107,6 +118,10 @@ SUPPORT_PRIORITY = ["continue_clean", "merge_superset", "split_child", "weak",
 # (contained-but-incoherent) and "none" do none of those.
 SUPPORT_CLASSES = frozenset(
     ("continue_clean", "merge_superset", "split_child", "weak"))
+
+
+def _box_area(box) -> float:
+    return max(0.0, float(box[2] - box[0])) * max(0.0, float(box[3] - box[1]))
 
 
 def window_size_for_extent(extent_px: float, cfg: TrackBuilderConfig) -> int:
@@ -269,6 +284,7 @@ class TrackBuilder:
         self._next_id += 1
         track.prompt_box = None  # set per-interval once window origin known
         track._birth_pano_box = pano_box  # noqa: SLF001 - internal handoff
+        track._seed_duplicates = []  # noqa: SLF001 - same-keyframe twins
         self._vote(track, obs)
         self.tracks.append(track)
         return track
@@ -359,6 +375,8 @@ class TrackBuilder:
                     "mask_bbox_window": bbox,
                     "supports": [],
                     "health": health,
+                    "seed_duplicates": list(
+                        getattr(track, "_seed_duplicates", [])),
                 })
                 if not health["ok"]:
                     self._close(track, keyframe, f"birth_{health['reason']}")
@@ -420,17 +438,126 @@ class TrackBuilder:
             self.seed_unassigned(keyframe + 1, detections, det_pano_boxes)
 
     def seed_unassigned(self, keyframe, detections, det_pano_boxes):
-        """Detections that supported no track become new seeds. Also used to
-        bootstrap the first keyframe of a run (no tracks -> all seed)."""
+        """Detections that supported no track become new seeds, unless they
+        duplicate an object that is already tracked. Also used to bootstrap
+        the first keyframe of a run (no tracks -> all seed).
+
+        Duplicates come in two shapes and are handled in this order:
+        1. The detection is the same object as an ALIVE track whose mask has
+           eroded or slid (support classified none/context): it re-anchors an
+           unsupported track ("reanchor_rebirth") or is absorbed as a vote on
+           a supported one ("duplicate"), never seeded.
+        2. Two unclaimed same-class detections at this keyframe cover the
+           same pano region (one landmark with boxes in several faces, or
+           two entries for one building): the larger seeds, the other votes
+           on it.
+        """
         claimed = set()
+        current = []
         for track in self.alive_tracks():
             if track.records and track.records[-1].get("keyframe") == keyframe:
+                current.append(track)
                 for s in track.records[-1].get("supports", []):
                     if s["class"] in SUPPORT_CLASSES:
                         claimed.add(s["obs_id"])
-        for obs in detections:
-            if obs.obs_id not in claimed:
-                self.seed(obs, det_pano_boxes[obs.obs_id], keyframe)
+        unclaimed = [obs for obs in detections if obs.obs_id not in claimed]
+        unclaimed.sort(key=lambda obs: -_box_area(det_pano_boxes[obs.obs_id]))
+        seeded = []  # (track, pano_box) seeded at this keyframe
+        for obs in unclaimed:
+            box = det_pano_boxes[obs.obs_id]
+            target = self._duplicate_of_alive(obs, box, current)
+            if target is not None:
+                self._absorb(target, obs, box, keyframe)
+                continue
+            tag = f"{obs.primary_tag_key}={obs.primary_tag_value}"
+            twin = next((track for track, other in seeded
+                         if track.tag_votes.most_common(1)[0][0] == tag
+                         and self._same_region(box, other)), None)
+            if twin is not None:
+                self._vote(twin, obs)
+                twin._seed_duplicates.append(obs.obs_id)  # noqa: SLF001
+                continue
+            seeded.append((self.seed(obs, box, keyframe), box))
+
+    def _duplicate_of_alive(self, obs, pano_box, tracks):
+        """The alive track this unclaimed detection duplicates, if any."""
+        tag = f"{obs.primary_tag_key}={obs.primary_tag_value}"
+        best, best_score = None, 0.0
+        for track in tracks:
+            modal = track.tag_votes.most_common(1)
+            if not modal or modal[0][0] != tag:
+                continue
+            if track.last_mask is None or not track.last_mask.any():
+                continue
+            ys, xs = np.nonzero(track.last_mask)
+            x0, y0 = track.last_origin
+            mask_box = [x0 + xs.min(), y0 + ys.min(),
+                        x0 + xs.max() + 1, y0 + ys.max() + 1]
+            inter = self._pano_intersection(pano_box, mask_box)
+            over_mask = inter / max(1.0, _box_area(mask_box))
+            cx = x0 + float(xs.mean())
+            cy = y0 + float(ys.mean())
+            bx = (pano_box[0] + pano_box[2]) / 2.0
+            by = (pano_box[1] + pano_box[3]) / 2.0
+            distance = math.hypot(
+                geo.signed_x_offset(bx, cx, self.pano_w), by - cy)
+            near = distance <= self.cfg.drift_gate_px
+            if over_mask >= self.cfg.dup_min_inter_over_mask or near:
+                score = over_mask + (1.0 if near else 0.0)
+                if score > best_score:
+                    best, best_score = track, score
+        return best
+
+    def _absorb(self, track, obs, pano_box, keyframe):
+        """Fold a duplicate detection into the track it belongs to."""
+        record = track.records[-1]
+        supported = any(s["class"] in SUPPORT_CLASSES
+                        for s in record.get("supports", []))
+        origin = track.last_origin
+        box_window = self._box_in_window(pano_box, origin)
+        metrics = mask_box_metrics(track.last_mask, box_window)
+        entry = {"obs_id": obs.obs_id,
+                 "class": "duplicate" if supported else "rebirth",
+                 "box_window": [round(v, 1) for v in box_window],
+                 **{k: round(v, 3) for k, v in metrics.items()}}
+        record.setdefault("supports", []).append(entry)
+        self._vote(track, obs)
+        if supported:
+            return
+        # Same object, mask slid off or eroded: re-anchor the identity on the
+        # detection instead of letting the track starve while a duplicate is
+        # born beside it.
+        track._reanchor_pano_box = pano_box  # noqa: SLF001
+        track.prompt_box = pano_box
+        track.prompt_mask = None
+        track.center_x = (pano_box[0] + pano_box[2]) / 2.0 % self.pano_w
+        track.center_y = (pano_box[1] + pano_box[3]) / 2.0
+        track.window_px = window_size_for_extent(
+            pano_box[2] - pano_box[0], self.cfg)
+        track.unsupported_streak = 0
+        track.drift_streak = 0
+        track.end_keyframe = keyframe
+        track.ever_supported = True
+        record["action"] = "reanchor_rebirth"
+
+    def _same_region(self, box_a, box_b) -> bool:
+        inter = self._pano_intersection(box_a, box_b)
+        if inter <= 0.0:
+            return False
+        area_a, area_b = _box_area(box_a), _box_area(box_b)
+        iou = inter / max(1.0, area_a + area_b - inter)
+        containment = inter / max(1.0, min(area_a, area_b))
+        return (iou >= self.cfg.seed_dup_iou
+                or containment >= self.cfg.seed_dup_containment)
+
+    def _pano_intersection(self, box_a, box_b) -> float:
+        """Rectangle intersection of two pano boxes, wrap-aware in x."""
+        dx = geo.signed_x_offset(box_b[0], box_a[0], self.pano_w)
+        bx0 = box_a[0] + dx
+        bx1 = bx0 + (box_b[2] - box_b[0])
+        w = min(box_a[2], bx1) - max(box_a[0], bx0)
+        h = min(box_a[3], box_b[3]) - max(box_a[1], box_b[1])
+        return float(w * h) if w > 0 and h > 0 else 0.0
 
     # -- internals ---------------------------------------------------------
 
