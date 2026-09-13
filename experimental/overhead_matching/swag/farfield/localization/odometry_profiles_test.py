@@ -12,6 +12,20 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 
 class OdometryProfilesTest(unittest.TestCase):
+    def test_turn_can_produce_zero_variance_increments(self):
+        nominal = [structs.OdometryDelta(
+            keyframe_idx=k, forward_m=10.0, left_m=0.0,
+            delta_yaw_cw_rad=math.pi if k == 5 else 0.0,
+            sigma_m=0.0, sigma_yaw_rad=0.0) for k in range(1, 13)]
+        actual, _ = odometry_profiles._derive_planar_imu_v1(
+            nominal, [100.0 * k for k in range(13)], 0, "out_and_back")
+        self.assertTrue(any(delta.sigma_m == 0.0 for delta in actual))
+        self.assertTrue(any(delta.sigma_m > 0.0 for delta in actual))
+        for delta in actual:
+            self.assertTrue(math.isfinite(delta.sigma_m))
+            self.assertGreaterEqual(delta.sigma_m, 0.0)
+            self.assertGreater(delta.sigma_yaw_rad, 0.0)
+
     def test_planar_v1_rotates_fixed_body_bias_through_a_right_turn(self):
         nominal = [
             structs.OdometryDelta(

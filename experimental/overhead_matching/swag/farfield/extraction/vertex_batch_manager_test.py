@@ -272,6 +272,9 @@ class OnlineAdapterExecutionTest(unittest.TestCase):
 
                 response = SimpleNamespace(
                     text="{}",
+                    model_version="fake-model-001",
+                    response_id="resp-1",
+                    create_time=None,
                     usage_metadata=SimpleNamespace(
                         prompt_token_count=1,
                         candidates_token_count=2,
@@ -290,11 +293,24 @@ class OnlineAdapterExecutionTest(unittest.TestCase):
                 with mock.patch.object(vbm, "check_environment"), \
                         mock.patch.object(
                             vbm.genai, "Client", return_value=client), \
+                        mock.patch.object(
+                            vbm, "_publisher_model_snapshot",
+                            return_value={"versionId": "default"}), \
                         contextlib.redirect_stdout(io.StringIO()):
                     vbm.cmd_run_online(args)
 
                 boundary = json.loads(output_path.read_text())
                 self.assertEqual(set(boundary), {"key", "response"})
+                self.assertEqual(boundary["response"]["modelVersion"],
+                                 "fake-model-001")
+                self.assertEqual(boundary["response"]["responseId"], "resp-1")
+                provenance = json.loads(
+                    output_path.with_suffix(".job.json").read_text())
+                self.assertEqual(provenance["model"], "test-model")
+                self.assertEqual(provenance["transport"], "on_demand")
+                self.assertEqual(provenance["publisher_model"],
+                                 {"versionId": "default"})
+                self.assertEqual(provenance["summary"]["completed"], 1)
                 self.assertEqual(
                     boundary,
                     vbm._normalize_batch_record({
@@ -339,10 +355,13 @@ class OnlineAdapterExecutionTest(unittest.TestCase):
             model="test-model", parallel=1)
         with mock.patch.object(vbm, "check_environment"), mock.patch.object(
                 vbm.genai, "Client", return_value=client), \
+                mock.patch.object(vbm, "_publisher_model_snapshot",
+                                  return_value={"error": "offline"}), \
                 contextlib.redirect_stdout(io.StringIO()):
             vbm.cmd_run_online(args)
 
         self.assertEqual(output_path.read_text(), "")
+        self.assertTrue(output_path.with_suffix(".job.json").is_file())
         error = json.loads(
             output_path.with_suffix(".errors.jsonl").read_text())
         self.assertEqual(set(error), {"key", "error"})

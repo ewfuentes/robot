@@ -9,6 +9,8 @@ those contracts.
 """
 
 import argparse
+import datetime
+import importlib.metadata
 import json
 import os
 import re
@@ -218,6 +220,71 @@ def cmd_status(args):
         sys.exit(1)
 
 
+def _publisher_model_snapshot(model: str) -> dict:
+    """What Vertex says about `model` at this moment.
+
+    Every Gemini alias on Vertex, previews included, reports `versionId:
+    default` and no dated pin (checked 2026-09-11 against the full publisher
+    list), so this cannot name the weights. It records what Google does
+    expose -- launch stage, the resolved resource template -- next to the
+    time we asked, which is the most a later reader can get for a hot-swapped
+    alias. Never raises: provenance must not fail a paid run.
+    """
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        import requests
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(google.auth.transport.requests.Request())
+        reply = requests.get(
+            f"https://aiplatform.googleapis.com/v1/publishers/google/models/{model}",
+            params={"view": "PUBLISHER_MODEL_VIEW_FULL"},
+            headers={"Authorization": f"Bearer {credentials.token}",
+                     "x-goog-user-project": os.environ["GOOGLE_CLOUD_PROJECT"]},
+            timeout=30)
+        body = reply.json()
+        for bulky in ("predictSchemata", "supportedActions"):
+            body.pop(bulky, None)
+        return body
+    except Exception as exc:  # noqa: BLE001 -- recorded, not raised
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def write_transport_provenance(output_path, *, model: str, transport: str,
+                               batch_job: dict | None = None,
+                               summary: dict | None = None) -> Path:
+    """`<output>.job.json`: which model resource served this transport shard.
+
+    Per-response `modelVersion`/`responseId`/`createTime` live in the raw
+    records (and the attempt shards built from them); this sidecar carries
+    the per-submission facts those rows cannot: the batch job resource, the
+    publisher-model snapshot, SDK version, project and location.
+    """
+    try:
+        sdk_version = importlib.metadata.version("google-genai")
+    except importlib.metadata.PackageNotFoundError:
+        sdk_version = None
+    record = {
+        "schema": "farfield.llm_transport_provenance/v1",
+        "model": model,
+        "transport": transport,
+        "project": os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        "location": os.environ.get("GOOGLE_CLOUD_LOCATION"),
+        "google_genai_version": sdk_version,
+        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "publisher_model": _publisher_model_snapshot(model),
+    }
+    if batch_job is not None:
+        record["batch_job"] = batch_job
+    if summary is not None:
+        record["summary"] = summary
+    path = Path(output_path).with_suffix(".job.json")
+    path.write_text(json.dumps(record, indent=1, default=str) + "\n")
+    print(f"  provenance: {path}")
+    return path
+
+
 def cmd_run_online(args):
     """Run batch requests online via live Vertex AI API."""
     check_environment()
@@ -278,6 +345,9 @@ def cmd_run_online(args):
                 "key": record["key"],
                 "response": {
                     "candidates": [{"content": {"parts": [{"text": response.text}], "role": "model"}}],
+                    "createTime": str(response.create_time) if response.create_time else None,
+                    "modelVersion": response.model_version,
+                    "responseId": response.response_id,
                     "usageMetadata": {
                         "promptTokenCount": response.usage_metadata.prompt_token_count,
                         "candidatesTokenCount": response.usage_metadata.candidates_token_count,
@@ -345,6 +415,10 @@ def cmd_run_online(args):
     print(f"  Thinking: {total_thinking:,}")
     print(f"  Total:    {total_prompt + total_output + total_thinking:,}")
     print(f"Output: {args.output}")
+    write_transport_provenance(
+        output_path, model=args.model, transport="on_demand",
+        summary={"requests": len(records), "completed": completed,
+                 "errors": errors, "elapsed_s": round(elapsed, 1)})
 
 
 def _batch_stage_uri(gcs_prefix: str, tag: str,
@@ -531,6 +605,10 @@ def cmd_run_batch(args):
     print(f"\nCompleted: {n_ok} ok, {n_err} error(s) -> {output_path}")
     print(f"Token usage:\n  Prompt:   {prompt:,}\n  Output:   {output:,}\n"
           f"  Thinking: {thinking:,}\n  Total:    {prompt + output + thinking:,}")
+    write_transport_provenance(
+        output_path, model=args.model, transport="batch",
+        batch_job=job.model_dump(mode="json", exclude_none=True),
+        summary={"requests": len(records), "completed": n_ok, "errors": n_err})
     if n_err:
         print(f"\n{n_err} request(s) failed; the request lifecycle will select "
               "them for a new attempt.")

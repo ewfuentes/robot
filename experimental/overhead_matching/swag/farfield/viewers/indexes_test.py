@@ -247,12 +247,36 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual((self.root / "index.html").read_text().splitlines()[0],
                          indexes.INDEX_GENERATED_MARK)
 
-    def test_refuses_symlink_root_and_nested_directories(self):
+    def test_refuses_symlink_root(self):
         root_link = Path(self.tmp.name) / "root-link"
         root_link.symlink_to(self.root, target_is_directory=True)
         with self.assertRaisesRegex(indexes.IndexRefreshError,
                                     "refusing symlink directory"):
             indexes.refresh(root_link)
+
+    def test_follows_artifact_version_symlinked_to_another_disk(self):
+        # Storage redirect: a lane's dataset directory lives on another disk
+        # and is linked into the root. Its index page is written through the
+        # link; the refresh must not abort.
+        linked_target = Path(self.tmp.name) / "other-disk" / "scope_shared"
+        version = linked_target / "sat_v1"
+        version.mkdir(parents=True)
+        (version / "manifest.json").write_text("{}")
+        lane = self.root / "artifacts" / "loci_satellite"
+        lane.mkdir(parents=True)
+        (lane / "scope_shared").symlink_to(
+            linked_target, target_is_directory=True)
+        indexes.refresh(self.root)
+        page = (lane / "index.html").read_text()
+        self.assertIn("scope_shared", page)
+
+    def test_skips_dangling_directory_symlink(self):
+        lane = self.root / "artifacts" / "loci_satellite"
+        lane.mkdir(parents=True)
+        (lane / "gone").symlink_to(
+            Path(self.tmp.name) / "not-there", target_is_directory=True)
+        indexes.refresh(self.root)
+        self.assertNotIn("gone", (lane / "index.html").read_text())
 
 
     def test_follows_directory_symlink_placed_inside_the_root(self):

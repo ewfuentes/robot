@@ -87,6 +87,8 @@ class OdometryDelta(msgspec.Struct, **MSGSPEC_STRUCT_OPTS):
     forward_m: float
     left_m: float
     delta_yaw_cw_rad: float
+    # Nonnegative noise increments; zero adds no independent noise, not zero
+    # total pose uncertainty (e.g. a cumulative IMU variance-envelope plateau).
     sigma_m: float  # isotropic per-axis translation noise std
     sigma_yaw_rad: float
 

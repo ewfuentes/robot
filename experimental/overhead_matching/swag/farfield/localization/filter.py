@@ -29,6 +29,7 @@ NEES, error curves) live in metrics.py; this module only runs the filter.
 import dataclasses
 import hashlib
 import math
+import warnings
 
 import msgspec
 import numpy as np
@@ -857,11 +858,35 @@ def systematic_resample(belief: ParticleBelief, rng: np.random.Generator,
             available = np.maximum(counts - minimum, 0)
             total_available = int(available.sum())
             if need > total_available:
-                raise ValueError(
+                # A diffuse belief resampled early can hold hundreds of
+                # hypothesis groups, more than the budget can floor at
+                # `survival_floor` each. The floor is a representation
+                # guarantee, so honor the largest one that fits rather than
+                # abort the run (2026-09-11; before that this raised).
+                counts -= deficit
+                floored = minimum > 0
+                fitted = 0
+                for candidate in range(survival_floor - 1, 0, -1):
+                    trial_minimum = np.where(floored, candidate, 0)
+                    trial_deficit = np.maximum(trial_minimum - counts, 0)
+                    trial_need = int(trial_deficit.sum())
+                    trial_available = int(np.maximum(
+                        counts + trial_deficit - trial_minimum, 0).sum())
+                    if trial_need <= trial_available:
+                        fitted = candidate
+                        break
+                warnings.warn(
                     f"survival_floor {survival_floor} needs {need} extra "
                     f"offspring but only {total_available} are above their "
-                    "floors; the floor is too large for this particle "
-                    "budget and group count")
+                    f"floors ({int(floored.sum())} hypothesis groups); "
+                    f"using floor {fitted} for this resample")
+                minimum = np.where(floored, fitted, 0)
+                deficit = np.maximum(minimum - counts, 0)
+                need = int(deficit.sum())
+                counts += deficit
+                available = np.maximum(counts - minimum, 0)
+                total_available = int(available.sum())
+        if need > 0:
             # Take the surplus back proportionally (largest-remainder), so
             # unfloored mass keeps its relative allocation.
             proportional = need * available / total_available
