@@ -18,6 +18,7 @@ import argparse
 import dataclasses
 import json
 import math
+import resource
 import time
 from pathlib import Path
 
@@ -943,6 +944,9 @@ def main():
     parser.add_argument(
         "--joint_cap", type=float, default=None,
         help="joint factor: clamp the per-track mixture term at this value")
+    parser.add_argument("--joint_backend", choices=("reference", "fused", "eager_optimized"), default="reference")
+    parser.add_argument("--joint_chunk", type=int, default=64)
+    parser.add_argument("--profile_releases", type=int, default=0)
     parser.add_argument(
         "--eof_temper", type=float, default=None,
         help="joint factor: per-epoch log-likelihood scale for tracks "
@@ -964,7 +968,7 @@ def main():
              "tensors across causal replays and the smoother pass "
              "(bit-identical results; zero disables)")
     parser.add_argument(
-        "--smoother", choices=("none", "fixed_interval"), default="none",
+        "--smoother", choices=("none", "fixed_interval", "online"), default="none",
         help="after the causal run, also compute the fixed-interval smoothed "
              "trajectory (forward-backward over the same grid HMM with every "
              "factor at its anchor, or at its release keyframe in joint mode) "
@@ -979,6 +983,8 @@ def main():
         "--smooth_lags", default="",
         help="comma-separated extra lags scored in the same backward chain "
              "(the online lag curve); the largest sets the alpha window")
+    parser.add_argument("--online_seconds", type=int, default=0,
+                        help="record prefix-only confidence and 0/5/10/20/30-second policies")
     parser.add_argument(
         "--heading_meas_sigma_deg", type=float, default=0.0,
         help="diagnostic only: at EVERY keyframe multiply the belief by a "
@@ -1009,6 +1015,12 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    if args.joint_chunk <= 0:
+        parser.error("--joint_chunk must be positive")
+    if args.online_seconds and (not args.track_joint or args.availability != "natural" or args.smoother == "none"):
+        parser.error("--online_seconds requires natural joint mode and a smoother")
+    if args.smoother == "online" and not args.online_seconds:
+        parser.error("--smoother online requires --online_seconds 1")
     if args.checkpoint_keyframes <= 0:
         parser.error("--checkpoint_keyframes must be positive")
     if args.top_modes < 0:
@@ -1289,6 +1301,14 @@ def main():
                       | ({args.smooth_lag} if args.smooth_lag > 0 else set()))
         lags = [v for v in lags if v > 0]
         lag = max(lags) if lags else 0
+        online_records = None
+        if args.online_seconds:
+            from experimental.overhead_matching.swag.farfield.localization import online_latency
+            online_times = online_latency.read_times(args.input_dir, n_keyframes)
+            online_records = [[] for _ in range(n_keyframes)]
+            required = max(k - int(np.searchsorted(online_times, t - 30.0))
+                           for k, t in enumerate(online_times))
+            lag = max(lag, required)
         planner = GridBelief(grid, args.n_heading, device)
         planner.belief = initial_belief.clone()
         plans = [None] * n_keyframes
@@ -1300,6 +1320,21 @@ def main():
         lag_error = {v: [None] * n_keyframes for v in lags}
         lag_states = {v: [None] * n_keyframes for v in lags}
         message = planner.belief
+
+        def record_online(posterior, target, asof):
+            mass, error, state = _score_message(posterior, target, masks, truth_by_kf, grid, device)
+            online_records[target].append({
+                "asof_keyframe": asof, "asof_time": float(online_times[asof]),
+                "state": state,
+                "confidence": online_latency.posterior_confidence(posterior, grid, state),
+                "observer": {"mass500": mass[500.0], "map_error_m": error}})
+
+        def finish_online():
+            distance = np.zeros(n_keyframes)
+            for k in range(1, n_keyframes):
+                a, b = truth_by_kf[k-1], truth_by_kf[k]
+                distance[k] = distance[k-1] + math.hypot(b.east_m-a.east_m, b.north_m-a.north_m)
+            return online_latency.finish(online_records, online_times, distance)
 
         def backward_step(beta, keyframe):
             if keyframe in factor_window:
@@ -1321,7 +1356,9 @@ def main():
             if factor is not None:
                 message = message * factor
             message = _normalized(message)
-            if keyframe % stride == 0:
+            if online_records is not None:
+                record_online(message, keyframe, keyframe)
+            if keyframe % stride == 0 and args.smoother != "online":
                 checkpoints[keyframe] = message.detach().cpu()
             if lag > 0:
                 window[keyframe] = message.detach().cpu()
@@ -1339,9 +1376,14 @@ def main():
                     if target < 0:
                         break
                     beta = backward_step(beta, target + 1)
-                    if steps in lag_series:
+                    record_seconds = (online_records is not None and
+                                      online_times[keyframe] - online_times[target] <= 30.0 + 1e-8)
+                    if steps in lag_series or record_seconds:
                         smoothed = _normalized(
                             window[target].to(device) * beta)
+                        if record_seconds:
+                            record_online(smoothed, target, keyframe)
+                    if steps in lag_series:
                         mass, map_error, state = _score_message(
                             smoothed, target, masks, truth_by_kf, grid, device)
                         for radius in RADII_M:
@@ -1349,10 +1391,18 @@ def main():
                         lag_error[steps][target] = map_error
                         lag_states[steps][target] = state
                 window.pop(keyframe - lag, None)
+                if args.smoother == "online" and keyframe - lag - 1 >= 0:
+                    plans[keyframe - lag - 1] = None
             if keyframe % 50 == 0:
                 print(f"smoother forward kf {keyframe:4d} "
                       f"({time.time() - started:.0f}s)")
         forward_seconds = time.time() - started
+
+        if args.smoother == "online":
+            return {"method": "online_timestamp_bounded_joint_release_smoothing",
+                    "summary": {}, "online_latency": finish_online(),
+                    "runtime_seconds": {"forward_with_online_policy": forward_seconds,
+                                        "total": time.time() - started}}
 
         smoothed_series = {radius: [0.0] * n_keyframes for radius in RADII_M}
         smoothed_error = [0.0] * n_keyframes
@@ -1398,6 +1448,8 @@ def main():
             "map_error_m_by_keyframe": smoothed_error,
             "map_state_by_keyframe": smoothed_states,
         }
+        if online_records is not None:
+            result["online_latency"] = finish_online()
         print("smoothed:", {key: round(value, 4)
                             for key, value in result["summary"].items()})
         for v in lags:
@@ -1447,6 +1499,10 @@ def main():
             for v, entry in smoothing.get("fixed_lags", {}).items():
                 for key, value in entry["summary"].items():
                     payload["summary"][f"lag{v}_{key}"] = value
+        payload["memory_including_smoothing"] = {
+            "host_peak_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated() if args.device.startswith("cuda") else 0,
+            "cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved() if args.device.startswith("cuda") else 0}
         return payload
     filtered_series = {radius: [] for radius in RADII_M}
     filtered_map_error = []
@@ -1506,7 +1562,13 @@ def main():
             if (args.eof_temper is not None
                     and keyframe == n_keyframes - 1):
                 temper = args.eof_temper
-            return grid_belief.track_joint_likelihood(
+            joint_fn = grid_belief.track_joint_likelihood
+            if args.joint_backend != "reference":
+                from experimental.overhead_matching.swag.farfield.localization.grid_joint_fast import joint_likelihood
+                def joint_fn(*a, **kw):
+                    return joint_likelihood(grid_belief, *a, **kw,
+                                            compiled=args.joint_backend == "fused")
+            return joint_fn(
                 epochs, candidate_east, candidate_north,
                 candidate_weight, sigma_pos, args.pi0, tail_mass,
                 quantization_comp=bool(args.quantization_comp),
@@ -1515,7 +1577,7 @@ def main():
                 cand_extent=candidate_extent,
                 temper=temper,
                 mixture=args.mixture,
-                cap=args.joint_cap)
+                cap=args.joint_cap, chunk=args.joint_chunk)
 
         smoothing_releases = releases
 
@@ -1525,7 +1587,10 @@ def main():
                 releases_at.setdefault(
                     release.release_keyframe_idx, []).append(release)
             started = time.time()
+            release_timings = []
+            update_timings = []
             for keyframe in range(n_keyframes):
+                update_started = time.perf_counter()
                 if keyframe > 0:
                     belief.motion(
                         odometry[keyframe], args.yaw_sigma_scale,
@@ -1534,7 +1599,18 @@ def main():
                 if heading_factor is not None:
                     belief.belief = _normalized(belief.belief * heading_factor)
                 for release in releases_at.get(keyframe, ()):
+                    if args.profile_releases and args.device.startswith("cuda"):
+                        torch.cuda.synchronize()
+                    release_started = time.perf_counter()
                     likelihood = joint_release_likelihood(release, keyframe)
+                    if args.profile_releases:
+                        if args.device.startswith("cuda"):
+                            torch.cuda.synchronize()
+                        ce, _, _, _, _ = candidate_set(release.tracklet_id)
+                        release_timings.append({"keyframe": keyframe,
+                            "track": release.tracklet_id.split("#")[-1],
+                            "candidates": ce.numel(), "epochs": len(release.measurements),
+                            "seconds": time.perf_counter() - release_started})
                     belief.belief = _normalized(belief.belief * likelihood)
                 belief.renormalize()
                 mass, map_error, state = _score_message(
@@ -1544,6 +1620,7 @@ def main():
                 for radius in RADII_M:
                     filtered_series[radius].append(mass[radius])
                 filtered_map_error.append(map_error)
+                update_timings.append(time.perf_counter() - update_started)
                 if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
                     print(
                         f"joint kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
@@ -1610,7 +1687,14 @@ def main():
                         "returned": len(final_top_modes),
                         "modes": final_top_modes,
                     },
-                    "runtime_seconds": {"joint_forward": forward_seconds},
+                    "runtime_seconds": {"joint_forward": forward_seconds,
+                        "update_p50": float(np.percentile(update_timings, 50)),
+                        "update_p95": float(np.percentile(update_timings, 95)),
+                        "update_max": max(update_timings)},
+                    "release_timings": release_timings,
+                    "memory": {"host_peak_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                        "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated() if args.device.startswith("cuda") else 0,
+                        "cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved() if args.device.startswith("cuda") else 0},
                 }
                 Path(args.out).write_text(
                     json.dumps(finish_payload(payload), indent=1))

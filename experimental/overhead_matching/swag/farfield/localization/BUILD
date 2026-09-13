@@ -919,6 +919,12 @@ py_test(
 )
 
 py_library(
+    name = "grid_online_experiments",
+    srcs = ["grid_joint_fast.py", "online_latency.py"],
+    deps = [requirement("numpy"), requirement("torch")],
+)
+
+py_library(
     name = "grid_filter_lib",
     srcs = ["grid_filter.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -927,6 +933,7 @@ py_library(
         requirement("torch"),
         ":export_ingest",
         ":filter",
+        ":grid_online_experiments",
         ":odometry_profiles",
         ":release_schedule",
         "//common/torch:load_torch_deps",
@@ -941,6 +948,7 @@ py_binary(
         requirement("torch"),
         ":export_ingest",
         ":filter",
+        ":grid_online_experiments",
         ":odometry_profiles",
         ":release_schedule",
         "//common/torch:load_torch_deps",
