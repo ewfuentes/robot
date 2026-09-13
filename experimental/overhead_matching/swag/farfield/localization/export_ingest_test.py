@@ -207,6 +207,21 @@ def write_export(root: Path, *, meta_mutator=None, landmarks=None,
 
 
 class LoadTest(unittest.TestCase):
+    def test_odometry_sigmas_allow_zero_but_not_negative_or_nonfinite(self):
+        odometry = [structs.OdometryDelta(
+            k, 40.0, 0.0, 0.0, 0.0, 0.0) for k in (1, 2)]
+        with tempfile.TemporaryDirectory() as temporary:
+            data = export_ingest.load(write_export(
+                Path(temporary), odometry=odometry))
+        self.assertEqual(data.odometry, odometry)
+        for field in ("sigma_m", "sigma_yaw_rad"):
+            for bad in (-1.0, float("nan"), float("inf")):
+                data.odometry = [msgspec.structs.replace(
+                    delta, **{field: bad}) for delta in odometry]
+                with self.subTest(field=field, bad=bad), \
+                        self.assertRaises(ValueError):
+                    export_ingest.validate(data)
+
     def test_loads_a_valid_manifest_owned_export(self):
         with tempfile.TemporaryDirectory() as temporary:
             export = write_export(Path(temporary))

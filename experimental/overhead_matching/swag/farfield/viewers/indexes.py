@@ -80,16 +80,27 @@ FRAME_VIEWER_KIND = "frame_landmark_viewer"
 FRAME_VIEWER_SCHEMA = "farfield_frame_landmark_viewer/v1"
 
 
-def _require_directory(path: Path, *, allow_missing: bool = False) -> bool:
-    """Validate one directory without following a final symlink."""
+def _require_directory(path: Path, *, allow_missing: bool = False,
+                       allow_symlink: bool = True) -> bool:
+    """Validate one directory, following a final symlink by default.
+
+    A directory symlink placed inside the root by its owner redirects storage
+    to another disk (`artifacts/loci_satellite/<scope> -> /more_data/...`) and
+    is part of the root, so it is followed here exactly as `_dirs` follows it.
+    The root itself may not be a symlink: `refresh` passes allow_symlink=False.
+    """
+    if not allow_symlink and path.is_symlink():
+        raise IndexRefreshError(f"refusing symlink directory: {path}")
     try:
-        metadata = path.lstat()
+        metadata = path.stat()
     except FileNotFoundError:
+        # Also a dangling symlink, which is not a directory to index.
         if allow_missing:
             return False
         raise IndexRefreshError(f"directory does not exist: {path}") from None
-    if stat.S_ISLNK(metadata.st_mode):
-        raise IndexRefreshError(f"refusing symlink directory: {path}")
+    except OSError as exc:  # symlink loop, unreadable mount, ...
+        raise IndexRefreshError(
+            f"cannot resolve directory: {path}: {exc}") from exc
     if not stat.S_ISDIR(metadata.st_mode):
         raise IndexRefreshError(
             f"expected directory, found another entry: {path}")
@@ -343,7 +354,7 @@ def refresh(data_root: Path) -> dict:
     index.html files owned by something else.
     """
     data_root = Path(data_root)
-    _require_directory(data_root)
+    _require_directory(data_root, allow_symlink=False)
     with _exclusive_refresh_lock(data_root):
         return _refresh_locked(data_root)
 

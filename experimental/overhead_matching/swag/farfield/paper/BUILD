@@ -18,6 +18,12 @@ py_binary(
     deps = [":table_common"],
 )
 
+py_test(
+    name = "check_roster_test",
+    srcs = ["check_roster_test.py"],
+    deps = [":check_roster", ":table_common"],
+)
+
 py_binary(
     name = "results_table",
     srcs = ["results_table.py"],

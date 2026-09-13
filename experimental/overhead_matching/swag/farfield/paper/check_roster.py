@@ -17,9 +17,11 @@ from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
     DATASET_GROUPS,
     DEFAULT_FARFIELD_ROOT,
+    LLM_SEQUENCE_OVERRIDES,
     LLM_STANDARD,
     SEQUENCE_ARTIFACTS,
     SEQUENCE_LANES,
+    TRACKING_COMPARISON,
     DatasetGroup,
     emit_table,
     read_json_object,
@@ -131,7 +133,8 @@ def check_sequence(root: Path, group: DatasetGroup, sequence: str,
                 notes.append(f"{key} not recorded")
                 continue
             llm_seen.setdefault(key, {}).setdefault(str(value), set()).add(sequence)
-            standard = LLM_STANDARD.get(key)
+            standard = LLM_SEQUENCE_OVERRIDES.get(sequence, {}).get(
+                key, LLM_STANDARD.get(key))
             if standard is not None and value != standard:
                 notes.append(f"{key}={value} ≠ standard {standard}")
         if kind == "catalogs":
@@ -162,10 +165,39 @@ def _markdown(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def tracking_comparison_rows(root: Path) -> list[list[str]]:
+    rows = []
+    for sequence, methods in TRACKING_COMPARISON.items():
+        for method, version in methods.items():
+            path = root / "artifacts" / "object_tracks" / sequence / version
+            try:
+                manifest = artifact.load_manifest(path)
+            except artifact.ArtifactValidationError as exc:
+                rows.append([sequence, method, version,
+                             "INVALID" if path.is_dir() else "PENDING",
+                             str(exc).splitlines()[0][:120]])
+                continue
+            notes = [f"code {manifest.git_commit[:8]}"]
+            for upstream in manifest.upstreams:
+                expected = SEQUENCE_ARTIFACTS[sequence].get(upstream.kind)
+                if expected is not None and upstream.version != expected:
+                    notes.append(f"upstream {upstream.kind}={upstream.version}"
+                                 f" ≠ roster {expected}")
+            rows.append([sequence, method, version,
+                         "MISMATCH" if any("≠" in note for note in notes) else "OK",
+                         "; ".join(notes)])
+    return rows
+
+
 def render_report(root: Path) -> str:
     sections = ["# Paper roster check", "",
                 f"Generated from `paper/table_common.py` against `{root}`. "
-                "Do not edit; change the roster and rerun `paper:check_roster`.", ""]
+                "Do not edit; change the roster and rerun `paper:check_roster`.", "",
+                "Artifact pins describe the September regeneration. Batch 2 "
+                "tracking through matching is queued for both methods; unpinned "
+                "evaluation lanes await that comparison. The run pins still identify historical "
+                "evaluations, so their prior-region mismatches remain visible "
+                "until replacement evaluations are selected.", ""]
     llm_seen: dict[str, dict[str, set[str]]] = {}
     problems = 0
     for group in DATASET_GROUPS:
@@ -177,7 +209,18 @@ def render_report(root: Path) -> str:
             problems += sum(row[2] not in ("OK", "") for row in rows)
             sections += [f"### {sequence}", "",
                          _markdown(["lane", "version", "status", "notes"], rows), ""]
-    sections += ["## LLM settings across sequences", ""]
+    comparison = tracking_comparison_rows(root)
+    problems += sum(row[3] != "OK" for row in comparison)
+    sections += ["## Tracking comparison", "",
+                 "Current tracker: `5c922921`; batch 2 PR #722 tracker: "
+                 "`c46b91ac`. Batch 1 dedup artifacts were produced at "
+                 "`b53a0514`, before the follow-up support-class change.", "",
+                 _markdown(["sequence", "method", "version", "status", "notes"],
+                           comparison), "",
+                 "## LLM settings across sequences", "",
+                 "Standard: Pro extraction and matching; Flash audit; v3 "
+                 "extraction prompt, with the explicit `_down30` variant only "
+                 "for Portland.", ""]
     llm_rows = []
     for key in LLM_STANDARD:
         values = llm_seen.get(key, {})

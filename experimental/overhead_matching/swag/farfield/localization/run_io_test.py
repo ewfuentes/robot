@@ -142,6 +142,24 @@ def stamp_retired_experiment_fields(
 
 
 class RoundTripTest(unittest.TestCase):
+    def test_odometry_sigmas_allow_zero_but_not_negative_or_nonfinite(self):
+        values = list(sample_payload())
+        values[2] = [msgspec.structs.replace(
+            delta, sigma_m=0.0, sigma_yaw_rad=0.0) for delta in values[2]]
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "zero"
+            run_io.write_run(run_dir, *values, dataset="synthetic", version="zero")
+            self.assertEqual(run_io.read_run(run_dir).odometry, values[2])
+            for field in ("sigma_m", "sigma_yaw_rad"):
+                for bad in (-1.0, float("nan"), float("inf")):
+                    damaged = list(values)
+                    damaged[2] = [msgspec.structs.replace(
+                        delta, **{field: bad}) for delta in values[2]]
+                    with self.subTest(field=field, bad=bad), \
+                            self.assertRaises(ValueError):
+                        run_io.write_run(Path(tmp) / "bad", *damaged,
+                                         dataset="synthetic", version="bad")
+
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"

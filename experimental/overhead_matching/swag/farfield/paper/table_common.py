@@ -116,7 +116,7 @@ DATASET_GROUPS = (
         map_source="OSM + ENC",
         catalog_scope="boston_harbor_20260712",
         region_policy="area625",
-        catalog_version="stage3_a6e45b9_trim625_v1",
+        catalog_version="trim625_20260911_v1",
         sequences=(
             "boston_harbor_leg1",
             "boston_harbor_leg2",
@@ -161,60 +161,55 @@ TABLE_GROUPS = tuple(group for group in DATASET_GROUPS if group.run_spec)
 FULL_METHOD_RUN_SPECS = tuple(group.run_spec for group in TABLE_GROUPS)
 
 
-def _chain(pinhole, landmarks, tracks, audits, bearings, matches, inputs):
+def _chain(pinhole, landmarks, tracks, audits, bearings, matches, diagnostics, inputs):
     return dict(zip(SEQUENCE_LANES, (
-        pinhole, landmarks, tracks, audits, bearings, matches, bearings, inputs)))
+        pinhole, landmarks, tracks, audits, bearings, matches, diagnostics, inputs)))
 
 
-# The lane versions each sequence's reported runs were built from, read off
-# the pinned runs' manifests on 2026-09-10. Alignment diagnostics share the
-# bearings version by convention. None = not produced yet.
-_STAGE3_HARBOR = _chain(
-    "stage3_7b88e81_adopted_v2", "stage3_7b88e81_adopted_v2",
-    "stage3_7b88e81_regen_v2", "stage3_17c8031_regen_v8_machine",
-    "stage3_c5e2220_rangecap_v1", "stage3_17c8031_regen_v8_machine",
-    "stage3_c5e2220_imu_rangecap_v1")
-_UNBUILT = dict.fromkeys(SEQUENCE_LANES)
+# Regeneration inputs, September 2026. All extractions are complete. The
+# current tracker is the comparison control, not a selected winner over #722.
+# Batch 2 is queued through matching; None means a downstream version is not selected
+# yet. DATASET_GROUPS.run_spec still names historical evaluations, which must
+# be replaced after the regenerated inputs have been evaluated.
+BATCH1_SEQUENCES = (
+    "boston_harbor_leg1", "mount_washington_20260815_leg2",
+    "flevoland_polder", "portland_flight_20260906_leg1",
+)
 
 SEQUENCE_ARTIFACTS: dict[str, dict[str, str | None]] = {
-    "mount_washington_20260815_leg1": _STAGE3_HARBOR,
-    "mount_washington_20260815_leg2": _STAGE3_HARBOR,
-    "mount_washington_20260815_leg3": _STAGE3_HARBOR,
-    "boston_harbor_leg1": _STAGE3_HARBOR,
-    "boston_harbor_leg2": _STAGE3_HARBOR,
-    "boston_harbor_leg3": _STAGE3_HARBOR,
-    "charles_river_20260727": _chain(
-        "stage3_7b88e81_adopted_v2", "stage3_7b88e81_adopted_v2",
-        "stage3_7b88e81_regen_v2", "stage3_17c8031_regen_v8_machine",
-        "stage3_acd4216_rangecap_v1", "stage3_17c8031_regen_v8_machine",
-        "stage3_acd4216_imu_rangecap_v1"),
-    "pohang_canal_04": _chain(
-        "stage3_7b88e81_adopted_v2", "stage3_7b88e81_adopted_v2",
-        "stage3_7b88e81_regen_v2", "stage3_17c8031_regen_v8_machine",
-        "stage3_c5e2220_rangecap_v1", "stage3_b847f55_baseline_v1",
-        "stage3_c5e2220_baseline_rangecap_v1"),
-    "flevoland_polder": _chain(
-        "stage3_b847f55_osmv2_v1", "stage3_b847f55_osmv2_v1",
-        "stage3_b847f55_osmv2_v1", "stage3_b847f55_osmv2_v1",
-        "stage3_acd4216_rangecap_v1", "stage3_b847f55_osmv2_pro_v1",
-        "stage3_acd4216_osmv2_pro_rangecap_v1"),
-    "franconia_leg1": _chain(
-        "stage3_b847f55_v1", "stage3_b847f55_v1",
-        "stage3_b847f55_v1", "stage3_b847f55_v1",
-        "stage3_acd4216_rangecap_v1", "stage3_b847f55_v1",
-        "stage3_acd4216_imu_rangecap_v1"),
-    "portland_flight_20260906_leg1": _UNBUILT,
-    "portland_flight_20260906_leg2": _UNBUILT,
-    "portland_flight_20260906_leg3": _UNBUILT,
+    sequence: _chain(
+        "pin2048_down30_20260911_v1" if group.key == "portland"
+        else "pin2048_20260911_v1",
+        "v3pro_20260911_v1", "v3pro_20260911_v1",
+        "v3pro_20260911_v1", "v3pro_20260911_v1",
+        "promatch_20260911_v1" if sequence in BATCH1_SEQUENCES else "v3pro_20260911_v1",
+        "v3pro_20260911_v1" if sequence in BATCH1_SEQUENCES else None,
+        "promatch_20260911_epson_v1" if sequence in BATCH1_SEQUENCES else "v3pro_20260911_v1")
+    for group in DATASET_GROUPS for sequence in group.sequences
 }
 
-# The one model/prompt every dataset must use per LLM stage. None means the
-# standard is not decided yet; the checker then only reports disagreement.
+# Batch 1 dedup tracks were produced at b53a0514. Batch 2 uses PR #722's
+# c46b91ac, including its follow-up that counts rebirth/duplicate as support.
+TRACKING_COMPARISON = {
+    sequence: {
+        "current": "v3pro_20260911_v1",
+        "dedup_pr722": ("v3dedup_20260912_v1" if sequence in BATCH1_SEQUENCES
+                        else "v3dedup_20260913_v1"),
+    }
+    for sequence in SEQUENCE_ARTIFACTS
+}
+
+# Portland's prompt explicitly declares the -30 degree pinhole pitch.
 LLM_STANDARD: dict[str, str | None] = {
-    "extraction.model": None,
-    "extraction.prompt_type": None,
-    "audit.model": None,
-    "matching.model": None,
+    "extraction.model": "gemini-3.1-pro-preview",
+    "extraction.prompt_type": "osm_tags_farfield_v3",
+    "audit.model": "gemini-3-flash-preview",
+    "matching.model": "gemini-3.1-pro-preview",
+}
+LLM_SEQUENCE_OVERRIDES = {
+    sequence: {"extraction.prompt_type": "osm_tags_farfield_v3_down30"}
+    for group in DATASET_GROUPS if group.key == "portland"
+    for sequence in group.sequences
 }
 
 

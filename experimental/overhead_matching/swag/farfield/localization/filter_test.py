@@ -392,6 +392,27 @@ class ResamplerTest(unittest.TestCase):
         self.assertEqual(int((belief.proposal_event_id == 0).sum()), 0)
         np.testing.assert_array_equal(belief.log_weight, np.zeros(belief.n))
 
+    def test_survival_floor_shrinks_when_groups_exceed_budget(self):
+        """Hundreds of hypothesis groups can outnumber the floor budget (a
+        diffuse belief resampled early); the floor shrinks to fit instead of
+        aborting the run."""
+        n, n_groups, size = 1000, 40, 25
+        rng = np.random.default_rng(0)
+        belief = pf.ParticleBelief(
+            east_m=np.repeat(np.arange(n_groups) * 1000.0, size),
+            north_m=np.zeros(n), heading_rad=np.zeros(n),
+            log_weight=np.log(rng.uniform(0.5, 1.5, n)))
+        belief.proposal_event_id[:] = np.repeat(np.arange(n_groups), size)
+        belief.proposal_hypothesis[:] = 7
+        with self.assertWarnsRegex(UserWarning, "using floor"):
+            pf.systematic_resample(belief, np.random.default_rng(1),
+                                   regularization=0.0, survival_floor=64)
+        self.assertEqual(belief.n, n)
+        self.assertTrue(np.all(np.isfinite(belief.log_weight)))
+        survivors = np.bincount(belief.proposal_event_id, minlength=n_groups)
+        self.assertTrue(np.all(survivors >= 1))
+        self.assertAlmostEqual(float(belief.normalized_weights().sum()), 1.0)
+
     def test_survival_floor_respects_min_mass(self):
         """A genuinely refuted group (mass below the min) may still die."""
         belief = self._belief_with_tiny_cluster(group_mass=4e-6)
