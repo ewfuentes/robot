@@ -944,6 +944,12 @@ def main():
         "--joint_cap", type=float, default=None,
         help="joint factor: clamp the per-track mixture term at this value")
     parser.add_argument(
+        "--eof_temper", type=float, default=None,
+        help="joint factor: per-epoch log-likelihood scale for tracks "
+             "released by the end-of-run flush (release at the final "
+             "keyframe, i.e. still alive and incomplete); defaults to "
+             "--joint_temper")
+    parser.add_argument(
         "--joint_temper", type=float, default=1.0,
         help="per-epoch log-likelihood scale inside the joint factor")
     parser.add_argument(
@@ -1288,6 +1294,7 @@ def main():
         plans = [None] * n_keyframes
         checkpoints = {}
         window = {}  # keyframe -> alpha on host, only the last `lag` + 1
+        factor_window = {}  # keyframe -> that keyframe's factor product (host)
         lag_series = {v: {radius: [None] * n_keyframes for radius in RADII_M}
                       for v in lags}
         lag_error = {v: [None] * n_keyframes for v in lags}
@@ -1295,7 +1302,11 @@ def main():
         message = planner.belief
 
         def backward_step(beta, keyframe):
-            factor = keyframe_likelihood(keyframe, planner)
+            if keyframe in factor_window:
+                factor = factor_window[keyframe]
+                factor = None if factor is None else factor.to(device)
+            else:
+                factor = keyframe_likelihood(keyframe, planner)
             incoming = beta if factor is None else beta * factor
             return _normalized(
                 apply_motion_transposed(incoming, plans[keyframe]))
@@ -1314,6 +1325,12 @@ def main():
                 checkpoints[keyframe] = message.detach().cpu()
             if lag > 0:
                 window[keyframe] = message.detach().cpu()
+                # the lag chains re-read this keyframe's factor up to `lag`
+                # times; keep the product on the host instead of rebuilding
+                # it from (possibly uncached) epoch likelihoods each time
+                factor_window[keyframe] = (
+                    None if factor is None else factor.detach().cpu())
+                factor_window.pop(keyframe - lag - 1, None)
                 # one backward chain from this keyframe serves every lag:
                 # after `v` adjoint steps it is beta for pose keyframe - v
                 beta = torch.ones_like(message)
@@ -1485,6 +1502,10 @@ def main():
                     1.0 / kappa,
                     m.range_max_m if args.range_cap else None,
                     head_slack_var, math.sqrt(pos_slack_var)))
+            temper = args.joint_temper
+            if (args.eof_temper is not None
+                    and keyframe == n_keyframes - 1):
+                temper = args.eof_temper
             return grid_belief.track_joint_likelihood(
                 epochs, candidate_east, candidate_north,
                 candidate_weight, sigma_pos, args.pi0, tail_mass,
@@ -1492,7 +1513,7 @@ def main():
                 range_softness=args.range_softness,
                 range_floor=args.range_floor,
                 cand_extent=candidate_extent,
-                temper=args.joint_temper,
+                temper=temper,
                 mixture=args.mixture,
                 cap=args.joint_cap)
 

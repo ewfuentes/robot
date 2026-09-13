@@ -59,3 +59,21 @@ truth-course heading + divided tables 0.449 (Portland).
 `in_map_confidence` in the response schema, kind endorsements expanded
 catalog-wide and encoded at c/N. Request sets sealed, unsubmitted:
 `artifacts/landmark_matches/{portland_flight_20260906_leg1,flevoland_polder}/catmatch_20260912_v1.llm-work`.
+
+## Addendum (later on 2026-09-12)
+
+- `--smooth_lags 10,60,120` scores several online fixed lags in one backward
+  chain and records each lag's MAP positions (`smoothing.fixed_lags[L]`).
+  Portland (divided + joint): lag 10/30/60/120/240 = 0.313/0.417/0.547/0.725/0.768,
+  end of run 0.800. Flevoland: lag 10/30/60/120 = 0.605/0.641/0.690/0.786, end 0.991.
+- `--identity_share sum_conf` (endorsed mass from summed row confidences):
+  Portland 0.173, Flevoland 0.575, Boston 0.623, MtWash 0.865 — confidences are
+  not calibrated enough for this to help uniformly.
+- `--eof_temper`: tempering only end-of-run flush releases changes nothing causal.
+- Zero-latency bound (eager, divided tables, independent epochs): Portland 0.196
+  vs natural 0.120; Flevoland 0.155 vs 0.115.
+- Joint factor bounds: `--joint_temper 0.5` Boston 0.710/0.976 but Portland
+  0.127/0.470; `--joint_cap 20` Portland 0.365/0.945, Boston 0.628/0.912,
+  Flevoland 0.506/0.981 (cap sweep continuing).
+- Smoother: per-keyframe factor products kept in a rolling host window so
+  fixed-lag chains do not rebuild them; likelihood cache unpinned.
