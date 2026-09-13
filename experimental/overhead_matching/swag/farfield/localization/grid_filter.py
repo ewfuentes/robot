@@ -829,6 +829,13 @@ def main():
         "--joint_cap", type=float, default=None,
         help="joint factor: clamp the per-track mixture term at this value")
     parser.add_argument(
+        "--joint_backend", choices=("reference", "fused", "eager_optimized"),
+        default="reference",
+        help="joint likelihood implementation; fused uses torch.compile")
+    parser.add_argument(
+        "--joint_chunk", type=int, default=64,
+        help="number of landmark candidates per joint-likelihood GPU batch")
+    parser.add_argument(
         "--joint_temper", type=float, default=1.0,
         help="per-epoch log-likelihood scale inside the joint factor")
     parser.add_argument(
@@ -869,6 +876,8 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    if args.joint_chunk <= 0:
+        parser.error("--joint_chunk must be positive")
     if args.checkpoint_keyframes <= 0:
         parser.error("--checkpoint_keyframes must be positive")
     if args.top_modes < 0:
@@ -1231,14 +1240,22 @@ def main():
                 1.0 / kappa,
                 m.range_max_m if args.range_cap else None,
                 head_slack_var, math.sqrt(pos_slack_var)))
-        return grid_belief.track_joint_likelihood(
+        joint_fn = grid_belief.track_joint_likelihood
+        if args.joint_backend != "reference":
+            from functools import partial
+            from experimental.overhead_matching.swag.farfield.localization.grid_joint_fast import joint_likelihood
+
+            joint_fn = partial(
+                joint_likelihood, grid_belief,
+                compiled=args.joint_backend == "fused")
+        return joint_fn(
             epochs, candidate_east, candidate_north,
             candidate_weight, sigma_pos, args.pi0, tail_mass,
             quantization_comp=bool(args.quantization_comp),
             range_softness=args.range_softness,
             range_floor=args.range_floor,
             temper=args.joint_temper,
-            cap=args.joint_cap)
+            cap=args.joint_cap, chunk=args.joint_chunk)
 
     smoothing_releases = releases
 

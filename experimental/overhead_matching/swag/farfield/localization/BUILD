@@ -919,6 +919,26 @@ py_test(
 )
 
 py_library(
+    name = "grid_joint_fast",
+    srcs = ["grid_joint_fast.py"],
+    deps = [
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_test(
+    name = "grid_joint_fast_test",
+    srcs = ["grid_joint_fast_test.py"],
+    deps = [
+        requirement("torch"),
+        ":grid_filter_lib",
+        ":grid_joint_fast",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_library(
     name = "grid_filter_lib",
     srcs = ["grid_filter.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
@@ -927,6 +947,7 @@ py_library(
         requirement("torch"),
         ":export_ingest",
         ":filter",
+        ":grid_joint_fast",
         ":odometry_profiles",
         ":release_schedule",
         ":structs",
@@ -942,6 +963,7 @@ py_binary(
         requirement("torch"),
         ":export_ingest",
         ":filter",
+        ":grid_joint_fast",
         ":odometry_profiles",
         ":release_schedule",
         ":structs",
