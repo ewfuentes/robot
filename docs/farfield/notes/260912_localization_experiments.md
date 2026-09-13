@@ -77,3 +77,21 @@ catalog-wide and encoded at c/N. Request sets sealed, unsubmitted:
   Flevoland 0.506/0.981 (cap sweep continuing).
 - Smoother: per-keyframe factor products kept in a rolling host window so
   fixed-lag chains do not rebuild them; likelihood cache unpinned.
+
+## Joint-cap sweep and candidate default lane
+
+`--joint_cap` (clamp a track's mixture term before null and tail) with divided
+tables + `--track_joint 1 --joint_slack 1`, causal / lag30 / smoothed, seed 0:
+
+| cap | Portland | Flevoland | Boston | Mt Washington |
+|---|---|---|---|---|
+| none | 0.262 / 0.417 / 0.800 | 0.585 / 0.641 / 0.991 | 0.581 / 0.622 / 0.707 | 0.866 / 0.903 / 1.000 |
+| 100 | 0.352 / 0.419 / 0.946 | 0.552 / 0.577 / 0.990 | 0.640 / 0.691 / 0.911 | 0.862 / 0.900 / 0.9995 |
+| 50 | 0.355 / 0.422 / 0.946 | 0.531 / 0.556 / 0.987 | 0.632 / 0.682 / 0.918 | - |
+| 20 | 0.365 / 0.432 / 0.945 | 0.506 / 0.531 / 0.981 | 0.628 / 0.675 / 0.912 | 0.848 / 0.887 / 0.9995 |
+
+Candidate default lane: divided tables + joint factor + `--joint_cap 100`. Versus
+the shipped pipeline (causal): Portland 0.036 -> 0.352, Flevoland 0.057 -> 0.552,
+Boston 0.638 -> 0.640, Mt Washington 0.864 -> 0.862; end-of-run smoothed
+0.117 -> 0.946, 0.176 -> 0.990, 0.877 -> 0.911, 1.000 -> 0.9995. Single seed.
+Full detail: `/data/farfield_matching/runs/260912_harel_experiments/HANDOFF.md`.
