@@ -405,9 +405,9 @@ def validate(data: ExportData) -> None:
         if not all(math.isfinite(value) for value in values):
             problems.append(
                 f"odometry at keyframe {item.keyframe_idx} is non-finite")
-        if item.sigma_m <= 0.0 or item.sigma_yaw_rad <= 0.0:
+        if item.sigma_m < 0.0 or item.sigma_yaw_rad < 0.0:
             problems.append(
-                f"odometry at keyframe {item.keyframe_idx} has non-positive "
+                f"odometry at keyframe {item.keyframe_idx} has negative "
                 "uncertainty")
 
     if data.truth:

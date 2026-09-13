@@ -76,6 +76,33 @@ class MotionPlanningTest(unittest.TestCase):
 
 
 class SmootherAdjointTest(unittest.TestCase):
+    def test_coreleased_factors_do_not_overflow_or_underflow(self):
+        for scale in (1e28, 1e-28):
+            prior = torch.tensor([0.25, 0.75, 0.0])
+            factors = [torch.tensor([2.0, 1.0, 3.0]) * scale,
+                       torch.tensor([5.0, 4.0, 2.0]) * scale]
+            naive = prior * factors[0] * factors[1]
+            self.assertTrue(not torch.isfinite(naive).all() or naive.sum() == 0)
+            expected = prior.double() * factors[0].double() * factors[1].double()
+            expected /= expected.sum()
+            actual = grid_filter._apply_likelihood_factors(prior, factors)
+            torch.testing.assert_close(actual, expected.float(), rtol=2e-5, atol=1e-7)
+            self.assertEqual(float(actual[2]), 0.0)
+
+    def test_stable_product_includes_incoming_message_and_rejects_invalid_mass(self):
+        prior = torch.tensor([1e-30, 1.0])
+        factors = [torch.tensor([1e30, 1.0])] * 2
+        actual = grid_filter._apply_likelihood_factors(prior, factors)
+        torch.testing.assert_close(actual, torch.tensor([1.0, 1e-30]),
+                                   rtol=2e-5, atol=0.0)
+        torch.testing.assert_close(
+            grid_filter._apply_likelihood_factors(torch.tensor([2.0, 3.0]), []),
+            torch.tensor([0.4, 0.6]))
+        for bad in (0.0, -1.0, float('nan'), float('inf')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                grid_filter._apply_likelihood_factors(torch.ones(2),
+                                                       [torch.full((2,), bad)])
+
     def test_transposed_motion_is_the_adjoint(self):
         torch.manual_seed(0)
         belief = grid_filter.GridBelief(

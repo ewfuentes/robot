@@ -236,6 +236,23 @@ def _normalized(t: torch.Tensor) -> torch.Tensor:
     return t / total
 
 
+def _apply_likelihood_factors(message, factors):
+    """Normalize a message times co-released factors without range overflow.
+
+    Include the incoming message in log space: scaling a standalone product
+    can underflow states that still matter after multiplying by the prior.
+    Subtracting a common log scale leaves all posterior odds unchanged.
+    """
+    log_message = None
+    for factor in factors:
+        if log_message is None:
+            log_message = torch.log(message)
+        log_message = log_message + torch.log(factor)
+    if log_message is None:
+        return _normalized(message)
+    return _normalized(torch.exp(log_message - log_message.max()))
+
+
 class GridBelief:
     """Linear-space belief over (heading, north, east) on one device."""
 
@@ -991,9 +1008,8 @@ def main():
     smoothing_releases = None
     joint_release_likelihood = None
 
-    def keyframe_likelihood(keyframe, grid_belief):
-        """Product of every factor anchored at `keyframe`, or None."""
-        factor = None
+    def apply_keyframe_likelihood(message, keyframe, grid_belief):
+        """Apply all factors at a keyframe, shared by every smoother pass."""
         if args.track_joint:
             releases_at = {}
             for release in smoothing_releases or ():
@@ -1004,9 +1020,7 @@ def main():
         else:
             factors = [epoch_likelihood(measurement, grid_belief)
                        for measurement in by_keyframe.get(keyframe, ())]
-        for likelihood in factors:
-            factor = likelihood if factor is None else factor * likelihood
-        return factor
+        return _apply_likelihood_factors(message, factors)
 
     def smoothing_pass():
         """Fixed-interval (and optional fixed-lag) smoothing on the grid HMM.
@@ -1041,8 +1055,7 @@ def main():
         message = planner.belief
 
         def backward_step(beta, keyframe):
-            factor = keyframe_likelihood(keyframe, planner)
-            incoming = beta if factor is None else beta * factor
+            incoming = apply_keyframe_likelihood(beta, keyframe, planner)
             return _normalized(
                 apply_motion_transposed(incoming, plans[keyframe]))
 
@@ -1052,10 +1065,7 @@ def main():
                     odometry[keyframe], args.yaw_sigma_scale,
                     heading_rw_rad, args.diffusion_m)
                 message = apply_motion(message, plans[keyframe])
-            factor = keyframe_likelihood(keyframe, planner)
-            if factor is not None:
-                message = message * factor
-            message = _normalized(message)
+            message = apply_keyframe_likelihood(message, keyframe, planner)
             if keyframe % stride == 0:
                 checkpoints[keyframe] = message.detach().cpu()
             if lag > 0:
@@ -1096,10 +1106,7 @@ def main():
             alphas.append(current)
             for keyframe in range(seg_start + 1, seg_end):
                 current = apply_motion(current, plans[keyframe])
-                factor = keyframe_likelihood(keyframe, planner)
-                if factor is not None:
-                    current = current * factor
-                current = _normalized(current)
+                current = apply_keyframe_likelihood(current, keyframe, planner)
                 alphas.append(current)
             for keyframe in range(seg_end - 1, seg_start - 1, -1):
                 smoothed = _normalized(alphas[keyframe - seg_start] * beta)
