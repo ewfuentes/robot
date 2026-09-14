@@ -1037,24 +1037,6 @@ py_test(
 )
 
 py_library(
-    name = "reproduce_grid_result_lib",
-    srcs = ["reproduce_grid_result.py"],
-    deps = [":grid_filter_lib"],
-)
-
-py_binary(
-    name = "reproduce_grid_result",
-    srcs = ["reproduce_grid_result.py"],
-    deps = [":grid_filter_lib"],
-)
-
-py_test(
-    name = "reproduce_grid_result_test",
-    srcs = ["reproduce_grid_result_test.py"],
-    deps = [":reproduce_grid_result_lib"],
-)
-
-py_library(
     name = "grid_viewer_lib",
     srcs = ["grid_viewer.py"],
     data = ["viewer_assets/style.css"],

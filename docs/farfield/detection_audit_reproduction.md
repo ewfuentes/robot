@@ -66,68 +66,103 @@ the same boundary policy. Each window resets the parent-region prior and IMU err
 an unsplit full leg retains its original seed stream. Use paired seeds
 0–4 across both methods. No reverse traversal or artificial boundary flush.
 
-## Build and reproduce one result
+## Build and re-run one archived result
+
+Each archived result stores the exact invocation that produced it in its own
+`config` object, so reproducing one means replaying those flags through
+`grid_filter`. That is also how the results were produced in the first place;
+there is no separate reproducer binary.
 
 ```bash
-bazel build //experimental/overhead_matching/swag/farfield/localization:reproduce_grid_result
+bazel build //experimental/overhead_matching/swag/farfield/localization:grid_filter
 bazel test //experimental/overhead_matching/swag/farfield/localization:grid_filter_test \
-  //experimental/overhead_matching/swag/farfield/localization:distance_episodes_test \
-  //experimental/overhead_matching/swag/farfield/localization:reproduce_grid_result_test
-
-bazel-bin/experimental/overhead_matching/swag/farfield/localization/reproduce_grid_result \
-  --reference /data/farfield_matching/runs/260914_detection_audit_replay/results/local/charles_river_20260727.hybrid.episode0.seed0.causal.json \
-  --out /tmp/charles.hybrid.seed0.reproduced.json
+  //experimental/overhead_matching/swag/farfield/localization:distance_episodes_test
 ```
 
-Add `--odometry-seed 1` to draw a different paired IMU realization. If moving
-the bundle, add `--path-map /data/farfield_matching /new/data/root`. Historical
-references can also contain the equivalent root
-`/home/ekf/farfield_tracking_batch2_20260913`; map that root too. Path mappings
-change only directory prefixes in the invocation, not input-file contents,
-artifact hashes, or scientific settings.
+```python
+# rerun.py -- stdlib only, run from the worktree root.
+import json
+import subprocess
+from pathlib import Path
 
-The reproducer preserves completed/partial outputs, rejects smoothing, checks
-the grid/episode/configuration and complete finite causal mass series, and
-records reference/source hashes. For an unchanged seed it also checks every
-mass value against the reference (absolute tolerance 2e-4 for cross-device
-roundoff). Use a new output path for each attempt. It is one process per
-evaluation; no cluster scheduler or machine assignments are embedded.
+BINARY = Path('bazel-bin/experimental/overhead_matching/swag/farfield/'
+              'localization/grid_filter').resolve()
+DATA = Path('/data/farfield_matching')
+# Historical results can carry the equivalent root
+# /home/ekf/farfield_tracking_batch2_20260913; map both at the current bundle.
+PATH_MAPS = [('/data/farfield_matching', DATA),
+             ('/home/ekf/farfield_tracking_batch2_20260913', DATA)]
 
-## Reproduce all 35 pairs, five seeds
 
-Build once, then run the following stdlib-only driver from the worktree root.
-Use an empty output directory. This runs sequentially; for multiple workers,
-partition the reference list into disjoint subsets. It deliberately does not
-alter other machines' jobs or assume that an SSH alias names the local host.
+def rerun(reference: Path, out: Path, seed=None):
+    result = json.loads(reference.read_text())
+    assert result['schema'] == 'farfield_causal_grid/v1', 'not a causal grid result'
+    config = dict(result['config'])
+    assert (config.get('smoother', 'none') == 'none'
+            and not config.get('smooth_lag')
+            and not config.get('smooth_lags', '').strip()
+            and 'smoothing' not in result), 'replay causal-only references'
+    for key, value in config.items():
+        if isinstance(value, str) and Path(value).is_absolute():
+            for old, new in PATH_MAPS:
+                if Path(value).is_relative_to(old):
+                    config[key] = str(new / Path(value).relative_to(old))
+                    break
+    config['out'] = str(out)
+    if seed is not None:
+        config['odometry_seed'] = seed
+    assert not out.exists(), 'choose a new output path; completed runs are preserved'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    argv = [str(BINARY)]
+    for key, value in config.items():
+        if value is not None:
+            argv += ['--' + key, str(value)]
+    subprocess.run(argv, check=True)
+
+    actual = json.loads(out.read_text())
+    assert actual['grid'] == result['grid']
+    assert actual.get('episode') == result.get('episode')
+    if config['odometry_seed'] == result['config']['odometry_seed']:
+        difference = max(
+            abs(x - y)
+            for radius, expected in result['mass_by_keyframe'].items()
+            for x, y in zip(actual['mass_by_keyframe'][radius], expected))
+        assert difference <= 2e-4, f'same-seed mass differs by {difference}'
+    return actual
+```
+
+Path mappings change only directory prefixes in the invocation, not input-file
+contents, artifact hashes, or scientific settings. The 2e-4 tolerance absorbs
+cross-device float roundoff; a larger same-seed difference means the inputs or
+the filter changed, not the hardware. Passing a different `seed` draws another
+paired IMU realization and legitimately moves the mass series, so the check is
+skipped there. It is one process per evaluation; no cluster scheduler or
+machine assignment is embedded.
+
+## Re-run all 35 pairs, five seeds
+
+Import `rerun` from the snippet above and drive it sequentially into an empty
+output directory. For multiple workers, partition the reference list into
+disjoint subsets.
 
 ```python
-from pathlib import Path
-import subprocess
-
-data = Path('/data/farfield_matching')
-hybrid = data / 'runs/260914_detection_audit_replay/results'
-baseline = data / 'runs/260914_distance_episodes/results'
+hybrid = DATA / 'runs/260914_detection_audit_replay/results'
+baseline = DATA / 'runs/260914_distance_episodes/results'
 output = Path('/tmp/hybrid-reproduction')
-binary = Path('bazel-bin/experimental/overhead_matching/swag/farfield/localization/reproduce_grid_result').resolve()
 references = sorted(hybrid.glob('*/*.hybrid.episode*.seed0.causal.json'))
 assert len(references) == 35
 for tracked in references:
-    raw_name = tracked.name.replace('.hybrid.', '.no_tracking.')
-    raw = list(baseline.glob('*/' + raw_name))
+    raw = list(baseline.glob('*/' + tracked.name.replace('.hybrid.', '.no_tracking.')))
     assert len(raw) == 1
     for seed in range(5):
         for reference in (raw[0], tracked):
-            destination = output / reference.name.replace('.seed0.', f'.seed{seed}.')
-            subprocess.run([
-                str(binary), '--reference', str(reference), '--out', str(destination),
-                '--odometry-seed', str(seed),
-                '--path-map', '/data/farfield_matching', str(data),
-                '--path-map', '/home/ekf/farfield_tracking_batch2_20260913', str(data),
-            ], check=True)
+            rerun(reference,
+                  output / reference.name.replace('.seed0.', f'.seed{seed}.'),
+                  seed)
 ```
 
 For the original one-seed delayed-track comparison, pass the matching
-`.current.episodeN.seed0.causal.json` reference to the same reproducer.
+`.current.episodeN.seed0.causal.json` reference to the same helper.
 The experimental `detections_only` policy and `output_end` prefix controls
 are also retained in their stored configurations. Separate retention-control
 variants have their exact source snapshots in their own run directory; this
