@@ -209,9 +209,21 @@ def _validate_motion(export_dir: Path, meta: ExportMeta,
             "motion.reverse_annotation_source must be non-empty")
 
 
+# How a track's per-detection range caps become one epoch cap. Producers that
+# predate the recorded field used "min" unconditionally, so an artifact
+# without the key reads as "min" and the two are the same reduction.
+RANGE_CAP_REDUCTIONS = frozenset({"min", "mode", "max", "track_median"})
+
+
 def _validate_reducer(meta: ExportMeta,
                       manifest: artifact.ArtifactManifest) -> None:
-    recorded = _exact_dict(meta.reducer, _REDUCER_KEYS, "reducer")
+    reducer = dict(meta.reducer) if isinstance(meta.reducer, dict) else {}
+    range_cap_reduction = reducer.pop("range_cap_reduction", "min")
+    if range_cap_reduction not in RANGE_CAP_REDUCTIONS:
+        raise ValueError(
+            "reducer.range_cap_reduction must be one of "
+            f"{sorted(RANGE_CAP_REDUCTIONS)}")
+    recorded = _exact_dict(reducer, _REDUCER_KEYS, "reducer")
     expected_static = {
         "name": "epoch_fused_compat_v1",
         "input_frame": "camera_cw_deg",
@@ -223,7 +235,7 @@ def _validate_reducer(meta: ExportMeta,
     epoch = recorded["epoch_keyframes"]
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch <= 0:
         raise ValueError("reducer.epoch_keyframes must be a positive integer")
-    if manifest.config.get("reducer") != recorded:
+    if manifest.config.get("reducer") != meta.reducer:
         raise ValueError("localization manifest does not bind reducer config")
 
 

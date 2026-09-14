@@ -92,6 +92,21 @@ class RefreshTest(unittest.TestCase):
         self.assertNotIn(
             'href="boston_harbor_leg1/v1/index.html"', kind)
 
+    def test_links_nested_causal_viewers_without_hiding_existing_runs(self):
+        experiment = self.root / "runs" / "260820_extent_sigma"
+        nested = (experiment / "natural" / "seed_00"
+                  / "boston_harbor_leg1.viewer")
+        nested.mkdir(parents=True)
+        (nested / "viewer.html").write_text("<html>grid</html>")
+
+        indexes.refresh(self.root)
+        page = (experiment / "index.html").read_text()
+        self.assertIn('href="boston_r001.viewer/viewer.html"', page)
+        self.assertIn("natural/seed_00/boston_harbor_leg1", page)
+        self.assertIn(
+            'href="natural/seed_00/boston_harbor_leg1.viewer/viewer.html"',
+            page)
+
     def test_track_index_links_the_exact_frame_viewer_sidecar(self):
         frame_source = (self.root / "artifacts" / "frame_landmarks"
                         / "boston_harbor_leg1" / "frames-v1")

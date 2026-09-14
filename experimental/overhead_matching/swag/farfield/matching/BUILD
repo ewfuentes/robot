@@ -35,6 +35,34 @@ py_binary(
     deps = [":match_landmarks_lib"],
 )
 
+py_library(
+    name = "reaggregate_tables_lib",
+    srcs = ["reaggregate_tables.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("msgspec"),
+        ":match_landmarks_lib",
+        "//experimental/overhead_matching/swag/farfield/localization:structs",
+    ],
+)
+
+py_binary(
+    name = "reaggregate_tables",
+    srcs = ["reaggregate_tables.py"],
+    main = "reaggregate_tables.py",
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":reaggregate_tables_lib"],
+)
+
+py_test(
+    name = "reaggregate_tables_test",
+    srcs = ["reaggregate_tables_test.py"],
+    deps = [
+        ":match_landmarks_lib",
+        ":reaggregate_tables_lib",
+    ],
+)
+
 py_test(
     name = "match_landmarks_test",
     srcs = ["match_landmarks_test.py"],
