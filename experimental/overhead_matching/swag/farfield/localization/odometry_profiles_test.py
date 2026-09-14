@@ -54,9 +54,12 @@ class OdometryProfilesTest(unittest.TestCase):
                 path, data, odometry_profiles.PLANAR_IMU_PROFILE, keyframe_range=(2, 4))
             different, _ = odometry_profiles.derive(
                 path, data, odometry_profiles.PLANAR_IMU_PROFILE, noise_seed=1, keyframe_range=(2, 4))
+            _, other_window = odometry_profiles.derive(
+                path, data, odometry_profiles.PLANAR_IMU_PROFILE, noise_seed=0, keyframe_range=(1, 3))
             self.assertEqual(episode, repeated)
             self.assertEqual(meta, paired)
             self.assertNotEqual(episode, different)
+            self.assertNotEqual(meta['noise']['realization'], other_window['noise']['realization'])
             self.assertEqual([d.keyframe_idx for d in episode], [1, 2])
             self.assertLess(episode[0].sigma_m, full[2].sigma_m / 100)
             self.assertEqual(meta['noise']['dataset_stream_id'], 'same_parent/episode_kf_2_4')

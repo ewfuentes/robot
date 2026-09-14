@@ -68,6 +68,13 @@ class DistanceEpisodesTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 episodes.windows(truth, 3)
 
+    def test_five_equal_windows_and_separate_full_trajectory(self):
+        truth = [structs.TruthPose(i, 100.0 * i, 0.0, 90.0)
+                 for i in range(13)]
+        self.assertEqual(episodes.windows(truth, 5),
+                         [(0, 4), (2, 6), (4, 8), (6, 10), (8, 12)])
+        self.assertEqual(episodes.windows(truth, 1), [(0, 12)])
+
     def test_whole_source_containment_and_reindexing_without_prior_crop(self):
         view, releases, meta = episodes.select(self.data, self.releases, self.plan, 1, self.schedule)
         self.assertEqual([r.tracklet_id for r in releases], ["middle"])
