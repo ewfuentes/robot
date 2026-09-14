@@ -218,21 +218,33 @@ def pano_bbox_from_face_bbox(face_yaw_deg: float, xmin: float, ymin: float,
 
 
 def pano_bbox_union(boxes_pano, pano_w: int):
-    """Union of unwrapped pano bboxes (e.g. a seam-merged observation).
-
-    Boxes are re-unwrapped around the first box's center so a group that
-    straddles the seam stays contiguous.
-    """
-    ref = (boxes_pano[0][0] + boxes_pano[0][2]) / 2.0
-    xs, ys = [], []
+    """Smallest circular enclosing interval, or [0, W] for full coverage."""
+    intervals, ys = [], []
     for x_min, y_min, x_max, y_max in boxes_pano:
-        center = (x_min + x_max) / 2.0
-        shift = round((center - ref) / pano_w) * pano_w
-        xs.extend([x_min - shift, x_max - shift])
+        width = x_max - x_min
+        if width >= pano_w:
+            intervals.append((0.0, float(pano_w)))
+        else:
+            start = x_min % pano_w
+            end = start + width
+            intervals.append((start, min(end, pano_w)))
+            if end > pano_w:
+                intervals.append((0.0, end - pano_w))
         ys.extend([y_min, y_max])
-    x_min, x_max = min(xs), max(xs)
-    shift = math.floor(x_min / pano_w) * pano_w
-    return x_min - shift, min(ys), x_max - shift, max(ys)
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    # The complement of the largest uncovered gap encloses every box.
+    gaps = [(right[0] - left[1], right[0])
+            for left, right in zip(merged, merged[1:])]
+    gaps.append((merged[0][0] + pano_w - merged[-1][1], merged[0][0]))
+    gap, start = max(gaps)
+    if gap <= 1e-9:
+        return 0.0, min(ys), float(pano_w), max(ys)
+    return start, min(ys), start + pano_w - gap, max(ys)
 
 
 def pano_bbox_for_observation(obs_boxes, pano_w: int, pano_h: int,

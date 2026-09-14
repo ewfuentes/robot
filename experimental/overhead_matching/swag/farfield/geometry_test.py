@@ -1,3 +1,4 @@
+import itertools
 import math
 import unittest
 
@@ -204,6 +205,21 @@ class _Box:
 
 
 class PanoBBoxTest(unittest.TestCase):
+    def test_pitched_four_face_runway_has_full_circle_coverage(self):
+        # Portland leg 2, frame 498: the old center-based unwrap gave 409.8 deg.
+        boxes = [geo.pano_bbox_from_face_bbox(
+            yaw, 0, ymin, 1000, 1000, PANO_W, PANO_H, pitch_deg=-30)
+            for yaw, ymin in ((0, 265), (90, 250), (180, 230), (270, 330))]
+        for order in itertools.permutations(boxes):
+            xmin, _, xmax, _ = geo.pano_bbox_union(order, PANO_W)
+            self.assertEqual((xmin, xmax), (0.0, float(PANO_W)))
+
+    def test_nearly_full_circle_keeps_the_uncovered_gap(self):
+        for order in itertools.permutations(
+                [(0, 0, 160, 10), (180, 0, 340, 10)]):
+            xmin, _, xmax, _ = geo.pano_bbox_union(order, 360)
+            self.assertEqual(xmax - xmin, 340)
+
     def test_center_face_box_maps_to_center_band(self):
         x_min, y_min, x_max, y_max = geo.pano_bbox_from_face_bbox(
             0, 400, 350, 425, 445, PANO_W, PANO_H)

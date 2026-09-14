@@ -27,6 +27,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     export_ingest,
     gps_to_odometry,
     odometry_profiles,
+    release_schedule,
     structs,
 )
 from experimental.overhead_matching.swag.farfield.matching import identity_review
@@ -158,6 +159,7 @@ def write_observations(root: Path, tracks_dir: Path, audits_dir: Path,
             upstreams=(audits.tracks_ref, audits.semantic_audits_ref),
             config={
                 "coverage": "complete", "bearing_sigma_deg": 1.0,
+                "pano_width": PANO_W,
                 "build_identity": build_identity,
             },
             declared_outputs=("observations.jsonl",)) as builder:
@@ -354,6 +356,36 @@ def build_fixture(
 
 
 class ReducerTest(unittest.TestCase):
+    def test_full_circle_exclusion_survives_export_and_release_schedule(self):
+        for full_frames in ((0, 1, 2, 3), (1,)):
+            with self.subTest(full_frames=full_frames), tempfile.TemporaryDirectory() as tmp:
+                track = source_track()
+                track.update(status="closed", last_keyframe=3)
+                for index in full_frames:
+                    track["records"][index]["mask_bbox_window"] = [0, 5, PANO_W * 1.14, 15]
+                with mock.patch(__name__ + ".source_track", return_value=track):
+                    args, tracklet_id = build_fixture(Path(tmp))
+                build_export.build(args)
+                data = export_ingest.load(args.output_dir)
+                ignored = data.manifest.config["ignored_full_circle_observations"]
+                self.assertEqual(ignored, [
+                    {"tracklet_id": tracklet_id, "keyframe_idx": k}
+                    for k in full_frames])
+                schedule = release_schedule.natural_closure_schedule_from_export(data)
+                if len(full_frames) == 4:
+                    self.assertEqual(data.measurements, [])
+                    self.assertEqual(data.tables, {})
+                    self.assertEqual(schedule, ())
+                else:
+                    self.assertEqual(set(data.tables), {tracklet_id})
+                    self.assertEqual(len(schedule), 1)
+                    self.assertEqual([m.anchor_keyframe_idx for m in data.measurements], [0, 3])
+                self.assertEqual(len(json.loads(
+                    (args.matching_dir / "compatibility.json").read_text())), 1)
+                ignored.append({"tracklet_id": tracklet_id, "keyframe_idx": 99})
+                with self.assertRaisesRegex(ValueError, "exclusions disagree"):
+                    release_schedule.natural_closure_schedule_from_export(data)
+
     def test_camera_heading_requires_explicit_dataset_metadata(self):
         with self.assertRaisesRegex(
                 build_export.LocalizationInputError, "pipeline_metadata"):

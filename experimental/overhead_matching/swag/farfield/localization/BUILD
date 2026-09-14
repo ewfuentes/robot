@@ -424,6 +424,7 @@ py_test(
         ":export_ingest",
         ":gps_to_odometry_lib",
         ":odometry_profiles",
+        ":release_schedule",
         ":structs",
         "//common/python:serialization",
         "//experimental/overhead_matching/swag/farfield:artifact",

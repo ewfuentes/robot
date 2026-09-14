@@ -62,3 +62,26 @@ the full smoothing workload. Thirty keyframes are not thirty seconds in Portland
 
 Local provenance: `/data/farfield_matching/runs/260913_overnight/`, including
 `checks/backend_cuda.json`, `checks/full_run_gate.json`, run metadata, and logs.
+
+## Follow-up robustness fixes
+
+Panorama-box unions use the smallest circular enclosing interval, so seam
+merges cannot exceed one full turn. Legacy overwrapped boxes are treated as
+full-circle observations and excluded from bearing/range fusion. Localization
+exports record these exclusions and omit matching tables only for tracks with
+no remaining directional measurements; the paid matching artifact is retained.
+Natural-release schedule construction verifies the exclusions against the
+bound source geometry. These input-generation fixes apply with or without
+smoothing.
+
+The optional likelihood cache now evicts least-recently-used entries within
+its host-memory budget. Invalid budgets are rejected and oversized tensors
+bypass the cache without evicting useful entries. `--likelihood_cache_gb 0`
+still disables it.
+
+Fixed-lag and final smoothing combine forward/backward messages through the
+existing log-space normalization helper. This preserves tiny overlapping
+tails that underflow when multiplied directly in float32, while genuinely
+disjoint support still fails. These two smoother paths are inactive in
+causal-only runs. Regression tests cover circular geometry, exclusion/export
+lineage, cache accounting and numerical parity, and tiny-tail normalization.
