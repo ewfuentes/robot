@@ -1,7 +1,8 @@
 # Reproducing detection-first, audited-track localization
 
-This change is stacked on #725 (distance windows), itself stacked on #724
-(the corrected grid filter). The hybrid implementation is the version used
+This change is based on `farfield-crossview-base`, which includes merged
+#725 (distance windows) and #724 (the corrected grid filter).
+The hybrid implementation is the version used
 for the 35-window seed-0 experiment and the subsequent five-seed sweep.
 The scientific `grid_filter.py` and `detection_audit.py` files are unchanged
 from that experiment. No deduplication, range-bin change, or final smoothing
@@ -57,8 +58,11 @@ keyframes. It uses `track_joint=1`, `joint_backend=fused`, `joint_chunk=128`,
 `likelihood_cache_gb=0`, `smoother=none`, `smooth_lag=0`, and empty `smooth_lags`.
 Keep every other likelihood/motion parameter from the stored configuration.
 
-The [35-window roster and boundary policy](distance_episode_evaluation.md)
-are unchanged. Each window resets the parent-region prior and IMU error;
+The reproduction commands below retain the archived 35-window roster. The
+[revised evaluation protocol](distance_episode_evaluation.md) instead specifies
+five subtracks and a separate full trajectory for each of the 13 recordings;
+do not relabel historical results as that revised study. Both protocols use
+the same boundary policy. Each window resets the parent-region prior and IMU error;
 an unsplit full leg retains its original seed stream. Use paired seeds
 0–4 across both methods. No reverse traversal or artificial boundary flush.
 
