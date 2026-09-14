@@ -940,12 +940,44 @@ py_test(
 )
 
 py_library(
+    name = "distance_episodes",
+    srcs = ["distance_episodes.py"],
+    deps = [
+        requirement("msgspec"),
+        ":export_ingest",
+        ":release_schedule",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_binary(
+    name = "build_distance_episodes",
+    srcs = ["distance_episodes.py"],
+    main = "distance_episodes.py",
+    deps = [":distance_episodes"],
+)
+
+py_test(
+    name = "distance_episodes_test",
+    srcs = ["distance_episodes_test.py"],
+    deps = [
+        requirement("msgspec"),
+        ":distance_episodes",
+        ":export_ingest",
+        ":release_schedule",
+        ":structs",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_library(
     name = "grid_filter_lib",
     srcs = ["grid_filter.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":distance_episodes",
         ":export_ingest",
         ":filter",
         ":grid_joint_fast",
@@ -962,6 +994,7 @@ py_binary(
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":distance_episodes",
         ":export_ingest",
         ":filter",
         ":grid_joint_fast",

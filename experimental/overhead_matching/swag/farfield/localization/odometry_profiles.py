@@ -345,12 +345,14 @@ def derive_from_motion(east_m, north_m, timestamps, configured, *,
 
 
 def derive(input_dir: Path, data, profile: str,
-           noise_seed: int = DEFAULT_NOISE_SEED):
+           noise_seed: int = DEFAULT_NOISE_SEED, *, keyframe_range=None):
     """Return ``(odometry, metadata)`` without mutating the export data."""
     if profile not in PROFILE_CHOICES:
         raise ValueError(f"unknown odometry profile {profile!r}")
     configured = _selected_config(data)
     if profile == "recorded":
+        if keyframe_range is not None:
+            raise ValueError("fresh episodes require synthetic planar IMU odometry")
         return data.odometry, {
             "name": profile,
             "source": "localization_inputs/tier1_odometry.jsonl",
@@ -366,12 +368,32 @@ def derive(input_dir: Path, data, profile: str,
          for value in camera_headings]
         if camera_headings is not None else None)
     if profile == PLANAR_IMU_PROFILE:
-        return derive_from_motion(
-            [pose.east_m for pose in data.truth],
-            [pose.north_m for pose in data.truth], timestamps, configured,
+        truth = data.truth
+        stream_id = data.artifact_ref.dataset
+        if keyframe_range is not None:
+            start, end = keyframe_range
+            if (type(start) is not int or type(end) is not int
+                    or not 0 <= start < end < len(truth)):
+                raise ValueError("invalid inclusive episode keyframe range")
+            truth = truth[start:end + 1]
+            timestamps = timestamps[start:end + 1]
+            if forward_headings is not None:
+                forward_headings = forward_headings[start:end + 1]
+            configured = {**configured, "reverse_keyframe_ranges": [
+                [max(a, start + 1) - start, min(b, end) - start]
+                for a, b in configured["reverse_keyframe_ranges"]
+                if max(a, start + 1) <= min(b, end)]}
+            stream_id += f"/episode_kf_{start}_{end}"
+        odometry, metadata = derive_from_motion(
+            [pose.east_m for pose in truth],
+            [pose.north_m for pose in truth], timestamps, configured,
             profile=profile, noise_seed=noise_seed,
-            stream_id=data.artifact_ref.dataset,
+            stream_id=stream_id,
             motion_sha256=data.meta.motion["content_sha256"],
             forward_world_cw_deg=forward_headings)
+        if keyframe_range is not None:
+            metadata["parent_keyframe_range_inclusive"] = list(keyframe_range)
+            metadata["noise"]["generation_scope"] = "fresh_error_after_clean_motion_episode_slicing"
+        return odometry, metadata
 
     raise AssertionError("unreachable")

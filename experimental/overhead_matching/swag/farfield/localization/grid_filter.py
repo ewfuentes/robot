@@ -29,6 +29,7 @@ import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
 import torch
 
 from experimental.overhead_matching.swag.farfield.localization import (
+    distance_episodes,
     export_ingest,
     filter as filter_lib,
     odometry_profiles,
@@ -806,6 +807,8 @@ def main():
         "--odometry_profile", choices=odometry_profiles.PROFILE_CHOICES,
         default="recorded")
     parser.add_argument("--odometry_seed", type=int, default=0)
+    parser.add_argument("--episode_plan", type=Path)
+    parser.add_argument("--episode_index", type=int)
     parser.add_argument(
         "--availability", choices=("natural",), default="natural",
         help="audited track measurements become visible when the track "
@@ -906,9 +909,26 @@ def main():
     data = export_ingest.load(Path(args.input_dir))
     if len(data.truth) != data.n_keyframes:
         raise ValueError("grid localization requires truth at every keyframe")
+    parent = data
+    releases = release_schedule_lib.load_sidecar(Path(args.release_schedule), data)
+    episode = None
+    keyframe_range = None
+    if (args.episode_plan is None) != (args.episode_index is None):
+        parser.error("--episode_plan and --episode_index must be supplied together")
+    if args.episode_plan is not None:
+        if not args.track_joint or args.smoother != "none" or args.smooth_lag or args.smooth_lags:
+            parser.error("distance episodes require joint mode and all smoothing disabled")
+        data, releases, episode = distance_episodes.select(
+            data, releases, release_schedule_lib._load_sidecar_document(args.episode_plan),
+            args.episode_index, Path(args.release_schedule))
+        if episode["count"] > 1:
+            keyframe_range = (episode["parent_keyframe_start"], episode["parent_keyframe_end_inclusive"])
     data.odometry, odometry_profile = odometry_profiles.derive(
-        Path(args.input_dir), data, args.odometry_profile,
-        noise_seed=args.odometry_seed)
+        Path(args.input_dir), parent, args.odometry_profile,
+        noise_seed=args.odometry_seed, keyframe_range=keyframe_range)
+    # argparse's Path is useful while loading, but configs are JSON records.
+    if args.episode_plan is not None:
+        args.episode_plan = str(args.episode_plan)
     n_keyframes = len(data.truth)
     catalog = data.catalog
     sigma_pos = float(catalog.position_sigma_m[0])
@@ -1211,8 +1231,6 @@ def main():
     online_map_states = []
     motion_plans = [None] * n_keyframes
 
-    releases = release_schedule_lib.load_sidecar(
-        Path(args.release_schedule), data)
     release_counts = {}
     for release in releases:
         release_counts[release.release_keyframe_idx] = (
@@ -1318,7 +1336,7 @@ def main():
                 "localization_inputs": data.artifact_ref.to_dict(),
                 "config": vars(args),
                 "odometry_profile": odometry_profile,
-                "episode": None,
+                "episode": episode,
                 "availability": {
                     "policy": "natural_track_close_with_eof_flush",
                     "post_closure_processing_delay_s": 0.0,
@@ -1411,7 +1429,7 @@ def main():
             "localization_inputs": data.artifact_ref.to_dict(),
             "config": vars(args),
             "odometry_profile": odometry_profile,
-            "episode": None,
+            "episode": episode,
             "availability": {
                 "policy": "natural_track_close_with_eof_flush",
                 "post_closure_processing_delay_s": 0.0,
