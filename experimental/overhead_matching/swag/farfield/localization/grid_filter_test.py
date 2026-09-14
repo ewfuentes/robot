@@ -288,6 +288,75 @@ class CausalReplayTest(unittest.TestCase):
         torch.testing.assert_close(scores[3], scores[2])
 
 
+class DetectionAuditReplayTest(unittest.TestCase):
+    def test_replacement_replays_diffusion_and_preserves_every_prefix(self):
+        release_type = grid_filter.release_schedule_lib.TrackRelease
+
+        def release(name, arrival, anchors):
+            return release_type(arrival, name, tuple(
+                structs.TrackletMeasurement(name, k, 0., 1.) for k in anchors), None)
+
+        raw = [release("d0", 0, [0]), release("d1", 1, [1]), release("d2", 2, [2])]
+        audits = [release("a", 3, [0, 1]), release("b", 4, [1, 2])]
+        removals = {"a": ["d0", "d1"], "b": ["d1", "d2"]}
+        factors = {k: torch.tensor(v).reshape(1, 1, 3) for k, v in {
+            "d0": [9., 1., 2.], "d1": [2., 1., 7.], "d2": [1., 8., 2.],
+            "a": [1., 2., 6.], "b": [4., 1., 2.]}.items()}
+        initial = torch.tensor([[[.2, .5, .3]]])
+        plans = [None] + [grid_filter.MotionPlan(
+            weighted_cell_shifts=(((0, 0, .8), (0, 1, .2)),))] * 5
+
+        def brute(stop, audit_list):
+            available = [r for r in audit_list if r.release_keyframe_idx <= stop]
+            removed = {k for r in available for k in removals[r.tracklet_id]}
+            active = available + [r for r in raw if r.tracklet_id not in removed]
+            message = initial.clone()
+            for step in range(stop + 1):
+                if step:
+                    message = grid_filter.apply_motion(message, plans[step])
+                for r in sorted(active, key=lambda r: r.tracklet_id):
+                    if r.release_keyframe_idx == step:
+                        message = grid_filter._normalized(message * factors[r.tracklet_id])
+                message = grid_filter._normalized(message)
+            return message
+
+        for stride in (1, 2, 8):
+            for stop in range(1, len(plans)):
+                _, scores, stats = grid_filter.detection_audit_replay(
+                    initial, plans[:stop + 1], raw, audits, removals,
+                    lambda r, _: factors[r.tracklet_id], lambda m, _: m.clone(), stride)
+                for k, score in enumerate(scores):
+                    torch.testing.assert_close(score, brute(k, audits))
+                if stop >= 4:
+                    self.assertEqual(stats["removed_detection_factors"], 3)
+                    self.assertEqual(stats["already_removed_shared_claims"], 1)
+                    self.assertEqual(stats["remaining_detection_factors"], 0)
+        _, scores, _ = grid_filter.detection_audit_replay(
+            initial, plans, raw, [], {}, lambda r, _: factors[r.tracklet_id],
+            lambda m, _: m.clone(), 2)
+        for k, score in enumerate(scores):
+            torch.testing.assert_close(score, brute(k, []))
+        with self.assertRaises(ValueError):
+            grid_filter.detection_audit_replay(
+                initial, plans, raw, [release("a", 0, [0])], {"a": ["d2"]},
+                lambda r, _: factors[r.tracklet_id], lambda m, _: m, 2)
+
+    def test_support_mapping_excludes_bystanders_and_records_missing(self):
+        tracks = [{"track_id": 1, "birth_obs_id": "o0", "records": [
+            {"supports": [{"class": "continue_clean", "obs_id": "o1"},
+                          {"class": "none", "obs_id": "bystander"},
+                          {"class": "weak", "obs_id": "missing"}]}]}]
+        detections = [{"track_id": i, "birth_obs_id": o, "status": "closed",
+                       "birth_keyframe": i, "last_keyframe": i}
+                      for i, o in enumerate(("o0", "o1", "bystander"))]
+        mapping, missing = grid_filter.detection_audit.member_mapping(
+            tracks, detections, ["tracked#T1"], [f"raw#T{i}" for i in range(3)])
+        self.assertEqual(mapping, {"tracked#T1": ["raw#T0", "raw#T1"]})
+        self.assertEqual(missing, {"tracked#T1": ["missing"]})
+        with self.assertRaises(ValueError):
+            grid_filter.detection_audit.member_mapping(tracks, detections * 2, [], [])
+
+
 class OnlineMapStateTest(unittest.TestCase):
     def test_online_map_uses_position_marginal_and_conditional_heading(self):
         grid = grid_filter.Grid(0.0, 20.0, 0.0, 10.0, 10.0)

@@ -977,6 +977,7 @@ py_library(
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":detection_audit",
         ":distance_episodes",
         ":export_ingest",
         ":filter",
@@ -994,6 +995,7 @@ py_binary(
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":detection_audit",
         ":distance_episodes",
         ":export_ingest",
         ":filter",
@@ -1005,6 +1007,24 @@ py_binary(
     ],
 )
 
+py_library(
+    name = "detection_audit",
+    srcs = ["detection_audit.py"],
+    deps = [
+        requirement("msgspec"),
+        ":export_ingest",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/tracking:tracklets",
+    ],
+)
+
+py_binary(
+    name = "build_detection_audit_plan",
+    srcs = ["detection_audit.py"],
+    main = "detection_audit.py",
+    deps = [":detection_audit"],
+)
+
 py_test(
     name = "grid_filter_test",
     srcs = ["grid_filter_test.py"],
@@ -1014,6 +1034,24 @@ py_test(
         ":structs",
         "//common/torch:load_torch_deps",
     ],
+)
+
+py_library(
+    name = "reproduce_grid_result_lib",
+    srcs = ["reproduce_grid_result.py"],
+    deps = [":grid_filter_lib"],
+)
+
+py_binary(
+    name = "reproduce_grid_result",
+    srcs = ["reproduce_grid_result.py"],
+    deps = [":grid_filter_lib"],
+)
+
+py_test(
+    name = "reproduce_grid_result_test",
+    srcs = ["reproduce_grid_result_test.py"],
+    deps = [":reproduce_grid_result_lib"],
 )
 
 py_library(
