@@ -29,6 +29,7 @@ import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
 import torch
 
 from experimental.overhead_matching.swag.farfield.localization import (
+    detection_audit,
     distance_episodes,
     export_ingest,
     filter as filter_lib,
@@ -745,6 +746,83 @@ def causal_replay(initial_message, motion_plans, releases,
     }
 
 
+def detection_audit_replay(initial, plans, detections, audits, removals,
+                           likelihood, score, checkpoint_keyframes):
+    """Replace detection factors at audit arrival by forward replay, not division.
+
+    This exactly recomputes the selected pose-grid factor graph under diffusion.
+    Prior current-pose outputs remain immutable. Cross-track overlap already
+    present in the non-deduplicated baseline is retained, but each provisional
+    detection is removed at most once.
+    """
+    if checkpoint_keyframes <= 0 or not plans or plans[0] is not None:
+        raise ValueError("invalid checkpoint stride or motion sentinel")
+    events, raw_ids, raw_times, seen = {}, set(), {}, set()
+    for kind, releases in (("detection", detections), ("audit", audits)):
+        for release in releases:
+            if release.release_keyframe_idx >= len(plans):
+                continue  # Future events cannot affect this output prefix.
+            if (release.tracklet_id in seen or not release.measurements
+                    or any(not 0 <= m.anchor_keyframe_idx <= release.release_keyframe_idx
+                           for m in release.measurements)):
+                raise ValueError("invalid or repeated evidence release")
+            seen.add(release.tracklet_id)
+            if kind == "detection":
+                raw_ids.add(release.tracklet_id)
+                raw_times[release.tracklet_id] = release.release_keyframe_idx
+            events.setdefault(release.release_keyframe_idx, {}).setdefault(kind, []).append(release)
+    device = initial.device
+    factors, locations, checkpoints = {}, {}, {}
+    current, scores = initial.clone(), []
+    removed, repeated, steps, rollback = 0, 0, 0, 0
+    for keyframe in range(len(plans)):
+        earliest = keyframe
+        for kind in ("detection", "audit"):
+            arriving = events.get(keyframe, {}).get(kind, ())
+            for release in sorted(arriving, key=lambda r: r.tracklet_id):
+                if kind == "audit":
+                    for track_id in removals[release.tracklet_id]:
+                        if track_id not in raw_ids or raw_times[track_id] > keyframe:
+                            raise ValueError("audit claims an unknown or future detection")
+                        old = locations.pop(track_id, None)
+                        if old is None:
+                            repeated += 1
+                            continue
+                        earliest = min(earliest, old)
+                        del factors[old][track_id]
+                        removed += 1
+                # ponytail: active factors and sparse checkpoints stay in RAM;
+                # add eviction/recompute if larger rosters exceed host memory.
+                factor = likelihood(release, keyframe).detach().cpu().clone()
+                factors.setdefault(keyframe, {})[release.tracklet_id] = factor
+                locations[release.tracklet_id] = keyframe
+        start = keyframe
+        if earliest < keyframe:
+            checkpoint = max((k for k in checkpoints if k < earliest), default=-1)
+            start = checkpoint + 1
+            current = (initial.clone() if checkpoint < 0 else
+                       checkpoints[checkpoint].to(device).clone())
+        rollback = max(rollback, keyframe - start)
+        for step in range(start, keyframe + 1):
+            if step:
+                current = apply_motion(current, plans[step])
+            for _, factor in sorted(factors.get(step, {}).items()):
+                current = _normalized(current * factor.to(device))
+            current = _normalized(current)
+            if step % checkpoint_keyframes == 0:
+                checkpoints[step] = current.detach().cpu().clone()
+            steps += 1
+        scores.append(score(current, keyframe))
+    return current, scores, {
+        "removed_detection_factors": removed,
+        "already_removed_shared_claims": repeated,
+        "remaining_detection_factors": len(raw_ids & locations.keys()),
+        "n_forward_keyframe_steps": steps,
+        "max_rollback_keyframes": rollback,
+        "checkpoint_keyframes": checkpoint_keyframes,
+    }
+
+
 def _top_modes(message, grid, limit, position_nms_m, heading_nms_deg):
     """Highest-mass final grid states after greedy SE(2) non-max suppression."""
     if limit <= 0:
@@ -809,6 +887,14 @@ def main():
     parser.add_argument("--odometry_seed", type=int, default=0)
     parser.add_argument("--episode_plan", type=Path)
     parser.add_argument("--episode_index", type=int)
+    parser.add_argument("--detection_input_dir", type=Path)
+    parser.add_argument("--detection_release_schedule", type=Path)
+    parser.add_argument("--detection_tables_override", type=Path)
+    parser.add_argument("--detection_audit_plan", type=Path)
+    parser.add_argument("--detection_audit_policy", choices=("replace", "detections_only"),
+                        default="replace")
+    parser.add_argument("--output_end", type=int,
+                        help="score only this prefix without changing episode initialization")
     parser.add_argument(
         "--availability", choices=("natural",), default="natural",
         help="audited track measurements become visible when the track "
@@ -889,6 +975,12 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    hybrid_paths = (args.detection_input_dir, args.detection_release_schedule,
+                    args.detection_tables_override, args.detection_audit_plan)
+    if any(p is not None for p in hybrid_paths):
+        if (any(p is None for p in hybrid_paths) or not args.track_joint
+                or args.smoother != "none" or args.smooth_lag or args.smooth_lags.strip()):
+            parser.error("detection/audit replay requires all four input paths, joint mode, and no smoothing")
     if args.joint_chunk <= 0:
         parser.error("--joint_chunk must be positive")
     if args.checkpoint_keyframes <= 0:
@@ -930,6 +1022,12 @@ def main():
     if args.episode_plan is not None:
         args.episode_plan = str(args.episode_plan)
     n_keyframes = len(data.truth)
+    if args.output_end is not None:
+        if not 1 <= args.output_end < n_keyframes:
+            parser.error("--output_end must name an existing nonzero episode keyframe")
+        if args.smoother != "none" or args.smooth_lag or args.smooth_lags.strip():
+            parser.error("prefix scoring requires all smoothing disabled")
+        n_keyframes = args.output_end + 1
     catalog = data.catalog
     sigma_pos = float(catalog.position_sigma_m[0])
 
@@ -974,6 +1072,28 @@ def main():
                 replaced += 1
         print(f"tables override: replaced {replaced} of "
               f"{len(data.tables)} tables from {args.tables_override}")
+
+    provisional_releases = removals = hybrid_metadata = None
+    if args.detection_input_dir is not None:
+        provisional = export_ingest.load(args.detection_input_dir)
+        raw_releases = release_schedule_lib.load_sidecar(args.detection_release_schedule, provisional)
+        replacement_plan = json.loads(args.detection_audit_plan.read_text())
+        start = episode["parent_keyframe_start"] if episode else 0
+        end = episode["parent_keyframe_end_inclusive"] if episode else parent.n_keyframes - 1
+        provisional_releases, removals, hybrid_metadata = detection_audit.select(
+            replacement_plan, parent, provisional, releases, raw_releases, start, end)
+        raw_tables = msgspec.json.decode(args.detection_tables_override.read_bytes(),
+                                        type=list[structs.CompatibilityTable])
+        by_suffix = {t.tracklet_id.rsplit("#", 1)[-1]: t for t in raw_tables}
+        for release in provisional_releases:
+            track_id = release.tracklet_id
+            if track_id in data.tables:
+                raise ValueError("detection and audited track identities collide")
+            table = by_suffix[track_id.rsplit("#", 1)[-1]]
+            data.tables[track_id] = msgspec.structs.replace(table, tracklet_id=track_id)
+        for name in ("detection_input_dir", "detection_release_schedule",
+                     "detection_tables_override", "detection_audit_plan"):
+            setattr(args, name, str(getattr(args, name)))
 
     def candidate_set(tracklet_id):
         if tracklet_id not in weight_cache:
@@ -1296,7 +1416,30 @@ def main():
             releases_at.setdefault(
                 release.release_keyframe_idx, []).append(release)
         started = time.time()
-        for keyframe in range(n_keyframes):
+        hybrid_stats = None
+        if provisional_releases is not None:
+            for keyframe in range(1, n_keyframes):
+                motion_plans[keyframe] = belief.plan_motion(
+                    odometry[keyframe], args.yaw_sigma_scale,
+                    heading_rw_rad, args.diffusion_m)
+
+            def hybrid_score(message, keyframe):
+                result = _score_message(message, keyframe, masks, truth_by_kf, grid, args.device)
+                if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
+                    print(f"hybrid kf {keyframe} mass500 {result[0][500.0]:.4f} "
+                          f"({time.time() - started:.0f}s)")
+                return result
+
+            belief.belief, scores, hybrid_stats = detection_audit_replay(
+                initial_belief, motion_plans, provisional_releases,
+                releases if args.detection_audit_policy == "replace" else (),
+                removals, joint_release_likelihood, hybrid_score, args.checkpoint_keyframes)
+            for mass, error, state in scores:
+                filtered_map_error.append(error)
+                online_map_states.append(state)
+                for radius in RADII_M:
+                    filtered_series[radius].append(mass[radius])
+        for keyframe in (range(n_keyframes) if hybrid_stats is None else ()):
             if keyframe > 0:
                 belief.motion(
                     odometry[keyframe], args.yaw_sigma_scale,
@@ -1377,6 +1520,17 @@ def main():
                 },
                 "runtime_seconds": {"joint_forward": forward_seconds},
             }
+            if hybrid_stats is not None:
+                payload["detection_audit"] = dict(
+                    hybrid_metadata, replay=hybrid_stats, evaluation_policy=args.detection_audit_policy)
+                payload["availability"].update({
+                    "policy": "detections_at_anchor_then_audited_track_replacement",
+                    "track_factor": "replace_source_detections_by_joint_track_at_release",
+                    "uses_future_semantic_audit_and_match": False,
+                    "qualification": "filter availability only; cached frontend calibration and compute delay not certified",
+                })
+                if args.detection_audit_policy == "detections_only":
+                    payload["availability"]["policy"] = "detections_only_replay_control"
             Path(args.out).write_text(
                 json.dumps(finish_payload(payload), indent=1))
             print("wrote", args.out)
