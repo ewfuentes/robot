@@ -26,6 +26,47 @@ class OdometryProfilesTest(unittest.TestCase):
             self.assertGreaterEqual(delta.sigma_m, 0.0)
             self.assertGreater(delta.sigma_yaw_rad, 0.0)
 
+    def test_episode_slices_clean_motion_then_resets_and_pairs_noise(self):
+        configured = {
+            'odometry_sigma_pair_m': 1.0, 'displacement_gate_m': 2.0,
+            'stationary_sigma_m': 3.0, 'slow_yaw_sigma_deg': 30.0,
+            'course_yaw_drift_sigma_deg': 2.0,
+            'imu_translation_noise_frac': 0.02, 'imu_yaw_noise_frac': 0.01,
+            'reverse_keyframe_ranges': [[1, 4]], 'reverse_annotation_source': 'test',
+        }
+        data = types.SimpleNamespace(
+            truth=[structs.TruthPose(i, 0.0, 10.0 * i, 0.0) for i in range(5)],
+            artifact_ref=types.SimpleNamespace(dataset='same_parent'),
+            manifest=types.SimpleNamespace(config={'localization_inputs': configured}),
+            meta=types.SimpleNamespace(motion={'content_sha256': 'motion'}))
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / 'motion_source.csv').write_text('idx,video_t_s\n0,0\n1,100\n2,200\n3,201\n4,202\n')
+            full, _ = odometry_profiles.derive(path, data, odometry_profiles.PLANAR_IMU_PROFILE)
+            with mock.patch.object(odometry_profiles, 'derive_from_motion',
+                                   wraps=odometry_profiles.derive_from_motion) as derive:
+                episode, meta = odometry_profiles.derive(
+                    path, data, odometry_profiles.PLANAR_IMU_PROFILE, keyframe_range=(2, 4))
+                args = derive.call_args.args
+                self.assertEqual(args[:3], ([0.0, 0.0, 0.0], [20.0, 30.0, 40.0], [200.0, 201.0, 202.0]))
+                self.assertEqual(args[3]['reverse_keyframe_ranges'], [[1, 2]])
+            repeated, paired = odometry_profiles.derive(
+                path, data, odometry_profiles.PLANAR_IMU_PROFILE, keyframe_range=(2, 4))
+            different, _ = odometry_profiles.derive(
+                path, data, odometry_profiles.PLANAR_IMU_PROFILE, noise_seed=1, keyframe_range=(2, 4))
+            _, other_window = odometry_profiles.derive(
+                path, data, odometry_profiles.PLANAR_IMU_PROFILE, noise_seed=0, keyframe_range=(1, 3))
+            self.assertEqual(episode, repeated)
+            self.assertEqual(meta, paired)
+            self.assertNotEqual(episode, different)
+            self.assertNotEqual(meta['noise']['realization'], other_window['noise']['realization'])
+            self.assertEqual([d.keyframe_idx for d in episode], [1, 2])
+            self.assertLess(episode[0].sigma_m, full[2].sigma_m / 100)
+            self.assertEqual(meta['noise']['dataset_stream_id'], 'same_parent/episode_kf_2_4')
+            self.assertEqual(configured['reverse_keyframe_ranges'], [[1, 4]])
+            with self.assertRaises(ValueError):
+                odometry_profiles.derive(path, data, 'recorded', keyframe_range=(2, 4))
+
     def test_planar_v1_rotates_fixed_body_bias_through_a_right_turn(self):
         nominal = [
             structs.OdometryDelta(
