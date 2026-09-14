@@ -931,6 +931,8 @@ py_library(
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":adaptive_identity",
+        ":adaptive_geometry",
         ":export_ingest",
         ":filter",
         ":grid_online_experiments",
@@ -940,12 +942,37 @@ py_library(
     ],
 )
 
+py_library(
+    name = "adaptive_identity",
+    srcs = ["adaptive_identity.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("torch"),
+        ":structs",
+        "//common/torch:load_torch_deps",
+    ],
+)
+
+py_test(
+    name = "adaptive_identity_test",
+    srcs = ["adaptive_identity_test.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("torch"),
+        ":adaptive_identity",
+        ":adaptive_geometry",
+        ":structs",
+    ],
+)
+
 py_binary(
     name = "grid_filter",
     srcs = ["grid_filter.py"],
     deps = [
         requirement("numpy"),
         requirement("torch"),
+        ":adaptive_identity",
+        ":adaptive_geometry",
         ":export_ingest",
         ":filter",
         ":grid_online_experiments",
@@ -1051,4 +1078,16 @@ py_test(
         ":filter_catalog",
         ":structs",
     ],
+)
+
+py_library(
+    name = "adaptive_geometry",
+    srcs = ["adaptive_geometry.py"],
+    deps = [requirement("torch"), "//common/torch:load_torch_deps"],
+)
+
+py_test(
+    name = "adaptive_geometry_test",
+    srcs = ["adaptive_geometry_test.py"],
+    deps = [requirement("torch"), ":adaptive_geometry"],
 )

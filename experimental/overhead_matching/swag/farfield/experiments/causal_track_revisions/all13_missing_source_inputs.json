@@ -1,0 +1,81 @@
+{
+  "rows": [
+    {
+      "dataset": "boston_harbor_leg2",
+      "video_path": "/data/farfield_matching/raw_material/boston_harbor_20260712/processed/revisions/boston_harbor_leg2_personseg_v1/anonymization/boston_harbor_leg2_3fps_personseg_blurred.mp4",
+      "expected_video_sha256": "94c6918ad4804cb0370b61b9ef351102ce58e3d992aac3e408a987dc54e9f8f5",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "boston_harbor_leg3",
+      "video_path": "/data/farfield_matching/raw_material/boston_harbor_20260712/processed/revisions/boston_harbor_leg3_personseg_v1/anonymization/boston_harbor_leg3_3fps_personseg_blurred.mp4",
+      "expected_video_sha256": "a9046c80ffce00881b82953fd4181baa0817f5b61075e54d4c058eb0fccba706",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "charles_river_20260727",
+      "video_path": "/data/farfield_matching/raw_material/charles_river_20260727/videos/full_sail.mp4",
+      "expected_video_sha256": "e4c8c0763e23e95c51b994fe0a5c7c7521bebc843a11dab81a8dec7853320dd5",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "franconia_leg1",
+      "video_path": "/data/farfield_matching/raw_material/franconia_20260829/processed/revisions/franconia_leg1_personseg_v1/anonymization/franconia_leg1_3fps_personseg_blurred.mp4",
+      "expected_video_sha256": "fa6bcd47e46173f2cf37d5f9d7ce219cf2ac3f9843535da3284bd09d77544540",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "mount_washington_20260815_leg1",
+      "video_path": "/data/farfield_matching/raw_material/mount_washington_20260815/processed/revisions/mount_washington_20260815_leg1_person_render_v1/anonymization/mount_washington_20260815_leg1_3fps_personseg_blurred.mp4",
+      "expected_video_sha256": "cc0c014442ba4b8b9fad6b16cf9a5a478b97eaa7078d75f147eb9364ba187385",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "mount_washington_20260815_leg3",
+      "video_path": "/data/farfield_matching/raw_material/mount_washington_20260815/processed/revisions/mount_washington_20260815_leg3_person_render_v1/anonymization/mount_washington_20260815_leg3_3fps_personseg_blurred.mp4",
+      "expected_video_sha256": "0584628b422595b4db742d98fa1b24d7689c4eb9c4e0f2808896bfc2e142bf59",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "pohang_canal_04",
+      "video_path": "/data/farfield_matching/raw_material/pohang_canal_20210716/pohang04_omni_3fps.mp4",
+      "expected_video_sha256": "a9c8dd7180774623897e87b963223ecf9118184c23513c3f3efb5b9ed053bb54",
+      "leveling_sources": []
+    },
+    {
+      "dataset": "portland_flight_20260906_leg2",
+      "video_path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg2_3fps_levelled.mp4",
+      "expected_video_sha256": "5bd34b6f20ced4daa56ef7bb138fd23bfd110bc69fd2750d5ade830d04c4cfe7",
+      "leveling_sources": [
+        {
+          "path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg2_leveling_manifest.json",
+          "exists": false,
+          "sha256": "5e69c13c85dbce7542c8f3254041c5c468b195ae2ea691edcbcdbcae2c48a932"
+        },
+        {
+          "path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg2_leveling.csv",
+          "exists": false,
+          "sha256": "17e5a07fa4058213cab6203eb7834725a275b508882ebc98d9a51819ffa02c87"
+        }
+      ]
+    },
+    {
+      "dataset": "portland_flight_20260906_leg3",
+      "video_path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg3_3fps_levelled.mp4",
+      "expected_video_sha256": "109aa09dda7cd2a3371c24f6c7de468656dd997a4ecb476341d7684e33624713",
+      "leveling_sources": [
+        {
+          "path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg3_leveling_manifest.json",
+          "exists": false,
+          "sha256": "d0b0fe5f96b698724cc1e746f225cc70360dc9cc21b4cae9c4883574469d224f"
+        },
+        {
+          "path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg3_leveling.csv",
+          "exists": false,
+          "sha256": "010985d9e0cb2c919f821e70f167562ef962d35fd9eb4600675b9db999823f8d"
+        }
+      ]
+    }
+  ],
+  "qualification": "Exact canonical source hashes; review clips or differently trimmed videos must not substitute without a separate alignment/provenance validation."
+}

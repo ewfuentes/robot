@@ -20,6 +20,14 @@ from experimental.overhead_matching.swag.farfield.tracking import tracklets
 
 
 SIDECAR_SCHEMA = "farfield_natural_closure_release_schedule/v1"
+DEPENDENCY_SCHEMA = "farfield_dependency_release_schedule/v1"
+DEPENDENCY_POLICY = {
+    "tracklet_release": "atomic",
+    "measurement_anchors": "preserved",
+    "release_rule": "max_declared_dependency_ready_keyframe",
+    "processing_latency": "not_modeled",
+    "claim": "prompt_dependency_lower_bound_only",
+}
 _SIDECAR_KEYS = frozenset({
     "schema",
     "localization_inputs",
@@ -241,18 +249,41 @@ def _load_sidecar_document(path: Path):
             from exc
 
 
+def validate_dependency_times(document, final_keyframe_idx):
+    """Require every released factor to wait for all declared prompt inputs."""
+    release = document["release_keyframe_by_tracklet"]
+    ready = document["source_ready_keyframe_by_tracklet"]
+    dependencies = document["dependencies_by_tracklet"]
+    if not all(isinstance(x, dict) for x in (release, ready, dependencies)):
+        raise ValueError("dependency schedule maps must be objects")
+    if set(release) != set(ready) or set(release) != set(dependencies):
+        raise ValueError("dependency schedule maps must cover the same tracks")
+    for key, value in ready.items():
+        if type(value) is not int or not 0 <= value <= final_keyframe_idx:
+            raise ValueError(f"invalid dependency ready keyframe for {key}")
+    for key, peers in dependencies.items():
+        if (not isinstance(peers, list) or not all(isinstance(p, str) for p in peers)
+                or key not in peers or len(peers) != len(set(peers))
+                or not set(peers) <= ready.keys()):
+            raise ValueError(f"invalid dependencies for {key}")
+        if type(release[key]) is not int or release[key] != max(ready[p] for p in peers):
+            raise ValueError(f"release for {key} disagrees with dependency readiness")
+
+
 def load_sidecar(
         path: Path,
         data: export_ingest.ExportData) -> tuple[TrackRelease, ...]:
     """Load release times, rebuilding measurement bundles from ``data``."""
     document = _load_sidecar_document(path)
-    if not isinstance(document, dict) or set(document) != _SIDECAR_KEYS:
+    dependency_mode = isinstance(document, dict) and document.get("schema") == DEPENDENCY_SCHEMA
+    expected_keys = _SIDECAR_KEYS | ({"source_ready_keyframe_by_tracklet", "dependencies_by_tracklet"} if dependency_mode else set())
+    if not isinstance(document, dict) or set(document) != expected_keys:
         actual = set(document) if isinstance(document, dict) else set()
         raise ValueError(
             "release schedule sidecar fields differ: "
-            f"missing={sorted(_SIDECAR_KEYS - actual)}, "
-            f"unknown={sorted(actual - _SIDECAR_KEYS)}")
-    if document["schema"] != SIDECAR_SCHEMA:
+            f"missing={sorted(expected_keys - actual)}, "
+            f"unknown={sorted(actual - expected_keys)}")
+    if document["schema"] not in (SIDECAR_SCHEMA, DEPENDENCY_SCHEMA):
         raise ValueError(
             f"release schedule schema must be {SIDECAR_SCHEMA!r}")
     if not artifact.records_same_artifact(
@@ -260,13 +291,20 @@ def load_sidecar(
         raise ValueError(
             "release schedule is bound to a different localization_inputs "
             "artifact")
-    if document["policy"] != _POLICY:
+    if document["policy"] != (DEPENDENCY_POLICY if dependency_mode else _POLICY):
         raise ValueError("release schedule policy differs from this reader")
     final_keyframe_idx = data.n_keyframes - 1
     if document["final_keyframe_idx"] != final_keyframe_idx:
         raise ValueError(
             "release schedule final keyframe disagrees with localization "
             "inputs")
+    if dependency_mode:
+        validate_dependency_times(document, final_keyframe_idx)
+        # Peer readiness cannot hide a source track declared ready before its
+        # own measurements exist.
+        _schedule_from_releases(
+            document["source_ready_keyframe_by_tracklet"],
+            data.measurements, data.tables, final_keyframe_idx)
     return _schedule_from_releases(
         document["release_keyframe_by_tracklet"],
         data.measurements,

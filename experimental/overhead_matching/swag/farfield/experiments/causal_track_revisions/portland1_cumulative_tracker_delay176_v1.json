@@ -1,0 +1,16 @@
+{
+  "window": [
+    0,
+    176
+  ],
+  "input_span_seconds": 377.33333300000004,
+  "tracker_service_seconds": 1927.1371938369703,
+  "tracker_service_over_input_span": 5.107254051782831,
+  "tracker_completion_delay_after_last_output_seconds": 1569.1371938369703,
+  "covered_events": 431,
+  "events_ready_by_window_end": 77,
+  "events_not_yet_ready_at_window_end": 354,
+  "median_event_tracker_delay_seconds": 873.8152647889219,
+  "qualification": "Fixed eight-interval batches start after all batch video dependencies are available, then consume measured tracker service serially. This is a realizable modeled buffering schedule, not an observed end-to-end run or a minimum-delay bound. Cached detector inference, initialization and filter service are excluded. Accuracy under this schedule has not been evaluated. Events beyond the measured complete batches remain uncovered; no final-frame clamp or EOF flush. A tracker_service_over_input_span above one cannot sustain recorded input speed under this measured workload.",
+  "dataset": "portland_flight_20260906_leg1"
+}

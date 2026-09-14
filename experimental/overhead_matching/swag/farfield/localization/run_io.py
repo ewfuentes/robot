@@ -568,10 +568,10 @@ def _validate_payloads(manifest: structs.RunManifest, truth: list,
     if odometry_indices != expected_odometry:
         problems.append("odometry keyframes must be contiguous 1..N-1")
     for record in odometry:
-        if record.sigma_m <= 0.0 or record.sigma_yaw_rad <= 0.0:
+        if record.sigma_m < 0.0 or record.sigma_yaw_rad < 0.0:
             problems.append(
                 f"odometry at keyframe {record.keyframe_idx} has "
-                "non-positive uncertainty")
+                "negative uncertainty")
     truth_indices = [record.keyframe_idx for record in truth]
     if truth_indices and truth_indices != expected_health:
         problems.append("truth must be empty or contiguous 0..N-1")

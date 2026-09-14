@@ -180,3 +180,15 @@ py_test(
         "//experimental/overhead_matching/swag/farfield/dataset_tools:checksums",
     ],
 )
+
+py_library(
+    name = "online_course",
+    srcs = ["online_course.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+)
+
+py_test(
+    name = "online_course_test",
+    srcs = ["online_course_test.py"],
+    deps = [":online_course"],
+)

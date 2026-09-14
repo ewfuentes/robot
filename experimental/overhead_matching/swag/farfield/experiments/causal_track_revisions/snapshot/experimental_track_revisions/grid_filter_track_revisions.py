@@ -1038,6 +1038,7 @@ def main():
     parser.add_argument("--trace_keyframes", default="",
                         help="Comma-separated release frames to save priors/factors")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--predictive_tempering",type=int,choices=[0,1],default=0)
     args = parser.parse_args()
     if args.adaptive_tables and (args.smoother != "none" or not args.track_joint
                                 or args.availability != "natural"):
@@ -1665,6 +1666,15 @@ def main():
                 mixture=args.mixture,
                 cap=None, chunk=args.joint_chunk)
 
+        revision_payload=json.loads(Path(args.release_schedule).read_text())
+        revisions={e['tracklet_id']:e['revision'] for e in revision_payload.get('emissions',[]) if 'revision' in e and e['tracklet_id'] in data.tables}
+        release_by_id={r.tracklet_id:r for r in releases}
+        revision_exponents={}
+        for tid,info in revisions.items():
+            previous=info['previous_tracklet_id']
+            if previous not in release_by_id or release_by_id[previous].release_keyframe_idx>=release_by_id[tid].release_keyframe_idx:
+                raise ValueError('Revision requires a previously consumed track prefix')
+
         smoothing_releases = releases
 
         if args.track_joint:
@@ -1726,6 +1736,7 @@ def main():
                         "inputs": data.artifact_ref.to_dict(),
                         "odometry_seed": args.odometry_seed,
                     }, trace_path / "prior.pt")
+                predictive_reference_prior = belief.belief
                 for release in releases_at.get(keyframe, ()):
                     if release.tracklet_id in adaptive_alternatives:
                         mode_mass = adaptive_identity.spatial_mode_mass(
@@ -1761,6 +1772,22 @@ def main():
                         geometry_decisions.append({
                             "keyframe": keyframe, "tracklet_id": release.tracklet_id,
                             "pre_update_spatial_mode_mass": mode_mass, **geometry_decision})
+                    if release.tracklet_id in revisions:
+                        from track_revision_ratio import replacement_ratio
+                        previous=revisions[release.tracklet_id]['previous_tracklet_id']
+                        old_likelihood=joint_release_likelihood(release_by_id[previous],keyframe)
+                        exponent=revision_exponents[previous]
+                        likelihood=replacement_ratio(likelihood,old_likelihood,exponent)
+                        revision_exponents[release.tracklet_id]=exponent
+                        adaptive_decisions.append(dict(keyframe=keyframe,tracklet_id=release.tracklet_id,
+                            previous_tracklet_id=previous,exponent=exponent,policy='cumulative_ratio_with_fixed_first_release_exponent'))
+                    elif args.predictive_tempering:
+                        from predictive_tempering import temper_factor
+                        likelihood, predictive_decision = temper_factor(predictive_reference_prior, likelihood)
+                        revision_exponents[release.tracklet_id]=predictive_decision['exponent']
+                        adaptive_decisions.append({"keyframe":keyframe,"tracklet_id":release.tracklet_id,**predictive_decision})
+                    else:
+                        revision_exponents[release.tracklet_id]=1.
                     if trace_path is not None:
                         torch.save(likelihood.detach().cpu(), trace_path / (
                             release.tracklet_id.split("#")[-1] + ".likelihood.pt"))
@@ -1811,6 +1838,7 @@ def main():
                         "lock_mass": args.adaptive_lock_mass,
                         "observation_sha256": hashlib.sha256(Path(args.adaptive_extent_observations).read_bytes()).hexdigest(),
                         "decisions": geometry_decisions} if args.adaptive_extent_observations else None),
+                    "predictive_tempering": ({"decisions": adaptive_decisions, "reference": "same_prior_before_all_co_released_tracks"} if args.predictive_tempering else None),
                     "adaptive_identity": ({"policy": "expand_while_spatially_diffuse_v1",
                         "radius_m": args.adaptive_lock_radius_m,
                         "lock_mass": args.adaptive_lock_mass,

@@ -1,0 +1,440 @@
+{
+  "scope": "all_13_sequences",
+  "authoritative_user_scope": "All 13 sequences, not only Portland leg1; supersedes the narrower initial overnight goal description.",
+  "candidate": "cumulative_current_pose_track_likelihood_ratio_with_fixed_first_release_exponent",
+  "shared_parameters": {
+    "n_heading": 36,
+    "mixture": "max",
+    "predictive_tempering": true,
+    "first_release_min_supported_frames": 3,
+    "first_release_min_age_seconds": 10,
+    "snapshot_period_keyframes": 8
+  },
+  "requirements": [
+    "Full stream-eligible sequence for each dataset; explicitly account for every excluded or EOF-dependent frame.",
+    "Paired one-shot tempered and cumulative-update results with the same rules/parameters; historical reference separately qualified.",
+    "Report all five distance-normalized mass metrics, MAP errors, runtime/processing delay, and per-sequence regressions.",
+    "Verify prefix invariance and exact cache/checkpoint identities; no future-derived track labels or matching tables.",
+    "No Gemini or other model API calls; published speedup branch unchanged.",
+    "Accuracy regression on one sequence must remain visible and does not authorize dropping that sequence or cancelling the other sequence checks.",
+    "Do not mark goal complete after Portland-only results; all 13 need recorded outcomes and provenance limitations."
+  ],
+  "rows": [
+    {
+      "dataset": "boston_harbor_leg1",
+      "n_frames": 379,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg1/v3dedup_20260912_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "661e93030bcd3904d0e969108b162266bc86f91c24aa1da3fdd0947962f0c14c",
+        "dataset": "boston_harbor_leg1",
+        "kind": "frame_landmarks",
+        "manifest_digest": "26f4796b4084fb4b7f62576fa87aad8a2619c1fde90fa64a78f6c5863966de32",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg1/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/boston_harbor_20260712/processed/revisions/boston_harbor_leg1_personseg_v1/anonymization/boston_harbor_leg1_3fps_personseg_blurred.mp4",
+      "video_exists": true,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "boston_harbor_leg1",
+        "seed": 0,
+        "output_sha256": "9640a48222ca31e962bae6c47e74d51fc4f89f4f718255d7acb6c623f0082016",
+        "reference500": 0.6313649624783322,
+        "candidate500": 0.6313649624783322,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "boston_harbor_leg2",
+      "n_frames": 236,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg2/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "8ef8e533a61d5020359e57282f76512e0c3fae603fd9b3ce1e86aa0ed5eb1e64",
+        "dataset": "boston_harbor_leg2",
+        "kind": "frame_landmarks",
+        "manifest_digest": "884525212ef1c8f8c318b63f6a82a56a62397704761c6f4e8ea1000c2081ff4f",
+        "path": "/home/ekf/farfield_tracking_batch2_20260913/artifacts/frame_landmarks/boston_harbor_leg2/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/boston_harbor_20260712/processed/revisions/boston_harbor_leg2_personseg_v1/anonymization/boston_harbor_leg2_3fps_personseg_blurred.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "boston_harbor_leg2",
+        "seed": 0,
+        "output_sha256": "21261970ff8dff80c15c0250b0579f4297876ba5a42a5cf5e1fd3526f323ea6b",
+        "reference500": 0.0005362709720169783,
+        "candidate500": 0.0013688600944597796,
+        "delta": {
+          "50": 2.637757295648893e-06,
+          "100": 2.811368260444704e-05,
+          "250": 0.0003121241192324575,
+          "500": 0.0008325891224428012,
+          "1000": 0.0008535137806550274
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "boston_harbor_leg3",
+      "n_frames": 734,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/boston_harbor_leg3/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "c10c9de77d23c69be18ee259b078f7208da5d8e8b592d6b20ad830e4db7dabdf",
+        "dataset": "boston_harbor_leg3",
+        "kind": "frame_landmarks",
+        "manifest_digest": "2c254db5b8f6227821695824c4dd09b62b21b1554e8fb32bc5b6a9eec875ff42",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/boston_harbor_leg3/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/boston_harbor_20260712/processed/revisions/boston_harbor_leg3_personseg_v1/anonymization/boston_harbor_leg3_3fps_personseg_blurred.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "boston_harbor_leg3",
+        "seed": 0,
+        "output_sha256": "67021146be92b358c7dfe722d1f8a528279029c5186dcda09edcd168555f231d",
+        "reference500": 0.16133840097684793,
+        "candidate500": 0.16133840097684793,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "charles_river_20260727",
+      "n_frames": 513,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/charles_river_20260727/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "de4a31a47f8501c36d51822c45d5760f8f8912d5368b7a1d701e356ae806b5cb",
+        "dataset": "charles_river_20260727",
+        "kind": "frame_landmarks",
+        "manifest_digest": "629c21c32a8914bb377389548a59453758bcd6f933eebcd31aef6603503291c2",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/charles_river_20260727/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/charles_river_20260727/videos/full_sail.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "charles_river_20260727",
+        "seed": 0,
+        "output_sha256": "a415732c229be7c74eb7ac4a8498b9610a648789fbd986acfc3bf6980f4d4f3a",
+        "reference500": 0.24457495975988827,
+        "candidate500": 0.24457495975988827,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "flevoland_polder",
+      "n_frames": 633,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/flevoland_polder/v3dedup_20260912_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "2efea93f0c1f1db4e18e3c1acb9014a529bb037c915626b67eb9eefda04153ab",
+        "dataset": "flevoland_polder",
+        "kind": "frame_landmarks",
+        "manifest_digest": "c604e464769d9979a372f0b808fa8cc531757ae0d83ab757f8e544a9144d8071",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/flevoland_polder/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/mapillary_full_20260903/videos/flevoland_polder_hold11_v1/flevoland_polder_hold11.mp4",
+      "video_exists": true,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "flevoland_polder",
+        "seed": 0,
+        "output_sha256": "1d1fd13bd496a4b65fd78a52107a28c486c5d819a30b2720e42c9af30358de5e",
+        "reference500": 0.5860774446807557,
+        "candidate500": 0.5860774446807557,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "franconia_leg1",
+      "n_frames": 808,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/franconia_leg1/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "7c0e86cccce35b60887e1b405c46921b02f6c5ce6c6ecde1738fab2b41963a34",
+        "dataset": "franconia_leg1",
+        "kind": "frame_landmarks",
+        "manifest_digest": "9233a5228424e74df81b019c4415452221c5ae19d051faacf3487a4d1fdb0d30",
+        "path": "/home/ekf/farfield_tracking_batch2_20260913/artifacts/frame_landmarks/franconia_leg1/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/franconia_20260829/processed/revisions/franconia_leg1_personseg_v1/anonymization/franconia_leg1_3fps_personseg_blurred.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "franconia_leg1",
+        "seed": 0,
+        "output_sha256": "979d09d3a9f4749b6643e052184b13ecb7be33f27e7b2b116e7897937f3e5b2e",
+        "reference500": 0.06106701508729254,
+        "candidate500": 0.06106701508729254,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "mount_washington_20260815_leg1",
+      "n_frames": 128,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/mount_washington_20260815_leg1/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "1e92b287fc7b6fb4b913e180fc3ed8f4be3ee55b9d678333950836cb5640c831",
+        "dataset": "mount_washington_20260815_leg1",
+        "kind": "frame_landmarks",
+        "manifest_digest": "6b4a3da2c2f87c008a3ad6c78939a6d78e2e2c3f3fbeac68f78fd5a414f323f9",
+        "path": "/home/ekf/farfield_tracking_batch2_20260913/artifacts/frame_landmarks/mount_washington_20260815_leg1/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/mount_washington_20260815/processed/revisions/mount_washington_20260815_leg1_person_render_v1/anonymization/mount_washington_20260815_leg1_3fps_personseg_blurred.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "mount_washington_20260815_leg1",
+        "seed": 0,
+        "output_sha256": "e01df17016b41e74d78f1f62771da1dcdc8dd64e0e172a4bcdb0199fd7a71f31",
+        "reference500": 0.0005482530241977617,
+        "candidate500": 0.0005482530241977617,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "mount_washington_20260815_leg2",
+      "n_frames": 265,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/mount_washington_20260815_leg2/v3dedup_20260912_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "ffd6abb8f4dacb2c82d3301f3fc84324bdfc0936f9dba4bdc937162e9cd92b75",
+        "dataset": "mount_washington_20260815_leg2",
+        "kind": "frame_landmarks",
+        "manifest_digest": "c962f4c0dc5b7be722070c8c82f28a94df7ab76974f2633b133c3e32bfef932d",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/mount_washington_20260815_leg2/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/mount_washington_20260815/processed/revisions/mount_washington_20260815_leg2_person_render_v1/anonymization/mount_washington_20260815_leg2_3fps_personseg_blurred.mp4",
+      "video_exists": true,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "mount_washington_20260815_leg2",
+        "seed": 0,
+        "output_sha256": "43df73825534104219d5322c59a15370681da53a0cbdf4fd353df053d7b1c3ba",
+        "reference500": 0.5593345326090784,
+        "candidate500": 0.5593345326090784,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "mount_washington_20260815_leg3",
+      "n_frames": 272,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/mount_washington_20260815_leg3/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "59b06116d8e6f598d333355056385b1a4f72148426bd673d903ac282c8238063",
+        "dataset": "mount_washington_20260815_leg3",
+        "kind": "frame_landmarks",
+        "manifest_digest": "1ba2850c74dc1980fe98bef4183285ead38d0f3f5711d0a20239508bd5af6978",
+        "path": "/home/ekf/farfield_tracking_batch2_20260913/artifacts/frame_landmarks/mount_washington_20260815_leg3/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/mount_washington_20260815/processed/revisions/mount_washington_20260815_leg3_person_render_v1/anonymization/mount_washington_20260815_leg3_3fps_personseg_blurred.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "mount_washington_20260815_leg3",
+        "seed": 0,
+        "output_sha256": "10f05185acdeb4285dc76968b4f71314ff561b23f26b3789c4d6a67da5ee82f4",
+        "reference500": 0.3297839357457049,
+        "candidate500": 0.3297839357457049,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "pohang_canal_04",
+      "n_frames": 1450,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/pohang_canal_04/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "f8fe1c85dd4a3fa109baa0a3cabe2e1b370b7cf6ae6601223cdeb2c9d718eaf5",
+        "dataset": "pohang_canal_04",
+        "kind": "frame_landmarks",
+        "manifest_digest": "ca336c84e9f124bf84e7bc70b8ecd0c0c812ad4f44aca2858ef73dda27523261",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/pohang_canal_04/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/pohang_canal_20210716/pohang04_omni_3fps.mp4",
+      "video_exists": false,
+      "horizon_leveling": false,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "pohang_canal_04",
+        "seed": 0,
+        "output_sha256": "336d993ec9fc59b09b1ed2d26740fc07fc88611637915009181fbeb6a2e62c4a",
+        "reference500": 0.08206049124280469,
+        "candidate500": 0.08206049124280469,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "portland_flight_20260906_leg1",
+      "n_frames": 492,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/portland_flight_20260906_leg1/v3dedup_20260912_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "2ca14a0621b4b004f63e8f467ce6d9cf260439cb62b3c1128160293d75611af3",
+        "dataset": "portland_flight_20260906_leg1",
+        "kind": "frame_landmarks",
+        "manifest_digest": "a95c2b13205ec4b065be821110f854b5bdac70b9d309c148a6835560687638ab",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/portland_flight_20260906_leg1/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg1_3fps_levelled.mp4",
+      "video_exists": true,
+      "horizon_leveling": true,
+      "live_prefix_checkpoint_count": 24,
+      "baseline_validation": {
+        "dataset": "portland_flight_20260906_leg1",
+        "seed": 0,
+        "output_sha256": "5a155e9c48978b241ea004057f445474122f7be9298f2f112975a6d0e82d8449",
+        "reference500": 0.2513915523277534,
+        "candidate500": 0.2513915523277534,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "running_portland_validation"
+    },
+    {
+      "dataset": "portland_flight_20260906_leg2",
+      "n_frames": 507,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/portland_flight_20260906_leg2/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "762107b5da00c630d96ed3a316a8b10c2c761fffff2f1cbeca732d2777cefce9",
+        "dataset": "portland_flight_20260906_leg2",
+        "kind": "frame_landmarks",
+        "manifest_digest": "1d26cf32c614b8e3dd0303199b7f1eb4ded60dca13f3d810568fa0fa3be375af",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/portland_flight_20260906_leg2/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg2_3fps_levelled.mp4",
+      "video_exists": false,
+      "horizon_leveling": true,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "portland_flight_20260906_leg2",
+        "seed": 0,
+        "output_sha256": "0870b2d9bf99b0126b0eda3acdabae76c7e2903d308c68ed386a9d51113541cb",
+        "reference500": 0.28797027122172864,
+        "candidate500": 0.33431332314561796,
+        "delta": {
+          "50": 0.00028630794133130085,
+          "100": 0.001778855044361787,
+          "250": 0.018195267539628718,
+          "500": 0.04634305192388932,
+          "1000": 0.06597463849902302
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    },
+    {
+      "dataset": "portland_flight_20260906_leg3",
+      "n_frames": 480,
+      "tracking_manifest": "/data/farfield_matching/artifacts/object_tracks/portland_flight_20260906_leg3/v3dedup_20260913_v1/manifest.json",
+      "frame_landmarks": {
+        "content_digest": "0eb519d168075b3c9db19773eeeed41e7f9edb5ebd8d95c2e6220aa5cd922c2a",
+        "dataset": "portland_flight_20260906_leg3",
+        "kind": "frame_landmarks",
+        "manifest_digest": "55e0209a1ad111c93cd2284f5766343b98d7ef53e4efbd7c8630ea5786f630d9",
+        "path": "/data/farfield_matching/artifacts/frame_landmarks/portland_flight_20260906_leg3/v3pro_20260911_v1",
+        "version": "v3pro_20260911_v1"
+      },
+      "video_path": "/data/farfield_matching/raw_material/portland_flight_videos/processed/derivatives/leg3_3fps_levelled.mp4",
+      "video_exists": false,
+      "horizon_leveling": true,
+      "live_prefix_checkpoint_count": 0,
+      "baseline_validation": {
+        "dataset": "portland_flight_20260906_leg3",
+        "seed": 0,
+        "output_sha256": "05810fc3837856ea09ed50a85374abe51e9ceaf7d8fbffb0214b26a2f6fac4ba",
+        "reference500": 0.11334317495705425,
+        "candidate500": 0.11334317495705425,
+        "delta": {
+          "50": 0.0,
+          "100": 0.0,
+          "250": 0.0,
+          "500": 0.0,
+          "1000": 0.0
+        }
+      },
+      "status": "pending_causal_input_preparation"
+    }
+  ]
+}

@@ -1038,6 +1038,7 @@ def main():
     parser.add_argument("--trace_keyframes", default="",
                         help="Comma-separated release frames to save priors/factors")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--predictive_tempering",type=int,choices=[0,1],default=0)
     args = parser.parse_args()
     if args.adaptive_tables and (args.smoother != "none" or not args.track_joint
                                 or args.availability != "natural"):
@@ -1726,6 +1727,7 @@ def main():
                         "inputs": data.artifact_ref.to_dict(),
                         "odometry_seed": args.odometry_seed,
                     }, trace_path / "prior.pt")
+                predictive_reference_prior = belief.belief
                 for release in releases_at.get(keyframe, ()):
                     if release.tracklet_id in adaptive_alternatives:
                         mode_mass = adaptive_identity.spatial_mode_mass(
@@ -1761,6 +1763,10 @@ def main():
                         geometry_decisions.append({
                             "keyframe": keyframe, "tracklet_id": release.tracklet_id,
                             "pre_update_spatial_mode_mass": mode_mass, **geometry_decision})
+                    if args.predictive_tempering:
+                        from predictive_tempering import temper_factor
+                        likelihood, predictive_decision = temper_factor(predictive_reference_prior, likelihood)
+                        adaptive_decisions.append({"keyframe":keyframe,"tracklet_id":release.tracklet_id,**predictive_decision})
                     if trace_path is not None:
                         torch.save(likelihood.detach().cpu(), trace_path / (
                             release.tracklet_id.split("#")[-1] + ".likelihood.pt"))
@@ -1811,6 +1817,7 @@ def main():
                         "lock_mass": args.adaptive_lock_mass,
                         "observation_sha256": hashlib.sha256(Path(args.adaptive_extent_observations).read_bytes()).hexdigest(),
                         "decisions": geometry_decisions} if args.adaptive_extent_observations else None),
+                    "predictive_tempering": ({"decisions": adaptive_decisions, "reference": "same_prior_before_all_co_released_tracks"} if args.predictive_tempering else None),
                     "adaptive_identity": ({"policy": "expand_while_spatially_diffuse_v1",
                         "radius_m": args.adaptive_lock_radius_m,
                         "lock_mass": args.adaptive_lock_mass,

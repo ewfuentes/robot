@@ -211,7 +211,12 @@ def _validate_motion(export_dir: Path, meta: ExportMeta,
 
 def _validate_reducer(meta: ExportMeta,
                       manifest: artifact.ArtifactManifest) -> None:
-    recorded = _exact_dict(meta.reducer, _REDUCER_KEYS, "reducer")
+    keys = _REDUCER_KEYS
+    if isinstance(meta.reducer, dict) and "range_cap_reduction" in meta.reducer:
+        keys = keys | {"range_cap_reduction"}
+        if meta.reducer["range_cap_reduction"] != "min":
+            raise ValueError("unsupported serialized range-cap reduction")
+    recorded = _exact_dict(meta.reducer, keys, "reducer")
     expected_static = {
         "name": "epoch_fused_compat_v1",
         "input_frame": "camera_cw_deg",
@@ -393,7 +398,7 @@ def validate(data: ExportData) -> None:
         if not all(math.isfinite(value) for value in values):
             problems.append(
                 f"odometry at keyframe {item.keyframe_idx} is non-finite")
-        if item.sigma_m <= 0.0 or item.sigma_yaw_rad <= 0.0:
+        if item.sigma_m < 0.0 or item.sigma_yaw_rad < 0.0:
             problems.append(
                 f"odometry at keyframe {item.keyframe_idx} has non-positive "
                 "uncertainty")

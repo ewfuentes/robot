@@ -232,6 +232,27 @@ class ReleaseSidecarTest(unittest.TestCase):
         self.assertIs(loaded[0].measurements[0], original_measurement)
         self.assertIs(loaded[0].table, original_table)
 
+    def test_peer_delay_cannot_hide_unavailable_own_measurement(self):
+        data = export_data([], [measurement("T1", 5), measurement("T2", 6)],
+                           {"T1": table("T1"), "T2": table("T2")})
+        document = {
+            "schema": release_schedule.DEPENDENCY_SCHEMA,
+            "policy": release_schedule.DEPENDENCY_POLICY,
+            "localization_inputs": data.artifact_ref.to_dict(),
+            "final_keyframe_idx": 12,
+            "source_ready_keyframe_by_tracklet": {"T1": 2, "T2": 8},
+            "dependencies_by_tracklet": {"T1": ["T1", "T2"], "T2": ["T2"]},
+            "release_keyframe_by_tracklet": {"T1": 8, "T2": 8},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "schedule.json"
+            path.write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, "after release 2"):
+                release_schedule.load_sidecar(path, data)
+            document["source_ready_keyframe_by_tracklet"]["T1"] = 5
+            path.write_text(json.dumps(document))
+            self.assertEqual(len(release_schedule.load_sidecar(path, data)), 2)
+
     def test_rejects_stale_localization_inputs_reference(self):
         original_measurement = measurement("T1", 3)
         data = export_data(
