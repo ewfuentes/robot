@@ -193,6 +193,26 @@ def natural_closure_schedule_from_export(
             "bearing_observations track/audit references are stale")
     accepted = tracklets.build_accepted_tracklets(
         audits.source_tracks, audits)
+    ignored = data.manifest.config.get("ignored_full_circle_observations")
+    if ignored is not None:
+        # Recompute exclusions from bound source geometry; arbitrary missing
+        # measurements/tables must still fail the exact-coverage checks.
+        expected_ignored, directional = [], set()
+        for item in accepted:
+            for segment in item.valid_segments:
+                for keyframe, _, width in tracklets.bearing_series(
+                        item.source_track, bearing_manifest.config["pano_width"],
+                        [{"start_t": segment.start_t, "end_t": segment.end_t}]):
+                    if width >= 360.0:
+                        expected_ignored.append({"tracklet_id": item.tracklet_id,
+                                                 "keyframe_idx": keyframe})
+                    else:
+                        directional.add(item.tracklet_id)
+        key = lambda row: (row["tracklet_id"], row["keyframe_idx"])
+        if sorted(ignored, key=key) != sorted(expected_ignored, key=key):
+            raise ValueError("full-circle exclusions disagree with source geometry")
+        excluded = {row["tracklet_id"] for row in ignored} - directional
+        accepted = [item for item in accepted if item.tracklet_id not in excluded]
     return natural_closure_schedule(
         accepted, data.measurements, data.tables, data.n_keyframes - 1)
 

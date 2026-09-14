@@ -11,6 +11,64 @@ from experimental.overhead_matching.swag.farfield.localization import (
 )
 
 
+class LikelihoodCacheTest(unittest.TestCase):
+    def test_lru_eviction_and_byte_accounting(self):
+        cache = grid_filter.LikelihoodCache(24, "cpu")
+        values = {key: torch.full((size,), float(index))
+                  for index, (key, size) in enumerate(
+                      [("a", 2), ("b", 4), ("c", 3), ("large", 7)])}
+        for key in ("a", "b", "a", "c"):
+            self.assertTrue(torch.equal(cache.get(key, lambda: values[key]), values[key]))
+        self.assertEqual(list(cache.store), ["a", "c"])
+        self.assertEqual((cache.bytes, cache.hits, cache.misses, cache.evictions),
+                         (20, 1, 3, 1))
+        cache.get("large", lambda: values["large"])
+        self.assertEqual(list(cache.store), ["a", "c"])
+        self.assertEqual((cache.bytes, cache.skipped), (20, 1))
+        cache.get("b", lambda: values["b"])
+        self.assertEqual(list(cache.store), ["b"])
+        self.assertEqual((cache.bytes, cache.evictions), (16, 3))
+
+    def test_disabled_and_invalid_budgets(self):
+        cache = grid_filter.LikelihoodCache(0, "cpu")
+        for _ in range(2):
+            cache.get("a", lambda: torch.ones(4))
+        self.assertEqual((len(cache.store), cache.bytes, cache.misses, cache.skipped),
+                         (0, 0, 2, 2))
+        for bad in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                grid_filter.LikelihoodCache(bad, "cpu")
+
+    def test_eviction_preserves_forward_and_backward_messages_exactly(self):
+        for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+            belief = grid_filter.GridBelief(
+                grid_filter.Grid(0, 50, 0, 40, 10), 6, device)
+            tensor_bytes = belief.belief.numel() * belief.belief.element_size()
+            def rollout(budget):
+                cache = grid_filter.LikelihoodCache(budget, device)
+                message = belief.belief.clone()
+                messages = []
+                def compute(key):
+                    return belief.track_likelihood(
+                        key * 0.1, 0.05,
+                        torch.tensor([100., 200.], device=device),
+                        torch.tensor([200., 100.], device=device),
+                        torch.tensor([0.4, 0.5], device=device), 25., 0.2, 0.1)
+                for keys in (range(5), range(4, -1, -1), [1, 2, 1, 3, 4]):
+                    for key in keys:
+                        factor = cache.get(key, lambda: compute(key))
+                        message = grid_filter._apply_likelihood_factors(message, [factor])
+                        messages.append(message.clone())
+                        self.assertLessEqual(cache.bytes, budget)
+                return messages, cache
+            reference, _ = rollout(0)
+            for budget in (tensor_bytes * 2, tensor_bytes * 5):
+                actual, cache = rollout(budget)
+                self.assertTrue(all(torch.equal(a, b) for a, b in zip(reference, actual)))
+                if budget == tensor_bytes * 2:
+                    self.assertGreater(cache.evictions, 0)
+
+
 class MotionPlanningTest(unittest.TestCase):
     def test_left_motion_uses_post_turn_heading(self):
         belief = grid_filter.GridBelief(
@@ -76,6 +134,22 @@ class MotionPlanningTest(unittest.TestCase):
 
 
 class SmootherAdjointTest(unittest.TestCase):
+    def test_forward_backward_product_preserves_tiny_shared_mass(self):
+        for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+            with self.subTest(device=device):
+                alpha = torch.tensor([1.0, 0.0, 1e-30, 2e-30], device=device)
+                beta = torch.tensor([0.0, 1.0, 1e-30, 1e-30], device=device)
+                self.assertEqual(float((alpha * beta).sum()), 0.0)
+                expected = alpha.double() * beta.double()
+                expected /= expected.sum()
+                actual = grid_filter._apply_likelihood_factors(alpha, [beta])
+                torch.testing.assert_close(actual, expected.float(),
+                                           rtol=2e-5, atol=0.0)
+                # Exact disjoint support is still invalid, not filled in.
+                beta[2:] = 0.0
+                with self.assertRaises(ValueError):
+                    grid_filter._apply_likelihood_factors(alpha, [beta])
+
     def test_coreleased_factors_do_not_overflow_or_underflow(self):
         for scale in (1e28, 1e-28):
             prior = torch.tensor([0.25, 0.75, 0.0])

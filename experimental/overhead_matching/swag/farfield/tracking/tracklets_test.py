@@ -59,6 +59,10 @@ class BoundAudits(dict):
 
 
 class BearingSeriesTest(unittest.TestCase):
+    def test_legacy_overwrapped_box_becomes_full_circle(self):
+        track = make_track(1, 0, {0: centred_box(100, width=PANO_W * 1.14)})
+        self.assertEqual(tracklets.bearing_series(track, PANO_W)[0][2], 360.0)
+
     def test_series_uses_camera_cw_frame_and_box_midpoint(self):
         track = make_track(
             1, 0, {
@@ -421,6 +425,16 @@ class RangeCapTest(unittest.TestCase):
 
 
 class EpochFusedCompatV1Test(unittest.TestCase):
+    def test_full_circle_is_ignored_including_its_range_cap(self):
+        full = observation(0, 180.0, width=360.0, range_max_m=100.0)
+        normal = observation(1, 10.0, width=8.0, range_max_m=2000.0)
+        self.assertEqual(tracklets.epoch_fused_compat_v1([full], PARAMS), [])
+        self.assertEqual(
+            tracklets.epoch_fused_compat_v1([full, normal], PARAMS),
+            tracklets.epoch_fused_compat_v1([normal], PARAMS))
+        self.assertEqual(len(tracklets.epoch_fused_compat_v1(
+            [observation(0, 180.0, width=359.9)], PARAMS)), 1)
+
     def test_epoch_bucketing_uses_middle_real_keyframe(self):
         observations = [observation(keyframe, 10.0)
                         for keyframe in range(10)]

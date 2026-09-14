@@ -497,7 +497,9 @@ def bearing_series(track: dict, pano_w: int, valid_segments=None) -> list:
                 f"invalid mask-box width {width_px!r}")
         midpoint_x = (box[0] + box[2]) / 2.0
         azimuth = geo.azimuth_of_pano_column(midpoint_x, pano_w)
-        angular_width = width_px / pano_w * 360.0
+        # Legacy seam-merged detection tracks may span more than one turn.
+        # Preserve them as full-circle observations; the reducer ignores them.
+        angular_width = min(width_px / pano_w * 360.0, 360.0)
         out.append((keyframe, azimuth, angular_width))
     return out
 
@@ -592,6 +594,8 @@ def epoch_fused_compat_v1(
         if not isinstance(observation, CameraBearingObservation):
             raise TrackletContractError(
                 "epoch_fused_compat_v1 expects CameraBearingObservation")
+        if observation.angular_width_deg >= 360.0:
+            continue
         grouped[(observation.tracklet_id,
                  observation.correlation_group)].append(observation)
     fused = []

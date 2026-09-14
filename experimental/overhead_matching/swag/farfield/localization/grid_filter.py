@@ -19,6 +19,7 @@ import dataclasses
 import json
 import math
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 import msgspec
@@ -194,29 +195,37 @@ class LikelihoodCache:
     A likelihood depends only on the measurement, its table and the grid,
     never on the belief, so causal replay (which recomputes each prefix from
     a checkpoint) and the smoother's second forward pass can reuse it. Tensors
-    are stored in pinned host memory in their original dtype, so a cached hit
-    is bit-identical to a recompute; entries beyond `budget_bytes` are simply
-    not cached.
+    are stored in host memory in their original dtype. Least-recently-used
+    entries are evicted to keep the smoother's moving window cached. A tensor
+    larger than the whole budget is returned without disturbing the cache.
     """
 
     def __init__(self, budget_bytes: float, device: str):
+        if not math.isfinite(budget_bytes) or budget_bytes < 0:
+            raise ValueError("likelihood cache budget must be finite and nonnegative")
         self.budget = budget_bytes
         self.device = device
-        self.store = {}
+        self.store = OrderedDict()
         self.bytes = 0
         self.hits = 0
         self.misses = 0
         self.skipped = 0
+        self.evictions = 0
 
     def get(self, key, compute):
         cached = self.store.get(key)
         if cached is not None:
             self.hits += 1
+            self.store.move_to_end(key)
             return cached.to(self.device)
         value = compute()
         self.misses += 1
         size = value.numel() * value.element_size()
-        if self.bytes + size <= self.budget:
+        if self.budget > 0 and size <= self.budget:
+            while self.bytes + size > self.budget:
+                _, evicted = self.store.popitem(last=False)
+                self.bytes -= evicted.numel() * evicted.element_size()
+                self.evictions += 1
             self.store[key] = value.detach().to("cpu")
             self.bytes += size
         else:
@@ -226,7 +235,8 @@ class LikelihoodCache:
     def describe(self) -> str:
         return (f"likelihood cache: {len(self.store)} tensors, "
                 f"{self.bytes / 1e9:.1f} GB, {self.hits} hits, "
-                f"{self.misses} misses, {self.skipped} uncached")
+                f"{self.misses} misses, {self.skipped} uncached, "
+                f"{self.evictions} evictions (LRU)")
 
 
 def _normalized(t: torch.Tensor) -> torch.Tensor:
@@ -829,6 +839,13 @@ def main():
         "--joint_cap", type=float, default=None,
         help="joint factor: clamp the per-track mixture term at this value")
     parser.add_argument(
+        "--joint_backend", choices=("reference", "fused", "eager_optimized"),
+        default="reference",
+        help="joint likelihood implementation; fused uses torch.compile")
+    parser.add_argument(
+        "--joint_chunk", type=int, default=64,
+        help="number of landmark candidates per joint-likelihood GPU batch")
+    parser.add_argument(
         "--joint_temper", type=float, default=1.0,
         help="per-epoch log-likelihood scale inside the joint factor")
     parser.add_argument(
@@ -836,7 +853,7 @@ def main():
         help="fraction of candidate weight kept beyond the range cap")
     parser.add_argument(
         "--likelihood_cache_gb", type=float, default=12.0,
-        help="pinned host memory for caching per-measurement likelihood "
+        help="host-memory LRU budget for caching per-measurement likelihood "
              "tensors across causal replays and the smoother pass "
              "(bit-identical results; zero disables)")
     parser.add_argument(
@@ -869,6 +886,8 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    if args.joint_chunk <= 0:
+        parser.error("--joint_chunk must be positive")
     if args.checkpoint_keyframes <= 0:
         parser.error("--checkpoint_keyframes must be positive")
     if args.top_modes < 0:
@@ -1079,8 +1098,8 @@ def main():
                         break
                     beta = backward_step(beta, target + 1)
                     if steps in lag_series:
-                        smoothed = _normalized(
-                            window[target].to(device) * beta)
+                        smoothed = _apply_likelihood_factors(
+                            window[target].to(device), [beta])
                         mass, map_error, state = _score_message(
                             smoothed, target, masks, truth_by_kf, grid, device)
                         for radius in RADII_M:
@@ -1109,7 +1128,10 @@ def main():
                 current = apply_keyframe_likelihood(current, keyframe, planner)
                 alphas.append(current)
             for keyframe in range(seg_end - 1, seg_start - 1, -1):
-                smoothed = _normalized(alphas[keyframe - seg_start] * beta)
+                # Normalized alpha and beta can overlap only in tiny tails;
+                # multiplying them in float32 can erase all shared mass.
+                smoothed = _apply_likelihood_factors(
+                    alphas[keyframe - seg_start], [beta])
                 mass, map_error, state = _score_message(
                     smoothed, keyframe, masks, truth_by_kf, grid, device)
                 for radius in RADII_M:
@@ -1231,14 +1253,22 @@ def main():
                 1.0 / kappa,
                 m.range_max_m if args.range_cap else None,
                 head_slack_var, math.sqrt(pos_slack_var)))
-        return grid_belief.track_joint_likelihood(
+        joint_fn = grid_belief.track_joint_likelihood
+        if args.joint_backend != "reference":
+            from functools import partial
+            from experimental.overhead_matching.swag.farfield.localization.grid_joint_fast import joint_likelihood
+
+            joint_fn = partial(
+                joint_likelihood, grid_belief,
+                compiled=args.joint_backend == "fused")
+        return joint_fn(
             epochs, candidate_east, candidate_north,
             candidate_weight, sigma_pos, args.pi0, tail_mass,
             quantization_comp=bool(args.quantization_comp),
             range_softness=args.range_softness,
             range_floor=args.range_floor,
             temper=args.joint_temper,
-            cap=args.joint_cap)
+            cap=args.joint_cap, chunk=args.joint_chunk)
 
     smoothing_releases = releases
 

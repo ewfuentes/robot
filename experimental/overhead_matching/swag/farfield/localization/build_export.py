@@ -845,6 +845,11 @@ def build(args) -> artifact.ArtifactRef:
     camera_measurements = reduce_observations(observations, epoch_keyframes)
     measurements = forward_frame_measurements(
         camera_measurements, calibration)
+    ignored_full_circle = [
+        {"tracklet_id": item.tracklet_id, "keyframe_idx": item.keyframe_idx}
+        for item in observations if item.angular_width_deg >= 360.0]
+    ignored_tracklets = ({item["tracklet_id"] for item in ignored_full_circle}
+                         - {item.tracklet_id for item in measurements})
 
     review_dir = getattr(args, "identity_review_dir", None)
     review_ref = None
@@ -879,6 +884,10 @@ def build(args) -> artifact.ArtifactRef:
 
     reverse_source = _config(
         document, "localization_inputs.reverse_annotation_source")
+    # Keep the complete paid matching artifact intact, but do not export
+    # factors for tracks whose only observations have no directional support.
+    tables = [table for table in tables
+              if table.tracklet_id not in ignored_tracklets]
     course_min_displacement_m = _finite(
         _config(document, "gps_course.min_displacement_m"),
         "course_min_displacement_m", positive=True)
@@ -999,6 +1008,7 @@ def build(args) -> artifact.ArtifactRef:
                 "orchestration": orchestration,
                 "build_identity": document["build_identity"],
                 "localization_inputs": config,
+                "ignored_full_circle_observations": ignored_full_circle,
                 "gps_course": dict(document["config"]["gps_course"]),
                 "nominal_forward_sha256": nominal_meta["content_sha256"],
                 "motion_source_sha256": motion_sha,
