@@ -1018,6 +1018,27 @@ py_library(
     ],
 )
 
+py_library(
+    name = "run_grid_batch_lib",
+    srcs = ["run_grid_batch.py"],
+    deps = [":grid_filter_lib"],
+)
+
+py_binary(
+    name = "run_grid_batch",
+    srcs = ["run_grid_batch.py"],
+    deps = [":run_grid_batch_lib"],
+)
+
+py_test(
+    name = "run_grid_batch_test",
+    srcs = ["run_grid_batch_test.py"],
+    deps = [
+        ":grid_filter_lib",
+        ":run_grid_batch_lib",
+    ],
+)
+
 py_binary(
     name = "build_detection_audit_plan",
     srcs = ["detection_audit.py"],

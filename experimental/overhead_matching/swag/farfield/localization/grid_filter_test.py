@@ -12,6 +12,30 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 
 class LikelihoodCacheTest(unittest.TestCase):
+    def test_consumer_misses_preserve_producer_tail(self):
+        cache = grid_filter.LikelihoodCache(8, "cpu")
+        for key in range(5):
+            cache.get(key, lambda: torch.tensor([float(key)]))
+        for key in range(5):
+            actual = cache.get(key, lambda: torch.tensor([float(key)]), admit=False)
+            self.assertEqual(actual.item(), key)
+        self.assertEqual((cache.hits, cache.bytes, cache.evictions), (2, 8, 3))
+
+    def test_single_frame_key_ignores_only_episode_frame(self):
+        def release(frame, bearing=45):
+            return SimpleNamespace(measurements=[structs.TrackletMeasurement("raw", frame, bearing, 2)])
+        key = grid_filter.single_frame_cache_key
+        self.assertEqual(key(release(20), 20, "table", "grid"),
+                         key(release(0), 0, "table", "grid"))
+        self.assertIsNone(key(release(0), 1, "table", "grid"))
+        self.assertIsNone(key(SimpleNamespace(measurements=release(0).measurements * 2),
+                              0, "table", "grid"))
+        baseline = key(release(0), 0, "table", "grid")
+        for actual in (key(release(0, 46), 0, "table", "grid"),
+                       key(release(0), 0, "changed table", "grid"),
+                       key(release(0), 0, "table", "changed grid")):
+            self.assertNotEqual(baseline, actual)
+
     def test_lru_eviction_and_byte_accounting(self):
         cache = grid_filter.LikelihoodCache(24, "cpu")
         values = {key: torch.full((size,), float(index))
