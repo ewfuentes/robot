@@ -9,7 +9,6 @@ group's region policy. Output is Markdown; nothing is modified.
 """
 
 import argparse
-import math
 import sys
 from pathlib import Path
 
@@ -23,8 +22,10 @@ from experimental.overhead_matching.swag.farfield.paper.table_common import (
     SEQUENCE_LANES,
     TRACKING_COMPARISON,
     DatasetGroup,
+    bbox_area_km2,
     emit_table,
     read_json_object,
+    region_area_km2,
 )
 
 _LLM_KEYS = {
@@ -39,18 +40,12 @@ def _stage_config(manifest: artifact.ArtifactManifest) -> dict:
     return recipe.get("stage_config") or {}
 
 
-def _bbox_area_km2(wsen) -> float:
-    west, south, east, north = wsen
-    mid = math.radians((south + north) / 2.0)
-    return (east - west) * 111.32 * math.cos(mid) * (north - south) * 111.32
-
-
 def _catalog_clip(manifest: artifact.ArtifactManifest) -> str:
     config = manifest.config
     region = config.get("region_bbox_wsen")
     if region and config.get("region_source") != "clip_bbox_wsen":
         return (f"region {config.get('region_source')} "
-                f"{_bbox_area_km2(region):,.0f} km²")
+                f"{bbox_area_km2(region):,.0f} km²")
     plan = config.get("clip_plan")
     if isinstance(plan, dict) and plan.get("bbox_wsen"):
         policy = plan.get("policy") or {}
@@ -59,21 +54,8 @@ def _catalog_clip(manifest: artifact.ArtifactManifest) -> str:
     if config.get("clip_km"):
         return f"legacy clip_km={config['clip_km']}"
     if config.get("bbox_wsen"):
-        return f"fetch bbox {_bbox_area_km2(config['bbox_wsen']):,.0f} km²"
+        return f"fetch bbox {bbox_area_km2(config['bbox_wsen']):,.0f} km²"
     return "NO CLIP"
-
-
-def _region_area_km2(manifest: artifact.ArtifactManifest,
-                     group: DatasetGroup) -> float | None:
-    """The region the group's policy declares, as the catalog records it."""
-    config = manifest.config
-    plan = config.get("clip_plan")
-    if group.region_policy == "area625" and isinstance(plan, dict):
-        return float((plan.get("policy") or {}).get("resolved_area_km2", 0)) or None
-    if group.region_policy == "fetch_bbox":
-        bbox = config.get("region_bbox_wsen") or config.get("bbox_wsen")
-        return _bbox_area_km2(bbox) if bbox else None
-    return None
 
 
 def _prior_area_km2(root: Path, group: DatasetGroup, sequence: str) -> str:
@@ -144,7 +126,7 @@ def check_sequence(root: Path, group: DatasetGroup, sequence: str,
                 clip += f" ≠ region policy {group.region_policy}"
             notes.append(clip)
             notes.append(f"rows_out={manifest.config.get('rows_out', manifest.config.get('rows', '?'))}")
-            region_km2[0] = _region_area_km2(manifest, group)
+            region_km2[0] = region_area_km2(manifest.config, group.region_policy)
         rows.append([kind, version, "MISMATCH" if any("≠" in n for n in notes) else "OK",
                      "; ".join(notes)])
     prior = _prior_area_km2(root, group, sequence)

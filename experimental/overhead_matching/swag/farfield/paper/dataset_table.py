@@ -1,34 +1,37 @@
 """Generate the far-field paper's LaTeX dataset-statistics table.
 
 This is the far-field counterpart to the LOCI-era LaTeX emitter in
-``dataset_statistics.py``. Numerical values come from frozen dataset, catalog,
-and localization-run manifests; only short editorial descriptions live here.
+``dataset_statistics.py``. Numerical values come from frozen dataset and
+catalog manifests; only short editorial descriptions live here.
 """
 
 import argparse
+import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 from experimental.overhead_matching.swag.farfield.paper.table_common import (
-    TABLE_GROUPS,
+    DATASET_GROUPS,
     DEFAULT_FARFIELD_ROOT,
-    FULL_METHOD_RUN_SPECS,
+    SEQUENCE_ARTIFACTS,
     DatasetGroup,
     emit_table,
-    glob_runs,
     read_json_object,
+    region_area_km2,
 )
 
 
 @dataclass(frozen=True)
 class DatasetStatistics:
     group: DatasetGroup
-    num_panoramas: int
-    trajectory_km: float
+    panoramas_per_leg: tuple[int, ...]
+    video_minutes_per_leg: tuple[float, ...]
+    trajectory_km_per_leg: tuple[float, ...]
+    accepted_tracks_per_leg: tuple[int, ...]
     map_landmarks: int
-    prior_areas_km2: tuple[float, ...]
+    area_km2: float
     capture_date: str
 
 
@@ -44,74 +47,6 @@ def _required_positive_float(value: object, *, field: str, path: Path) -> float:
     return float(value)
 
 
-def _load_prior_areas(
-    run_dirs: Sequence[Path],
-    expected_datasets: set[str],
-    expected_seeds: frozenset[int] = frozenset(range(4)),
-) -> dict[str, float]:
-    """Read the uniform position-prior support from the reported full runs."""
-    found: dict[str, dict[int, float]] = {}
-    for run_dir in run_dirs:
-        manifest_path = run_dir / "manifest.json"
-        manifest = read_json_object(manifest_path)
-        if manifest.get("kind") != "localization_run" or manifest.get("complete") is not True:
-            raise ValueError(f"{manifest_path}: expected a complete localization run")
-        dataset = manifest.get("dataset")
-        if dataset not in expected_datasets:
-            continue
-        config = manifest.get("config")
-        contract = config.get("localization_run_contract") if isinstance(config, dict) else None
-        if (
-            not isinstance(contract, dict)
-            or contract.get("run_kind") != "evaluation"
-            or contract.get("ablation_tags") != []
-        ):
-            raise ValueError(f"{manifest_path}: expected an evaluation run contract")
-        filter_config = contract.get("filter_config")
-        if (
-            not isinstance(filter_config, dict)
-            or filter_config.get("range_cap_enabled") is not True
-        ):
-            raise ValueError(f"{manifest_path}: expected the full-method filter")
-        seed = filter_config.get("seed")
-        if type(seed) is not int or seed not in expected_seeds:
-            raise ValueError(f"{manifest_path}: unexpected filter seed {seed!r}")
-        init = filter_config.get("init")
-        if not isinstance(init, dict) or init.get("kind") != "UniformBoxInit":
-            raise ValueError(f"{manifest_path}: expected a uniform box prior")
-        bounds = []
-        for field in ("east_min_m", "east_max_m", "north_min_m", "north_max_m"):
-            value = init.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"{manifest_path}: init.{field} must be numeric")
-            bounds.append(float(value))
-        east_min, east_max, north_min, north_max = bounds
-        area_km2 = (east_max - east_min) * (north_max - north_min) / 1e6
-        if not math.isfinite(area_km2) or area_km2 <= 0.0:
-            raise ValueError(f"{manifest_path}: uniform prior has invalid bounds")
-        by_seed = found.setdefault(dataset, {})
-        if seed in by_seed:
-            raise ValueError(f"{manifest_path}: duplicate seed {seed} for {dataset}")
-        by_seed[seed] = area_km2
-
-    missing = {
-        (dataset, seed)
-        for dataset in expected_datasets
-        for seed in expected_seeds
-        if seed not in found.get(dataset, {})
-    }
-    if missing:
-        raise ValueError(f"missing full-method runs: {sorted(missing)}")
-
-    areas = {}
-    for dataset, by_seed in found.items():
-        unique = set(by_seed.values())
-        if len(unique) != 1:
-            raise ValueError(f"{dataset}: full-method seeds use different priors")
-        areas[dataset] = next(iter(unique))
-    return areas
-
-
 def _capture_date(metadata: dict, metadata_path: Path) -> str:
     capture_date = metadata.get("capture_date")
     if isinstance(capture_date, str) and capture_date:
@@ -124,38 +59,82 @@ def _capture_date(metadata: dict, metadata_path: Path) -> str:
     raise ValueError(f"{metadata_path}: capture date is not recorded")
 
 
+def _artifact_config(path: Path, kind: str, sequence: str) -> tuple[dict, dict]:
+    manifest = read_json_object(path)
+    if manifest.get("schema") != "farfield.artifact.v1":
+        raise ValueError(f"{path}: unexpected artifact schema")
+    if manifest.get("kind") != kind or manifest.get("complete") is not True:
+        raise ValueError(f"{path}: expected a complete {kind} artifact")
+    if manifest.get("dataset") != sequence:
+        raise ValueError(f"{path}: dataset does not match {sequence!r}")
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        raise ValueError(f"{path}: config must be an object")
+    return manifest, config
+
+
+def _video_minutes(dataset_path: Path, metadata: dict) -> float:
+    path = dataset_path / "frames_gps.csv"
+    try:
+        with path.open(newline="") as stream:
+            timestamps = [float(row["video_t_s"]) for row in csv.DictReader(stream)]
+    except OSError as exc:
+        raise ValueError(f"Could not read {path}: {exc}") from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: video_t_s must be numeric") from exc
+    if (len(timestamps) < 2 or any(not math.isfinite(value) for value in timestamps)
+            or any(end <= start for start, end in zip(timestamps, timestamps[1:]))):
+        raise ValueError(f"{path}: retained frame timestamps must increase")
+
+    trims = metadata.get("trims") or []
+    if not any(trim.get("trim_kind") == "range" for trim in trims):
+        return (timestamps[-1] - timestamps[0]) / 60.0
+
+    log_path = dataset_path / "extraction_log.csv"
+    try:
+        with log_path.open(newline="") as stream:
+            positions = [
+                int(row["sequence_position"]) for row in csv.DictReader(stream)
+            ]
+    except OSError as exc:
+        raise ValueError(f"Could not read {log_path}: {exc}") from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{log_path}: sequence_position must be an integer") from exc
+    if len(positions) != len(timestamps) or any(
+            end <= start for start, end in zip(positions, positions[1:])):
+        raise ValueError(f"{log_path}: positions must align and increase")
+    duration_s = sum(
+        end_t - start_t
+        for start_t, end_t, start_pos, end_pos in zip(
+            timestamps, timestamps[1:], positions, positions[1:])
+        if end_pos == start_pos + 1
+    )
+    if duration_s <= 0:
+        raise ValueError(f"{dataset_path}: retained video duration is empty")
+    return duration_s / 60.0
+
+
 def collect_dataset_statistics(
     farfield_root: Path,
     catalog_version: str | None = None,
-    groups: Sequence[DatasetGroup] = TABLE_GROUPS,
-    localization_run_dirs: Sequence[Path] | None = None,
+    groups: Sequence[DatasetGroup] = DATASET_GROUPS,
 ) -> list[DatasetStatistics]:
     """Load and aggregate the paper datasets.
 
-    Multi-sequence locations sum panorama counts and trajectory lengths. Their
-    catalog manifests must identify the same content, so a shared map catalog
-    is counted once rather than once per leg.
+    Multi-sequence locations retain per-leg panorama, trajectory, and accepted
+    track counts. Their catalog manifests must identify the same content.
     """
-    expected_datasets = {
-        sequence for group in groups for sequence in group.sequences
-    }
-    if localization_run_dirs is None:
-        runs_root = farfield_root / "runs"
-        localization_run_dirs = glob_runs(tuple(
-            (runs_root / directory, pattern)
-            for directory, pattern in FULL_METHOD_RUN_SPECS
-        ))
-    prior_areas = _load_prior_areas(localization_run_dirs, expected_datasets)
-
     rows = []
     for group in groups:
-        num_panoramas = 0
-        trajectory_km = 0.0
+        panoramas_per_leg = []
+        video_minutes_per_leg = []
+        trajectory_km_per_leg = []
+        accepted_tracks_per_leg = []
         capture_dates = set()
         resolutions = set()
         catalog_digests = set()
         catalog_counts = set()
-        group_prior_areas = []
+        catalog_areas = set()
 
         for sequence in group.sequences:
             metadata_path = (
@@ -167,14 +146,11 @@ def collect_dataset_statistics(
                     f"{metadata_path}: dataset_name must be {sequence!r}, got "
                     f"{metadata.get('dataset_name')!r}"
                 )
-            num_panoramas += _required_positive_int(
-                metadata.get("num_images"), field="num_images", path=metadata_path
-            )
-            trajectory_km += _required_positive_float(
-                metadata.get("trajectory_km"),
-                field="trajectory_km",
-                path=metadata_path,
-            )
+            panoramas_per_leg.append(_required_positive_int(
+                metadata.get("num_images"), field="num_images", path=metadata_path))
+            video_minutes_per_leg.append(_video_minutes(metadata_path.parent, metadata))
+            trajectory_km_per_leg.append(_required_positive_float(
+                metadata.get("trajectory_km"), field="trajectory_km", path=metadata_path))
             capture_dates.add(_capture_date(metadata, metadata_path))
             resolution = metadata.get("resolution")
             if not isinstance(resolution, str) or not resolution:
@@ -189,26 +165,35 @@ def collect_dataset_statistics(
                 / (catalog_version or group.catalog_version)
                 / "manifest.json"
             )
-            manifest = read_json_object(catalog_path)
-            if manifest.get("schema") != "farfield.artifact.v1":
-                raise ValueError(f"{catalog_path}: unexpected artifact schema")
-            if manifest.get("kind") != "catalogs" or manifest.get("complete") is not True:
-                raise ValueError(f"{catalog_path}: expected a complete catalogs artifact")
-            if manifest.get("dataset") != sequence:
-                raise ValueError(f"{catalog_path}: dataset does not match {sequence!r}")
+            manifest, config = _artifact_config(catalog_path, "catalogs", sequence)
             digest = manifest.get("content_digest")
             if not isinstance(digest, str) or not digest:
                 raise ValueError(f"{catalog_path}: missing content_digest")
             catalog_digests.add(digest)
-            config = manifest.get("config")
-            if not isinstance(config, dict):
-                raise ValueError(f"{catalog_path}: config must be an object")
             catalog_counts.add(
                 _required_positive_int(
                     config.get("rows_out"), field="config.rows_out", path=catalog_path
                 )
             )
-            group_prior_areas.append(prior_areas[sequence])
+            area = region_area_km2(config, group.region_policy)
+            if area is None or not math.isfinite(area) or area <= 0.0:
+                raise ValueError(f"{catalog_path}: catalog region has invalid area")
+            catalog_areas.add(area)
+
+            bearings_version = SEQUENCE_ARTIFACTS[sequence]["bearing_observations"]
+            if bearings_version is None:
+                raise ValueError(f"{sequence}: bearing observations are not pinned")
+            bearings_path = (
+                farfield_root / "artifacts" / "bearing_observations"
+                / sequence / bearings_version / "manifest.json"
+            )
+            _, bearings_config = _artifact_config(
+                bearings_path, "bearing_observations", sequence)
+            accepted_tracks_per_leg.append(_required_positive_int(
+                bearings_config.get("n_accepted_tracklets"),
+                field="config.n_accepted_tracklets",
+                path=bearings_path,
+            ))
 
         if len(capture_dates) != 1:
             raise ValueError(
@@ -220,7 +205,8 @@ def collect_dataset_statistics(
                 f"{group.display_name}: sequence resolutions disagree: "
                 f"{sorted(resolutions)}"
             )
-        if len(catalog_digests) != 1 or len(catalog_counts) != 1:
+        if (len(catalog_digests) != 1 or len(catalog_counts) != 1
+                or len(catalog_areas) != 1):
             raise ValueError(
                 f"{group.display_name}: sequences do not share one catalog artifact"
             )
@@ -228,10 +214,12 @@ def collect_dataset_statistics(
         rows.append(
             DatasetStatistics(
                 group=group,
-                num_panoramas=num_panoramas,
-                trajectory_km=trajectory_km,
+                panoramas_per_leg=tuple(panoramas_per_leg),
+                video_minutes_per_leg=tuple(video_minutes_per_leg),
+                trajectory_km_per_leg=tuple(trajectory_km_per_leg),
+                accepted_tracks_per_leg=tuple(accepted_tracks_per_leg),
                 map_landmarks=next(iter(catalog_counts)),
-                prior_areas_km2=tuple(group_prior_areas),
+                area_km2=next(iter(catalog_areas)),
                 capture_date=next(iter(capture_dates)),
             )
         )
@@ -240,29 +228,34 @@ def collect_dataset_statistics(
 
 def render_dataset_table(rows: Sequence[DatasetStatistics]) -> str:
     """Render dataset statistics as a booktabs-compatible LaTeX table."""
-    def format_area(areas: Sequence[float]) -> str:
-        return f"{max(areas):,.0f}"
-
+    markers = {
+        "pohang": "\\textsuperscript{*}",
+        "flevoland": "\\textsuperscript{\\textdagger}",
+    }
     headers = [
         "Dataset",
-        "Conditions",
-        "\\# Seq. / Panos",
+        "Setting",
+        "Panos",
+        "\\shortstack{Video\\\\(min)}",
         "Traj. (km)",
-        "\\# landmarks",
-        "Area (km$^2$)",
-        "MSM Sources",
-        "Capture",
+        "\\shortstack{Accepted\\\\tracks}",
+        "\\shortstack{MSM\\\\landmarks}",
+        "\\shortstack{Overhead\\\\Area (km$^2$)}",
+        "\\shortstack{MSM\\\\sources}",
+        "\\shortstack{Capture\\\\Date}",
     ]
     body = [
         [
-            row.group.display_name,
+            row.group.display_name + markers.get(row.group.key, ""),
             row.group.conditions,
-            f"{len(row.group.sequences)} / {row.num_panoramas:,}",
-            f"{row.trajectory_km:.1f}",
+            "/".join(f"{value:,}" for value in row.panoramas_per_leg),
+            "/".join(f"{value:.0f}" for value in row.video_minutes_per_leg),
+            "/".join(f"{value:.1f}" for value in row.trajectory_km_per_leg),
+            "/".join(f"{value:,}" for value in row.accepted_tracks_per_leg),
             f"{row.map_landmarks:,}",
-            format_area(row.prior_areas_km2),
-            row.group.map_source,
-            row.capture_date,
+            f"{row.area_km2:,.0f}",
+            row.group.map_source.replace(" / ", "/"),
+            row.capture_date[2:7],
         ]
         for row in rows
     ]
@@ -274,15 +267,17 @@ def render_dataset_table(rows: Sequence[DatasetStatistics]) -> str:
     lines = [
         "\\begin{table*}[t]",
         "  \\centering",
-        "  \\caption{Far-field dataset statistics. Multi-sequence locations "
-        "report totals across sequences; landmarks are counted once for a "
-        "shared MSM. Area reports the largest rectangular support used for "
-        "uniform particle initialization among grouped sequences, rounded to "
-        "the nearest km$^2$. Baseline supports differ as described in the text.}",
+        "  \\caption{Released evaluation dataset statistics. Slash-separated "
+        "values report individual legs. Accepted tracks are landmark tracks "
+        "retained after semantic audit, and MSM landmark counts are from the "
+        "trimmed maps. \\textsuperscript{*} identifies "
+        "data from the Pohang Canal "
+        "Dataset~\\cite{chung2023pohang}; \\textsuperscript{$\\dagger$} identifies "
+        "imagery from the Mapillary platform~\\cite{MapillaryPlatform}.}",
         "  \\label{tab:farfield-datasets}",
-        "  \\small",
-        "  \\setlength{\\tabcolsep}{3.5pt}",
-        "  \\begin{tabular}{llrrrrcc}",
+        "  \\scriptsize",
+        "  \\setlength{\\tabcolsep}{0.5pt}",
+        "  \\begin{tabular*}{\\textwidth}{@{\\extracolsep{\\fill}}llrrrrrrcc@{}}",
         "  \\toprule",
         "  " + format_row(headers),
         "  \\midrule",
@@ -291,7 +286,7 @@ def render_dataset_table(rows: Sequence[DatasetStatistics]) -> str:
     lines.extend(
         [
             "  \\bottomrule",
-            "  \\end{tabular}",
+            "  \\end{tabular*}",
             "\\end{table*}",
         ]
     )
