@@ -10,6 +10,7 @@ neighborhoods) composes from this: build a second, finer lattice over the
 bounding boxes of the surviving coarse candidates.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,13 +34,22 @@ class Lattice:
 
 
 def build_lattice(hf: terrain.HeightField, *, spacing_m: float,
-                  bounds_xy: tuple[float, float, float, float] | None = None
-                  ) -> Lattice:
+                  bounds_xy: tuple[float, float, float, float] | None = None,
+                  backgrounds: Sequence[terrain.HeightField] = ()) \
+        -> Lattice:
     """Regular grid clipped to the height field and its valid data.
 
     ``bounds_xy`` (x_min, y_min, x_max, y_max) defaults to the height field's
     own bounds. Grid nodes are offset half a spacing from the bound edges so
     a shared declared region yields the same lattice for every method.
+
+    ``backgrounds`` are the coarser surfaces the renderer falls back to, in
+    the same order, and a candidate is dropped only when NONE of the surfaces
+    has data there. Without them, a hole in the fine surface silently deletes
+    candidates that the declared search region contains -- in the Boston
+    Harbor DSM that is 17% of the box, including navigable water beside the
+    query track. Every condition over one region must be given the same
+    coverage here, or the conditions are searching different candidate sets.
     """
     if spacing_m <= 0:
         raise ValueError("spacing_m must be positive")
@@ -63,11 +73,18 @@ def build_lattice(hf: terrain.HeightField, *, spacing_m: float,
     # Drop candidates standing on no-data cells (elevation is untrustworthy
     # there); rendering *through* distant no-data is reported as coverage by
     # the renderer instead, so the lattice only vets the observer's own cell.
-    col = np.clip(((x_flat - hf.x0) / hf.res).astype(np.int64), 0,
-                  hf.elevation.shape[1] - 1)
-    row = np.clip(((hf.y0 - y_flat) / hf.res).astype(np.int64), 0,
-                  hf.elevation.shape[0] - 1)
-    keep = ~hf.nodata_mask[row, col]
+    def has_data(field: terrain.HeightField) -> np.ndarray:
+        col = ((x_flat - field.x0) / field.res).astype(np.int64)
+        row = ((field.y0 - y_flat) / field.res).astype(np.int64)
+        inside = ((col >= 0) & (col < field.elevation.shape[1])
+                  & (row >= 0) & (row < field.elevation.shape[0]))
+        valid = np.zeros(x_flat.shape, dtype=bool)
+        valid[inside] = ~field.nodata_mask[row[inside], col[inside]]
+        return valid
+
+    keep = has_data(hf)
+    for background in backgrounds:
+        keep |= has_data(background)
 
     return Lattice(x_m=x_flat[keep], y_m=y_flat[keep], spacing_m=spacing_m,
                    crs=hf.crs, bounds_xy=(x_min, y_min, x_max, y_max),

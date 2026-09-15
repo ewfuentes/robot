@@ -109,7 +109,36 @@ py_binary(
     name = "build_surface",
     srcs = ["build_surface.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":terrain"],
+    # terrain imports rasterio lazily, so declare it here to retain it in the
+    # executable's runfiles even though --help does not exercise that import.
+    deps = [
+        ":terrain",
+        requirement("rasterio"),
+    ],
+)
+
+py_library(
+    name = "lidar_dsm",
+    srcs = ["lidar_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":terrain",
+        requirement("laspy"),
+        requirement("lazrs"),
+        requirement("numpy"),
+        requirement("pyproj"),
+    ],
+)
+
+py_binary(
+    name = "build_dsm",
+    srcs = ["build_dsm.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":lidar_dsm",
+        ":terrain",
+        requirement("numpy"),
+    ],
 )
 
 py_library(
@@ -158,8 +187,95 @@ py_binary(
     ],
 )
 
+py_library(
+    name = "truth_strips",
+    srcs = ["truth_strips.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        "//experimental/overhead_matching/swag/farfield/calibration:heading",
+    ],
+)
+
 py_binary(
-    name = "score_localization_inputs",
+    name = "export_truth_compare",
+    srcs = ["export_truth_compare.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_truth_video",
+    srcs = ["export_truth_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":depth_render",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_likelihood_video",
+    srcs = ["export_likelihood_video.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_binary(
+    name = "export_retrieval_forensics",
+    srcs = ["export_retrieval_forensics.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        ":crosslocate_net",
+        ":depth_render",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        ":terrain",
+        ":truth_strips",
+        ":viz",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield/viewers:page",
+    ],
+)
+
+py_library(
+    name = "score_localization_inputs_lib",
     srcs = ["score_localization_inputs.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
@@ -177,6 +293,13 @@ py_binary(
         "//experimental/overhead_matching/swag/farfield/localization:retrieval",
         "//experimental/overhead_matching/swag/farfield/localization:structs",
     ],
+)
+
+py_binary(
+    name = "score_localization_inputs",
+    srcs = ["score_localization_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":score_localization_inputs_lib"],
 )
 
 py_binary(
@@ -258,6 +381,21 @@ py_test(
 )
 
 py_test(
+    name = "lidar_dsm_test",
+    srcs = ["lidar_dsm_test.py"],
+    deps = [
+        ":lidar_dsm",
+        ":terrain",
+    ],
+)
+
+py_test(
+    name = "truth_strips_test",
+    srcs = ["truth_strips_test.py"],
+    deps = [":truth_strips"],
+)
+
+py_test(
     name = "depth_render_test",
     srcs = ["depth_render_test.py"],
     deps = [
@@ -286,4 +424,35 @@ py_test(
     name = "panorama_score_test",
     srcs = ["panorama_score_test.py"],
     deps = [":panorama_score"],
+)
+
+py_test(
+    name = "render_db_catalog_test",
+    srcs = ["render_db_catalog_test.py"],
+    deps = [
+        ":render_db_lib",
+        ":terrain",
+        requirement("numpy"),
+    ],
+)
+
+py_test(
+    name = "score_localization_inputs_test",
+    srcs = ["score_localization_inputs_test.py"],
+    deps = [
+        ":score_localization_inputs_lib",
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/localization:retrieval",
+        "//experimental/overhead_matching/swag/farfield/localization:structs",
+    ],
 )

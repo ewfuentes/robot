@@ -16,8 +16,11 @@ Run via bazel:
 """
 
 import argparse
+import hashlib
 import json
+import math
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
@@ -39,13 +42,15 @@ def build_database(hf: terrain.HeightField, lat: lattice_lib.Lattice,
                    sky_fill_m: float, device: str = "cuda",
                    views_per_batch: int = 24,
                    progress_every: int = 200,
-                   sample_render_indices: tuple[int, ...] = ()) -> dict:
+                   sample_render_indices: tuple[int, ...] = (),
+                   backgrounds: Sequence[terrain.HeightField] = ()) -> dict:
     """Render + embed every lattice location.
 
     Returns {"descriptors": (N, n_theta, D) float16 array, "coverage":
     (N, n_theta) float32, "sample_renders": {loc_idx: (n_theta, H, W) f16}}.
     """
-    tt = depth_render.TerrainTensor.from_height_field(hf, device=device)
+    tt = depth_render.TerrainTensor.chain_from_height_fields(
+        [hf, *backgrounds], device=device)
     model = model.to(device).eval()
     n_theta = render_config.n_yaw
     descriptors = np.zeros((len(lat), n_theta, crosslocate_net.DESCRIPTOR_DIM),
@@ -137,18 +142,65 @@ def load_database(db_dir: Path, device: str = "cpu") -> dict:
     }
 
 
+def catalog_support(catalog_manifest: Path, crs: str) -> dict:
+    """Load a catalog's declared WGS84 region and project its four corners.
+
+    The region rectangle is projected corner-by-corner rather than by
+    transforming only its diagonal.  This is the same convention used by the
+    localization export, and is conservative for projected CRSs.
+    """
+    catalog_manifest = Path(catalog_manifest)
+    payload = catalog_manifest.read_bytes()
+    try:
+        manifest = json.loads(payload)
+        bbox = manifest["config"]["region_bbox_wsen"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"catalog manifest {catalog_manifest} must contain "
+            "config.region_bbox_wsen") from exc
+    if (not isinstance(bbox, list) or len(bbox) != 4
+            or not all(isinstance(v, (int, float)) and math.isfinite(v)
+                       for v in bbox)):
+        raise ValueError(
+            f"catalog manifest {catalog_manifest} has invalid "
+            f"config.region_bbox_wsen: {bbox!r}")
+    west, south, east, north = map(float, bbox)
+    if west >= east or south >= north:
+        raise ValueError(
+            f"catalog manifest {catalog_manifest} has empty "
+            f"region_bbox_wsen: {bbox!r}")
+    x, y = terrain.utm_from_latlon(
+        np.asarray([south, south, north, north]),
+        np.asarray([west, east, east, west]), crs)
+    projected_bounds = [float(np.min(x)), float(np.min(y)),
+                        float(np.max(x)), float(np.max(y))]
+    return {
+        "path": str(catalog_manifest),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "region_bbox_wsen": [west, south, east, north],
+        "projected_bounds_xy": projected_bounds,
+        "surface_crs": crs,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--background", type=Path, action="append",
+                        default=[],
+                        help="Coarse HeightField consulted where the main "
+                             "surface has no data (far field beyond its box, "
+                             "and interior holes); base path, no suffix. "
+                             "Repeatable, fine to coarse.")
     parser.add_argument("--height_field", type=Path, required=True,
                         help="Base path of a saved HeightField (no suffix)")
     parser.add_argument("--weights", type=Path, required=True,
                         help="converted_weights.npz: name-keyed dump of the release TF1 checkpoint")
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--spacing_m", type=float, required=True)
-    parser.add_argument("--bounds_xy", type=float, nargs=4, default=None,
-                        metavar=("X_MIN", "Y_MIN", "X_MAX", "Y_MAX"),
-                        help="Declared search bounds in the surface CRS "
-                             "(default: full height field)")
+    parser.add_argument("--catalog_manifest", type=Path, required=True,
+                        help="Final catalog manifest whose "
+                             "config.region_bbox_wsen defines the candidate "
+                             "support and is recorded by SHA-256")
     parser.add_argument("--max_range_m", type=float, default=30000.0)
     parser.add_argument("--observer_height_m", type=float, default=1.7)
     parser.add_argument("--sky_fill_m", type=float, required=True,
@@ -159,9 +211,12 @@ def main() -> None:
     args = parser.parse_args()
 
     hf = terrain.HeightField.load(args.height_field)
+    backgrounds = [terrain.HeightField.load(p) for p in args.background]
+    catalog = catalog_support(args.catalog_manifest, hf.crs)
     lat = lattice_lib.build_lattice(
         hf, spacing_m=args.spacing_m,
-        bounds_xy=tuple(args.bounds_xy) if args.bounds_xy else None)
+        bounds_xy=tuple(catalog["projected_bounds_xy"]),
+        backgrounds=backgrounds)
     print(f"lattice: {len(lat)} locations "
           f"({lat.n_dropped_nodata} dropped for nodata)")
 
@@ -176,12 +231,14 @@ def main() -> None:
                                     args.n_sample_renders).round())
     result = build_database(hf, lat, model, render_config,
                             sky_fill_m=args.sky_fill_m, device=args.device,
-                            sample_render_indices=sample_indices)
+                            sample_render_indices=sample_indices,
+                            backgrounds=backgrounds)
     save_database(args.output_dir, result, lat, render_config, {
         "height_field": str(args.height_field),
+        "backgrounds": [str(p) for p in args.background],
         "weights": str(args.weights),
         "sky_fill_m": args.sky_fill_m,
-        "argv_bounds_xy": args.bounds_xy,
+        "catalog": catalog,
     })
     print(f"wrote {args.output_dir}")
 

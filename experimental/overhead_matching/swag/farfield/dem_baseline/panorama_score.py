@@ -16,6 +16,7 @@ dot product and the release's squared-Euclidean distance is 2 - 2 * cos:
 rankings agree by construction.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
@@ -39,10 +40,12 @@ class JointScores:
         return values, flat_idx // n_theta, flat_idx % n_theta
 
 
-def joint_scores(query_descriptors: torch.Tensor,
-                 database_descriptors: torch.Tensor,
-                 valid_crops: torch.Tensor | None = None,
-                 crop_top_k: int | None = None) -> JointScores:
+def joint_scores_variants(
+        query_descriptors: torch.Tensor,
+        database_descriptors: torch.Tensor,
+        valid_crops: torch.Tensor | None = None,
+        crop_top_ks: Sequence[int | None] = (None,)) \
+        -> dict[int | None, JointScores]:
     """Score every (location, shift) pair.
 
     query_descriptors: (M, D) for one panorama's crop ring, unit-norm.
@@ -52,13 +55,12 @@ def joint_scores(query_descriptors: torch.Tensor,
         failed extraction) are excluded from the mean. All-invalid is an error
         -- the caller decides how an unusable frame enters the evaluation
         (applicability accounting, not a silent zero).
-    crop_top_k: if set, S(i, k) is the mean of the k best-matching crops
-        instead of all of them — robust aggregation under partial occlusion
-        (canopy, people): a few clean crops carry the frame rather than being
-        drowned by the occluded majority. Chosen per-cell, so different
-        (location, shift) hypotheses may be supported by different crops.
-        Mutually exclusive with valid_crops (the occlusion studies used
-        exactly one mechanism at a time).
+    crop_top_ks: one or more aggregation variants. ``None`` means average all
+        valid crops; an integer k means average the k best crops per joint
+        cell. The aligned crop similarities are computed once and reused for
+        every requested variant. Top-k variants are mutually exclusive with
+        valid_crops (the occlusion studies used exactly one mechanism at a
+        time).
     """
     m, dim = query_descriptors.shape
     n_loc, n_theta, dim_db = database_descriptors.shape
@@ -86,18 +88,32 @@ def joint_scores(query_descriptors: torch.Tensor,
     gather = ((m_idx[:, None] + k_idx[None, :]) % n_theta)  # (M, K)
     aligned = torch.gather(
         cos, 2, gather[None].expand(n_loc, -1, -1))  # (L, M, K)
-    if crop_top_k is not None:
-        if valid_crops is not None:
-            raise ValueError("crop_top_k and valid_crops are mutually "
-                             "exclusive")
-        if not 1 <= crop_top_k <= m:
-            raise ValueError(f"crop_top_k must be in [1, {m}], "
-                             f"got {crop_top_k}")
-        scores = aligned.topk(crop_top_k, dim=1).values.mean(dim=1)
-    else:
-        weights = valid.float() / valid.float().sum()
-        scores = torch.einsum("lmk,m->lk", aligned, weights)
-
     spacing = 360.0 / n_theta
-    return JointScores(scores=scores,
-                       heading_cw_deg=np.arange(n_theta) * spacing)
+    result = {}
+    for crop_top_k in dict.fromkeys(crop_top_ks):
+        if crop_top_k is not None:
+            if valid_crops is not None:
+                raise ValueError("crop_top_k and valid_crops are mutually "
+                                 "exclusive")
+            if not 1 <= crop_top_k <= m:
+                raise ValueError(f"crop_top_k must be in [1, {m}], "
+                                 f"got {crop_top_k}")
+            scores = aligned.topk(crop_top_k, dim=1).values.mean(dim=1)
+        else:
+            weights = valid.float() / valid.float().sum()
+            scores = torch.einsum("lmk,m->lk", aligned, weights)
+        result[crop_top_k] = JointScores(
+            scores=scores, heading_cw_deg=np.arange(n_theta) * spacing)
+    if not result:
+        raise ValueError("crop_top_ks must contain at least one variant")
+    return result
+
+
+def joint_scores(query_descriptors: torch.Tensor,
+                 database_descriptors: torch.Tensor,
+                 valid_crops: torch.Tensor | None = None,
+                 crop_top_k: int | None = None) -> JointScores:
+    """Score one aggregation variant; compatibility wrapper for callers."""
+    return joint_scores_variants(
+        query_descriptors, database_descriptors, valid_crops,
+        crop_top_ks=(crop_top_k,))[crop_top_k]

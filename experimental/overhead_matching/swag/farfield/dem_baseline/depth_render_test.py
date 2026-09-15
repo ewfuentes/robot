@@ -67,6 +67,121 @@ class FlatPlaneTest(unittest.TestCase):
         np.testing.assert_allclose(ring.coverage, 1.0, atol=1e-6)
 
 
+class CylinderTest(unittest.TestCase):
+    def test_flat_plane_depth_and_sky(self):
+        hf = _flat_field(0.0)
+        tt = depth_render.TerrainTensor.from_height_field(hf, device="cpu")
+        config = _small_config(observer_height_m=50.0, max_range_m=20000.0)
+        cyl = depth_render.render_cylinder(
+            tt, config, 0.0, 0.0, n_az=90, elev_min_deg=-20.0,
+            elev_max_deg=10.0, n_rows=60)
+        self.assertEqual(cyl.depth_m.shape, (60, 90))
+        elev = np.radians(cyl.elev_deg)
+        below = elev < math.radians(-0.5)
+        depth = cyl.depth_m.numpy()
+        expected = 50.0 / np.sin(-elev[below])
+        for col in (0, 33, 89):
+            np.testing.assert_allclose(depth[below, col], expected,
+                                       rtol=0.02)
+        self.assertTrue(np.isinf(depth[elev > math.radians(0.5)]).all())
+        self.assertEqual(cyl.coverage, 1.0)
+
+    def test_wall_appears_at_its_azimuth(self):
+        hf = _flat_field(0.0)
+        # 200 m wall due east, 1 km away (columns near azimuth 90).
+        col0 = int((1000.0 - hf.x0) / hf.res)
+        hf.elevation[:, col0:col0 + 2] = 200.0
+        tt = depth_render.TerrainTensor.from_height_field(hf, device="cpu")
+        config = _small_config(observer_height_m=10.0, max_range_m=20000.0)
+        cyl = depth_render.render_cylinder(
+            tt, config, 0.0, 0.0, n_az=360, elev_min_deg=-5.0,
+            elev_max_deg=8.0, n_rows=26)
+        depth = cyl.depth_m.numpy()
+        up_rows = cyl.elev_deg > 2.0
+        east = depth[np.ix_(up_rows, np.arange(85, 96))]
+        north = depth[np.ix_(up_rows, np.arange(0, 10))]
+        self.assertTrue((east < 1500.0).all())
+        self.assertTrue(np.isinf(north).all())
+
+
+class BackgroundTest(unittest.TestCase):
+    """A coarse background supplies geometry the fine grid does not have."""
+
+    def _fine_with_hole(self) -> terrain.HeightField:
+        # 4 km of fine grid around the origin, with an interior hole.
+        size, res = 400, 10.0
+        hf = terrain.HeightField(
+            elevation=np.zeros((size, size), dtype=np.float32),
+            x0=-size * res / 2.0, y0=size * res / 2.0, res=res,
+            crs="EPSG:32619",
+            nodata_mask=np.zeros((size, size), dtype=bool))
+        hf.nodata_mask[100:140, 100:140] = True
+        return hf
+
+    def test_far_wall_only_in_background_is_rendered(self):
+        # A 400 m wall 8 km north: outside the fine grid entirely.
+        coarse = _flat_field(0.0, size=900, res=100.0)
+        wall_row = int((coarse.y0 - 8000.0) / coarse.res)
+        coarse.elevation[wall_row - 1:wall_row + 1, :] = 400.0
+        background = depth_render.TerrainTensor.from_height_field(
+            coarse, device="cpu")
+        config = _small_config(observer_height_m=2.0, max_range_m=20000.0)
+
+        alone = depth_render.render_cylinder(
+            depth_render.TerrainTensor.from_height_field(
+                self._fine_with_hole(), device="cpu"),
+            config, 0.0, 0.0, n_az=36, elev_min_deg=-2.0, elev_max_deg=6.0,
+            n_rows=16)
+        composed = depth_render.render_cylinder(
+            depth_render.TerrainTensor.from_height_field(
+                self._fine_with_hole(), device="cpu", background=background),
+            config, 0.0, 0.0, n_az=36, elev_min_deg=-2.0, elev_max_deg=6.0,
+            n_rows=16)
+
+        # The wall top is atan(398 / 8000) = 2.85 deg above the observer, so
+        # rows below that see it and rows above it stay sky.
+        on_wall = (composed.elev_deg > 1.0) & (composed.elev_deg < 2.5)
+        above = composed.elev_deg > 3.2
+        north = composed.depth_m.numpy()[np.ix_(on_wall, [0])]
+        np.testing.assert_allclose(north, 8000.0, rtol=0.05)
+        self.assertTrue(np.isinf(
+            composed.depth_m.numpy()[np.ix_(above, [0])]).all())
+        self.assertTrue(np.isinf(
+            alone.depth_m.numpy()[np.ix_(on_wall, [0])]).all())
+
+    def test_background_fills_an_interior_hole(self):
+        hf = self._fine_with_hole()
+        # Fine grid is flat 0; the hole would read as edge-clamped 0 anyway,
+        # so give the background a distinctive height to see which one wins.
+        coarse = _flat_field(50.0, size=900, res=100.0)
+        tt = depth_render.TerrainTensor.from_height_field(
+            hf, device="cpu",
+            background=depth_render.TerrainTensor.from_height_field(
+                coarse, device="cpu"))
+        hole_x = torch.tensor([[hf.x0 + 120 * hf.res]])
+        hole_y = torch.tensor([[hf.y0 - 120 * hf.res]])
+        edge_x = torch.tensor([[hf.x0 + 10 * hf.res]])
+        edge_y = torch.tensor([[hf.y0 - 10 * hf.res]])
+        self.assertAlmostEqual(float(tt.sample(hole_x, hole_y)), 50.0)
+        self.assertAlmostEqual(float(tt.sample(edge_x, edge_y)), 0.0)
+        self.assertAlmostEqual(float(tt.sample_valid(hole_x, hole_y)), 1.0)
+
+    def test_coverage_counts_background_data(self):
+        hf = self._fine_with_hole()
+        config = _small_config(observer_height_m=2.0, max_range_m=10000.0)
+        alone = depth_render.render_cylinder(
+            depth_render.TerrainTensor.from_height_field(hf, device="cpu"),
+            config, 0.0, 0.0, n_az=36, n_rows=8)
+        composed = depth_render.render_cylinder(
+            depth_render.TerrainTensor.from_height_field(
+                hf, device="cpu",
+                background=depth_render.TerrainTensor.from_height_field(
+                    _flat_field(0.0, size=900, res=100.0), device="cpu")),
+            config, 0.0, 0.0, n_az=36, n_rows=8)
+        self.assertLess(alone.coverage, 0.5)  # fine grid is 4 km of 10 km
+        self.assertAlmostEqual(composed.coverage, 1.0, places=6)
+
+
 class WallTest(unittest.TestCase):
     """A tall north wall must appear in the north view at the right depth
     and the right heading, and be absent looking south."""
