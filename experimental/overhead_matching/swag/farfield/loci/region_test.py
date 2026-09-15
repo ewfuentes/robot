@@ -2,11 +2,15 @@ import json
 import math
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from experimental.overhead_matching.swag.farfield import artifact
+from experimental.overhead_matching.swag.farfield.catalog import schema
 from experimental.overhead_matching.swag.farfield.loci import region
+from experimental.overhead_matching.swag.farfield.paper import table_common
 
 
 class RegionTest(unittest.TestCase):
@@ -22,6 +26,17 @@ class RegionTest(unittest.TestCase):
             -71.3938738436199, 42.12870117897012,
             -70.7731941563801, 42.58501782102988,
         )
+
+    def _publish_catalog(self, root, version, *, config, upstreams=()):
+        directory = root / "artifacts" / "catalogs" \
+            / "charles_river_20260727" / version
+        with artifact.ArtifactDirectoryBuilder(
+                directory, kind="catalogs",
+                dataset="charles_river_20260727", version=version,
+                generator="region_test", upstreams=upstreams, config=config,
+                declared_outputs=("catalog.feather",)) as builder:
+            builder.output_path("catalog.feather").write_bytes(b"test")
+        return directory, artifact.open_artifact(directory)
 
     def test_charles_150_square_kilometre_contract(self):
         plan = region.derive_region(
@@ -98,6 +113,18 @@ class RegionTest(unittest.TestCase):
         self.assertEqual(list(centres[-1]), grid["last_center_pixel_xy"])
         self.assertTrue(all(math.isfinite(item) for item in centres[-1]))
 
+    def test_full_paper_region_keeps_patch_footprints_inside_authority(self):
+        paper_bbox = (-71.24, 42.24, -70.93, 42.47)
+        plan = region.derive_paper_region(paper_bbox, self.trajectory)
+
+        self.assertEqual(plan["bbox_wsen"], list(paper_bbox))
+        self.assertTrue(plan["grid"]["contain_footprints"])
+        west, south, east, north = plan["grid"]["footprint_bbox_wsen"]
+        self.assertGreaterEqual(west, paper_bbox[0])
+        self.assertGreaterEqual(south, paper_bbox[1])
+        self.assertLessEqual(east, paper_bbox[2])
+        self.assertLessEqual(north, paper_bbox[3])
+
     def test_source_tile_range_uses_quantized_fractional_crop_origin(self):
         zoom = 2
         north, west = region.pixel_to_lat_lon(448.6, 448.6, zoom)
@@ -110,69 +137,87 @@ class RegionTest(unittest.TestCase):
         self.assertEqual(grid["source_tile_range_xyxy"], [0, 0, 3, 3])
         self.assertEqual(grid["n_source_tiles"], 16)
 
-    def test_materialize_requires_matching_full_catalog(self):
-        catalog_ref = object()
-        manifest = SimpleNamespace(config={
-            "schema": "farfield_catalog_trim/v1",
-            "bbox_wsen": list(self.source_bbox),
-        })
+    def test_selected_catalog_resolves_direct_untrimmed_composite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            full_dir, full_ref = self._publish_catalog(
+                root, "full_v1", config={
+                    "schema": schema.FULL_ARTIFACT_SCHEMA,
+                    "bbox_wsen": list(self.source_bbox),
+                    "source_coverage": {
+                        "schema": "farfield_catalog_source_coverage/v2",
+                        "status": "passed",
+                        "message": "test coverage",
+                        "details": [],
+                    },
+                })
+            composite_dir, composite_ref = self._publish_catalog(
+                root, "full_plus_faa_v1", config={"rows_out": 2},
+                upstreams=(full_ref,))
+            selected_dir, selected_ref = self._publish_catalog(
+                root, "trim625_v1", config={
+                    "region_bbox_wsen": [-71.24, 42.24, -70.93, 42.47],
+                    "region_source": "clip_bbox_wsen",
+                    "clip_plan": {
+                        "scope": "charles_river_20260727",
+                        "bbox_datasets": ["charles_river_20260727"],
+                        "bbox_wsen": [-71.24, 42.24, -70.93, 42.47],
+                    },
+                }, upstreams=(composite_ref,))
+            group = replace(
+                table_common.DATASET_GROUP_BY_KEY["charles"],
+                catalog_version="trim625_v1")
+
+            inputs = region.load_paper_catalog(
+                selected_dir, group=group)
+
+            self.assertEqual(inputs.selected_ref, selected_ref)
+            self.assertEqual(inputs.untrimmed_ref, composite_ref)
+            self.assertEqual(inputs.source_bbox_wsen, self.source_bbox)
+            self.assertTrue(full_dir.is_dir())
+            self.assertTrue(composite_dir.is_dir())
+
+    def test_materialize_rejects_footprint_outside_paper_region(self):
+        catalog = region.PaperCatalogInputs(
+            selected_ref=object(),
+            selected_region_bbox_wsen=(-71.10, 42.34, -71.07, 42.37),
+            untrimmed_ref=object(),
+            source_bbox_wsen=self.source_bbox,
+        )
+        group = SimpleNamespace(sequences=("charles_river_20260727",))
         with mock.patch.object(
-                region.artifact, "open_artifact",
-                return_value=catalog_ref) as open_artifact:
+                region, "resolve_paper_group",
+                return_value=(group, Path("/fake/catalog"))):
             with mock.patch.object(
-                    region.artifact, "load_manifest",
-                    return_value=manifest):
+                    region, "load_paper_catalog", return_value=catalog):
                 with mock.patch.object(
-                        region, "load_trajectory_extent") as load_trajectory:
+                        region, "load_trajectory_extent",
+                        return_value=self.trajectory):
                     with self.assertRaisesRegex(
-                            region.RegionError, "must be a full catalog"):
+                            region.RegionError,
+                            "outside the table_common-selected"):
                         region.materialize(
                             farfield_root=Path("/unused"),
                             dataset="charles_river_20260727",
-                            trajectory_datasets=("charles_river_20260727",),
-                            catalog_dir=Path("/fake/catalog"),
+                            paper_group="charles",
                             version="area150km2_test",
                             target_area_km2=150.0,
                         )
 
-        open_artifact.assert_called_once_with(
-            Path("/fake/catalog"),
-            expected_kind=region.paths_lib.CATALOGS,
-            expected_dataset="charles_river_20260727",
-        )
-        load_trajectory.assert_not_called()
+    def test_paper_group_owns_catalog_pin_and_trajectories(self):
+        group, path = region.resolve_paper_group(
+            Path("/farfield"), "boston_harbor")
 
-    def test_shared_scope_names_its_catalog_dataset_explicitly(self):
-        manifest = SimpleNamespace(config={
-            "schema": "not-a-full-catalog",
-            "bbox_wsen": list(self.source_bbox),
-        })
-        with mock.patch.object(
-                region.artifact, "open_artifact",
-                return_value=object()) as open_artifact:
-            with mock.patch.object(
-                    region.artifact, "load_manifest",
-                    return_value=manifest):
-                with self.assertRaisesRegex(
-                        region.RegionError, "must be a full catalog"):
-                    region.materialize(
-                        farfield_root=Path("/unused"),
-                        dataset="boston_harbor_shared",
-                        trajectory_datasets=(
-                            "boston_harbor_leg1",
-                            "boston_harbor_leg2",
-                            "boston_harbor_leg3",
-                        ),
-                        catalog_dir=Path("/fake/catalog"),
-                        catalog_dataset="boston_harbor_leg1",
-                        version="area150km2_test",
-                        target_area_km2=150.0,
-                    )
-
-        open_artifact.assert_called_once_with(
-            Path("/fake/catalog"),
-            expected_kind=region.paths_lib.CATALOGS,
-            expected_dataset="boston_harbor_leg1",
+        self.assertEqual(group.catalog_version, "trim625_20260911_v1")
+        self.assertEqual(group.sequences, (
+            "boston_harbor_leg1",
+            "boston_harbor_leg2",
+            "boston_harbor_leg3",
+        ))
+        self.assertEqual(
+            path,
+            Path("/farfield/artifacts/catalogs/boston_harbor_leg1/"
+                 "trim625_20260911_v1"),
         )
 
     def test_grid_zoom_controls_patch_density(self):

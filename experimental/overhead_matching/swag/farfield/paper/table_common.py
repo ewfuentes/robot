@@ -14,8 +14,9 @@ from typing import Sequence
 
 DEFAULT_FARFIELD_ROOT = Path("/data/farfield_matching")
 
-# Region policy for a dataset group. The uniform prior, the catalog trim, and
-# every baseline must use the one box this names.
+# Region policy for a dataset group. The catalog trim and paper uniform prior
+# use the one box this names. A baseline may publish a smaller search region
+# only when it binds this catalog and proves that its complete footprint fits.
 #   area625     trim_catalog clip plan: trajectory-union bbox padded
 #               symmetrically to at least 625 km^2 (the reviewed policy)
 #   fetch_bbox  no clip; the region is the full catalog's fetch bbox
@@ -56,6 +57,11 @@ class DatasetGroup:
         if self.region_policy not in REGION_POLICIES:
             raise ValueError(
                 f"{self.key}: unknown region policy {self.region_policy!r}")
+
+    @property
+    def landmark_types(self) -> tuple[str, ...]:
+        """Catalog source types required by this paper row."""
+        return tuple(source.lower() for source in self.map_source.split(" + "))
 
 
 # Editorial fields are intentionally kept next to the paper roster. The
@@ -152,6 +158,10 @@ DATASET_GROUPS = (
         run_spec=None,
     ),
 )
+
+DATASET_GROUP_BY_KEY = {group.key: group for group in DATASET_GROUPS}
+if len(DATASET_GROUP_BY_KEY) != len(DATASET_GROUPS):
+    raise ValueError("paper dataset group keys must be unique")
 
 # Groups the tables can report today: every seed of every method exists.
 TABLE_GROUPS = tuple(group for group in DATASET_GROUPS if group.run_spec)

@@ -42,8 +42,9 @@ py_library(
         "//experimental/overhead_matching/swag/farfield:paths",
         "//experimental/overhead_matching/swag/farfield:provenance",
         "//experimental/overhead_matching/swag/farfield:publication",
-        "//experimental/overhead_matching/swag/farfield/catalog:schema",
+        "//experimental/overhead_matching/swag/farfield/catalog:lineage",
         "//experimental/overhead_matching/swag/farfield/collection:active_catalogs_lib",
+        "//experimental/overhead_matching/swag/farfield/paper:table_common",
     ],
 )
 
@@ -159,6 +160,31 @@ py_binary(
     name = "vlm_requests",
     srcs = ["vlm_requests.py"],
     deps = [requirement("pillow")],
+)
+
+py_library(
+    name = "vlm_responses_lib",
+    srcs = ["vlm_responses.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/extraction:extract_landmarks_lib",
+    ],
+)
+
+py_binary(
+    name = "vlm_responses",
+    srcs = ["vlm_responses.py"],
+    deps = [":vlm_responses_lib"],
+)
+
+py_test(
+    name = "vlm_responses_test",
+    srcs = ["vlm_responses_test.py"],
+    deps = [
+        ":vlm_responses_lib",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
 )
 
 py_library(

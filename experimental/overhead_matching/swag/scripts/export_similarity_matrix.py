@@ -386,7 +386,7 @@ def load_or_build_satellite_embeddings(
     loader = vd.get_dataloader(
         dataset.get_sat_patch_view(), batch_size=96, num_workers=8)
     embeddings = sed.build_satellite_db(
-        sat_model, loader, device=device).detach().cpu()
+        sat_model, loader, device=device, output_device="cpu")
     _validate_satellite_embeddings(
         embeddings, identity["satellite_filenames"], path)
     payload = {

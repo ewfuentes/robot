@@ -89,13 +89,20 @@ ARCGIS_BUNDLE_SIZE = 128
 CACHED_MAP_PROVIDER = "arcgis_cached_map"
 IMAGE_SERVER_PROVIDER = "arcgis_image_server_export"
 WMS_PROVIDER = "ogc_wms_getmap"
+GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER = "google_xyz_maine_fallback"
 DEFAULT_PROVIDER_MODE = CACHED_MAP_PROVIDER
-PROVIDER_MODES = (CACHED_MAP_PROVIDER, IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
+PROVIDER_MODES = (
+    CACHED_MAP_PROVIDER,
+    IMAGE_SERVER_PROVIDER,
+    WMS_PROVIDER,
+    GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER,
+)
 
 IMAGE_SERVER_EXPORT_FORMAT = "png"
 IMAGE_SERVER_INTERPOLATION = "RSP_BilinearInterpolation"
 IMAGE_SERVER_RASTER_FUNCTION = "NaturalColor"
 IMAGE_SERVER_MOSAIC_OPERATION = "MT_FIRST"
+IMAGE_SERVER_MOSAIC_OPERATIONS = ("MT_FIRST", "MT_LAST")
 IMAGE_SERVER_MAX_CHUNK_TILES = 15
 IMAGE_SERVER_CHUNK_WORKERS = 2
 IMAGE_SERVER_CHUNK_SCHEMA = "arcgis_image_server_source_chunk/v1"
@@ -119,6 +126,17 @@ IMAGE_SERVER_CATALOG_FIELDS = (
     "sensor_type",
     "Category",
 )
+
+DEFAULT_GOOGLE_TILE_URL_TEMPLATE = (
+    "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}")
+GOOGLE_XYZ_ZOOM = 20
+GOOGLE_XYZ_WORKERS = 32
+GOOGLE_XYZ_SOURCE = "google_xyz_live"
+MAINE_IMAGE_SERVER_FALLBACK_SOURCE = "maine_image_server_fallback"
+GOOGLE_MAINE_CHUNK_SCHEMA = "google_xyz_maine_source_chunk/v1"
+GOOGLE_MAINE_PROVIDER_SCHEMA = "google_xyz_maine_fallback_provider/v1"
+GOOGLE_LIVE_DRIFT_POLICY = (
+    "live_unpinned_responses_frozen_by_source_tile_sha256_v1")
 
 WMS_VERSION = "1.1.1"
 WMS_FORMAT = "image/jpeg"
@@ -189,8 +207,9 @@ class ImageServerTileChunk:
     tile_y: int
     width: int
     height: int
-    response_info: ImageInfo
+    response_info: ImageInfo | None
     tiles: tuple[ImageServerSourceTile, ...]
+    source: str | None = None
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -696,6 +715,24 @@ def _normalize_lock_raster_ids(values: Iterable[int]) -> tuple[int, ...]:
     return tuple(sorted(raster_ids))
 
 
+def _normalize_image_server_raster_function(value: str | None) -> str:
+    if value is None:
+        return IMAGE_SERVER_RASTER_FUNCTION
+    value = str(value).strip()
+    if not value:
+        raise SatelliteError("ImageServer raster function must be non-empty")
+    return value
+
+
+def _normalize_image_server_mosaic_operation(value: str | None) -> str:
+    value = IMAGE_SERVER_MOSAIC_OPERATION if value is None else str(value).strip()
+    if value not in IMAGE_SERVER_MOSAIC_OPERATIONS:
+        raise SatelliteError(
+            "ImageServer mosaic operation must be one of "
+            f"{IMAGE_SERVER_MOSAIC_OPERATIONS}")
+    return value
+
+
 def _image_server_catalog_parameters(
         bbox_wsen: Iterable[float], catalog_where: str) -> dict:
     west, south, east, north = tuple(float(item) for item in bbox_wsen)
@@ -718,11 +755,13 @@ def _image_server_catalog_parameters(
 
 
 def _image_server_mosaic_rule(
-        lock_raster_ids: Iterable[int]) -> dict:
+        lock_raster_ids: Iterable[int], *,
+        mosaic_operation: str = IMAGE_SERVER_MOSAIC_OPERATION) -> dict:
     return {
         "mosaicMethod": "esriMosaicLockRaster",
         "lockRasterIds": list(_normalize_lock_raster_ids(lock_raster_ids)),
-        "mosaicOperation": IMAGE_SERVER_MOSAIC_OPERATION,
+        "mosaicOperation": _normalize_image_server_mosaic_operation(
+            mosaic_operation),
     }
 
 
@@ -769,11 +808,31 @@ def _decode_image_server_response(response, *,
     return image, info
 
 
+def _decode_google_xyz_response(response, *, what: str) -> ImageInfo:
+    """Validate one raw Google XYZ JPEG without changing its bytes."""
+    content_type = str(response.headers.get("Content-Type", "")) \
+        .split(";", 1)[0].strip().lower()
+    if content_type != "image/jpeg":
+        raise SatelliteError(
+            f"Google XYZ returned content type {content_type!r}, "
+            "expected 'image/jpeg'")
+    _, info = _validate_image_bytes(
+        response.content,
+        (region.DEFAULT_TILE_PX, region.DEFAULT_TILE_PX), what)
+    if info.image_format != "JPEG" or info.mode != "RGB":
+        raise SatelliteError(
+            f"Google XYZ encoded {info.image_format}/{info.mode}, "
+            "expected JPEG/RGB")
+    return info
+
+
 class ArcGisImageServerClient(ArcGisTileClient):
     """Retrying client for one pinned ArcGIS dynamic ImageServer export."""
 
     def __init__(self, service_url: str, *, catalog_where: str,
                  lock_raster_ids: Iterable[int],
+                 raster_function: str = IMAGE_SERVER_RASTER_FUNCTION,
+                 mosaic_operation: str = IMAGE_SERVER_MOSAIC_OPERATION,
                  connect_timeout_s: float = 10.0,
                  read_timeout_s: float = 60.0,
                  max_retries: int = 4,
@@ -789,6 +848,10 @@ class ArcGisImageServerClient(ArcGisTileClient):
                 "clause")
         self.catalog_where = catalog_where
         self.lock_raster_ids = _normalize_lock_raster_ids(lock_raster_ids)
+        self.raster_function = _normalize_image_server_raster_function(
+            raster_function)
+        self.mosaic_operation = _normalize_image_server_mosaic_operation(
+            mosaic_operation)
 
     def query_catalog(self, bbox_wsen: Iterable[float]) -> dict:
         return self.get_json(
@@ -799,7 +862,9 @@ class ArcGisImageServerClient(ArcGisTileClient):
     def fetch_tile(self, zoom: int, tile_x: int, tile_y: int) -> bytes:
         url = self.service_url + "/exportImage"
         parameters = _image_server_export_parameters(
-            zoom, tile_x, tile_y, self.lock_raster_ids)
+            zoom, tile_x, tile_y, self.lock_raster_ids,
+            raster_function=self.raster_function,
+            mosaic_operation=self.mosaic_operation)
         response = self._get(url, params=parameters)
         _decode_image_server_response(
             response,
@@ -815,7 +880,9 @@ class ArcGisImageServerClient(ArcGisTileClient):
         """Fetch and split one fixed, north-up rectangle of XYZ tiles."""
         parameters = _image_server_export_parameters(
             zoom, tile_x, tile_y, self.lock_raster_ids,
-            width=width, height=height)
+            width=width, height=height,
+            raster_function=self.raster_function,
+            mosaic_operation=self.mosaic_operation)
         response = self._get(
             self.service_url + "/exportImage", params=parameters)
         tile_px = region.DEFAULT_TILE_PX
@@ -846,6 +913,88 @@ class ArcGisImageServerClient(ArcGisTileClient):
             response_info=response_info, tiles=tuple(tiles))
 
 
+class GoogleXyzMaineFallbackClient(ArcGisImageServerClient):
+    """Use live Google XYZ, falling back a whole chunk on any HTTP 404."""
+
+    def __init__(self, service_url: str, *, google_tile_url_template: str,
+                 catalog_where: str, lock_raster_ids: Iterable[int],
+                 raster_function: str = "None",
+                 mosaic_operation: str = "MT_LAST",
+                 google_workers: int = GOOGLE_XYZ_WORKERS,
+                 **kwargs) -> None:
+        super().__init__(
+            service_url, catalog_where=catalog_where,
+            lock_raster_ids=lock_raster_ids,
+            raster_function=raster_function,
+            mosaic_operation=mosaic_operation, **kwargs)
+        self.google_tile_url_template = _normalize_google_tile_url_template(
+            google_tile_url_template)
+        if self.raster_function != "None" \
+                or self.mosaic_operation != "MT_LAST":
+            raise SatelliteError(
+                "Google/Maine fallback requires ImageServer raster function "
+                "None and mosaic operation MT_LAST")
+        if type(google_workers) is not int or google_workers < 1:
+            raise SatelliteError("Google XYZ worker count must be positive")
+        self.google_workers = google_workers
+
+    def _fetch_google_tile(
+            self, item: tuple[int, int, int]) \
+            -> tuple[int, int, bytes, ImageInfo] | None:
+        zoom, tile_x, tile_y = item
+        url = self.google_tile_url_template.format(
+            z=zoom, x=tile_x, y=tile_y)
+        try:
+            response = self._get(url, missing_is_error=True)
+        except MissingTileError:
+            return None
+        info = _decode_google_xyz_response(
+            response, what=f"Google XYZ z{zoom}/{tile_x}/{tile_y}")
+        return tile_x, tile_y, response.content, info
+
+    def fetch_tile_chunk(self, zoom: int, tile_x: int, tile_y: int,
+                         width: int, height: int) \
+            -> ImageServerTileChunk:
+        if zoom != GOOGLE_XYZ_ZOOM:
+            raise SatelliteError(
+                f"Google XYZ composite requires z{GOOGLE_XYZ_ZOOM}, "
+                f"found z{zoom}")
+        _web_mercator_tile_range_bbox(
+            zoom, tile_x, tile_y, width=width, height=height)
+        coordinates = [
+            (zoom, x, y)
+            for y in range(tile_y, tile_y + height)
+            for x in range(tile_x, tile_x + width)
+        ]
+        google = list(_bounded_map(
+            self._fetch_google_tile, coordinates,
+            workers=min(self.google_workers, len(coordinates))))
+        if any(value is None for value in google):
+            fallback = super().fetch_tile_chunk(
+                zoom, tile_x, tile_y, width, height)
+            return ImageServerTileChunk(
+                zoom=fallback.zoom, tile_x=fallback.tile_x,
+                tile_y=fallback.tile_y, width=fallback.width,
+                height=fallback.height,
+                response_info=fallback.response_info,
+                tiles=fallback.tiles,
+                source=MAINE_IMAGE_SERVER_FALLBACK_SOURCE)
+        by_coordinate = {
+            (value[0], value[1]): value
+            for value in google if value is not None
+        }
+        tiles = tuple(
+            ImageServerSourceTile(
+                tile_x=x, tile_y=y,
+                value=by_coordinate[(x, y)][2],
+                info=by_coordinate[(x, y)][3])
+            for _, x, y in coordinates)
+        return ImageServerTileChunk(
+            zoom=zoom, tile_x=tile_x, tile_y=tile_y,
+            width=width, height=height,
+            response_info=None, tiles=tiles, source=GOOGLE_XYZ_SOURCE)
+
+
 def _grid_tile_items(grid: dict) -> Iterator[tuple[int, int]]:
     tile_x_min, tile_y_min, tile_x_max, tile_y_max = (
         grid["source_tile_range_xyxy"])
@@ -854,18 +1003,33 @@ def _grid_tile_items(grid: dict) -> Iterator[tuple[int, int]]:
             yield tile_x, tile_y
 
 
+def _normalize_source_shard(count: int, index: int) -> tuple[int, int]:
+    if type(count) is not int or count < 1:
+        raise SatelliteError("source shard count must be a positive integer")
+    if type(index) is not int or not 0 <= index < count:
+        raise SatelliteError(
+            "source shard index must lie in [0, source shard count)")
+    return count, index
+
+
 def _iter_image_server_source_chunks(
-        grid: dict, chunk_tiles: int) \
+        grid: dict, chunk_tiles: int, *,
+        source_shard_count: int = 1, source_shard_index: int = 0) \
         -> Iterator[tuple[int, int, int, int]]:
     """Yield a fixed NW-anchored, row-major partition of source tiles."""
     chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
+    source_shard_count, source_shard_index = _normalize_source_shard(
+        source_shard_count, source_shard_index)
     tile_x_min, tile_y_min, tile_x_max, tile_y_max = (
         grid["source_tile_range_xyxy"])
+    ordinal = 0
     for tile_y in range(tile_y_min, tile_y_max + 1, chunk_tiles):
         height = min(chunk_tiles, tile_y_max - tile_y + 1)
         for tile_x in range(tile_x_min, tile_x_max + 1, chunk_tiles):
             width = min(chunk_tiles, tile_x_max - tile_x + 1)
-            yield tile_x, tile_y, width, height
+            if ordinal % source_shard_count == source_shard_index:
+                yield tile_x, tile_y, width, height
+            ordinal += 1
 
 
 def _tile_cache_path(build_dir: Path, zoom: int,
@@ -948,7 +1112,9 @@ def _web_mercator_tile_range_bbox(
 def _image_server_export_parameters(
         zoom: int, tile_x: int, tile_y: int,
         lock_raster_ids: Iterable[int], *,
-        width: int = 1, height: int = 1) -> dict:
+        width: int = 1, height: int = 1,
+        raster_function: str = IMAGE_SERVER_RASTER_FUNCTION,
+        mosaic_operation: str = IMAGE_SERVER_MOSAIC_OPERATION) -> dict:
     bbox = _web_mercator_tile_range_bbox(
         zoom, tile_x, tile_y, width=width, height=height)
     tile_px = region.DEFAULT_TILE_PX
@@ -960,10 +1126,12 @@ def _image_server_export_parameters(
         "format": IMAGE_SERVER_EXPORT_FORMAT,
         "interpolation": IMAGE_SERVER_INTERPOLATION,
         "renderingRule": _json_parameter({
-            "rasterFunction": IMAGE_SERVER_RASTER_FUNCTION,
+            "rasterFunction": _normalize_image_server_raster_function(
+                raster_function),
         }),
         "mosaicRule": _json_parameter(
-            _image_server_mosaic_rule(lock_raster_ids)),
+            _image_server_mosaic_rule(
+                lock_raster_ids, mosaic_operation=mosaic_operation)),
         "f": "image",
     }
 
@@ -1070,6 +1238,8 @@ def _image_server_provider_contract(
         service_url: str, metadata: dict, grid: dict,
         catalog_audit: dict, *, catalog_where: str,
         lock_raster_ids: Iterable[int],
+        raster_function: str = IMAGE_SERVER_RASTER_FUNCTION,
+        mosaic_operation: str = IMAGE_SERVER_MOSAIC_OPERATION,
         image_server_chunk_tiles: int = 1) -> dict:
     chunk_tiles = _normalize_image_server_chunk_tiles(
         image_server_chunk_tiles)
@@ -1166,9 +1336,11 @@ def _image_server_provider_contract(
             "format": IMAGE_SERVER_EXPORT_FORMAT,
             "interpolation": IMAGE_SERVER_INTERPOLATION,
             "rendering_rule": {
-                "rasterFunction": IMAGE_SERVER_RASTER_FUNCTION,
+                "rasterFunction": _normalize_image_server_raster_function(
+                    raster_function),
             },
-            "mosaic_rule": _image_server_mosaic_rule(raster_ids),
+            "mosaic_rule": _image_server_mosaic_rule(
+                raster_ids, mosaic_operation=mosaic_operation),
             "tile_envelope": {
                 "schema": "web_mercator_xyz_bbox/v1",
                 "earth_radius_m": geometry.EARTH_RADIUS_M,
@@ -1263,6 +1435,20 @@ def _normalize_image_server_chunk_tiles(value: int) -> int:
     return value
 
 
+def _normalize_google_tile_url_template(value: str | None) -> str:
+    template = str(value or DEFAULT_GOOGLE_TILE_URL_TEMPLATE).strip()
+    if any(field not in template for field in ("{z}", "{x}", "{y}")):
+        raise SatelliteError(
+            "Google tile URL template must contain {z}, {x}, and {y}")
+    try:
+        example = template.format(z=GOOGLE_XYZ_ZOOM, x=0, y=0)
+    except (KeyError, ValueError) as error:
+        raise SatelliteError("invalid Google tile URL template") from error
+    if not example.startswith("https://"):
+        raise SatelliteError("Google tile URL template must use https")
+    return template
+
+
 def _image_server_chunk_contract(chunk_tiles: int) -> dict:
     chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
     return {
@@ -1282,17 +1468,69 @@ def _image_server_chunk_contract(chunk_tiles: int) -> dict:
     }
 
 
+def _google_maine_chunk_contract(chunk_tiles: int) -> dict:
+    chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
+    if chunk_tiles != IMAGE_SERVER_MAX_CHUNK_TILES:
+        raise SatelliteError(
+            "Google/Maine source chunks must be exactly 15x15 tiles")
+    return {
+        "schema": GOOGLE_MAINE_CHUNK_SCHEMA,
+        "shape_tiles_xy": [chunk_tiles, chunk_tiles],
+        "partition_anchor": "region_source_tile_range_northwest",
+        "partition_order": "row_major",
+        "algorithm": (
+            "whole_chunk_google_xyz_or_image_server_fallback_v1"),
+        "child_encoding": "source_selected_per_complete_chunk_v1",
+        "primary_source": GOOGLE_XYZ_SOURCE,
+        "primary_child_encoding": "raw_jpeg_rgb_256px",
+        "fallback_source": MAINE_IMAGE_SERVER_FALLBACK_SOURCE,
+        "fallback_trigger": "any_primary_http_404_in_chunk",
+        "fallback_scope": "complete_chunk",
+        "fallback_chunking": _image_server_chunk_contract(chunk_tiles),
+    }
+
+
+def _google_maine_provider_contract(
+        fallback: dict, google_tile_url_template: str,
+        chunk_tiles: int) -> dict:
+    return {
+        "schema": GOOGLE_MAINE_PROVIDER_SCHEMA,
+        "type": GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER,
+        # Keep this at top level for existing-artifact identity checks.
+        "service_url": fallback["service_url"],
+        "primary": {
+            "type": GOOGLE_XYZ_SOURCE,
+            "tile_url_template": _normalize_google_tile_url_template(
+                google_tile_url_template),
+            "zoom": GOOGLE_XYZ_ZOOM,
+            "tile_px": region.DEFAULT_TILE_PX,
+            "response_encoding": "raw_jpeg_rgb_256px",
+            "imagery_version": "live_unpinned",
+            "drift_policy": GOOGLE_LIVE_DRIFT_POLICY,
+        },
+        "fallback": fallback,
+        "selection": {
+            "trigger": "any_primary_http_404_in_chunk",
+            "fallback_scope": "complete_chunk",
+            "chunking": _google_maine_chunk_contract(chunk_tiles),
+        },
+    }
+
+
 def _provider_request_contract(
         provider_mode: str, service_url: str, *,
         source_index_url: str | None,
         catalog_where: str | None,
         lock_raster_ids: Iterable[int],
+        image_server_raster_function: str | None = None,
+        image_server_mosaic_operation: str | None = None,
         esri_wayback_release: str | None = None,
         require_source_index_coverage: bool = True,
         image_server_chunk_tiles: int = 1,
         wms_layer: str | None = None,
         wms_srs: str | None = None,
-        wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) -> dict:
+        wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+        google_tile_url_template: str | None = None) -> dict:
     chunk_tiles = _normalize_image_server_chunk_tiles(
         image_server_chunk_tiles)
     if provider_mode not in PROVIDER_MODES:
@@ -1304,6 +1542,18 @@ def _provider_request_contract(
     if provider_mode != WMS_PROVIDER and (wms_layer or wms_srs):
         raise SatelliteError(
             "WMS layer/SRS options apply only to WMS GetMap mode")
+    image_server_modes = (
+        IMAGE_SERVER_PROVIDER, GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER)
+    if (provider_mode not in image_server_modes
+            and (image_server_raster_function is not None
+                 or image_server_mosaic_operation is not None)):
+        raise SatelliteError(
+            "ImageServer raster function/mosaic operation apply only to "
+            "ImageServer-backed modes")
+    if (provider_mode != GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER
+            and google_tile_url_template is not None):
+        raise SatelliteError(
+            "Google tile URL template applies only to Google/Maine mode")
     esri_wayback_release = _normalize_esri_wayback_release(
         esri_wayback_release)
     raster_ids = tuple(lock_raster_ids)
@@ -1369,8 +1619,8 @@ def _provider_request_contract(
             "ESRI Wayback release applies only to cached-map mode")
     if source_index_url is not None:
         raise SatelliteError(
-            "ImageServer export uses its own catalog; source_index_url must "
-            "be unset")
+            "ImageServer-backed modes use their own catalog; "
+            "source_index_url must be unset")
     if not require_source_index_coverage:
         raise SatelliteError(
             "--allow_incomplete_source_index applies only to cached-map "
@@ -1380,6 +1630,25 @@ def _provider_request_contract(
         raise SatelliteError(
             "ImageServer export requires --catalog_where")
     normalized_ids = _normalize_lock_raster_ids(raster_ids)
+    if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+        raster_function = _normalize_image_server_raster_function(
+            "None" if image_server_raster_function is None
+            else image_server_raster_function)
+        mosaic_operation = _normalize_image_server_mosaic_operation(
+            "MT_LAST" if image_server_mosaic_operation is None
+            else image_server_mosaic_operation)
+        if (raster_function != "None" or mosaic_operation != "MT_LAST"):
+            raise SatelliteError(
+                "Google/Maine fallback requires ImageServer raster function "
+                "None and mosaic operation MT_LAST")
+        if chunk_tiles != IMAGE_SERVER_MAX_CHUNK_TILES:
+            raise SatelliteError(
+                "Google/Maine mode requires --image_server_chunk_tiles=15")
+    else:
+        raster_function = _normalize_image_server_raster_function(
+            image_server_raster_function)
+        mosaic_operation = _normalize_image_server_mosaic_operation(
+            image_server_mosaic_operation)
     request = {
         "provider_mode": provider_mode,
         "service_url": service_url,
@@ -1387,12 +1656,24 @@ def _provider_request_contract(
         "lock_raster_ids": list(normalized_ids),
         "export_format": IMAGE_SERVER_EXPORT_FORMAT,
         "export_interpolation": IMAGE_SERVER_INTERPOLATION,
-        "export_raster_function": IMAGE_SERVER_RASTER_FUNCTION,
-        "export_mosaic_operation": IMAGE_SERVER_MOSAIC_OPERATION,
+        "export_raster_function": raster_function,
+        "export_mosaic_operation": mosaic_operation,
     }
     if chunk_tiles > 1:
-        request["export_chunking"] = _image_server_chunk_contract(
-            chunk_tiles)
+        request["export_chunking"] = (
+            _google_maine_chunk_contract(chunk_tiles)
+            if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER
+            else _image_server_chunk_contract(chunk_tiles))
+    if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+        request.update({
+            "google_tile_url_template": (
+                _normalize_google_tile_url_template(
+                    google_tile_url_template)),
+            "google_imagery_version": "live_unpinned",
+            "google_drift_policy": GOOGLE_LIVE_DRIFT_POLICY,
+            "fallback_trigger": "any_primary_http_404_in_chunk",
+            "fallback_scope": "complete_chunk",
+        })
     return request
 
 
@@ -1414,6 +1695,23 @@ def _iter_tilemap_chunks(grid: dict):
         tile_y += height
 
 
+def _geometry_from_esri_rings(rings):
+    """Decode ArcGIS polygon rings using its orientation-independent fill."""
+    if not isinstance(rings, list) or not rings:
+        raise ValueError("polygon rings must be a non-empty list")
+    geometry_value = None
+    for ring_value in rings:
+        polygon = Polygon(ring_value)
+        if polygon.is_empty or not polygon.is_valid:
+            raise ValueError("polygon ring is empty or invalid")
+        geometry_value = (polygon if geometry_value is None
+                          else geometry_value.symmetric_difference(polygon))
+    if (geometry_value.is_empty or not geometry_value.is_valid
+            or geometry_value.geom_type not in {"Polygon", "MultiPolygon"}):
+        raise ValueError("polygon rings do not form valid polygonal geometry")
+    return geometry_value
+
+
 def _audit_source_index(client, source_index_url: str,
                         bbox_wsen: Iterable[float], *,
                         require_complete: bool = True) -> dict:
@@ -1432,17 +1730,11 @@ def _audit_source_index(client, source_index_url: str,
         attributes = feature.get("attributes") or {}
         geometry_value = feature.get("geometry") or {}
         rings = geometry_value.get("rings")
-        if not isinstance(rings, list) or len(rings) != 1:
-            raise SatelliteError(
-                "source imagery index feature is not one simple polygon")
         try:
-            polygon = Polygon(rings[0])
+            polygon = _geometry_from_esri_rings(rings)
         except Exception as error:
             raise SatelliteError(
                 "source imagery index contains invalid geometry") from error
-        if polygon.is_empty or not polygon.is_valid:
-            raise SatelliteError(
-                "source imagery index contains invalid geometry")
         polygons.append(polygon)
         entries.append({
             "object_id": attributes.get("OBJECTID"),
@@ -1524,17 +1816,11 @@ def _audit_image_server_catalog(
                 f"ImageServer raster {object_id} is not Category=1 primary "
                 "imagery")
         rings = geometry_value.get("rings")
-        if not isinstance(rings, list) or len(rings) != 1:
-            raise SatelliteError(
-                "ImageServer catalog feature is not one simple polygon")
         try:
-            polygon = Polygon(rings[0])
+            polygon = _geometry_from_esri_rings(rings)
         except Exception as error:
             raise SatelliteError(
                 "ImageServer catalog contains invalid geometry") from error
-        if polygon.is_empty or not polygon.is_valid:
-            raise SatelliteError(
-                "ImageServer catalog contains invalid geometry")
         polygons.append(polygon)
         observed_ids.append(object_id)
         entries.append({
@@ -1589,11 +1875,14 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
                    provider_mode: str = DEFAULT_PROVIDER_MODE,
                    catalog_where: str | None = None,
                    lock_raster_ids: Iterable[int] = (),
+                   image_server_raster_function: str | None = None,
+                   image_server_mosaic_operation: str | None = None,
                    esri_wayback_release: str | None = None,
                    image_server_chunk_tiles: int = 1,
                    wms_layer: str | None = None,
                    wms_srs: str | None = None,
-                   wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) \
+                   wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+                   google_tile_url_template: str | None = None) \
         -> dict:
     """Strictly prove cache and source-index coverage for a region plan."""
     grid = plan.get("grid")
@@ -1602,11 +1891,14 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        image_server_raster_function=image_server_raster_function,
+        image_server_mosaic_operation=image_server_mosaic_operation,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=wms_layer, wms_srs=wms_srs,
-        wms_chunk_tiles=wms_chunk_tiles)
+        wms_chunk_tiles=wms_chunk_tiles,
+        google_tile_url_template=google_tile_url_template)
     esri_wayback_release = request.get("esri_wayback_release")
     if provider_mode == WMS_PROVIDER:
         provider = _wms_provider_contract(
@@ -1636,17 +1928,31 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
                 "policy": provider["no_data"]["policy"],
             },
         }
-    if provider_mode == IMAGE_SERVER_PROVIDER:
+    if provider_mode in (
+            IMAGE_SERVER_PROVIDER, GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER):
+        if (provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER
+                and grid["zoom"] != GOOGLE_XYZ_ZOOM):
+            raise SatelliteError(
+                f"Google/Maine mode requires z{GOOGLE_XYZ_ZOOM}, "
+                f"found z{grid['zoom']}")
         rendered_footprint = _rendered_footprint_bbox_wsen(grid)
         catalog = _audit_image_server_catalog(
             client, service_url, rendered_footprint,
             catalog_where=request["catalog_where"],
             lock_raster_ids=request["lock_raster_ids"])
-        provider = _image_server_provider_contract(
+        fallback_provider = _image_server_provider_contract(
             service_url, service_metadata, grid, catalog,
             catalog_where=request["catalog_where"],
             lock_raster_ids=request["lock_raster_ids"],
+            raster_function=request["export_raster_function"],
+            mosaic_operation=request["export_mosaic_operation"],
             image_server_chunk_tiles=image_server_chunk_tiles)
+        provider = (
+            _google_maine_provider_contract(
+                fallback_provider, request["google_tile_url_template"],
+                image_server_chunk_tiles)
+            if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER
+            else fallback_provider)
         return {
             "schema": COVERAGE_SCHEMA,
             "status": "passed",
@@ -1661,6 +1967,16 @@ def audit_coverage(client, plan: dict, service_metadata: dict, *,
             },
             "catalog": catalog,
             "source_index": {"status": "not_applicable"},
+            **({
+                "primary_availability": {
+                    "status": "deferred_to_source_fetch",
+                    "verification": (
+                        "per_chunk_receipts_and_published_tile_hashes"),
+                    "fallback_on": "HTTP 404 only",
+                    "fallback_scope": "complete_15x15_chunk",
+                },
+            } if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER
+               else {}),
         }
 
     provider = _cached_map_provider_contract(
@@ -1834,13 +2150,31 @@ def _load_valid_source_chunk_receipt(
             receipt.get(key) != value for key, value in descriptor.items()):
         return None
     response = receipt.get("response")
-    if (not isinstance(response, dict)
-            or response.get("image_format") not in {"JPEG", "PNG"}
-            or response.get("mode") != "RGB"
-            or response.get("width") != width * grid["tile_px"]
-            or response.get("height") != height * grid["tile_px"]
-            or not _valid_sha256(response.get("sha256"))
-            or not _valid_sha256(response.get("decoded_pixel_sha256"))):
+    composite_source = None
+    if descriptor["schema"] == GOOGLE_MAINE_CHUNK_SCHEMA:
+        composite_source = receipt.get("source")
+        if composite_source == GOOGLE_XYZ_SOURCE:
+            if response is not None:
+                return None
+        elif composite_source == MAINE_IMAGE_SERVER_FALLBACK_SOURCE:
+            if (not isinstance(response, dict)
+                    or response.get("image_format") != "PNG"
+                    or response.get("mode") != "RGB"
+                    or response.get("width") != width * grid["tile_px"]
+                    or response.get("height") != height * grid["tile_px"]
+                    or not _valid_sha256(response.get("sha256"))
+                    or not _valid_sha256(
+                        response.get("decoded_pixel_sha256"))):
+                return None
+        else:
+            return None
+    elif (not isinstance(response, dict)
+          or response.get("image_format") not in {"JPEG", "PNG"}
+          or response.get("mode") != "RGB"
+          or response.get("width") != width * grid["tile_px"]
+          or response.get("height") != height * grid["tile_px"]
+          or not _valid_sha256(response.get("sha256"))
+          or not _valid_sha256(response.get("decoded_pixel_sha256"))):
         return None
     records = receipt.get("tiles")
     expected_coordinates = [
@@ -1867,7 +2201,9 @@ def _load_valid_source_chunk_receipt(
                 value, (grid["tile_px"], grid["tile_px"]), str(path))
         except (OSError, SatelliteError):
             return None
-        if (info.image_format != "PNG" or info.mode != "RGB"
+        expected_format = (
+            "JPEG" if composite_source == GOOGLE_XYZ_SOURCE else "PNG")
+        if (info.image_format != expected_format or info.mode != "RGB"
                 or (reject_black_children and image.getbbox() is None)):
             return None
         expected_record = {
@@ -1883,7 +2219,9 @@ def _load_valid_source_chunk_receipt(
 def _ensure_chunked_source_tiles(
         build_dir: Path, grid: dict, client, *, workers: int,
         progress_every: int, chunk_tiles: int,
-        chunking_contract: dict | None = None) -> dict:
+        chunking_contract: dict | None = None,
+        source_shard_count: int = 1,
+        source_shard_index: int = 0) -> dict:
     fetch_chunk = getattr(client, "fetch_tile_chunk", None)
     if not callable(fetch_chunk):
         raise SatelliteError(
@@ -1893,12 +2231,18 @@ def _ensure_chunked_source_tiles(
         chunking_contract = _image_server_chunk_contract(chunk_tiles)
     elif chunking_contract.get("schema") == WMS_CHUNK_SCHEMA:
         chunk_tiles = _normalize_wms_chunk_tiles(chunk_tiles)
+    elif chunking_contract.get("schema") == GOOGLE_MAINE_CHUNK_SCHEMA:
+        chunk_tiles = _normalize_image_server_chunk_tiles(chunk_tiles)
+        if chunking_contract != _google_maine_chunk_contract(chunk_tiles):
+            raise SatelliteError("invalid Google/Maine source contract")
     else:
         raise SatelliteError("unsupported source chunk contract")
     reject_black_children = chunking_contract["schema"] != WMS_CHUNK_SCHEMA
-    chunk_workers = min(workers, IMAGE_SERVER_CHUNK_WORKERS)
-    if chunk_workers < 1:
+    if workers < 1:
         raise SatelliteError("worker count must be positive")
+    chunk_workers = (
+        1 if chunking_contract["schema"] == GOOGLE_MAINE_CHUNK_SCHEMA
+        else min(workers, IMAGE_SERVER_CHUNK_WORKERS))
     zoom = grid["zoom"]
     tile_px = grid["tile_px"]
 
@@ -1937,12 +2281,29 @@ def _ensure_chunked_source_tiles(
             raise SatelliteError(
                 "source chunk client returned a mismatched tile set")
 
-        records = []
-        for tile in result.tiles:
+        composite_source = None
+        if chunking_contract["schema"] == GOOGLE_MAINE_CHUNK_SCHEMA:
+            composite_source = result.source
+            if composite_source not in {
+                    GOOGLE_XYZ_SOURCE,
+                    MAINE_IMAGE_SERVER_FALLBACK_SOURCE}:
+                raise SatelliteError(
+                    "Google/Maine client returned an invalid source")
+            if ((composite_source == GOOGLE_XYZ_SOURCE
+                 and result.response_info is not None)
+                    or (composite_source
+                        == MAINE_IMAGE_SERVER_FALLBACK_SOURCE
+                        and result.response_info is None)):
+                raise SatelliteError(
+                    "Google/Maine client returned invalid response provenance")
+
+        def write_child(tile: ImageServerSourceTile) -> dict:
             image, info = _validate_image_bytes(
                 tile.value, (tile_px, tile_px),
                 f"chunk child z{zoom}/{tile.tile_x}/{tile.tile_y}")
-            if (info != tile.info or info.image_format != "PNG"
+            expected_format = (
+                "JPEG" if composite_source == GOOGLE_XYZ_SOURCE else "PNG")
+            if (info != tile.info or info.image_format != expected_format
                     or info.mode != "RGB"
                     or (reject_black_children and image.getbbox() is None)):
                 raise SatelliteError(
@@ -1955,19 +2316,30 @@ def _ensure_chunked_source_tiles(
             if written != info:
                 raise SatelliteError(
                     f"atomic chunk tile write did not validate: {path}")
-            records.append({
+            return {
                 "tile_x": tile.tile_x,
                 "tile_y": tile.tile_y,
                 **_image_info_json(info),
-            })
+            }
+
+        if composite_source is None:
+            records = [write_child(tile) for tile in result.tiles]
+        else:
+            with ThreadPoolExecutor(
+                    max_workers=min(workers, len(result.tiles))) as executor:
+                records = list(executor.map(write_child, result.tiles))
 
         receipt_document = {
             **_source_chunk_descriptor(
                 grid, chunk_tiles, tile_x, tile_y, width, height,
                 chunking_contract=chunking_contract),
-            "response": _image_info_json(result.response_info),
+            "response": (
+                _image_info_json(result.response_info)
+                if result.response_info is not None else None),
             "tiles": records,
         }
+        if composite_source is not None:
+            receipt_document["source"] = composite_source
         receipt_path = _source_chunk_receipt_path(
             build_dir, zoom, tile_x, tile_y, width, height)
         artifact.atomic_write_json(receipt_path, receipt_document)
@@ -1989,7 +2361,11 @@ def _ensure_chunked_source_tiles(
 
     counts = {"total": 0, "resumed": 0, "downloaded": 0, "replaced": 0}
     last_report = 0
-    chunks = _iter_image_server_source_chunks(grid, chunk_tiles)
+    chunks = tuple(_iter_image_server_source_chunks(
+        grid, chunk_tiles, source_shard_count=source_shard_count,
+        source_shard_index=source_shard_index))
+    expected_tiles = sum(width * height
+                         for _, _, width, height in chunks)
     for result in _bounded_map(
             ensure_chunk, chunks, workers=chunk_workers,
             max_in_flight=chunk_workers):
@@ -1999,31 +2375,40 @@ def _ensure_chunked_source_tiles(
                 and counts["total"] // progress_every > last_report):
             last_report = counts["total"] // progress_every
             print(
-                f"  source tiles {counts['total']}/{grid['n_source_tiles']} "
+                f"  source tiles {counts['total']}/{expected_tiles} "
                 f"(cached={counts['resumed']}, new={counts['downloaded']}, "
                 f"repaired={counts['replaced']})")
-    if counts["total"] != grid["n_source_tiles"]:
+    if counts["total"] != expected_tiles:
         raise SatelliteError(
             f"processed {counts['total']} source tiles, expected "
-            f"{grid['n_source_tiles']}")
+            f"{expected_tiles} for source shard "
+            f"{source_shard_index}/{source_shard_count}")
     return counts
 
 
 def ensure_source_tiles(build_dir: Path, grid: dict, client, *,
                         workers: int = 32, progress_every: int = 1000,
                         image_server_chunk_tiles: int = 1,
-                        source_chunking_contract: dict | None = None) -> dict:
+                        source_chunking_contract: dict | None = None,
+                        source_shard_count: int = 1,
+                        source_shard_index: int = 0) -> dict:
     """Download/repair every source tile, retaining hash-matched entries."""
     build_dir = Path(build_dir)
     chunk_tiles = _normalize_image_server_chunk_tiles(
         image_server_chunk_tiles)
+    source_shard_count, source_shard_index = _normalize_source_shard(
+        source_shard_count, source_shard_index)
     if chunk_tiles > 1 or source_chunking_contract is not None:
         return _ensure_chunked_source_tiles(
             build_dir, grid, client, workers=workers,
             progress_every=progress_every, chunk_tiles=(
                 source_chunking_contract["shape_tiles_xy"][0]
                 if source_chunking_contract is not None else chunk_tiles),
-            chunking_contract=source_chunking_contract)
+            chunking_contract=source_chunking_contract,
+            source_shard_count=source_shard_count,
+            source_shard_index=source_shard_index)
+    if (source_shard_count, source_shard_index) != (1, 0):
+        raise SatelliteError("source sharding requires chunked downloads")
     zoom = grid["zoom"]
     tile_px = grid["tile_px"]
     prior_hashes: dict[tuple[int, int], tuple[str, str]] = {}
@@ -2145,13 +2530,23 @@ def write_source_tile_manifest(build_dir: Path, grid: dict,
                 raise SatelliteError(
                     f"required cached source tile is missing/corrupt: "
                     f"{tile_path}")
-            yield {
+            record = {
                 "zoom": zoom,
                 "tile_x": tile_x,
                 "tile_y": tile_y,
                 "cache_key": f"{zoom}/{tile_x}/{tile_y}.tile",
                 **asdict(info),
             }
+            if provider.get("type") == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+                if info.image_format == "JPEG" and info.mode == "RGB":
+                    record["source"] = GOOGLE_XYZ_SOURCE
+                elif info.image_format == "PNG" and info.mode == "RGB":
+                    record["source"] = MAINE_IMAGE_SERVER_FALLBACK_SOURCE
+                else:
+                    raise SatelliteError(
+                        "Google/Maine source tile has an unsupported "
+                        f"encoding: {tile_path}")
+            yield record
 
     count = _write_streamed_manifest(
         path,
@@ -2627,11 +3022,14 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
                        provider_mode: str = DEFAULT_PROVIDER_MODE,
                        catalog_where: str | None = None,
                        lock_raster_ids: Iterable[int] = (),
+                       image_server_raster_function: str | None = None,
+                       image_server_mosaic_operation: str | None = None,
                        esri_wayback_release: str | None = None,
                        image_server_chunk_tiles: int = 1,
                        wms_layer: str | None = None,
                        wms_srs: str | None = None,
-                       wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES) \
+                       wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+                       google_tile_url_template: str | None = None) \
         -> artifact.ArtifactRef | None:
     if not destination.exists() and not destination.is_symlink():
         return None
@@ -2643,11 +3041,14 @@ def _existing_artifact(destination: Path, region_ref: artifact.ArtifactRef,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        image_server_raster_function=image_server_raster_function,
+        image_server_mosaic_operation=image_server_mosaic_operation,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=wms_layer, wms_srs=wms_srs,
-        wms_chunk_tiles=wms_chunk_tiles)
+        wms_chunk_tiles=wms_chunk_tiles,
+        google_tile_url_template=google_tile_url_template)
     provider = manifest.config.get("provider", {})
     expected = {
         "region_manifest_digest": region_ref.manifest_digest,
@@ -2692,20 +3093,30 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
                 provider_mode: str = DEFAULT_PROVIDER_MODE,
                 catalog_where: str | None = None,
                 lock_raster_ids: Iterable[int] = (),
+                image_server_raster_function: str | None = None,
+                image_server_mosaic_operation: str | None = None,
                 esri_wayback_release: str | None = None,
                 image_server_chunk_tiles: int = 1,
                 wms_layer: str | None = None,
                 wms_srs: str | None = None,
                 wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+                google_tile_url_template: str | None = None,
                 jpeg_quality: int = DEFAULT_JPEG_QUALITY,
                 workers: int = 32, patch_workers: int = 8,
                 decoded_tile_cache_entries: int = 1024,
-                client=None) -> artifact.ArtifactRef:
+                source_only: bool = False,
+                source_shard_count: int = 1,
+                source_shard_index: int = 0,
+                client=None) -> artifact.ArtifactRef | None:
     farfield_root = Path(farfield_root).resolve()
     dataset = artifact.require_identifier(dataset, "artifact dataset")
     version = artifact.require_identifier(version, "artifact version")
     build_cache_version = artifact.require_identifier(
         build_cache_version or version, "satellite build cache version")
+    source_shard_count, source_shard_index = _normalize_source_shard(
+        source_shard_count, source_shard_index)
+    if source_shard_count > 1 and not source_only:
+        raise SatelliteError("source sharding requires --source_only")
     region_ref, plan = region.load_region(Path(region_dir))
     if region_ref.dataset != dataset:
         raise SatelliteError(
@@ -2715,7 +3126,9 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
     # services while making ImageServer mode self-contained.  ImageServer
     # coverage comes from its own pinned raster catalog, not this unrelated
     # FeatureServer default.
-    if (provider_mode in (IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
+    if (provider_mode in (
+            IMAGE_SERVER_PROVIDER, WMS_PROVIDER,
+            GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER)
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
     if (esri_wayback_release is not None
@@ -2724,11 +3137,14 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        image_server_raster_function=image_server_raster_function,
+        image_server_mosaic_operation=image_server_mosaic_operation,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=wms_layer, wms_srs=wms_srs,
-        wms_chunk_tiles=wms_chunk_tiles)
+        wms_chunk_tiles=wms_chunk_tiles,
+        google_tile_url_template=google_tile_url_template)
     destination = (
         farfield_root / "artifacts" / ARTIFACT_KIND / dataset / version)
     existing = _existing_artifact(
@@ -2738,12 +3154,15 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         jpeg_quality=jpeg_quality, provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        image_server_raster_function=request.get("export_raster_function"),
+        image_server_mosaic_operation=request.get("export_mosaic_operation"),
         esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=request.get("wms_layer"),
         wms_srs=request.get("wms_srs"),
         wms_chunk_tiles=request.get(
-            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
+        google_tile_url_template=request.get("google_tile_url_template"))
     if existing is not None:
         return existing
 
@@ -2755,7 +3174,19 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         elif provider_mode == IMAGE_SERVER_PROVIDER:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
-                lock_raster_ids=request["lock_raster_ids"])
+                lock_raster_ids=request["lock_raster_ids"],
+                raster_function=request["export_raster_function"],
+                mosaic_operation=request["export_mosaic_operation"])
+        elif provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+            client = GoogleXyzMaineFallbackClient(
+                service_url,
+                google_tile_url_template=(
+                    request["google_tile_url_template"]),
+                catalog_where=request["catalog_where"],
+                lock_raster_ids=request["lock_raster_ids"],
+                raster_function=request["export_raster_function"],
+                mosaic_operation=request["export_mosaic_operation"],
+                google_workers=workers)
         else:
             client = OgcWmsClient(
                 service_url, layer=request["wms_layer"],
@@ -2769,12 +3200,15 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        image_server_raster_function=request.get("export_raster_function"),
+        image_server_mosaic_operation=request.get("export_mosaic_operation"),
         esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=request.get("wms_layer"),
         wms_srs=request.get("wms_srs"),
         wms_chunk_tiles=request.get(
-            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
+        google_tile_url_template=request.get("google_tile_url_template"))
     coverage_sha256 = artifact.sha256_json(coverage)
     provider = coverage["provider"]
     grid = plan["grid"]
@@ -2806,7 +3240,14 @@ def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
         image_server_chunk_tiles=image_server_chunk_tiles,
         source_chunking_contract=(
             _wms_chunk_contract(request["wms_chunk_tiles"])
-            if provider_mode == WMS_PROVIDER else None))
+            if provider_mode == WMS_PROVIDER else
+            _google_maine_chunk_contract(image_server_chunk_tiles)
+            if provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER else
+            None),
+        source_shard_count=source_shard_count,
+        source_shard_index=source_shard_index)
+    if source_only:
+        return None
     source_manifest = write_source_tile_manifest(build_dir, grid, provider)
     patch_summary = ensure_patches(
         build_dir, grid, source_manifest["sha256"],
@@ -2929,15 +3370,20 @@ def audit_region(region_dir: Path, *,
                  provider_mode: str = DEFAULT_PROVIDER_MODE,
                  catalog_where: str | None = None,
                  lock_raster_ids: Iterable[int] = (),
+                 image_server_raster_function: str | None = None,
+                 image_server_mosaic_operation: str | None = None,
                  esri_wayback_release: str | None = None,
                  image_server_chunk_tiles: int = 1,
                  wms_layer: str | None = None,
                  wms_srs: str | None = None,
                  wms_chunk_tiles: int = WMS_MAX_CHUNK_TILES,
+                 google_tile_url_template: str | None = None,
                  client=None) -> dict:
     """Run the provider coverage proof without creating build state."""
     _, plan = region.load_region(Path(region_dir))
-    if (provider_mode in (IMAGE_SERVER_PROVIDER, WMS_PROVIDER)
+    if (provider_mode in (
+            IMAGE_SERVER_PROVIDER, WMS_PROVIDER,
+            GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER)
             and source_index_url == DEFAULT_SOURCE_INDEX_URL):
         source_index_url = None
     if (esri_wayback_release is not None
@@ -2946,11 +3392,14 @@ def audit_region(region_dir: Path, *,
     request = _provider_request_contract(
         provider_mode, service_url, source_index_url=source_index_url,
         catalog_where=catalog_where, lock_raster_ids=lock_raster_ids,
+        image_server_raster_function=image_server_raster_function,
+        image_server_mosaic_operation=image_server_mosaic_operation,
         esri_wayback_release=esri_wayback_release,
         require_source_index_coverage=require_source_index_coverage,
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=wms_layer, wms_srs=wms_srs,
-        wms_chunk_tiles=wms_chunk_tiles)
+        wms_chunk_tiles=wms_chunk_tiles,
+        google_tile_url_template=google_tile_url_template)
     if client is None:
         if provider_mode == CACHED_MAP_PROVIDER:
             client = ArcGisTileClient(
@@ -2959,7 +3408,18 @@ def audit_region(region_dir: Path, *,
         elif provider_mode == IMAGE_SERVER_PROVIDER:
             client = ArcGisImageServerClient(
                 service_url, catalog_where=request["catalog_where"],
-                lock_raster_ids=request["lock_raster_ids"])
+                lock_raster_ids=request["lock_raster_ids"],
+                raster_function=request["export_raster_function"],
+                mosaic_operation=request["export_mosaic_operation"])
+        elif provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+            client = GoogleXyzMaineFallbackClient(
+                service_url,
+                google_tile_url_template=(
+                    request["google_tile_url_template"]),
+                catalog_where=request["catalog_where"],
+                lock_raster_ids=request["lock_raster_ids"],
+                raster_function=request["export_raster_function"],
+                mosaic_operation=request["export_mosaic_operation"])
         else:
             client = OgcWmsClient(
                 service_url, layer=request["wms_layer"],
@@ -2972,12 +3432,15 @@ def audit_region(region_dir: Path, *,
         provider_mode=provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        image_server_raster_function=request.get("export_raster_function"),
+        image_server_mosaic_operation=request.get("export_mosaic_operation"),
         esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=image_server_chunk_tiles,
         wms_layer=request.get("wms_layer"),
         wms_srs=request.get("wms_srs"),
         wms_chunk_tiles=request.get(
-            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES))
+            "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
+        google_tile_url_template=request.get("google_tile_url_template"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -2991,7 +3454,8 @@ def parse_args() -> argparse.Namespace:
         "--provider_mode", choices=PROVIDER_MODES,
         default=DEFAULT_PROVIDER_MODE,
         help=("cached MapServer tiles (default), pinned ImageServer exports, "
-              "or WMS 1.1.1 GetMap"))
+              "WMS 1.1.1 GetMap, or live Google XYZ with a pinned Maine "
+              "ImageServer fallback"))
     parser.add_argument(
         "--build_cache_version",
         help="reuse the mutable cache belonging to another artifact version; "
@@ -3014,10 +3478,25 @@ def parse_args() -> argparse.Namespace:
         help="ImageServer primary raster OBJECTID to pin; repeat for every "
              "catalog feature covering the region")
     parser.add_argument(
+        "--image_server_raster_function",
+        help=("pinned ImageServer raster function "
+              f"(default: {IMAGE_SERVER_RASTER_FUNCTION}; Google/Maine: "
+              "None)"))
+    parser.add_argument(
+        "--image_server_mosaic_operation",
+        choices=IMAGE_SERVER_MOSAIC_OPERATIONS,
+        help=("pinned ImageServer overlap order "
+              f"(default: {IMAGE_SERVER_MOSAIC_OPERATION}; Google/Maine: "
+              "MT_LAST)"))
+    parser.add_argument(
         "--image_server_chunk_tiles", type=int, default=1,
         help="fixed ImageServer export chunk width/height in source tiles; "
              "1 preserves legacy single-tile exports, 15 uses 3840px "
-             "exports (maximum 15)")
+             "exports and is required by Google/Maine (maximum 15)")
+    parser.add_argument(
+        "--google_tile_url_template",
+        help=("live Google XYZ URL containing {z}, {x}, and {y}; default: "
+              f"{DEFAULT_GOOGLE_TILE_URL_TEMPLATE}"))
     parser.add_argument(
         "--wms_layer",
         help="required named layer for WMS GetMap mode")
@@ -3037,6 +3516,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jpeg_quality", type=int,
                         default=DEFAULT_JPEG_QUALITY)
     parser.add_argument("--workers", type=int, default=32)
+    parser.add_argument(
+        "--source_only", action="store_true",
+        help="download this source shard and stop before manifests or patches")
+    parser.add_argument("--source_shard_count", type=int, default=1)
+    parser.add_argument("--source_shard_index", type=int, default=0)
     parser.add_argument("--patch_workers", type=int, default=8)
     parser.add_argument("--decoded_tile_cache_entries", type=int,
                         default=1024)
@@ -3063,12 +3547,15 @@ def main() -> None:
         source_index_url=source_index_url,
         catalog_where=args.catalog_where,
         lock_raster_ids=args.lock_raster_id,
+        image_server_raster_function=args.image_server_raster_function,
+        image_server_mosaic_operation=args.image_server_mosaic_operation,
         esri_wayback_release=args.esri_wayback_release,
         require_source_index_coverage=(
             not args.allow_incomplete_source_index),
         image_server_chunk_tiles=args.image_server_chunk_tiles,
         wms_layer=args.wms_layer, wms_srs=args.wms_srs,
-        wms_chunk_tiles=args.wms_chunk_tiles)
+        wms_chunk_tiles=args.wms_chunk_tiles,
+        google_tile_url_template=args.google_tile_url_template)
     client_kwargs = {
         "connect_timeout_s": args.connect_timeout_s,
         "read_timeout_s": args.read_timeout_s,
@@ -3082,7 +3569,20 @@ def main() -> None:
     elif args.provider_mode == IMAGE_SERVER_PROVIDER:
         client = ArcGisImageServerClient(
             args.service_url, catalog_where=request["catalog_where"],
-            lock_raster_ids=request["lock_raster_ids"], **client_kwargs)
+            lock_raster_ids=request["lock_raster_ids"],
+            raster_function=request["export_raster_function"],
+            mosaic_operation=request["export_mosaic_operation"],
+            **client_kwargs)
+    elif args.provider_mode == GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER:
+        client = GoogleXyzMaineFallbackClient(
+            args.service_url,
+            google_tile_url_template=request["google_tile_url_template"],
+            catalog_where=request["catalog_where"],
+            lock_raster_ids=request["lock_raster_ids"],
+            raster_function=request["export_raster_function"],
+            mosaic_operation=request["export_mosaic_operation"],
+            google_workers=args.workers,
+            **client_kwargs)
     else:
         client = OgcWmsClient(
             args.service_url, layer=request["wms_layer"],
@@ -3097,12 +3597,18 @@ def main() -> None:
             provider_mode=args.provider_mode,
             catalog_where=request.get("catalog_where"),
             lock_raster_ids=request.get("lock_raster_ids", ()),
+            image_server_raster_function=request.get(
+                "export_raster_function"),
+            image_server_mosaic_operation=request.get(
+                "export_mosaic_operation"),
             esri_wayback_release=request.get("esri_wayback_release"),
             image_server_chunk_tiles=args.image_server_chunk_tiles,
             wms_layer=request.get("wms_layer"),
             wms_srs=request.get("wms_srs"),
             wms_chunk_tiles=request.get(
                 "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
+            google_tile_url_template=request.get(
+                "google_tile_url_template"),
             client=client)
         print(json.dumps(coverage, sort_keys=True, indent=2))
         return
@@ -3117,17 +3623,24 @@ def main() -> None:
         provider_mode=args.provider_mode,
         catalog_where=request.get("catalog_where"),
         lock_raster_ids=request.get("lock_raster_ids", ()),
+        image_server_raster_function=request.get("export_raster_function"),
+        image_server_mosaic_operation=request.get("export_mosaic_operation"),
         esri_wayback_release=request.get("esri_wayback_release"),
         image_server_chunk_tiles=args.image_server_chunk_tiles,
         wms_layer=request.get("wms_layer"),
         wms_srs=request.get("wms_srs"),
         wms_chunk_tiles=request.get(
             "wms_chunk_tiles", WMS_MAX_CHUNK_TILES),
+        google_tile_url_template=request.get("google_tile_url_template"),
         jpeg_quality=args.jpeg_quality, workers=args.workers,
         patch_workers=args.patch_workers,
         decoded_tile_cache_entries=args.decoded_tile_cache_entries,
+        source_only=args.source_only,
+        source_shard_count=args.source_shard_count,
+        source_shard_index=args.source_shard_index,
         client=client)
-    print(reference.path)
+    if reference is not None:
+        print(reference.path)
 
 
 if __name__ == "__main__":
