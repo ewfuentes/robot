@@ -51,9 +51,10 @@ class GridObservationTest(unittest.TestCase):
         expected = torch.stack([
             patch_log_likelihood[[5, 3, 2, 0]].max(),
             patch_log_likelihood[1],
-            torch.tensor(0.0),
+            torch.tensor(-torch.inf),
         ])
         torch.testing.assert_close(actual, expected)
+        self.assertEqual(actual.exp()[2].item(), 0.0)
 
 
 if __name__ == "__main__":

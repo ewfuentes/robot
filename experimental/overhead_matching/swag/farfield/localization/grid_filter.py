@@ -1577,7 +1577,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                     "box": box,
                     "supported_position_cells": int(
                         loci_observation.support_mask.sum()),
-                    "unsupported_loci_cells_observation": "neutral",
+                    "unsupported_loci_cells_observation": "zero_likelihood",
                 },
                 "summary": filtered_summary,
                 "mass_by_keyframe": {

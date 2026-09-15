@@ -415,4 +415,5 @@ class LociGridObservation:
             self.mapping.segment_ids,
         )
         result = cell_log_likelihood.reshape(self.n_north, self.n_east)
-        return torch.where(self.support_mask, result, torch.zeros_like(result))
+        # Uncovered cells must not outrank actual matches with a unit likelihood.
+        return result.masked_fill(~self.support_mask, -torch.inf)
