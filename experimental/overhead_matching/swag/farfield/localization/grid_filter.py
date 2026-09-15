@@ -16,6 +16,7 @@ host checkpoint every ``--checkpoint_keyframes``.
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import math
 import time
@@ -214,7 +215,7 @@ class LikelihoodCache:
         self.skipped = 0
         self.evictions = 0
 
-    def get(self, key, compute):
+    def get(self, key, compute, *, admit=True):
         cached = self.store.get(key)
         if cached is not None:
             self.hits += 1
@@ -223,7 +224,7 @@ class LikelihoodCache:
         value = compute()
         self.misses += 1
         size = value.numel() * value.element_size()
-        if self.budget > 0 and size <= self.budget:
+        if admit and self.budget > 0 and size <= self.budget:
             while self.bytes + size > self.budget:
                 _, evicted = self.store.popitem(last=False)
                 self.bytes -= evicted.numel() * evicted.element_size()
@@ -878,7 +879,18 @@ def _top_modes(message, grid, limit, position_nms_m, heading_nms_deg):
         pool = min(flat.numel(), 4 * pool)
 
 
-def main():
+def single_frame_cache_key(release, keyframe, table, context):
+    """Only factors with no relative motion can survive episode reindexing."""
+    if len(release.measurements) != 1:
+        return None
+    measurement = release.measurements[0]
+    if measurement.anchor_keyframe_idx != keyframe:
+        return None
+    return (context, msgspec.json.encode(table), msgspec.json.encode(
+        msgspec.structs.replace(measurement, anchor_keyframe_idx=0)))
+
+
+def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_dir", required=True)
     parser.add_argument(
@@ -974,7 +986,7 @@ def main():
     parser.add_argument("--top_mode_heading_nms_deg", type=float, default=10.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     hybrid_paths = (args.detection_input_dir, args.detection_release_schedule,
                     args.detection_tables_override, args.detection_audit_plan)
     if any(p is not None for p in hybrid_paths):
@@ -998,7 +1010,7 @@ def main():
             "before its track has closed, so a fixed-lag estimate would use "
             "tracks not yet released at k+lag and is not an online result")
 
-    data = export_ingest.load(Path(args.input_dir))
+    data = load_input(Path(args.input_dir))
     if len(data.truth) != data.n_keyframes:
         raise ValueError("grid localization requires truth at every keyframe")
     parent = data
@@ -1075,7 +1087,7 @@ def main():
 
     provisional_releases = removals = hybrid_metadata = None
     if args.detection_input_dir is not None:
-        provisional = export_ingest.load(args.detection_input_dir)
+        provisional = load_input(args.detection_input_dir)
         raw_releases = release_schedule_lib.load_sidecar(args.detection_release_schedule, provisional)
         replacement_plan = json.loads(args.detection_audit_plan.read_text())
         start = episode["parent_keyframe_start"] if episode else 0
@@ -1356,8 +1368,33 @@ def main():
         release_counts[release.release_keyframe_idx] = (
             release_counts.get(release.release_keyframe_idx, 0) + 1)
 
+    raw_ids = ({r.tracklet_id for r in provisional_releases}
+               if provisional_releases is not None else {r.tracklet_id for r in releases})
+    raw_context = None
+    if raw_cache is not None:
+        # Bind actual numerical inputs, not filenames: overrides and catalog
+        # changes must miss even when a track identity is unchanged.
+        catalog_digest = hashlib.sha256(msgspec.json.encode([
+            catalog.landmark_ids, catalog.east_m.tolist(), catalog.north_m.tolist(),
+            catalog.position_sigma_m.tolist(), catalog.log_prior.tolist(),
+        ])).digest()
+        raw_context = (catalog_digest, tuple(vars(grid).items()), tuple(
+            (name, getattr(args, name)) for name in (
+                "n_heading", "pi0", "matcher_recall", "tail", "kappa_scale",
+                "range_cap", "quantization_comp", "range_softness", "range_floor",
+                "joint_temper", "joint_cap", "joint_chunk", "joint_backend", "device")))
+
     def joint_release_likelihood(release, keyframe, grid_belief=None):
         grid_belief = belief if grid_belief is None else grid_belief
+        if raw_cache is not None and grid_belief is belief and release.tracklet_id in raw_ids:
+            key = single_frame_cache_key(
+                release, keyframe, data.tables[release.tracklet_id], raw_context)
+            if key is not None:
+                return raw_cache.get(
+                    key, lambda: _joint_release_likelihood(release, keyframe, grid_belief),
+                    # A consumer's uncached prefix must not evict the producer's
+                    # cached tail when the trajectory exceeds the RAM budget.
+                    admit=provisional_releases is None)
         return likelihood_cache.get(
             ("joint", release.tracklet_id, keyframe),
             lambda: _joint_release_likelihood(

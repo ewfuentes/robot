@@ -169,3 +169,76 @@ the full score into the subtrack mean or substitute a final/fixed-lag smoothed
 score. Keep full-trajectory and subtrack aggregate tables separate; average
 subtracks within their parent first. Overlapping windows and seeds are not
 independent datasets. Keep recording-level grouping when estimating uncertainty.
+
+## Batched causal evaluation
+
+Use `localization:run_grid_batch --jobs configs.json --cache_gib 8` for one
+process per GPU. `configs.json` is a JSON list of the complete `grid_filter`
+argument dictionaries, each with its own `out` path. Include both methods
+for the full recording and all five windows. Existing/repeated output paths
+are rejected; the runner does not silently resume or overwrite a study.
+Inputs must remain immutable during the batch. Preserve the jobs file with
+the results; the ordinary per-job JSON still records the resolved config,
+episode, odometry realization, causal summary, and all mass series.
+
+The runner groups by parent raw input and device, runs full raw then full
+hybrid, then windows from latest start to earliest, raw then hybrid for each.
+It reuses loaded inputs (copied before mutation) and the existing bounded
+host-memory likelihood cache. Hybrid misses do not evict the raw producer's
+cached tail, so even a full trajectory larger than the cache can get hits.
+Only same-frame single-measurement factors are shared, with keys bound to
+the actual catalog, overridden table, measurement, grid and likelihood
+settings. Multi-frame audited factors depend on each window's odometry and
+are recomputed. Beliefs, motion and replay state are never shared.
+
+`top_modes` defaults to zero in the batch driver (explicit overrides work).
+When converting existing resolved configs, remove their old `top_modes: 400`
+entry or set it to zero explicitly.
+This skips final-posterior mode extraction, not any causal 500/100 scoring.
+Smoothing is rejected. The per-run likelihood cache is disabled because
+hybrid replay already retains its factors. The shared cache has a hard
+tensor-byte budget, defaults to 8 GiB, and is dropped between parents;
+input caching holds at most two exports. Closure cycles are collected after
+each job so completed replay state cannot accumulate across windows.
+
+### Local efficiency checks and Portland memory
+
+On aspen (RTX 5090), a three-repeat Charles River prototype benchmark
+(raw window 1, hybrid window 1, hybrid window 2) measured median block times
+of 50.24 s for separate processes, 41.22 s for a persistent process/input
+cache, and 32.63 s with an 8 GiB shared raw cache. These include process
+startup. A single-copy replay prototype showed no useful gain and was not
+included. Final-mode extraction itself took only 0.051 s in an 11.64 s pilot;
+skipping it primarily removes an unused diagnostic. All causal mass series
+were exactly equal. These are local timings, not projected Portland speedups.
+
+A bounded production-code check ran Charles River full raw/hybrid followed
+by window 5 raw/hybrid. Cache-off/on causal summaries, every mass-series
+value, grid, episode, odometry and audit metadata matched exactly; full
+hybrid also matched the earlier base-code result. The 8 GiB cache produced
+950 hits in full hybrid and 737 hits in each window-5 job (2,424 total).
+This single sequential pilot took 102.75 s without caching and 68.47 s with
+caching, excluding interpreter imports; the cached pass ran second with
+warm compilation, so this is not an isolated multi-repeat speedup estimate.
+Process peak RSS reached 17.17 GiB with caching, versus 10.90 GiB after the
+uncached pass. This check retained the old explicit 400-mode setting in
+both arms and did not restart any study workers.
+
+Portland full-run replay tensor estimates from the frozen source-member
+maps and release schedules (FP32, checkpoint interval 8):
+
+| Leg | Peak live factors | All checkpoints | Replay + 8 GiB cache |
+| --- | ---: | ---: | ---: |
+| Portland 1 | 962 | 62 | 60.47 GiB (64.93 GB) |
+| Portland 2 | 1,129 | 64 | 69.01 GiB (74.10 GB) |
+| Portland 3 | 817 | 60 | 53.02 GiB (56.93 GB) |
+
+Count raw insertions and accepted audits in replay order, removing claimed
+raw factors once; take the peak live count, conservatively add *all*
+checkpoints, and multiply by `4 * n_heading * n_north * n_east` bytes.
+Add the shared cache budget. Five-window estimates including that cache
+range from 24.48 to 37.51 GiB. These are tensor estimates, **not measured peak
+RSS**: input objects, transient tensors, CUDA/process overhead and allocator
+retention need additional headroom. Use one worker per 128 GB palm/pika host
+for Portland. There is no evidence here requiring >100 GB or disk spilling;
+do not add spill machinery without an actual memory problem.
