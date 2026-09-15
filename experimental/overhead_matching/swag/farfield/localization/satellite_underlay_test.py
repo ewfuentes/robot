@@ -1,3 +1,4 @@
+import io
 import math
 import unittest
 from types import SimpleNamespace
@@ -78,6 +79,30 @@ class FitZoomTest(unittest.TestCase):
         plan = su.fit_zoom("f", *self.BOX, 18, budget)
         harder = su.layer_plan("f", *self.BOX, plan["zoom"] + 1)
         self.assertGreater(harder["n_tiles"], budget)
+
+
+class FetchMosaicTest(unittest.TestCase):
+
+    def test_accepts_an_alternate_tile_url(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (256, 256), "red").save(buffer, format="PNG")
+
+        class Session:
+            def __init__(self):
+                self.urls = []
+
+            def get(self, url, timeout):
+                self.urls.append(url)
+                return SimpleNamespace(status_code=200, content=buffer.getvalue())
+
+        session = Session()
+        image, failures = su.fetch_mosaic(
+            1, 2, 1, 2, 3, None, session, workers=1,
+            url_template="https://tiles/{z}/{x}/{y}.png")
+
+        self.assertEqual(session.urls, ["https://tiles/3/1/2.png"])
+        self.assertEqual(image.size, (256, 256))
+        self.assertEqual(failures, 0)
 
 
 class EnuBoundsTest(unittest.TestCase):

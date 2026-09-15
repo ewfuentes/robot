@@ -145,7 +145,8 @@ def find_release(date: str, session) -> tuple[int, str]:
     return best[0], best[1]
 
 
-def fetch_mosaic(x0, y0, x1, y1, zoom, release, session, workers=8):
+def fetch_mosaic(x0, y0, x1, y1, zoom, release, session, workers=8,
+                 url_template=WAYBACK_TILE_URL):
     """Stitched RGB image for a tile rectangle, plus how many tiles failed."""
     from PIL import Image
     width, height = (x1 - x0 + 1) * TILE_PX, (y1 - y0 + 1) * TILE_PX
@@ -153,7 +154,7 @@ def fetch_mosaic(x0, y0, x1, y1, zoom, release, session, workers=8):
     failures = 0
 
     def one(tx, ty):
-        url = WAYBACK_TILE_URL.format(release=release, z=zoom, y=ty, x=tx)
+        url = url_template.format(release=release, z=zoom, y=ty, x=tx)
         for attempt in range(3):
             try:
                 response = session.get(url, timeout=30)

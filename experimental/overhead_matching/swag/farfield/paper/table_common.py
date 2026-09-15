@@ -7,12 +7,31 @@ Change a pin here first, then regenerate; never the other way round.
 """
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 
 DEFAULT_FARFIELD_ROOT = Path("/data/farfield_matching")
+
+# Frozen seed-0 studies: five distance windows plus a separate full trajectory.
+PAPER_EVALUATIONS_ROOT = DEFAULT_FARFIELD_ROOT / "runs/paper_evaluations_20260915"
+PAPER_TWOARM_STUDY = PAPER_EVALUATIONS_ROOT / "farfield_twoarms_20260914"
+PAPER_LOCI_STUDY = PAPER_EVALUATIONS_ROOT / "farfield_loci_20260915"
+PAPER_NO_RANGE_STUDY = PAPER_EVALUATIONS_ROOT / "farfield_norange_20260915"
+PAPER_CROSSLOCATE_STUDY = PAPER_EVALUATIONS_ROOT / "farfield_crosslocate_20260915"
+PAPER_CROSSLOCATE_FLEVOLAND_STUDY = PAPER_EVALUATIONS_ROOT / "farfield_crosslocate_flevoland_20260915"
+
+# Current causal evaluations. The older DatasetGroup.run_spec pins below are
+# retained for historical artifact/prior audits, not the new results table.
+PAPER_SEEDS = (0, 1, 2, 3, 4)
+PAPER_SWEEPS = {
+    "ours": ("260914_hybrid_notracking_5seeds", "hybrid"),
+    "no_tracking": ("260914_hybrid_notracking_5seeds", "no_tracking"),
+    "no_range": ("260914_hybrid_no_range_bins", "hybrid_no_range"),
+}
+PAPER_LOCI_VERSION = "paper_full_multisource_landmark_only_unknown_heading_20260914_v1"
 
 # Region policy for a dataset group. The uniform prior, the catalog trim, and
 # every baseline must use the one box this names.
@@ -58,6 +77,23 @@ class DatasetGroup:
                 f"{self.key}: unknown region policy {self.region_policy!r}")
 
 
+def bbox_area_km2(wsen) -> float:
+    west, south, east, north = wsen
+    mid = math.radians((south + north) / 2.0)
+    return (east - west) * 111.32 * math.cos(mid) * (north - south) * 111.32
+
+
+def region_area_km2(config: dict, region_policy: str) -> float | None:
+    """Return the catalog region selected by a dataset group's policy."""
+    plan = config.get("clip_plan")
+    if region_policy == "area625" and isinstance(plan, dict):
+        return float((plan.get("policy") or {}).get("resolved_area_km2", 0)) or None
+    if region_policy == "fetch_bbox":
+        bbox = config.get("region_bbox_wsen") or config.get("bbox_wsen")
+        return bbox_area_km2(bbox) if bbox else None
+    return None
+
+
 # Editorial fields are intentionally kept next to the paper roster. The
 # numerical fields in both tables are loaded from the data root.
 DATASET_GROUPS = (
@@ -90,7 +126,7 @@ DATASET_GROUPS = (
     DatasetGroup(
         key="flevoland",
         display_name="Flevoland",
-        conditions="Rural polder",
+        conditions="Rural",
         map_source="OSM",
         catalog_scope="flevoland_polder_20250111",
         region_policy="area625",
@@ -102,7 +138,7 @@ DATASET_GROUPS = (
         key="charles",
         display_name="Charles River",
         conditions="Urban river",
-        map_source="OSM + ENC",
+        map_source="OSM / ENC",
         catalog_scope="charles_river_20260727",
         region_policy="area625",
         catalog_version="trim625_20260910_v1",
@@ -113,7 +149,7 @@ DATASET_GROUPS = (
         key="boston_harbor",
         display_name="Boston Harbor",
         conditions="Coastal harbor",
-        map_source="OSM + ENC",
+        map_source="OSM / ENC",
         catalog_scope="boston_harbor_20260712",
         region_policy="area625",
         catalog_version="trim625_20260911_v1",
@@ -127,7 +163,7 @@ DATASET_GROUPS = (
     DatasetGroup(
         key="franconia",
         display_name="Franconia",
-        conditions="Mountain road",
+        conditions="Mountain ridge",
         map_source="OSM",
         catalog_scope="franconia_20260829",
         region_policy="area625",
@@ -140,7 +176,7 @@ DATASET_GROUPS = (
         key="portland",
         display_name="Portland",
         conditions="Light aircraft",
-        map_source="OSM + ENC + FAA",
+        map_source="OSM / ENC / FAA",
         catalog_scope="portland_flight_20260906",
         region_policy="fetch_bbox",
         catalog_version="trim_osmfaa_20260910_v1",
@@ -153,11 +189,10 @@ DATASET_GROUPS = (
     ),
 )
 
-# Groups the tables can report today: every seed of every method exists.
+# Groups the results table can report today: every seed of every method exists.
 TABLE_GROUPS = tuple(group for group in DATASET_GROUPS if group.run_spec)
 
-# Complete four-seed runs used for the paper's full-method column. Keep the
-# dataset table and results table on the same pinned evaluation artifacts.
+# Complete four-seed runs used for the results table's full-method column.
 FULL_METHOD_RUN_SPECS = tuple(group.run_spec for group in TABLE_GROUPS)
 
 

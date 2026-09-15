@@ -1,6 +1,26 @@
+load("@pip//:requirements.bzl", "requirement")
+
 py_library(
     name = "table_common",
     srcs = ["table_common.py"],
+)
+
+py_binary(
+    name = "overhead_figures",
+    srcs = ["overhead_figures.py"],
+    deps = [
+        requirement("matplotlib"),
+        requirement("requests"),
+        ":dataset_table",
+        ":table_common",
+        "//experimental/overhead_matching/swag/farfield/localization:satellite_underlay_lib",
+    ],
+)
+
+py_test(
+    name = "overhead_figures_test",
+    srcs = ["overhead_figures_test.py"],
+    deps = [":overhead_figures"],
 )
 
 py_binary(
@@ -21,7 +41,10 @@ py_binary(
 py_test(
     name = "check_roster_test",
     srcs = ["check_roster_test.py"],
-    deps = [":check_roster", ":table_common"],
+    deps = [
+        ":check_roster",
+        ":table_common",
+    ],
 )
 
 py_binary(
