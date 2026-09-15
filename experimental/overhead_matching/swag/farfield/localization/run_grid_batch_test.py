@@ -74,6 +74,9 @@ class BatchTest(unittest.TestCase):
             argv = main.call_args.args[0]
             self.assertIn("--observation_source", argv)
             self.assertNotIn("--track_joint", argv)
+            with patch.object(run_grid_batch.grid_filter, "main") as main:
+                run_grid_batch.run([{**config, "observation_source": "crosslocate"}], cache_gib=0)
+            self.assertIn("crosslocate", main.call_args.args[0])
             with self.assertRaises(ValueError):
                 run_grid_batch.run([{key: value for key, value in config.items()
                                      if key != "cell_m"}], cache_gib=0)

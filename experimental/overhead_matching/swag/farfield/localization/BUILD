@@ -984,6 +984,7 @@ py_library(
         ":grid_joint_fast",
         ":odometry_profiles",
         ":release_schedule",
+        ":retrieval_grid",
         ":structs",
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield:artifact",
@@ -1005,11 +1006,44 @@ py_binary(
         ":grid_joint_fast",
         ":odometry_profiles",
         ":release_schedule",
+        ":retrieval_grid",
         ":structs",
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/farfield:artifact",
         "//experimental/overhead_matching/swag/farfield/loci:grid_observation",
         "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ],
+)
+
+py_library(
+    name = "retrieval_grid",
+    srcs = ["retrieval_grid.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("pyproj"),
+        requirement("scipy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+    ],
+)
+
+py_test(
+    name = "retrieval_grid_test",
+    srcs = ["retrieval_grid_test.py"],
+    deps = [
+        ":retrieval_grid",
+        ":grid_filter_lib",
+        ":distance_episodes",
+        ":export_ingest",
+        ":structs",
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:geometry",
+        "//experimental/overhead_matching/swag/farfield:artifact",
     ],
 )
 

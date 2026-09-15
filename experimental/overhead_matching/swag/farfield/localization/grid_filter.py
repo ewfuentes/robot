@@ -4,9 +4,9 @@ This experiment applies the current independent-epoch bearing mixture on an
 exact (heading, north, east) grid and scores the current posterior at each
 keyframe.
 
-Bearing observations retain the causal delayed-track behavior. LOCI instead
-supplies one immediate landmark-matrix log likelihood per panorama and never
-applies a track release or compatibility table.
+Bearing observations retain the causal delayed-track behavior. LOCI and
+CrossLocate supply immediate panorama log likelihoods (position-only and
+position/heading respectively), without track releases or compatibility tables.
 
 The full belief history is too large on Pohang, so causal replay keeps one
 host checkpoint every ``--checkpoint_keyframes``.
@@ -35,6 +35,7 @@ from experimental.overhead_matching.swag.farfield.localization import (
     filter as filter_lib,
     odometry_profiles,
     release_schedule as release_schedule_lib,
+    retrieval_grid,
     structs,
 )
 from experimental.overhead_matching.swag.farfield.loci import grid_observation
@@ -954,7 +955,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_dir", required=True)
     parser.add_argument(
-        "--observation_source", choices=("bearing", "loci"),
+        "--observation_source", choices=("bearing", "loci", "crosslocate"),
         default="bearing")
     parser.add_argument(
         "--odometry_profile", choices=odometry_profiles.PROFILE_CHOICES,
@@ -982,6 +983,12 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         "--loci_config", help="landmark aggregation config (image fields ignored)")
     parser.add_argument(
         "--loci_path", help="published full-trajectory paths.json")
+    parser.add_argument("--retrieval_dir", help="schema-0.7 retrieval artifact directory")
+    parser.add_argument("--retrieval_frames_csv", help="canonical parent frames_gps.csv")
+    parser.add_argument("--retrieval_cache_dir", help="local decompressed-score cache")
+    parser.add_argument("--retrieval_render_crs", help="producer's projected metric CRS")
+    parser.add_argument("--retrieval_temperature", type=float, default=0.1)
+    parser.add_argument("--retrieval_outlier_epsilon", type=float, default=0.05)
     parser.add_argument("--cell_m", type=float, default=200.0)
     parser.add_argument("--n_heading", type=int, default=18)
     parser.add_argument("--yaw_sigma_scale", type=float, default=1.0)
@@ -1054,6 +1061,15 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    retrieval_paths = (args.retrieval_dir, args.retrieval_frames_csv,
+                       args.retrieval_cache_dir, args.retrieval_render_crs)
+    if args.observation_source == "crosslocate":
+        if not all(retrieval_paths):
+            parser.error("CrossLocate requires retrieval directory, frames CSV, local cache, and render CRS")
+        if args.loci_config or args.loci_path or args.margin_m != 0:
+            parser.error("CrossLocate requires --margin_m 0 and no LOCI arguments")
+    elif any(retrieval_paths):
+        parser.error("retrieval arguments require CrossLocate observations")
     if args.observation_source == "bearing":
         if args.availability != "natural" or not args.release_schedule:
             parser.error(
@@ -1063,18 +1079,18 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
             parser.error("--loci_config/--loci_path require LOCI observations")
     else:
         if args.availability != "immediate":
-            parser.error("LOCI observations require --availability immediate")
-        if not args.loci_config or not args.loci_path:
+            parser.error("panorama observations require --availability immediate")
+        if args.observation_source == "loci" and (not args.loci_config or not args.loci_path):
             parser.error("LOCI observations require --loci_config and --loci_path")
         if args.release_schedule:
-            parser.error("LOCI observations do not use --release_schedule")
+            parser.error("panorama observations do not use --release_schedule")
         if (args.track_joint or args.tables_override
                 or any(p is not None for p in (
                     args.detection_input_dir, args.detection_release_schedule,
                     args.detection_tables_override, args.detection_audit_plan))):
-            parser.error("LOCI observations do not use tracks, tables, or audit replay")
+            parser.error("panorama observations do not use tracks, tables, or audit replay")
         if args.smoother != "none" or args.smooth_lag or args.smooth_lags.strip():
-            parser.error("LOCI integration currently supports causal filtering only")
+            parser.error("panorama integration currently supports causal filtering only")
     hybrid_paths = (args.detection_input_dir, args.detection_release_schedule,
                     args.detection_tables_override, args.detection_audit_plan)
     if any(p is not None for p in hybrid_paths):
@@ -1127,7 +1143,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         parent_panorama_ids, loci_path_ref = _load_loci_path(
             Path(args.loci_path), data.artifact_ref.dataset,
             loci_artifacts.panorama_ids, data.n_keyframes)
-    else:
+    elif args.observation_source == "bearing":
         releases = release_schedule_lib.load_sidecar(
             Path(args.release_schedule), data)
     episode = None
@@ -1136,7 +1152,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         parser.error("--episode_plan and --episode_index must be supplied together")
     if args.episode_plan is not None:
         plan = release_schedule_lib._load_sidecar_document(args.episode_plan)
-        if args.observation_source == "loci":
+        if args.observation_source != "bearing":
             data, episode = distance_episodes.select_trajectory(
                 data, plan, args.episode_index)
         else:
@@ -1150,7 +1166,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                 Path(args.release_schedule))
         if episode["count"] > 1:
             keyframe_range = (episode["parent_keyframe_start"], episode["parent_keyframe_end_inclusive"])
-    # Both observation sources derive from the parent with the same episode
+    # All observation sources derive from the parent with the same episode
     # range, so a shared profile/seed produces paired odometry noise.
     data.odometry, odometry_profile = odometry_profiles.derive(
         Path(args.input_dir), parent, args.odometry_profile,
@@ -1185,6 +1201,8 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
 
     grid = Grid(*box, args.cell_m)
     belief = GridBelief(grid, args.n_heading, args.device)
+    panorama_observation = None
+    observation_provenance = None
     if loci_artifacts is not None:
         loci_observation = loci_artifacts.bind(
             grid, data.frame,
@@ -1193,6 +1211,25 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         support = loci_observation.support_mask
         if not bool(support.any()):
             raise ValueError("LOCI lattice supports no filter cells")
+        belief.belief = belief.belief.double()
+        panorama_observation = loci_observation
+        observation_provenance = loci_artifacts.provenance()
+        observation_provenance["path"] = loci_path_ref.to_dict()
+        observation_provenance["aggregation"] = {
+            "kind": type(loci_config).__name__,
+            "streams": ["landmark"],
+            "landmark_sigma": loci_config.landmark_sigma,
+            "landmark_use_raw_residual": False,
+        }
+    elif args.observation_source == "crosslocate":
+        panorama_observation = retrieval_grid.RetrievalGridObservation(
+            args.retrieval_dir, args.retrieval_frames_csv, args.retrieval_cache_dir,
+            parent, grid, args.n_heading, render_crs=args.retrieval_render_crs,
+            temperature=args.retrieval_temperature,
+            outlier_epsilon=args.retrieval_outlier_epsilon, device=args.device)
+        start = episode["parent_keyframe_start"] if episode else 0
+        panorama_ids = panorama_observation.panorama_ids[start:start + n_keyframes]
+        observation_provenance = panorama_observation.provenance()
         belief.belief = belief.belief.double()
     initial_belief = belief.belief.clone()
     n_states = args.n_heading * grid.n_north * grid.n_east
@@ -1316,11 +1353,13 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
             ("epoch", measurement.tracklet_id,
              measurement.anchor_keyframe_idx), compute)
 
-    def loci_log_likelihood(keyframe):
+    def panorama_log_likelihood(keyframe):
         pano_id = panorama_ids[keyframe]
+        def compute():
+            value = panorama_observation.log_likelihood(pano_id)
+            return value.unsqueeze(0) if value.ndim == 2 else value
         return likelihood_cache.get(
-            ("loci", pano_id),
-            lambda: loci_observation.log_likelihood(pano_id).unsqueeze(0))
+            (args.observation_source, pano_id), compute)
 
     masks = truth_masks(grid, data.truth, RADII_M)
     truth_by_kf = {pose.keyframe_idx: pose for pose in data.truth}
@@ -1330,9 +1369,9 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
 
     def apply_keyframe_likelihood(message, keyframe, grid_belief):
         """Apply all factors at a keyframe, shared by every smoother pass."""
-        if args.observation_source == "loci":
+        if args.observation_source != "bearing":
             return _apply_log_likelihood_factor(
-                message, loci_log_likelihood(keyframe))
+                message, panorama_log_likelihood(keyframe))
         if args.track_joint:
             releases_at = {}
             for release in smoothing_releases or ():
@@ -1515,7 +1554,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     online_map_states = []
     motion_plans = [None] * n_keyframes
 
-    if args.observation_source == "loci":
+    if args.observation_source != "bearing":
         started = time.time()
         for keyframe in range(n_keyframes):
             if keyframe > 0:
@@ -1533,7 +1572,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
             filtered_map_error.append(map_error)
             if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
                 print(
-                    f"LOCI kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
+                    f"{args.observation_source} kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
                     f"mass100 {mass[100.0]:.4f} "
                     f"map_err {map_error:8.1f} m "
                     f"({time.time() - started:.0f}s)")
@@ -1544,24 +1583,16 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
             belief.belief, grid, args.top_modes,
             args.top_mode_position_nms_m,
             args.top_mode_heading_nms_deg)
-        print("LOCI:", {key: round(value, 4)
+        print(args.observation_source + ":", {key: round(value, 4)
                         for key, value in filtered_summary.items()},
               f"runtime {forward_seconds:.0f}s")
         if args.out:
-            loci_provenance = loci_artifacts.provenance()
-            loci_provenance["path"] = loci_path_ref.to_dict()
-            loci_provenance["aggregation"] = {
-                "kind": type(loci_config).__name__,
-                "streams": ["landmark"],
-                "landmark_sigma": loci_config.landmark_sigma,
-                "landmark_use_raw_residual": False,
-            }
             payload = {
                 "schema": "farfield_causal_grid/v1",
                 "localization_inputs": data.artifact_ref.to_dict(),
                 "config": vars(args),
                 "odometry_profile": odometry_profile,
-                "loci": loci_provenance,
+                args.observation_source: observation_provenance,
                 "episode": episode,
                 "availability": {
                     "policy": "immediate_per_panorama",
@@ -1576,8 +1607,8 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                     "cell_m": grid.cell_m,
                     "box": box,
                     "supported_position_cells": int(
-                        loci_observation.support_mask.sum()),
-                    "unsupported_loci_cells_observation": "neutral",
+                        panorama_observation.support_mask.sum()),
+                    f"unsupported_{args.observation_source}_cells_observation": "neutral",
                 },
                 "summary": filtered_summary,
                 "mass_by_keyframe": {

@@ -45,8 +45,8 @@ def run(configs, cache_gib=8):
     jobs = []
     for config in configs:
         config = dict(config)
-        loci = config.get("observation_source") == "loci"
-        if loci:
+        panorama = config.get("observation_source") in ("loci", "crosslocate")
+        if panorama:
             mismatched = {
                 key: (config.get(key), expected)
                 for key, expected in LOCI_COMPARISON_SETTINGS.items()
@@ -55,14 +55,14 @@ def run(configs, cache_gib=8):
             if (mismatched or config.get("episode_plan") is None
                     or config.get("episode_index") is None):
                 raise ValueError(
-                    "LOCI comparison jobs require explicit paired episode, "
+                    "panorama comparison jobs require explicit paired episode, "
                     f"odometry, grid, and motion settings: {mismatched}")
-        if ((not loci and not config.get("track_joint"))
+        if ((not panorama and not config.get("track_joint"))
                 or config.get("smoother", "none") != "none"
                 or config.get("smooth_lag", 0)
                 or config.get("smooth_lags", "").strip()):
             raise ValueError(
-                "batch evaluation requires LOCI or joint mode and causal-only scoring")
+                "batch evaluation requires panorama or joint mode and causal-only scoring")
         if not config.get("out"):
             raise ValueError("every job needs a distinct output path")
         output = Path(config["out"]).resolve()
