@@ -1150,6 +1150,8 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                 Path(args.release_schedule))
         if episode["count"] > 1:
             keyframe_range = (episode["parent_keyframe_start"], episode["parent_keyframe_end_inclusive"])
+    # Both observation sources derive from the parent with the same episode
+    # range, so a shared profile/seed produces paired odometry noise.
     data.odometry, odometry_profile = odometry_profiles.derive(
         Path(args.input_dir), parent, args.odometry_profile,
         noise_seed=args.odometry_seed, keyframe_range=keyframe_range)
@@ -1171,13 +1173,10 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     catalog = data.catalog
     sigma_pos = float(catalog.position_sigma_m[0])
 
-    if loci_artifacts is not None:
-        declared_box = loci_artifacts.enu_box(data.frame)
-    else:
-        region = export_ingest.prior_box(data, args.margin_m)
-        declared_box = (
-            region.east_min_m, region.east_max_m,
-            region.north_min_m, region.north_max_m)
+    region = export_ingest.prior_box(data, args.margin_m)
+    declared_box = (
+        region.east_min_m, region.east_max_m,
+        region.north_min_m, region.north_max_m)
     box = declared_box
     if args.pi0 is None:
         args.pi0 = 0.2
@@ -1194,9 +1193,6 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         support = loci_observation.support_mask
         if not bool(support.any()):
             raise ValueError("LOCI lattice supports no filter cells")
-        belief.belief.zero_()
-        belief.belief[:, support] = (
-            1.0 / (args.n_heading * int(support.sum())))
         belief.belief = belief.belief.double()
     initial_belief = belief.belief.clone()
     n_states = args.n_heading * grid.n_north * grid.n_east
@@ -1581,6 +1577,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                     "box": box,
                     "supported_position_cells": int(
                         loci_observation.support_mask.sum()),
+                    "unsupported_loci_cells_observation": "neutral",
                 },
                 "summary": filtered_summary,
                 "mass_by_keyframe": {

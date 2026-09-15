@@ -345,27 +345,6 @@ class LociArtifacts:
             y_matrix_rank=y_rank,
         )
 
-    @property
-    def footprint_bbox_wsen(self) -> tuple[float, float, float, float]:
-        bbox = self.grid.get("footprint_bbox_wsen")
-        if (not isinstance(bbox, list) or len(bbox) != 4
-                or not all(math.isfinite(float(value)) for value in bbox)):
-            raise ValueError("LOCI grid has no finite footprint bbox")
-        west, south, east, north = map(float, bbox)
-        if not (-180.0 <= west < east <= 180.0
-                and -90.0 <= south < north <= 90.0):
-            raise ValueError("LOCI grid footprint bbox is not ordered WGS84")
-        return west, south, east, north
-
-    def enu_box(self, frame) -> tuple[float, float, float, float]:
-        west, south, east, north = self.footprint_bbox_wsen
-        east_m, north_m = frame.enu_from_latlon(
-            np.asarray([south, north]), np.asarray([west, east]))
-        return (
-            float(east_m[0]), float(east_m[1]),
-            float(north_m[0]), float(north_m[1]),
-        )
-
     def provenance(self) -> dict:
         return {
             "landmark_matrix": self.landmark_matrix_ref.to_dict(),
@@ -435,4 +414,5 @@ class LociGridObservation:
             self.mapping.cell_offsets,
             self.mapping.segment_ids,
         )
-        return cell_log_likelihood.reshape(self.n_north, self.n_east)
+        result = cell_log_likelihood.reshape(self.n_north, self.n_east)
+        return torch.where(self.support_mask, result, torch.zeros_like(result))

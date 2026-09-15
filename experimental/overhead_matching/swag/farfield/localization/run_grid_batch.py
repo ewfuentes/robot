@@ -11,6 +11,20 @@ from pathlib import Path
 from experimental.overhead_matching.swag.farfield.localization import grid_filter
 
 
+LOCI_COMPARISON_SETTINGS = {
+    "availability": "immediate",
+    "odometry_profile": "epson_mg570_calibrated_planar_v1",
+    "odometry_seed": 0,
+    "cell_m": 100.0,
+    "n_heading": 36,
+    "yaw_sigma_scale": 1.0,
+    "heading_rw_deg": 1.0,
+    "diffusion_m": 5.0,
+    "margin_m": 0.0,
+    "top_modes": 0,
+}
+
+
 def job_order(config):
     parent = str(Path(config.get("detection_input_dir") or config["input_dir"]).resolve())
     full, start = True, 0
@@ -32,6 +46,17 @@ def run(configs, cache_gib=8):
     for config in configs:
         config = dict(config)
         loci = config.get("observation_source") == "loci"
+        if loci:
+            mismatched = {
+                key: (config.get(key), expected)
+                for key, expected in LOCI_COMPARISON_SETTINGS.items()
+                if key not in config or config[key] != expected
+            }
+            if (mismatched or config.get("episode_plan") is None
+                    or config.get("episode_index") is None):
+                raise ValueError(
+                    "LOCI comparison jobs require explicit paired episode, "
+                    f"odometry, grid, and motion settings: {mismatched}")
         if ((not loci and not config.get("track_joint"))
                 or config.get("smoother", "none") != "none"
                 or config.get("smooth_lag", 0)
