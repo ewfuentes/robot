@@ -1,14 +1,12 @@
-"""Exact grid-HMM localization with causal delayed-track replay.
+"""Exact grid-HMM localization with interchangeable observation likelihoods.
 
 This experiment applies the current independent-epoch bearing mixture on an
 exact (heading, north, east) grid and scores the current posterior at each
 keyframe.
 
-The observation input remains ``epoch_fused_compat_v1``. In ``natural``
-availability mode an audited track arrives atomically at its recorded close
-keyframe, its measurements retain their historical anchors, and the current
-prefix is replayed from the last unaffected checkpoint. Previously emitted
-current-state scores are never revised.
+Bearing observations retain the causal delayed-track behavior. LOCI instead
+supplies one immediate landmark-matrix log likelihood per panorama and never
+applies a track release or compatibility table.
 
 The full belief history is too large on Pohang, so causal replay keeps one
 host checkpoint every ``--checkpoint_keyframes``.
@@ -29,6 +27,7 @@ import numpy as np
 import common.torch.load_torch_deps  # noqa: F401  (must precede torch)
 import torch
 
+from experimental.overhead_matching.swag.farfield import artifact
 from experimental.overhead_matching.swag.farfield.localization import (
     detection_audit,
     distance_episodes,
@@ -38,6 +37,8 @@ from experimental.overhead_matching.swag.farfield.localization import (
     release_schedule as release_schedule_lib,
     structs,
 )
+from experimental.overhead_matching.swag.farfield.loci import grid_observation
+from experimental.overhead_matching.swag.filter import adaptive_aggregators
 
 MAX_KAPPA = filter_lib.MAX_KAPPA
 RADII_M = (50.0, 100.0, 250.0, 500.0, 1000.0)
@@ -264,6 +265,15 @@ def _apply_likelihood_factors(message, factors):
     if log_message is None:
         return _normalized(message)
     return _normalized(torch.exp(log_message - log_message.max()))
+
+
+def _apply_log_likelihood_factor(message, log_factor):
+    """Normalize a message times one factor already represented in log space."""
+    log_message = torch.log(message) + log_factor
+    maximum = log_message.max()
+    if not bool(torch.isfinite(maximum)):
+        raise ValueError("log-likelihood leaves no finite grid state")
+    return _normalized(torch.exp(log_message - maximum))
 
 
 class GridBelief:
@@ -890,9 +900,62 @@ def single_frame_cache_key(release, keyframe, table, context):
         msgspec.structs.replace(measurement, anchor_keyframe_idx=0)))
 
 
+def _load_loci_path(path: Path, dataset: str, panorama_ids, n_keyframes: int):
+    """Validate the published full-trajectory panorama order."""
+    path = Path(path)
+    root = path.parent
+    if path.resolve() != (root / "paths.json").resolve():
+        raise ValueError("--loci_path must name its artifact's paths.json")
+    reference = artifact.open_artifact(
+        root, expected_kind="loci_eval_paths", expected_dataset=dataset)
+    manifest = artifact.load_manifest(root)
+    config = manifest.config
+    required = {
+        "schema": "farfield.loci_eval_paths/v1",
+        "protocol": "one_complete_recorded_trajectory_forward_only",
+        "full_trajectory": True,
+        "forward_only": True,
+        "num_forward": 1,
+        "num_backward": 0,
+        "path_count": 1,
+        "panorama_count": n_keyframes,
+    }
+    if (any(config.get(key) != value for key, value in required.items())
+            or manifest.declared_outputs != ("paths.json",)):
+        raise ValueError("invalid full-trajectory LOCI path manifest")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    expected_args = {
+        "target_distance_m": None,
+        "full_trajectory": True,
+        "forward_only": True,
+        "num_paths": 1,
+        "num_forward": 1,
+        "num_backward": 0,
+    }
+    if (not isinstance(document, dict)
+            or set(document) != {"paths", "args", "dataset_hash", "dataset_path"}
+            or document.get("args") != expected_args
+            or document.get("dataset_hash")
+            != config.get("pano_id_mapping_sha256")
+            or document.get("dataset_path") != config.get("dataset_path")):
+        raise ValueError("LOCI paths.json disagrees with its published manifest")
+    paths = document.get("paths") if isinstance(document, dict) else None
+    if (not isinstance(paths, list) or len(paths) != 1
+            or not isinstance(paths[0], list)
+            or not all(isinstance(value, str) for value in paths[0])):
+        raise ValueError("LOCI paths.json must contain exactly one string path")
+    path_ids = tuple(paths[0])
+    if len(path_ids) != n_keyframes or path_ids != tuple(panorama_ids):
+        raise ValueError("LOCI evaluation path differs from matrix panorama identity")
+    return path_ids, reference
+
+
 def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_dir", required=True)
+    parser.add_argument(
+        "--observation_source", choices=("bearing", "loci"),
+        default="bearing")
     parser.add_argument(
         "--odometry_profile", choices=odometry_profiles.PROFILE_CHOICES,
         default="recorded")
@@ -908,13 +971,17 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser.add_argument("--output_end", type=int,
                         help="score only this prefix without changing episode initialization")
     parser.add_argument(
-        "--availability", choices=("natural",), default="natural",
-        help="audited track measurements become visible when the track "
-             "closes (its release keyframe); the only supported mode")
+        "--availability", choices=("natural", "immediate"), default="natural",
+        help="bearing tracks use natural closure; LOCI uses one immediate "
+             "panorama factor per keyframe")
     parser.add_argument(
-        "--release_schedule", required=True,
+        "--release_schedule",
         help="bound natural-closure sidecar "
              "(localization:build_release_schedule)")
+    parser.add_argument(
+        "--loci_config", help="landmark aggregation config (image fields ignored)")
+    parser.add_argument(
+        "--loci_path", help="published full-trajectory paths.json")
     parser.add_argument("--cell_m", type=float, default=200.0)
     parser.add_argument("--n_heading", type=int, default=18)
     parser.add_argument("--yaw_sigma_scale", type=float, default=1.0)
@@ -987,6 +1054,27 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    if args.observation_source == "bearing":
+        if args.availability != "natural" or not args.release_schedule:
+            parser.error(
+                "bearing observations require --availability natural and "
+                "--release_schedule")
+        if args.loci_config or args.loci_path:
+            parser.error("--loci_config/--loci_path require LOCI observations")
+    else:
+        if args.availability != "immediate":
+            parser.error("LOCI observations require --availability immediate")
+        if not args.loci_config or not args.loci_path:
+            parser.error("LOCI observations require --loci_config and --loci_path")
+        if args.release_schedule:
+            parser.error("LOCI observations do not use --release_schedule")
+        if (args.track_joint or args.tables_override
+                or any(p is not None for p in (
+                    args.detection_input_dir, args.detection_release_schedule,
+                    args.detection_tables_override, args.detection_audit_plan))):
+            parser.error("LOCI observations do not use tracks, tables, or audit replay")
+        if args.smoother != "none" or args.smooth_lag or args.smooth_lags.strip():
+            parser.error("LOCI integration currently supports causal filtering only")
     hybrid_paths = (args.detection_input_dir, args.detection_release_schedule,
                     args.detection_tables_override, args.detection_audit_plan)
     if any(p is not None for p in hybrid_paths):
@@ -1014,19 +1102,56 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     if len(data.truth) != data.n_keyframes:
         raise ValueError("grid localization requires truth at every keyframe")
     parent = data
-    releases = release_schedule_lib.load_sidecar(Path(args.release_schedule), data)
+    releases = ()
+    loci_artifacts = loci_observation = loci_path_ref = None
+    parent_panorama_ids = panorama_ids = None
+    loci_config = None
+    if args.observation_source == "loci":
+        loci_config = adaptive_aggregators.load_aggregator_config(
+            Path(args.loci_config))
+        if not isinstance(
+                loci_config,
+                adaptive_aggregators.SafaPlusNormalizedLandmarkAggregatorConfig):
+            raise ValueError(
+                "LOCI grid evaluation requires "
+                "SafaPlusNormalizedLandmarkAggregatorConfig")
+        if (loci_config.allow_legacy_similarity_identity
+                or loci_config.landmark_use_raw_residual):
+            raise ValueError(
+                "LOCI landmark evaluation requires normalized residuals and "
+                "strict matrix identity")
+        loci_artifacts = grid_observation.LociArtifacts.load(
+            loci_config.landmark_similarity_matrix_path)
+        if loci_artifacts.landmark_matrix_ref.dataset != data.artifact_ref.dataset:
+            raise ValueError("LOCI matrix and localization input datasets differ")
+        parent_panorama_ids, loci_path_ref = _load_loci_path(
+            Path(args.loci_path), data.artifact_ref.dataset,
+            loci_artifacts.panorama_ids, data.n_keyframes)
+    else:
+        releases = release_schedule_lib.load_sidecar(
+            Path(args.release_schedule), data)
     episode = None
     keyframe_range = None
     if (args.episode_plan is None) != (args.episode_index is None):
         parser.error("--episode_plan and --episode_index must be supplied together")
     if args.episode_plan is not None:
-        if not args.track_joint or args.smoother != "none" or args.smooth_lag or args.smooth_lags:
-            parser.error("distance episodes require joint mode and all smoothing disabled")
-        data, releases, episode = distance_episodes.select(
-            data, releases, release_schedule_lib._load_sidecar_document(args.episode_plan),
-            args.episode_index, Path(args.release_schedule))
+        plan = release_schedule_lib._load_sidecar_document(args.episode_plan)
+        if args.observation_source == "loci":
+            data, episode = distance_episodes.select_trajectory(
+                data, plan, args.episode_index)
+        else:
+            if (not args.track_joint or args.smoother != "none"
+                    or args.smooth_lag or args.smooth_lags):
+                parser.error(
+                    "bearing distance episodes require joint mode and all "
+                    "smoothing disabled")
+            data, releases, episode = distance_episodes.select(
+                data, releases, plan, args.episode_index,
+                Path(args.release_schedule))
         if episode["count"] > 1:
             keyframe_range = (episode["parent_keyframe_start"], episode["parent_keyframe_end_inclusive"])
+    # Both observation sources derive from the parent with the same episode
+    # range, so a shared profile/seed produces paired odometry noise.
     data.odometry, odometry_profile = odometry_profiles.derive(
         Path(args.input_dir), parent, args.odometry_profile,
         noise_seed=args.odometry_seed, keyframe_range=keyframe_range)
@@ -1034,12 +1159,17 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     if args.episode_plan is not None:
         args.episode_plan = str(args.episode_plan)
     n_keyframes = len(data.truth)
+    if parent_panorama_ids is not None:
+        start = episode["parent_keyframe_start"] if episode else 0
+        panorama_ids = parent_panorama_ids[start:start + n_keyframes]
     if args.output_end is not None:
         if not 1 <= args.output_end < n_keyframes:
             parser.error("--output_end must name an existing nonzero episode keyframe")
         if args.smoother != "none" or args.smooth_lag or args.smooth_lags.strip():
             parser.error("prefix scoring requires all smoothing disabled")
         n_keyframes = args.output_end + 1
+        if panorama_ids is not None:
+            panorama_ids = panorama_ids[:n_keyframes]
     catalog = data.catalog
     sigma_pos = float(catalog.position_sigma_m[0])
 
@@ -1055,19 +1185,31 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
 
     grid = Grid(*box, args.cell_m)
     belief = GridBelief(grid, args.n_heading, args.device)
+    if loci_artifacts is not None:
+        loci_observation = loci_artifacts.bind(
+            grid, data.frame,
+            landmark_sigma=loci_config.landmark_sigma,
+            device=args.device)
+        support = loci_observation.support_mask
+        if not bool(support.any()):
+            raise ValueError("LOCI lattice supports no filter cells")
+        belief.belief = belief.belief.double()
     initial_belief = belief.belief.clone()
     n_states = args.n_heading * grid.n_north * grid.n_east
     print(
         f"grid: {grid.n_east} x {grid.n_north} x {args.n_heading} = "
         f"{n_states / 1e6:.1f}M states, cell {grid.cell_m:g} m; "
+        f"observation={args.observation_source} "
         f"pi0={args.pi0} recall={args.matcher_recall} "
         f"yaw_scale={args.yaw_sigma_scale} rw={args.heading_rw_deg} deg "
         f"tail={args.tail}")
 
-    catalog_east = torch.tensor(
-        catalog.east_m, dtype=torch.float32, device=args.device)
-    catalog_north = torch.tensor(
-        catalog.north_m, dtype=torch.float32, device=args.device)
+    catalog_east = catalog_north = None
+    if args.observation_source == "bearing":
+        catalog_east = torch.tensor(
+            catalog.east_m, dtype=torch.float32, device=args.device)
+        catalog_north = torch.tensor(
+            catalog.north_m, dtype=torch.float32, device=args.device)
     weight_cache = {}
 
     if args.tables_override:
@@ -1132,9 +1274,10 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         return weight_cache[tracklet_id]
 
     by_keyframe = {}
-    for measurement in data.measurements:
-        by_keyframe.setdefault(
-            measurement.anchor_keyframe_idx, []).append(measurement)
+    if args.observation_source == "bearing":
+        for measurement in data.measurements:
+            by_keyframe.setdefault(
+                measurement.anchor_keyframe_idx, []).append(measurement)
     odometry = {item.keyframe_idx: item for item in data.odometry}
 
     def apply_likelihoods(message, keyframe, measurements=None):
@@ -1173,6 +1316,12 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
             ("epoch", measurement.tracklet_id,
              measurement.anchor_keyframe_idx), compute)
 
+    def loci_log_likelihood(keyframe):
+        pano_id = panorama_ids[keyframe]
+        return likelihood_cache.get(
+            ("loci", pano_id),
+            lambda: loci_observation.log_likelihood(pano_id).unsqueeze(0))
+
     masks = truth_masks(grid, data.truth, RADII_M)
     truth_by_kf = {pose.keyframe_idx: pose for pose in data.truth}
     heading_rw_rad = math.radians(args.heading_rw_deg)
@@ -1181,6 +1330,9 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
 
     def apply_keyframe_likelihood(message, keyframe, grid_belief):
         """Apply all factors at a keyframe, shared by every smoother pass."""
+        if args.observation_source == "loci":
+            return _apply_log_likelihood_factor(
+                message, loci_log_likelihood(keyframe))
         if args.track_joint:
             releases_at = {}
             for release in smoothing_releases or ():
@@ -1362,6 +1514,99 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
     filtered_map_error = []
     online_map_states = []
     motion_plans = [None] * n_keyframes
+
+    if args.observation_source == "loci":
+        started = time.time()
+        for keyframe in range(n_keyframes):
+            if keyframe > 0:
+                belief.motion(
+                    odometry[keyframe], args.yaw_sigma_scale,
+                    heading_rw_rad, args.diffusion_m)
+            belief.belief = apply_keyframe_likelihood(
+                belief.belief, keyframe, belief)
+            mass, map_error, state = _score_message(
+                belief.belief, keyframe, masks, truth_by_kf, grid,
+                args.device)
+            online_map_states.append(state)
+            for radius in RADII_M:
+                filtered_series[radius].append(mass[radius])
+            filtered_map_error.append(map_error)
+            if keyframe % 20 == 0 or keyframe == n_keyframes - 1:
+                print(
+                    f"LOCI kf {keyframe:4d} mass500 {mass[500.0]:.4f} "
+                    f"mass100 {mass[100.0]:.4f} "
+                    f"map_err {map_error:8.1f} m "
+                    f"({time.time() - started:.0f}s)")
+        forward_seconds = time.time() - started
+        filtered_summary = _summary(
+            filtered_series, filtered_map_error, truth_by_kf, n_keyframes)
+        final_top_modes = _top_modes(
+            belief.belief, grid, args.top_modes,
+            args.top_mode_position_nms_m,
+            args.top_mode_heading_nms_deg)
+        print("LOCI:", {key: round(value, 4)
+                        for key, value in filtered_summary.items()},
+              f"runtime {forward_seconds:.0f}s")
+        if args.out:
+            loci_provenance = loci_artifacts.provenance()
+            loci_provenance["path"] = loci_path_ref.to_dict()
+            loci_provenance["aggregation"] = {
+                "kind": type(loci_config).__name__,
+                "streams": ["landmark"],
+                "landmark_sigma": loci_config.landmark_sigma,
+                "landmark_use_raw_residual": False,
+            }
+            payload = {
+                "schema": "farfield_causal_grid/v1",
+                "localization_inputs": data.artifact_ref.to_dict(),
+                "config": vars(args),
+                "odometry_profile": odometry_profile,
+                "loci": loci_provenance,
+                "episode": episode,
+                "availability": {
+                    "policy": "immediate_per_panorama",
+                    "post_observation_processing_delay_s": 0.0,
+                    "past_scores_revised": False,
+                    "track_inputs_used": False,
+                },
+                "grid": {
+                    "n_east": grid.n_east,
+                    "n_north": grid.n_north,
+                    "n_heading": args.n_heading,
+                    "cell_m": grid.cell_m,
+                    "box": box,
+                    "supported_position_cells": int(
+                        loci_observation.support_mask.sum()),
+                    "unsupported_loci_cells_observation": "neutral",
+                },
+                "summary": filtered_summary,
+                "mass_by_keyframe": {
+                    f"{radius:g}": filtered_series[radius]
+                    for radius in RADII_M
+                },
+                "map_error_m_by_keyframe": filtered_map_error,
+                "online_map_state_by_keyframe": {
+                    "source": (
+                        "online_position_marginal_grid_cell_argmax_with_"
+                        "conditional_heading"),
+                    "keyframe_order": "list_index_equals_episode_keyframe_idx",
+                    "states": online_map_states,
+                },
+                "filtered_final_top_modes": {
+                    "source": "online_current_posterior_at_final_keyframe",
+                    "reference_keyframe_idx": n_keyframes - 1,
+                    "pose_frame": "region_enu_heading_world_cw_from_north",
+                    "position_nms_m": args.top_mode_position_nms_m,
+                    "heading_nms_deg": args.top_mode_heading_nms_deg,
+                    "requested": args.top_modes,
+                    "returned": len(final_top_modes),
+                    "modes": final_top_modes,
+                },
+                "runtime_seconds": {"immediate_forward": forward_seconds},
+            }
+            Path(args.out).write_text(json.dumps(payload, indent=1))
+            print("wrote", args.out)
+        return
 
     release_counts = {}
     for release in releases:

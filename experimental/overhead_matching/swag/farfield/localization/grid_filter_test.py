@@ -12,6 +12,13 @@ from experimental.overhead_matching.swag.farfield.localization import (
 
 
 class LikelihoodCacheTest(unittest.TestCase):
+    def test_loci_log_likelihood_is_applied_directly(self):
+        prior = torch.tensor([0.25, 0.75])
+        log_likelihood = torch.log(torch.tensor([4.0, 1.0]))
+        actual = grid_filter._apply_log_likelihood_factor(  # noqa: SLF001
+            prior, log_likelihood)
+        torch.testing.assert_close(actual, torch.tensor([4.0 / 7.0, 3.0 / 7.0]))
+
     def test_consumer_misses_preserve_producer_tail(self):
         cache = grid_filter.LikelihoodCache(8, "cpu")
         for key in range(5):

@@ -52,6 +52,7 @@ py_library(
     deps = [
         requirement("msgspec"),
         requirement("pandas"),
+        requirement("pyyaml"),
         requirement("torch"),
         "//common/python:serialization",
         "//common/torch:load_torch_deps",

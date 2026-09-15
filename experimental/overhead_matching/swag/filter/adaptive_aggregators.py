@@ -123,13 +123,14 @@ def _raise_if_nonfinite(
         )
 
 
-def _load_similarity_matrix(path: Path) -> torch.Tensor:
+def _load_similarity_matrix(path: Path, *, mmap: bool = False) -> torch.Tensor:
     """Load a similarity matrix from a file.
 
     Handles both raw tensor format and dict format (with 'similarity' key).
     Keeps matrix on CPU to save GPU memory - row lookups are fast enough.
     """
-    data = torch.load(path, weights_only=False, map_location="cpu")
+    data = torch.load(
+        path, weights_only=False, map_location="cpu", mmap=mmap)
     if isinstance(data, dict):
         if "similarity" in data:
             return data["similarity"]
@@ -506,7 +507,7 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
 
     def __init__(
         self,
-        image_similarity_matrix: torch.Tensor,
+        image_similarity_matrix: torch.Tensor | None,
         landmark_similarity_matrix: torch.Tensor,
         panorama_metadata: pd.DataFrame,
         image_sigma: float,
@@ -525,14 +526,17 @@ class SafaPlusNormalizedLandmarkAggregator(ObservationLogLikelihoodAggregator):
     def __call__(self, pano_id: str) -> torch.Tensor:
         pano_index = self._pano_id_index.get_loc(pano_id)
 
-        img_sim = self.image_similarity_matrix[pano_index].to(self.device)
         lm_sim = self.landmark_similarity_matrix[pano_index].to(self.device)
 
-        # Image-side Gaussian-on-residuals (SAFA form).
-        log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
-            img_sim, self.image_sigma
-        )
-        _raise_if_nonfinite(log_p_img, pano_id, "log_p_img", cls_name=type(self).__name__)
+        if self.image_similarity_matrix is None:
+            log_p_img = torch.zeros_like(lm_sim)
+        else:
+            img_sim = self.image_similarity_matrix[pano_index].to(self.device)
+            log_p_img = wag_observation_log_likelihood_from_similarity_matrix(
+                img_sim, self.image_sigma
+            )
+            _raise_if_nonfinite(
+                log_p_img, pano_id, "log_p_img", cls_name=type(self).__name__)
 
         # Landmark stream — branch on residual form. The two branches have
         # *different* NaN contracts:

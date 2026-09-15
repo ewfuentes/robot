@@ -94,18 +94,12 @@ def build_plan(data, releases, count, artifacts_dir, schedule_path):
 
 def select(data, releases, plan, index, schedule_path):
     """Select whole tracks, reindex poses/releases, preserve catalog and prior."""
-    if (plan.get("schema") != SCHEMA
-            or plan.get("boundary_policy") != "fully_contained_source_track_inclusive_end"
-            or not artifact.records_same_artifact(plan.get("localization_inputs"), data.artifact_ref)
-            or plan.get("release_schedule_sha256") != artifact.sha256_file(schedule_path)):
-        raise ValueError("episode plan identity, policy, or release binding differs")
-    bounds = plan["windows"]
-    if (not isinstance(bounds, list)
-            or bounds != [list(b) for b in windows(data.truth, len(bounds))]
-            or any(type(v) is not int for pair in bounds for v in pair)):
-        raise ValueError("episode bounds differ from distance windows")
-    if type(index) is not int or not 0 <= index < len(bounds):
-        raise ValueError("episode index is outside the plan")
+    view, metadata = select_trajectory(data, plan, index)
+    if (plan.get("boundary_policy")
+            != "fully_contained_source_track_inclusive_end"
+            or plan.get("release_schedule_sha256")
+            != artifact.sha256_file(schedule_path)):
+        raise ValueError("episode track policy or release binding differs")
     births = plan["source_track_births"]
     if set(births) != {r.tracklet_id for r in releases}:
         raise ValueError("episode births must cover every released track")
@@ -113,7 +107,8 @@ def select(data, releases, plan, index, schedule_path):
         birth = births[release.tracklet_id]
         if type(birth) is not int or not 0 <= birth <= min(m.anchor_keyframe_idx for m in release.measurements):
             raise ValueError("invalid source track birth")
-    start, end = bounds[index]
+    start = metadata["parent_keyframe_start"]
+    end = metadata["parent_keyframe_end_inclusive"]
     kept = [r for r in releases if births[r.tracklet_id] >= start
             and r.release_keyframe_idx <= end]
     selected = tuple(dataclasses.replace(
@@ -123,24 +118,48 @@ def select(data, releases, plan, index, schedule_path):
                            for m in r.measurements)) for r in kept)
     ids = {r.tracklet_id for r in selected}
     view = dataclasses.replace(
-        data, meta=msgspec.structs.replace(data.meta, n_keyframes=end - start + 1),
-        truth=[msgspec.structs.replace(p, keyframe_idx=p.keyframe_idx - start)
-               for p in data.truth[start:end + 1]],
-        odometry=[],
+        view,
         measurements=sorted([m for r in selected for m in r.measurements],
                             key=lambda m: (m.anchor_keyframe_idx, m.tracklet_id)),
         tables={key: value for key, value in data.tables.items() if key in ids})
+    metadata.update({
+        "kept_tracklets": len(kept), "parent_tracklets": len(releases),
+        "kept_tracklet_ids": sorted(ids),
+    })
+    return view, selected, metadata
+
+
+def select_trajectory(data, plan, index):
+    """Select and reindex only the trajectory window named by an episode plan."""
+    if (plan.get("schema") != SCHEMA
+            or not artifact.records_same_artifact(
+                plan.get("localization_inputs"), data.artifact_ref)):
+        raise ValueError("episode plan identity differs")
+    bounds = plan.get("windows")
+    if (not isinstance(bounds, list) or not bounds
+            or any(not isinstance(pair, list) or len(pair) != 2
+                   for pair in bounds)
+            or any(type(v) is not int for pair in bounds for v in pair)
+            or bounds != [list(b) for b in windows(data.truth, len(bounds))]):
+        raise ValueError("episode bounds differ from distance windows")
+    if type(index) is not int or not 0 <= index < len(bounds):
+        raise ValueError("episode index is outside the plan")
+    start, end = bounds[index]
+    view = dataclasses.replace(
+        data, meta=msgspec.structs.replace(
+            data.meta, n_keyframes=end - start + 1),
+        truth=[msgspec.structs.replace(p, keyframe_idx=p.keyframe_idx - start)
+               for p in data.truth[start:end + 1]],
+        odometry=[], measurements=[], tables={})
     metadata = {
         "schema": SCHEMA, "index": index, "count": len(bounds),
         "parent_keyframe_start": start, "parent_keyframe_end_inclusive": end,
         "parent_dataset": data.artifact_ref.dataset,
-        "direction": "forward", "boundary_policy": plan["boundary_policy"],
+        "direction": "forward", "boundary_policy": plan.get("boundary_policy"),
         "plan_sha256": artifact.sha256_json(plan),
-        "kept_tracklets": len(kept), "parent_tracklets": len(releases),
-        "kept_tracklet_ids": sorted(ids),
         "initialization": "fresh_uniform_parent_region_and_fresh_imu_error",
     }
-    return view, selected, metadata
+    return view, metadata
 
 
 def main():

@@ -3,6 +3,34 @@ load("@pip//:requirements.bzl", "requirement")
 exports_files(glob(["configs/*.yaml"]))
 
 py_library(
+    name = "grid_observation",
+    srcs = ["grid_observation.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/gps:web_mercator",
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/data:vigor_dataset",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+        "//experimental/overhead_matching/swag/filter:histogram_belief",
+    ],
+)
+
+py_test(
+    name = "grid_observation_test",
+    srcs = ["grid_observation_test.py"],
+    deps = [
+        ":grid_observation",
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ],
+)
+
+py_library(
     name = "region_lib",
     srcs = ["region.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],

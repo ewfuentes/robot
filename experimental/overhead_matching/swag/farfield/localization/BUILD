@@ -986,6 +986,9 @@ py_library(
         ":release_schedule",
         ":structs",
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/loci:grid_observation",
+        "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     ],
 )
 
@@ -1004,6 +1007,9 @@ py_binary(
         ":release_schedule",
         ":structs",
         "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:artifact",
+        "//experimental/overhead_matching/swag/farfield/loci:grid_observation",
+        "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     ],
 )
 
