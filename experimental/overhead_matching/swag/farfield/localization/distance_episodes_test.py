@@ -92,6 +92,16 @@ class DistanceEpisodesTest(unittest.TestCase):
         _, last, _ = episodes.select(self.data, self.releases, self.plan, 2, self.schedule)
         self.assertEqual([(r.tracklet_id, r.release_keyframe_idx) for r in last], [('eof', 4)])
 
+    def test_trajectory_selection_does_not_require_tracks_or_schedule(self):
+        plan = {**self.plan, "boundary_policy": "trajectory_only"}
+        view, meta = episodes.select_trajectory(self.data, plan, 1)
+        self.assertEqual([p.keyframe_idx for p in view.truth], list(range(5)))
+        self.assertEqual(view.truth[0].east_m, 200.0)
+        self.assertEqual(view.measurements, [])
+        self.assertEqual(view.tables, {})
+        self.assertEqual(meta["parent_keyframe_start"], 2)
+        self.assertEqual(meta["boundary_policy"], "trajectory_only")
+
     def test_binding_and_birth_guards_and_relocation(self):
         relocated = copy.deepcopy(self.plan)
         relocated['localization_inputs']['path'] = '/another/machine/inputs'

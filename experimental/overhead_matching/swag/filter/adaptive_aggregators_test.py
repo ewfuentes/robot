@@ -148,7 +148,7 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
 
     def _make(self, img_sim, lm_sim, image_sigma=0.187, landmark_sigma=0.72,
               landmark_use_raw_residual=False):
-        meta = _make_metadata(img_sim.shape[0])
+        meta = _make_metadata(lm_sim.shape[0])
         return SafaPlusNormalizedLandmarkAggregator(
             image_similarity_matrix=img_sim,
             landmark_similarity_matrix=lm_sim,
@@ -204,6 +204,15 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         self.assertAlmostEqual(
             (out[2] - log_p_img[2]).item(), expected_lm_at_max, places=4
         )
+
+    def test_landmark_only_uses_no_image_likelihood(self):
+        lm_sim = torch.tensor([[0.0, 0.5, 1.0]])
+        agg = self._make(None, lm_sim, landmark_sigma=0.5)
+
+        out = agg("p0")
+
+        torch.testing.assert_close(
+            out - out.max(), torch.tensor([-2.0, -0.5, 0.0]))
 
     def test_landmark_residual_decreases_likelihood_quadratically(self):
         """log_p_lm[j] − log_p_lm[j*] should be exactly −0.5 (r_norm / σ_lm)^2."""

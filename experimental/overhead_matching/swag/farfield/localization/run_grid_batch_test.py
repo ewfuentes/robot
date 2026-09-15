@@ -57,6 +57,20 @@ class BatchTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_grid_batch.run(jobs)
 
+    def test_landmark_loci_does_not_require_joint_tracks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {
+                "input_dir": "inputs",
+                "observation_source": "loci",
+                "availability": "immediate",
+                "out": str(Path(directory) / "loci.json"),
+            }
+            with patch.object(run_grid_batch.grid_filter, "main") as main:
+                run_grid_batch.run([config], cache_gib=0)
+            argv = main.call_args.args[0]
+            self.assertIn("--observation_source", argv)
+            self.assertNotIn("--track_joint", argv)
+
 
 if __name__ == "__main__":
     unittest.main()

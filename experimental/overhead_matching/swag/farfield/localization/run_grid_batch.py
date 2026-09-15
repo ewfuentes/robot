@@ -31,9 +31,13 @@ def run(configs, cache_gib=8):
     jobs = []
     for config in configs:
         config = dict(config)
-        if (not config.get("track_joint") or config.get("smoother", "none") != "none"
-                or config.get("smooth_lag", 0) or config.get("smooth_lags", "").strip()):
-            raise ValueError("batch evaluation requires joint mode and causal-only scoring")
+        loci = config.get("observation_source") == "loci"
+        if ((not loci and not config.get("track_joint"))
+                or config.get("smoother", "none") != "none"
+                or config.get("smooth_lag", 0)
+                or config.get("smooth_lags", "").strip()):
+            raise ValueError(
+                "batch evaluation requires LOCI or joint mode and causal-only scoring")
         if not config.get("out"):
             raise ValueError("every job needs a distinct output path")
         output = Path(config["out"]).resolve()
