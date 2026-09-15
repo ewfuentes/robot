@@ -56,9 +56,28 @@ def main() -> None:
                              "shift) by its k best-matching crops instead "
                              "of all of them (occlusion study; recorded in "
                              "the scorer string)")
+    parser.add_argument(
+        "--crop_top_k_variant_output_dir", action="append", nargs=2,
+        metavar=("K", "OUTPUT_DIR"), default=[],
+        help="also write a top-k variant to OUTPUT_DIR while sharing the "
+             "crop embedding and database-wide similarity pass with the "
+             "primary --output_dir result; repeatable")
     parser.add_argument("--device",
                         default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+    extra_variants: dict[int, Path] = {}
+    for raw_k, raw_output_dir in args.crop_top_k_variant_output_dir:
+        try:
+            crop_top_k = int(raw_k)
+        except ValueError:
+            parser.error(f"variant K must be an integer, got {raw_k!r}")
+        if crop_top_k in extra_variants:
+            parser.error(f"duplicate crop-top-k variant: {crop_top_k}")
+        extra_variants[crop_top_k] = Path(raw_output_dir)
+    if args.crop_top_k in extra_variants:
+        parser.error("a variant duplicates the primary --crop_top_k")
+    if Path(args.output_dir) in extra_variants.values():
+        parser.error("variant output directories must differ from --output_dir")
     paths = paths_lib.resolve(parser, args,
                               require=("panorama_dir", "dataset_base"))
 
@@ -74,7 +93,13 @@ def main() -> None:
     selected = frames[::args.keyframe_stride]
     n_nodes = len(db["x_m"])
     n_bins = manifest["render_config"]["n_yaw"]
-    scores = np.zeros((len(selected), n_nodes, n_bins), dtype=np.float32)
+    variant_scores = {
+        args.crop_top_k: np.zeros((len(selected), n_nodes, n_bins),
+                                  dtype=np.float16),
+        **{crop_top_k: np.zeros((len(selected), n_nodes, n_bins),
+                                dtype=np.float16)
+           for crop_top_k in extra_variants},
+    }
 
     started = time.monotonic()
     with torch.inference_mode():
@@ -85,10 +110,11 @@ def main() -> None:
             batch = torch.stack([
                 crosslocate_net.rgb_query_tensor(crop) for crop in ring
             ]).to(args.device)
-            joint = panorama_score.joint_scores(model(batch),
-                                                db["descriptors"],
-                                                crop_top_k=args.crop_top_k)
-            scores[i] = joint.scores.cpu().numpy()
+            joint_variants = panorama_score.joint_scores_variants(
+                model(batch), db["descriptors"],
+                crop_top_ks=tuple(variant_scores))
+            for crop_top_k, joint in joint_variants.items():
+                variant_scores[crop_top_k][i] = joint.scores.cpu().numpy()
             if (i + 1) % 25 == 0:
                 rate = (i + 1) / (time.monotonic() - started)
                 print(f"{i + 1}/{len(selected)} keyframes ({rate:.2f}/s)",
@@ -103,26 +129,31 @@ def main() -> None:
     db_manifest_sha = hashlib.sha256(
         (args.db_dir / "manifest.json").read_bytes()).hexdigest()
     weights_sha = hashlib.sha256(args.weights.read_bytes()).hexdigest()
-    meta = retrieval.RetrievalFieldsMeta(
-        schema_version=structs.SCHEMA_VERSION,
-        dataset=paths.dataset,
-        n_keyframes=len(selected),
-        n_nodes=n_nodes,
-        n_heading_bins=n_bins,
-        node_spacing_m=manifest["lattice"]["spacing_m"],
-        db_dir=str(args.db_dir),
-        db_manifest_sha256=db_manifest_sha,
-        scorer=f"dem_baseline.crosslocate_vgg16_mac@{weights_sha[:12]}"
-               + (f" crop_top_k={args.crop_top_k}"
-                  if args.crop_top_k is not None else ""))
-    retrieval.write_fields(
-        args.output_dir, meta, np.asarray(lat_deg), np.asarray(lon_deg),
-        scores, np.asarray([f.frame_idx for f in selected]),
-        [f.pano_stem for f in selected])
-    print(f"score spread (per-field max - median): "
-          f"{np.median(scores.max(axis=(1, 2)) - np.median(scores, axis=(1, 2))):.4f}"
-          f" median across {len(selected)} keyframes")
-    print(f"wrote {args.output_dir}")
+    keyframe_idx = np.asarray([f.frame_idx for f in selected])
+    pano_ids = [f.pano_stem for f in selected]
+    variant_outputs = {args.crop_top_k: Path(args.output_dir),
+                       **extra_variants}
+    for crop_top_k, output_dir in variant_outputs.items():
+        meta = retrieval.RetrievalFieldsMeta(
+            schema_version=structs.SCHEMA_VERSION,
+            dataset=paths.dataset,
+            n_keyframes=len(selected),
+            n_nodes=n_nodes,
+            n_heading_bins=n_bins,
+            node_spacing_m=manifest["lattice"]["spacing_m"],
+            db_dir=str(args.db_dir),
+            db_manifest_sha256=db_manifest_sha,
+            scorer=f"dem_baseline.crosslocate_vgg16_mac@{weights_sha[:12]}"
+                   + (f" crop_top_k={crop_top_k}"
+                      if crop_top_k is not None else ""))
+        scores = variant_scores[crop_top_k]
+        retrieval.write_fields(output_dir, meta, np.asarray(lat_deg),
+                               np.asarray(lon_deg), scores, keyframe_idx,
+                               pano_ids)
+        print(f"crop_top_k={crop_top_k}: score spread (per-field max - median): "
+              f"{np.median(scores.max(axis=(1, 2)) - np.median(scores, axis=(1, 2))):.4f}"
+              f" median across {len(selected)} keyframes")
+        print(f"wrote {output_dir}")
 
 
 if __name__ == "__main__":

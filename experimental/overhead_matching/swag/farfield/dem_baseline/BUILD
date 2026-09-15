@@ -109,7 +109,12 @@ py_binary(
     name = "build_surface",
     srcs = ["build_surface.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
-    deps = [":terrain"],
+    # terrain imports rasterio lazily, so declare it here to retain it in the
+    # executable's runfiles even though --help does not exercise that import.
+    deps = [
+        ":terrain",
+        requirement("rasterio"),
+    ],
 )
 
 py_library(
@@ -269,8 +274,8 @@ py_binary(
     ],
 )
 
-py_binary(
-    name = "score_localization_inputs",
+py_library(
+    name = "score_localization_inputs_lib",
     srcs = ["score_localization_inputs.py"],
     visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
     deps = [
@@ -288,6 +293,13 @@ py_binary(
         "//experimental/overhead_matching/swag/farfield/localization:retrieval",
         "//experimental/overhead_matching/swag/farfield/localization:structs",
     ],
+)
+
+py_binary(
+    name = "score_localization_inputs",
+    srcs = ["score_localization_inputs.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
+    deps = [":score_localization_inputs_lib"],
 )
 
 py_binary(
@@ -412,4 +424,35 @@ py_test(
     name = "panorama_score_test",
     srcs = ["panorama_score_test.py"],
     deps = [":panorama_score"],
+)
+
+py_test(
+    name = "render_db_catalog_test",
+    srcs = ["render_db_catalog_test.py"],
+    deps = [
+        ":render_db_lib",
+        ":terrain",
+        requirement("numpy"),
+    ],
+)
+
+py_test(
+    name = "score_localization_inputs_test",
+    srcs = ["score_localization_inputs_test.py"],
+    deps = [
+        ":score_localization_inputs_lib",
+        ":crosslocate_net",
+        ":panorama_score",
+        ":query_crops",
+        ":render_db_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+        requirement("pyproj"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/farfield:dataset",
+        "//experimental/overhead_matching/swag/farfield:paths",
+        "//experimental/overhead_matching/swag/farfield/localization:retrieval",
+        "//experimental/overhead_matching/swag/farfield/localization:structs",
+    ],
 )

@@ -90,6 +90,19 @@ class JointScoreTest(unittest.TestCase):
                 query, db, valid_crops=torch.ones(12, dtype=torch.bool),
                 crop_top_k=3)
 
+    def test_variants_share_aligned_scores(self):
+        db = _random_db(seed=5)
+        query = db[2]
+        variants = panorama_score.joint_scores_variants(
+            query, db, crop_top_ks=(None, 6))
+        self.assertEqual(set(variants), {None, 6})
+        self.assertTrue(torch.equal(
+            variants[None].scores,
+            panorama_score.joint_scores(query, db).scores))
+        self.assertTrue(torch.equal(
+            variants[6].scores,
+            panorama_score.joint_scores(query, db, crop_top_k=6).scores))
+
     def test_all_invalid_raises(self):
         db = _random_db()
         query = db[0]

@@ -134,12 +134,10 @@ extents:
   candidates; it never adds candidate locations.
 - **Filtering later:** `--prior_region catalog --margin_m 0`.
 
-`render_db` currently accepts only a projected `--bounds_xy`; it does not read
-or hash the catalog manifest. Before the production render, bind this step to
-the catalog: read `region_bbox_wsen`, project all four corners into the surface
-CRS, use their min/max as the lattice bounds, and record the catalog manifest's
-SHA-256 in the database manifest. This matches the projected-corner convention
-used by `localization/build_export.py`. If literal WGS84 rectangle membership
+`render_db` requires the final `--catalog_manifest`, reads and hashes its
+`region_bbox_wsen`, projects all four corners into the surface CRS, and uses
+their min/max as the candidate lattice bounds. This matches the
+projected-corner convention used by `localization/build_export.py`. If literal WGS84 rectangle membership
 is required rather than that projected bounding box, a node mask must also be
 added; the current CLI does not provide one.
 
@@ -230,9 +228,9 @@ Build one database for each distinct region-and-observer-height combination:
 bazel run //experimental/overhead_matching/swag/farfield/dem_baseline:render_db -- \
   --height_field "$FARFIELD_ROOT/artifacts/dem_surfaces/REGION/VERSION/surface" \
   --background "$FARFIELD_ROOT/artifacts/dem_surfaces/REGION/BACKGROUND/surface" \
+  --catalog_manifest "$FARFIELD_ROOT/artifacts/catalogs/DATASET/VERSION/manifest.json" \
   --weights "$FARFIELD_ROOT/models/crosslocate/AlpsPhotosToDepthCompact_31_2/converted_weights.npz" \
   --spacing_m 100 \
-  --bounds_xy X_MIN_CANDIDATE Y_MIN_CANDIDATE X_MAX_CANDIDATE Y_MAX_CANDIDATE \
   --max_range_m 30000 \
   --observer_height_m HEIGHT_ABOVE_LOCAL_SURFACE \
   --sky_fill_m -1 \
@@ -255,9 +253,18 @@ bazel run //experimental/overhead_matching/swag/farfield/dem_baseline:score_loca
 ```
 
 The primary run omits `--crop_top_k`. If the owner requests the robust
-aggregation ablation, run a second, separately named output with
-`--crop_top_k 6`; this choice is baked into the fields and cannot be changed by
-the filter later.
+aggregation ablation, produce it in the same scorer pass with a separately
+named output:
+
+```bash
+  --crop_top_k_variant_output_dir 6 \
+  "$FARFIELD_ROOT/artifacts/retrieval_observations/DATASET/TOP6_VARIANT"
+```
+
+This shares query embedding and database-wide crop similarities with the
+primary output; only the final crop aggregation and artifact write are
+additional. Each output records its own aggregation in `retrieval_meta.json`,
+and the choice cannot be changed by the filter later.
 
 ## Output contract
 
