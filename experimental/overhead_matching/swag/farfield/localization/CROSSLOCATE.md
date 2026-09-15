@@ -54,15 +54,20 @@ meridian convergence from the filter's true-north nominal heading. Position
 lookup uses the nearest node within 0.75 lattice spacings; heading lookup
 interpolates scores circularly, including across the final/first yaw bins.
 
-`--margin_m 0` is required. Cells with centers outside the declared catalog bbox
-are excluded. The projected rectangular lattice's edge wedges may supply
-nearest neighbors for cells inside the bbox, but never expand filter support.
-The 30 km terrain halo affects rendering only and is not a localization prior.
+`--margin_m 0` is required. The existing filter grid and uniform prior are
+preserved exactly, including rounded-up boundary cells whose centers fall
+outside the literal catalog bbox. Coverage is determined only by nearest-node
+distance on that grid, not by an extra bbox mask. The 30 km terrain halo affects
+rendering only and is not a localization prior.
 
 For each frame, mapped scores are temperature-softmaxed over supported filter
-states and mixed with a uniform outlier floor over all in-catalog filter states.
-Unsupported in-catalog cells receive only that floor. This normalization is on
-the filter grid, **not** the original retrieval lattice; calibration therefore
+states and mixed with a uniform outlier floor over those supported states.
+The mixture is rescaled to mean one on supported states; unsupported cells
+receive a unit factor (log likelihood zero), neutral relative to that mean.
+Missing coverage never removes a cell or assigns it outlier-only evidence.
+Flat scores therefore leave the prior unchanged, including boundary cells.
+Zero overlap between the retrieval lattice and grid still raises an error.
+This normalization is on the filter grid, **not** the original retrieval lattice; calibration therefore
 needs validation for this adapter. Defaults (`temperature=0.1`, `epsilon=0.05`)
 are provisional and recorded as `calibration_frozen: false` in every result.
 Raw nonfinite scores cause an error rather than silently changing support.

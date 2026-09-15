@@ -3,7 +3,8 @@
 Raw artifacts stay read-only. Only scores.npy is extracted into an explicitly
 chosen local cache; a single frame is evaluated at a time. Position lookup is
 nearest-neighbor, yaw lookup circular-linear, followed by temperature softmax
-and a uniform outlier floor over the declared filter support.
+and a uniform outlier floor on covered states. Uncovered states are neutral;
+the existing filter grid and prior are never narrowed by retrieval coverage.
 """
 
 import csv
@@ -120,23 +121,15 @@ class RetrievalGridObservation:
             if np.max(np.abs(steps - np.rint(steps))) * spacing > 0.1:
                 raise ValueError("render CRS does not match the declared regular lattice")
         cell_e, cell_n = np.meshgrid(*grid.centers())
-        cell_lat, cell_lon = data.frame.latlon_from_enu(cell_e.ravel(), cell_n.ravel())
-        prior = data.meta.prior_region
-        if prior is None:
-            raise ValueError("retrieval requires the declared catalog prior")
-        w, s, e, n = prior.bbox_wsen
-        inside = ((cell_lon >= w) & (cell_lon <= e)
-                  & (cell_lat >= s) & (cell_lat <= n))
         node_e, node_n = data.frame.enu_from_latlon(lat, lon)
         distance, nodes = cKDTree(np.column_stack([node_e, node_n])).query(
             np.column_stack([cell_e.ravel(), cell_n.ravel()]))
-        supported = inside & (distance <= 0.75 * spacing)
+        supported = distance <= 0.75 * spacing
         if not supported.any():
             raise ValueError("retrieval lattice supports no declared filter cells")
         self._nodes = nodes
-        self._inside, self._supported = inside, supported
+        self._supported = supported
         self._shape = (n_heading, grid.n_north, grid.n_east)
-        self.region_mask = torch.as_tensor(inside.reshape(self._shape[1:]), device=device)
         self.support_mask = torch.as_tensor(supported.reshape(self._shape[1:]), device=device)
         convergence = np.asarray(Proj(crs).get_factors(lon[nodes], lat[nodes]).meridian_convergence)
         mount = float(data.meta.nominal_forward["bearing_camera_cw_deg"])
@@ -166,7 +159,8 @@ class RetrievalGridObservation:
             "node_spacing_m": spacing,
             "temperature": temperature, "outlier_epsilon": outlier_epsilon,
             "calibration_frozen": False,
-            "normalization": "softmax_over_supported_filter_states_plus_uniform_catalog_floor",
+            "normalization": "supported_softmax_uniform_mixture_rescaled_to_mean_one",
+            "missing_coverage_policy": "unit_factor_neutral_relative_to_supported_mean",
             "position_lookup": "nearest_node_within_0.75_spacing",
             "heading_lookup": "circular_linear_score_interpolation",
         }
@@ -181,11 +175,12 @@ class RetrievalGridObservation:
         interpolated = ((1 - self._fraction) * scores[self._nodes, self._lo]
                         + self._fraction * scores[self._nodes, self._hi])
         supported = np.broadcast_to(self._supported, interpolated.shape)
-        signal = np.full(interpolated.shape, -np.inf)
         selected = interpolated[supported]
         selected = (selected - selected.max()) / self.temperature
-        signal[supported] = math.log1p(-self.epsilon) + selected - logsumexp(selected)
-        floor = math.log(self.epsilon) - math.log(self._inside.sum() * self._shape[0])
-        result = np.logaddexp(signal, floor)
-        result[:, ~self._inside] = -np.inf
+        # Give the covered mixture mean one, so missing coverage can use a
+        # unit factor without its weight depending on the number of grid cells.
+        signal = (math.log1p(-self.epsilon) + selected - logsumexp(selected)
+                  + math.log(selected.size))
+        result = np.zeros(interpolated.shape)
+        result[supported] = np.logaddexp(signal, math.log(self.epsilon))
         return torch.as_tensor(result.reshape(self._shape), device=self.device)

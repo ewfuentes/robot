@@ -80,12 +80,12 @@ class RetrievalGridTest(unittest.TestCase):
         self.assertIsInstance(observation.scores, np.memmap)
         before = sorted(p.name for p in self.raw.iterdir())
         actual = observation.log_likelihood(self.ids[2]).numpy()
-        self.assertAlmostEqual(np.exp(actual).sum(), 1)
-        self.assertTrue(np.isneginf(actual[:, ~observation.region_mask.numpy()]).all())
-        unsupported = observation.region_mask & ~observation.support_mask
+        self.assertAlmostEqual(np.exp(actual).mean(), 1)
+        self.assertTrue(np.isfinite(actual).all())
+        unsupported = ~observation.support_mask
         self.assertTrue(bool(unsupported.any()))
-        np.testing.assert_allclose(np.exp(actual[:, unsupported.numpy()]),
-                                   0.1 / (8 * observation.region_mask.sum().item()))
+        np.testing.assert_array_equal(actual[:, unsupported.numpy()], 0)
+        self.assertGreaterEqual(np.exp(actual).min(), 0.1)
         # At the first cell, true nominal zero means camera -45 degrees, then
         # subtract the (negative here) meridian convergence: interpolate 3->0.
         convergence = Proj(32619).get_factors(self.lon[0], self.lat[0]).meridian_convergence
@@ -97,7 +97,7 @@ class RetrievalGridTest(unittest.TestCase):
             lo = int(value)
             return ((1 - (value - lo)) * float(self.scores[2, 0, lo])
                     + (value - lo) * float(self.scores[2, 0, (lo + 1) % 4]))
-        floor = 0.1 / (8 * observation.region_mask.sum().item())
+        floor = 0.1
         ratio = (np.exp(actual[0, 0, 0]) - floor) / (np.exp(actual[1, 0, 0]) - floor)
         self.assertAlmostEqual(ratio, np.exp((interpolated(0) - interpolated(45)) / 0.3))
         self.assertEqual(sorted(p.name for p in self.raw.iterdir()), before)
@@ -105,6 +105,24 @@ class RetrievalGridTest(unittest.TestCase):
         timestamp = cache.stat().st_mtime_ns
         np.testing.assert_array_equal(self.observation().log_likelihood(self.ids[2]).numpy(), actual)
         self.assertEqual(cache.stat().st_mtime_ns, timestamp)
+
+    def test_flat_scores_preserve_prior_including_boundary_and_missing_cells(self):
+        self.scores.fill(0)
+        self.write_scores()
+        observation = self.observation()
+        # This grid includes rounded-up cells whose centers exceed the bbox.
+        self.assertGreater(self.grid.centers()[0][-1], self.data.meta.prior_region.east_max_m)
+        factor = observation.log_likelihood(self.ids[0])
+        torch.testing.assert_close(factor, torch.zeros_like(factor), atol=1e-14, rtol=0)
+        prior = grid_filter.GridBelief(self.grid, 8, "cpu").belief.double()
+        updated = prior.clone()
+        for _ in range(3):
+            updated = grid_filter._apply_log_likelihood_factor(updated, factor)
+        torch.testing.assert_close(updated, prior)
+        self.assertTrue(bool((updated > 0).all()))
+        # A literal bbox change must not change coverage on an unchanged grid.
+        self.data.meta.prior_region.bbox_wsen = [0, 0, 0.001, 0.001]
+        torch.testing.assert_close(self.observation().support_mask, observation.support_mask)
 
     def test_invalid_inputs_and_nonfinite_scores(self):
         for options in (dict(temperature=0), dict(temperature=float("nan")),
@@ -133,13 +151,19 @@ class RetrievalGridTest(unittest.TestCase):
         output = self.root / "result.json"
         seen = []
         original = retrieval_grid.RetrievalGridObservation.log_likelihood
+        initial_messages = []
+        apply_factor = grid_filter._apply_log_likelihood_factor
+        def apply_observation(message, factor):
+            initial_messages.append(message.clone())
+            return apply_factor(message, factor)
         def observe(instance, pano_id):
             seen.append(pano_id)
             return original(instance, pano_id)
         odometry = [structs.OdometryDelta(i, 10, 0, 0, 0, 0) for i in (1, 2)]
         with patch.object(grid_filter.odometry_profiles, "derive",
                           return_value=(odometry, {})) as derive, patch.object(
-                retrieval_grid.RetrievalGridObservation, "log_likelihood", observe):
+                retrieval_grid.RetrievalGridObservation, "log_likelihood", observe), patch.object(
+                grid_filter, "_apply_log_likelihood_factor", apply_observation):
             grid_filter.main([
                 "--input_dir", "inputs", "--observation_source", "crosslocate",
                 "--availability", "immediate", "--margin_m", "0",
@@ -151,6 +175,9 @@ class RetrievalGridTest(unittest.TestCase):
                 "--output_end", "1", "--out", str(output)],
                 load_input=lambda _: self.data)
         self.assertEqual(seen, self.ids[1:3])
+        torch.testing.assert_close(initial_messages[0],
+                                   grid_filter.GridBelief(self.grid, 8, "cpu").belief.double(),
+                                   atol=0, rtol=0)
         self.assertEqual(derive.call_args.kwargs["keyframe_range"], (1, 3))
         result = json.loads(output.read_text())
         self.assertEqual(result["schema"], "farfield_causal_grid/v1")

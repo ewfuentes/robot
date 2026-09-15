@@ -1230,8 +1230,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
         start = episode["parent_keyframe_start"] if episode else 0
         panorama_ids = panorama_observation.panorama_ids[start:start + n_keyframes]
         observation_provenance = panorama_observation.provenance()
-        belief.belief = _normalized(
-            belief.belief.double() * panorama_observation.region_mask)
+        belief.belief = belief.belief.double()
     initial_belief = belief.belief.clone()
     n_states = args.n_heading * grid.n_north * grid.n_east
     print(
@@ -1609,9 +1608,7 @@ def main(argv=None, *, load_input=export_ingest.load, raw_cache=None):
                     "box": box,
                     "supported_position_cells": int(
                         panorama_observation.support_mask.sum()),
-                    f"unsupported_{args.observation_source}_cells_observation": (
-                        "neutral" if args.observation_source == "loci"
-                        else "uniform_outlier_floor_inside_catalog_zero_outside"),
+                    f"unsupported_{args.observation_source}_cells_observation": "neutral",
                 },
                 "summary": filtered_summary,
                 "mass_by_keyframe": {
