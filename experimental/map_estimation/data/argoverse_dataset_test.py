@@ -17,6 +17,10 @@ from experimental.map_estimation.data import av2_log
 # not directly inside it.
 BASE_PATH = Path("external/argoverse_snippet")
 LOG_ID = "07YOTznatmYypvQYpzviEcU3yGPsyaGg__Spring_2020"
+LOG_IDS = [
+    LOG_ID,
+    "i1qcWZ15fSD2vfLljK8EgVPdyUWNgbp9__Winter_2021",
+]
 
 
 class ArgoverseDatasetTest(unittest.TestCase):
@@ -26,8 +30,8 @@ class ArgoverseDatasetTest(unittest.TestCase):
     def test_discovers_the_log_on_disk(self):
         dataset = ad.ArgoverseDataset(self.request, root=BASE_PATH)
 
-        self.assertEqual(dataset.get_log_ids(), [LOG_ID])
-        self.assertEqual(len(dataset), 1)
+        self.assertEqual(dataset.get_log_ids(), LOG_IDS)
+        self.assertEqual(len(dataset), len(LOG_IDS))
 
     def test_named_log_ids_are_used_verbatim(self):
         dataset = ad.ArgoverseDataset(self.request, log_ids=[LOG_ID], root=BASE_PATH)

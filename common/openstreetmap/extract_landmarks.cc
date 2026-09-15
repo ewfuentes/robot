@@ -243,55 +243,61 @@ std::vector<std::pair<std::string, LandmarkFeature>> extract_landmarks(
     using LocationHandler = osmium::handler::NodeLocationsForWays<IndexType>;
 
     IndexType index;
+
+    // Both passes need the same location handler, and the two handler types are
+    // distinct, so the pass sequence is templated on it rather than duplicated.
+    auto run_passes = [&](auto& location_handler) {
+        // Pass 1: Extract nodes and ways (with node locations for ways)
+        {
+            osmium::io::Reader reader(pbf_path,
+                                      osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
+
+            LandmarkHandler handler(bboxes, tag_filters);
+            osmium::apply(reader, location_handler, handler);
+            reader.close();
+
+            all_features = handler.features();
+        }
+
+        // Pass 2: Extract multipolygon relations
+        {
+            // MultipolygonManager collects relations and their members
+            using MultipolygonManager = osmium::area::MultipolygonManager<osmium::area::Assembler>;
+
+            osmium::area::Assembler::config_type assembler_config;
+            MultipolygonManager mp_manager{assembler_config};
+
+            // First pass: collect relations
+            {
+                osmium::io::Reader reader(pbf_path, osmium::osm_entity_bits::relation);
+                osmium::apply(reader, mp_manager);
+                reader.close();
+            }
+
+            // Prepare manager for member lookups
+            mp_manager.prepare_for_lookup();
+
+            // Second pass: read ways/nodes and assemble areas
+            {
+                osmium::io::Reader reader(pbf_path);
+                AreaHandler area_handler(bboxes, tag_filters);
+
+                osmium::apply(reader, location_handler,
+                              mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
+                                  osmium::apply(buffer, area_handler);
+                              }));
+
+                reader.close();
+
+                // Add multipolygon features to results
+                const auto& mp_features = area_handler.features();
+                all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
+            }
+        }
+    };
+
     LocationHandler location_handler(index);
-
-    // Pass 1: Extract nodes and ways (with node locations for ways)
-    {
-        osmium::io::Reader reader(pbf_path,
-                                  osmium::osm_entity_bits::node | osmium::osm_entity_bits::way);
-
-        LandmarkHandler handler(bboxes, tag_filters);
-        osmium::apply(reader, location_handler, handler);
-        reader.close();
-
-        all_features = handler.features();
-    }
-
-    // Pass 2: Extract multipolygon relations
-    {
-        // MultipolygonManager collects relations and their members
-        using MultipolygonManager = osmium::area::MultipolygonManager<osmium::area::Assembler>;
-
-        osmium::area::Assembler::config_type assembler_config;
-        MultipolygonManager mp_manager{assembler_config};
-
-        // First pass: collect relations
-        {
-            osmium::io::Reader reader(pbf_path, osmium::osm_entity_bits::relation);
-            osmium::apply(reader, mp_manager);
-            reader.close();
-        }
-
-        // Prepare manager for member lookups
-        mp_manager.prepare_for_lookup();
-
-        // Second pass: read ways/nodes and assemble areas
-        {
-            osmium::io::Reader reader(pbf_path);
-            AreaHandler area_handler(bboxes, tag_filters);
-
-            osmium::apply(reader, location_handler,
-                          mp_manager.handler([&area_handler](osmium::memory::Buffer&& buffer) {
-                              osmium::apply(buffer, area_handler);
-                          }));
-
-            reader.close();
-
-            // Add multipolygon features to results
-            const auto& mp_features = area_handler.features();
-            all_features.insert(all_features.end(), mp_features.begin(), mp_features.end());
-        }
-    }
+    run_passes(location_handler);
 
     return all_features;
 }

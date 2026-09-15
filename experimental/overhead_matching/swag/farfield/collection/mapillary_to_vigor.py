@@ -1,0 +1,1718 @@
+#!/usr/bin/env python3
+"""Convert a Mapillary image sequence into a farfield/VIGOR-format dataset.
+
+Reads Mapillary image + JSON metadata pairs and writes a dataset directory with
+pano_id_mapping.csv, frames_gps.csv, intrinsics.csv, extraction_log.csv and
+pipeline_metadata.json (+ manifest.json via farfield.provenance).
+
+Images are stored UNROTATED for both projections -- equirectangular panoramas are
+not north-aligned. Rotating would bake a heading estimate into the pixels, where
+an error in it is unfixable without going back to the originals and cannot be
+recalibrated the way a recorded angle can. Orientation is carried per frame in
+intrinsics.csv, with the column->azimuth formula in pipeline_metadata.json.
+
+Both raw Mapillary angle fields are preserved as clockwise-from-true-north
+optical-axis bearings. The selected optical-axis value and the separately
+derived column-0 value use unambiguous column names; neither is localization
+calibration authority.
+"""
+
+from collections import Counter
+
+import argparse
+import csv
+import json
+import math
+import multiprocessing
+import statistics
+import subprocess
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+
+import cv2
+
+from experimental.overhead_matching.swag.farfield import (
+    artifact,
+    audit_dataset,
+    geometry,
+    nominal_forward,
+    paths as paths_lib,
+    provenance,
+)
+# The camera_type spellings live with the API models; see models.py for the
+# verification note (both spellings are plain 2:1 equirectangular).
+from experimental.overhead_matching.swag.farfield.collection.models import (
+    EQUIRECT_CAMERA_TYPES,
+)
+from experimental.overhead_matching.swag.farfield.collection import extract_stitch
+from experimental.overhead_matching.swag.farfield.dataset_tools import checksums
+
+try:
+    from tqdm import tqdm
+except ImportError:  # progress bars are a convenience, not a dependency
+    def tqdm(iterable=None, total=None, desc=None, **kwargs):
+        if desc:
+            print(f"  {desc}...", flush=True)
+        return iterable if iterable is not None else []
+
+NUM_WORKERS = max(1, multiprocessing.cpu_count() - 2)
+CONVERSION_GENERATOR = (
+    "//experimental/overhead_matching/swag/farfield/"
+    "collection:mapillary_to_vigor"
+)
+_CONVERSION_MANIFEST_KEYS = frozenset({
+    "schema", "generator", "git_commit", "argv", "created", "inputs",
+    "config", "notes", "content_digest", "content_digest_excludes",
+    "input_download", "complete",
+})
+_CONVERSION_CONTENT_DIGEST_EXCLUDES = (
+    provenance.MANIFEST_NAME,
+    checksums.CHECKSUM_FILE,
+    "nominal_forward.json",
+    "_manifests/**",
+)
+_TRACKING_VIDEO_SCHEMA = "farfield.synthetic_hold_video.v1"
+
+
+# ── Metadata loading ──────────────────────────────────────────────────────────
+
+
+def load_sequence_metadata(
+        sequence_dir: Path, _validated_manifest: dict | None = None) -> list[dict]:
+    """Load the frame-sidecar JSONs from a Mapillary staging directory.
+
+    Only JSONs with a sibling .jpg are frame sidecars; anything else in the
+    directory (the staging manifest.json, notes) is ignored. Returns the list
+    sorted by sequence_position (authoritative spatial order from the
+    Mapillary API). A partial or absent position set is rejected: timestamp
+    order is not an equivalent spatial contract.
+    """
+    download_manifest = (_validated_manifest
+                         if _validated_manifest is not None
+                         else extract_stitch.validate_download_directory(
+                             sequence_dir))
+    metadata = []
+    for expected in download_manifest["expected"]:
+        json_path = sequence_dir / f"{expected['stem']}.json"
+        with open(json_path) as f:
+            meta = json.load(f)
+        meta["json_path"] = str(json_path)
+        meta["image_path"] = str(json_path.with_suffix(".jpg"))
+        metadata.append(meta)
+
+    missing_positions = [
+        Path(m["json_path"]).name for m in metadata
+        if (isinstance(m.get("sequence_position"), bool)
+            or not isinstance(m.get("sequence_position"), int)
+            or m["sequence_position"] < 0)
+    ]
+    if missing_positions:
+        raise ValueError(
+            "every frame sidecar must contain a nonnegative integer "
+            "sequence_position; invalid sidecars include "
+            + ", ".join(missing_positions[:5]))
+    positions = [m["sequence_position"] for m in metadata]
+    if len(set(positions)) != len(positions):
+        raise ValueError("frame sidecars contain duplicate sequence_position values")
+    metadata.sort(key=lambda m: m["sequence_position"])
+    expected_positions = list(range(len(download_manifest["expected"])))
+    if positions != expected_positions:
+        raise ValueError(
+            "frame sidecars do not exactly cover the completed download "
+            f"positions 0..{len(expected_positions) - 1}")
+
+    # Report timestamp ties as a metadata diagnostic; sequence_position remains
+    # the authoritative order.
+    ts_counts = Counter(m["captured_at"] for m in metadata)
+    dupes = {ts: c for ts, c in ts_counts.items() if c > 1}
+    if dupes:
+        total_tied = sum(c for c in dupes.values())
+        print(f"  Warning: {len(dupes)} duplicate timestamps ({total_tied}/{len(metadata)} images share a timestamp)")
+
+    return metadata
+
+
+# ── GPS utilities (all through farfield.geometry — the one owner) ─────────────
+
+
+def gps_course(m1, m2):
+    """Compass course from m1 to m2 (metadata dicts with lat/lng)."""
+    east_m, north_m = geometry.enu_from_latlon(
+        m2["lat"], m2["lng"], m1["lat"], m1["lng"])
+    if abs(east_m) < 1e-4 and abs(north_m) < 1e-4:
+        return None
+    return geometry.compass_bearing_deg(east_m, north_m)
+
+
+def compute_bbox_and_stats(metadata: list[dict]) -> dict:
+    """Compute bounding box and area statistics from metadata GPS points."""
+    lats = [m["lat"] for m in metadata]
+    lngs = [m["lng"] for m in metadata]
+
+    south, north = min(lats), max(lats)
+    west, east = min(lngs), max(lngs)
+
+    mid_lat = (south + north) / 2
+    width_km = geometry.haversine_m(mid_lat, west, mid_lat, east) / 1000
+    height_km = geometry.haversine_m(south, west, north, west) / 1000
+    area_km2 = width_km * height_km
+
+    total_dist_m = 0
+    for i in range(1, len(metadata)):
+        total_dist_m += geometry.haversine_m(
+            metadata[i - 1]["lat"], metadata[i - 1]["lng"],
+            metadata[i]["lat"], metadata[i]["lng"],
+        )
+
+    return {
+        "south": south,
+        "north": north,
+        "west": west,
+        "east": east,
+        "width_km": width_km,
+        "height_km": height_km,
+        "area_km2": area_km2,
+        "trajectory_km": total_dist_m / 1000,
+        "num_images": len(metadata),
+    }
+
+
+# ── Heading source selection / validation ────────────────────────────────────
+
+HEADING_FIELDS = {"computed": "computed_compass_angle", "compass": "compass_angle"}
+
+
+def _circ_err(a: float, b: float) -> float:
+    return abs(float(geometry.circular_diff_deg(a, b)))
+
+
+def optical_axis_to_column0_true_deg(optical_axis_true_deg: float) -> float:
+    """World bearing of equirectangular column 0 from its optical-axis bearing."""
+    return (float(optical_axis_true_deg) - 180.0) % 360.0
+
+
+def nominal_forward_world_cw_deg(
+        optical_axis_true_deg: float,
+        nominal_forward_camera_cw_deg: float) -> float:
+    """World bearing of the approved nominal-forward camera-frame ray."""
+    return (float(optical_axis_true_deg)
+            + float(nominal_forward_camera_cw_deg)) % 360.0
+
+
+def score_heading_source(
+        metadata: list[dict], field: str,
+        nominal_forward_camera_cw_deg: float | None = None) -> dict:
+    """Compare one raw Mapillary optical-axis bearing with GPS course.
+
+    With an approved nominal-forward annotation the comparison is between GPS
+    course and that annotated camera ray in world coordinates. Without one,
+    optical-axis/course disagreement remains a diagnostic and cannot approve a
+    heading source or infer a mounting angle.
+    """
+    errs = []
+    for i in range(len(metadata) - 1):
+        course = gps_course(metadata[i], metadata[i + 1])
+        if course is None:
+            continue
+        world = float(metadata[i][field])
+        if nominal_forward_camera_cw_deg is not None:
+            world = nominal_forward_world_cw_deg(
+                world, nominal_forward_camera_cw_deg)
+        errs.append(_circ_err(world, course))
+    n = len(metadata)
+    zero = sum(1 for m in metadata if m[field] == 0.0)
+    comparison = (
+        "approved_nominal_forward_world_vs_gps_course"
+        if nominal_forward_camera_cw_deg is not None
+        else "optical_axis_world_vs_gps_course_diagnostic_only")
+    if not errs:
+        return {"field": field, "comparison": comparison, "n_pairs": 0,
+                "median_abs_course_delta_deg": None,
+                "mean_abs_course_delta_deg": None,
+                "frac_exactly_zero": round(zero / n, 4)}
+    return {
+        "field": field,
+        "comparison": comparison,
+        "n_pairs": len(errs),
+        "median_abs_course_delta_deg": round(statistics.median(errs), 2),
+        "mean_abs_course_delta_deg": round(statistics.mean(errs), 2),
+        "frac_exactly_zero": round(zero / n, 4),
+    }
+
+
+# ── Camera/course diagnostic ─────────────────────────────────────────────────
+
+DIAGNOSTIC_AUTHORITY = {
+    "classification": "diagnostic_only",
+    "may_calibrate_nominal_forward": False,
+    "may_rotate_localization_bearings": False,
+}
+
+
+def _circular_mean_std_deg(values: list[float]) -> tuple[float, float]:
+    radians = [math.radians(value) for value in values]
+    mean_sin = statistics.mean(math.sin(value) for value in radians)
+    mean_cos = statistics.mean(math.cos(value) for value in radians)
+    mean = math.degrees(math.atan2(mean_sin, mean_cos))
+    concentration = min(1.0, math.hypot(mean_sin, mean_cos))
+    std = (math.degrees(math.sqrt(-2.0 * math.log(concentration)))
+           if concentration > 0.0 else 180.0)
+    return float(geometry.wrap_deg(mean)), min(std, 180.0)
+
+
+def compute_heading_course_offset(
+        metadata: list[dict], heading_field: str,
+        nominal_forward_camera_cw_deg: float | None = None) -> dict:
+    """Circular offset between a named camera ray and GPS course."""
+    offsets = []
+    for i in range(len(metadata) - 1):
+        course = gps_course(metadata[i], metadata[i + 1])
+        if course is None:
+            continue
+        world = float(metadata[i][heading_field])
+        if nominal_forward_camera_cw_deg is not None:
+            world = nominal_forward_world_cw_deg(
+                world, nominal_forward_camera_cw_deg)
+        offsets.append(float(geometry.circular_diff_deg(
+            world, course)))
+
+    if not offsets:
+        return {
+            "result_kind": (
+                "nominal_forward_world_minus_gps_course_cw_deg"
+                if nominal_forward_camera_cw_deg is not None
+                else "optical_axis_world_minus_gps_course_cw_deg"),
+            "mean_offset_cw_deg": None,
+            "circular_std_deg": None,
+            "n_samples": 0,
+            "authority": dict(DIAGNOSTIC_AUTHORITY),
+        }
+
+    mean, std = _circular_mean_std_deg(offsets)
+    return {
+        "result_kind": (
+            "nominal_forward_world_minus_gps_course_cw_deg"
+            if nominal_forward_camera_cw_deg is not None
+            else "optical_axis_world_minus_gps_course_cw_deg"),
+        "mean_offset_cw_deg": round(mean, 1),
+        "circular_std_deg": round(std, 1),
+        "n_samples": len(offsets),
+        "authority": dict(DIAGNOSTIC_AUTHORITY),
+    }
+
+
+# ── Projection / camera model ────────────────────────────────────────────────
+
+# Limited-FOV models, stored as-is with intrinsics alongside.
+PERSPECTIVE_CAMERA_TYPES = ("perspective", "brown", "fisheye", "radial", "simple_radial")
+
+
+def classify_projection(metadata: list[dict]) -> bool:
+    """True if the capture is equirectangular, False if limited-FOV.
+
+    Exits on a mixed or unknown set: a trajectory that silently blends 360 and
+    perspective frames would have a different pixel-to-azimuth mapping per
+    frame, and every downstream bearing would be wrong for some of them.
+    """
+    kinds = {}
+    for m in metadata:
+        kinds.setdefault(m.get("camera_type", ""), []).append(m["id"])
+
+    unknown = [k for k in kinds if k not in EQUIRECT_CAMERA_TYPES + PERSPECTIVE_CAMERA_TYPES]
+    if unknown:
+        print(f"ERROR: unrecognized camera_type(s) {unknown}; "
+              f"example image ids {[kinds[k][0] for k in unknown]}. Add them to "
+              f"EQUIRECT_CAMERA_TYPES or PERSPECTIVE_CAMERA_TYPES once their "
+              f"projection is confirmed.")
+        sys.exit(1)
+
+    equirect = [k for k in kinds if k in EQUIRECT_CAMERA_TYPES]
+    perspective = [k for k in kinds if k in PERSPECTIVE_CAMERA_TYPES]
+    if equirect and perspective:
+        print(f"ERROR: trajectory mixes equirectangular {equirect} and perspective "
+              f"{perspective} frames. Example ids: "
+              f"{[kinds[k][0] for k in equirect + perspective]}. Split it into "
+              f"one dataset per projection.")
+        sys.exit(1)
+    return bool(equirect)
+
+
+def fov_from_camera_parameters(meta: dict):
+    """(hfov_deg, vfov_deg) from Mapillary's [focal_normalized, k1, k2].
+
+    focal is normalized by max(width, height), so the pinhole half-angle on each
+    axis uses that axis' extent over the same normalizer. Distortion (k1, k2) is
+    not applied here — it is recorded in intrinsics.csv for consumers that want
+    to undistort.
+    """
+    params = meta.get("camera_parameters")
+    if not params or not params[0]:
+        return None, None
+    focal = params[0]
+    w, h = meta["width"], meta["height"]
+    norm = max(w, h)
+    hfov = 2 * math.degrees(math.atan((w / norm) / (2 * focal)))
+    vfov = 2 * math.degrees(math.atan((h / norm) / (2 * focal)))
+    return hfov, vfov
+
+
+# A perspective capture's horizontal field of view is physically bounded: below
+# ~25 deg is a telephoto no phone or action cam carries, and above ~160 deg is a
+# circular fisheye that would not be tagged `perspective`. Mapillary's focal
+# comes from SfM or EXIF and is sometimes wildly wrong for a run of frames.
+PLAUSIBLE_HFOV_DEG = (25.0, 160.0)
+
+# Fewest plausible frames that can support a median. The substituted share does
+# not matter much -- these are fixed single-camera captures, so the true FOV is
+# near-constant and a median is a good estimate of it -- but the size of the set
+# the median comes from does.
+MIN_PLAUSIBLE_BASIS = 30
+
+
+def repair_implausible_focals(metadata, verbose=True):
+    """Replace unphysical focal lengths with the trajectory's median.
+
+    Returns {pano_id: replacement_focal} for the frames that need one.
+
+    A fixed camera's true FOV is trajectory-wide and near-constant, so the
+    pooled median is robust to a sequence-local cluster of bad lens metadata.
+    Substitution preserves frame continuity. Every substituted frame is labelled
+    `focal_source=substituted_implausible` in intrinsics.csv so a consumer
+    needing exact intrinsics can exclude them instead.
+    """
+    lo, hi = PLAUSIBLE_HFOV_DEG
+    plausible, suspect = [], []
+    for meta in metadata:
+        hfov, _ = fov_from_camera_parameters(meta)
+        if hfov is None:
+            continue
+        (plausible if lo <= hfov <= hi else suspect).append(meta)
+    if not suspect:
+        return {}
+    if len(plausible) < MIN_PLAUSIBLE_BASIS:
+        raise SystemExit(
+            f"ERROR: only {len(plausible)} frame(s) report a field of view "
+            f"inside {lo}-{hi} deg, which is too thin a basis for a median "
+            f"({MIN_PLAUSIBLE_BASIS} required). Inspect camera_parameters for "
+            "this trajectory by hand.")
+
+    focals = sorted(m["camera_parameters"][0] for m in plausible)
+    median = focals[len(focals) // 2]
+    if verbose:
+        bad_fovs = sorted(fov_from_camera_parameters(m)[0] for m in suspect)
+        print(f"  WARNING: {len(suspect)} of {len(plausible) + len(suspect)} "
+              f"frames report an implausible FOV "
+              f"({bad_fovs[0]:.2f}-{bad_fovs[-1]:.2f}°, outside {lo}-{hi}°); "
+              f"substituting the trajectory median focal {median:.4f} "
+              f"(≈{2 * math.degrees(math.atan(1 / (2 * median))):.1f}° on a "
+              f"landscape frame) and labelling them in intrinsics.csv")
+    return {m["pano_id"]: median for m in suspect}
+
+
+# ── Image processing ─────────────────────────────────────────────────────────
+
+
+def process_single_image(args):
+    """Process a single Mapillary image (for parallel execution).
+
+    Returns (idx, output_filename, error_msg). Frames remain unrotated for every
+    projection, so this step performs only resize and re-encoding.
+    """
+    (idx, meta, output_dir, jpeg_quality, target_width, pano_id) = args
+
+    image_path = meta["image_path"]
+    lat = meta["lat"]
+    lng = meta["lng"]
+
+    # pano_id is a zero-padded fN index, not the Mapillary id: the filtering
+    # pipeline joins frames with int(pano_id[1:]) against frames_gps.csv's idx
+    # and orders frames by sorting the id as a string. A bare numeric Mapillary
+    # id satisfies neither.
+    output_filename = f"{pano_id},{lat:.6f},{lng:.6f},.jpg"
+    output_path = output_dir / output_filename
+
+    image = cv2.imread(image_path)
+    if image is None:
+        return idx, None, f"Failed to read: {image_path}"
+
+    height, width = image.shape[:2]
+
+    # Images are stored UNROTATED, in the camera frame as captured, for both
+    # projections. Rotating to north-align would bake a heading estimate into
+    # the pixels: any error in it becomes unfixable without re-deriving from the
+    # originals, and it cannot be recalibrated downstream the way a recorded
+    # angle can. The per-frame reference azimuth goes to intrinsics.csv instead,
+    # and pipeline_metadata.json records the column->azimuth formula.
+
+    if target_width and width > target_width:
+        scale = target_width / width
+        new_h = int(height * scale)
+        image = cv2.resize(image, (target_width, new_h), interpolation=cv2.INTER_AREA)
+
+    if not cv2.imwrite(
+            str(output_path), image,
+            [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]):
+        return idx, None, f"Failed to write: {output_path}"
+    return idx, output_filename, None
+
+
+def create_conversion_staging(destination: Path) -> Path:
+    """Create the sole diagnostic staging directory without clobbering data."""
+    destination = Path(destination)
+    staging = destination.with_name(
+        destination.name + artifact.INCOMPLETE_SUFFIX)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(
+            f"completed output already exists: {destination}")
+    if staging.exists() or staging.is_symlink():
+        raise FileExistsError(
+            f"incomplete output already exists: {staging}")
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    staging.mkdir()
+    return staging
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _strict_json(path: Path) -> dict:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"manifest is not a regular file: {path}")
+    try:
+        document = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {token!r}")),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"invalid conversion manifest {path}: {error}") from error
+    if not isinstance(document, dict):
+        raise ValueError(f"conversion manifest must be an object: {path}")
+    return document
+
+
+def _download_identity(sequence_dir: Path, document: dict) -> dict:
+    manifest_path = sequence_dir / extract_stitch.MANIFEST_NAME
+    return {
+        "path": str(sequence_dir.resolve()),
+        "manifest_sha256": artifact.sha256_file(manifest_path),
+        "content_digest": document["content_digest"],
+        "source_manifest": document["source_manifest"],
+    }
+
+
+def _load_tracking_video_manifest(
+        manifest_path: Path, *, dataset_name: str, download_manifest: dict,
+        input_download: dict,
+        metadata: list[dict]) -> dict:
+    """Validate a synthetic hold video and return its bound dataset fields."""
+    manifest_path = Path(manifest_path)
+    document = _strict_json(manifest_path)
+    if (document.get("schema") != _TRACKING_VIDEO_SCHEMA
+            or document.get("complete") is not True
+            or document.get("dataset") != dataset_name):
+        raise ValueError(
+            "tracking video manifest is incomplete, unsupported, or for a "
+            "different dataset")
+
+    source = document.get("source")
+    if (not isinstance(source, dict)
+            or source.get("kind") != "mapillary_stage2_download"
+            or source.get("manifest_sha256")
+            != input_download["manifest_sha256"]
+            or source.get("content_digest") != input_download["content_digest"]):
+        raise ValueError("tracking video source download identity changed")
+
+    expected_count = len(download_manifest["expected"])
+    source_frames = document.get("source_frames")
+    if (source.get("image_count") != expected_count
+            or not isinstance(source_frames, list)
+            or len(source_frames) != expected_count):
+        raise ValueError("tracking video does not cover the completed download")
+    timing = document.get("timing")
+    rate = timing.get("frame_rate") if isinstance(timing, dict) else None
+    try:
+        numerator = int(rate["numerator"])
+        denominator = int(rate["denominator"])
+        origin_ms = int(timing["origin_captured_at_ms"])
+        frame_count = int(timing["frame_count"])
+        duration_s = float(timing["duration_s"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("tracking video timing is invalid") from error
+    if (numerator <= 0 or denominator <= 0 or frame_count <= 0
+            or not math.isfinite(duration_s) or duration_s <= 0
+            or not isinstance(source_frames[0], dict)
+            or source_frames[0].get("captured_at_ms") != origin_ms):
+        raise ValueError("tracking video origin does not match source frame zero")
+
+    video_t_s = {}
+    for meta in metadata:
+        position = meta["sequence_position"]
+        frame = source_frames[position]
+        captured_at_ms = meta["captured_at"]
+        if (not isinstance(frame, dict)
+                or frame.get("sequence_position") != position
+                or frame.get("source_image_id") != str(meta["id"])
+                or frame.get("captured_at_ms") != captured_at_ms):
+            raise ValueError(
+                f"tracking video source frame {position} identity changed")
+        target_index = round(
+            (captured_at_ms - origin_ms) * numerator
+            / (1000 * denominator))
+        target_time = frame.get("target_time_s")
+        if (frame.get("target_frame_index") != target_index
+                or isinstance(target_time, bool)
+                or not isinstance(target_time, (int, float))
+                or not math.isfinite(target_time)
+                or not math.isclose(
+                    target_time, target_index * denominator / numerator,
+                    abs_tol=1e-9)):
+            raise ValueError(
+                f"tracking video source frame {position} timing changed")
+        video_t_s[position] = float(target_time)
+
+    output = document.get("output")
+    if not isinstance(output, dict) or not isinstance(output.get("path"), str):
+        raise ValueError("tracking video output is invalid")
+    declared_video = Path(output["path"])
+    video_path = (declared_video if declared_video.is_absolute()
+                  else manifest_path.parent / declared_video)
+    if video_path.is_symlink() or not video_path.is_file():
+        raise ValueError(f"tracking video is not a regular file: {video_path}")
+    video_path = video_path.resolve()
+    farfield_root = paths_lib.default_root().resolve()
+    try:
+        source_video = video_path.relative_to(farfield_root).as_posix()
+    except ValueError as error:
+        raise ValueError("tracking video is outside the farfield root") from error
+    video_sha256 = artifact.sha256_file(video_path)
+    if (output.get("sha256") != video_sha256
+            or output.get("size_bytes") != video_path.stat().st_size):
+        raise ValueError("tracking video output hash or size changed")
+
+    try:
+        streams = output["ffprobe"]["streams"]
+        stream, = [item for item in streams
+                   if item.get("codec_type") == "video"]
+        width, height = int(stream["width"]), int(stream["height"])
+        probed_frames = int(stream["nb_frames"])
+        probed_duration = float(stream["duration"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("tracking video probe values are invalid") from error
+    if (width <= 0 or height <= 0
+            or probed_frames != frame_count
+            or not math.isclose(probed_duration, duration_s, abs_tol=1e-6)):
+        raise ValueError("tracking video probe disagrees with timing")
+
+    manifest_sha256 = artifact.sha256_file(manifest_path)
+    return {
+        "inputs": {
+            "tracking_video_manifest": str(manifest_path.resolve()),
+            "tracking_video_manifest_sha256": manifest_sha256,
+            "tracking_video": str(video_path),
+            "tracking_video_sha256": video_sha256,
+        },
+        "video": {
+            "source_video": source_video,
+            "source_video_sha256": video_sha256,
+            "video_resolution": f"{width}x{height}",
+            "video_codec": stream.get("codec_name"),
+            "video_fps": numerator / denominator,
+            "video_duration_s": float(duration_s),
+            "video_frames": frame_count,
+            "sync": {
+                "method": "mapillary_synthetic_zero_order_hold",
+                "timestamp_source": timing.get("timestamp_source"),
+                "origin_captured_at_ms": origin_ms,
+                "frame_rate": dict(rate),
+                "quantization": timing.get("quantization"),
+            },
+            "anonymized": True,
+            "provider_anonymized": True,
+            "privacy_review_status": "provider_anonymized",
+            "retained": True,
+        },
+        "video_t_s": video_t_s,
+    }
+
+
+def _conversion_inputs(sequence_dir: Path,
+                       nominal_forward_path: Path | None,
+                       tracking_video: dict | None = None) -> dict:
+    result = {"sequence_dir": str(sequence_dir.resolve())}
+    if nominal_forward_path is not None:
+        result["nominal_forward_calibration"] = str(
+            nominal_forward_path.resolve())
+    if tracking_video is not None:
+        result.update(tracking_video["inputs"])
+    return result
+
+
+def _conversion_content_digest(destination: Path) -> str:
+    """Hash conversion outputs, excluding later integrity/review records."""
+    destination = Path(destination)
+    excluded = {
+        provenance.MANIFEST_NAME,
+        checksums.CHECKSUM_FILE,
+        "nominal_forward.json",
+    }
+    derived = destination / "_manifests"
+    if derived.exists() or derived.is_symlink():
+        excluded.add("_manifests")
+        excluded.update(
+            path.relative_to(destination).as_posix()
+            for path in derived.rglob("*"))
+    return artifact.sha256_directory(destination, exclude=tuple(excluded))
+
+
+def _create_initial_checksums(destination: Path) -> int:
+    target = Path(destination) / checksums.CHECKSUM_FILE
+    artifact.atomic_create_file(target, checksums.manifest_bytes(destination))
+    return checksums.verify(destination)
+
+
+def validate_completed_conversion(
+        destination: Path, *, input_download: dict, inputs: dict,
+        config: dict, allow_incomplete: bool = False) -> dict:
+    """Validate exact conversion identity and every published output byte."""
+    destination = Path(destination)
+    if (not allow_incomplete
+            and any(part.endswith(artifact.INCOMPLETE_SUFFIX)
+                    for part in destination.parts)):
+        raise ValueError(f"incomplete conversion cannot be consumed: {destination}")
+    if destination.is_symlink() or not destination.is_dir():
+        raise ValueError(f"conversion is not a regular directory: {destination}")
+    manifest_path = destination / provenance.MANIFEST_NAME
+    document = _strict_json(manifest_path)
+    missing = sorted(_CONVERSION_MANIFEST_KEYS - set(document))
+    unknown = sorted(set(document) - _CONVERSION_MANIFEST_KEYS)
+    if missing or unknown:
+        raise ValueError(
+            f"conversion manifest missing={missing}, unknown={unknown}")
+    if (document["schema"] != provenance.SCHEMA
+            or document["generator"] != CONVERSION_GENERATOR
+            or document["complete"] is not True):
+        raise ValueError("incomplete or unsupported conversion manifest")
+    for field in ("git_commit", "created"):
+        if not isinstance(document[field], str) or not document[field]:
+            raise ValueError(f"conversion manifest {field} must be non-empty")
+    if (not isinstance(document["argv"], list)
+            or not all(isinstance(item, str) for item in document["argv"])):
+        raise ValueError("conversion manifest argv must be a list of strings")
+    if document["input_download"] != input_download:
+        raise ValueError("completed conversion input download changed")
+    if document["inputs"] != inputs:
+        raise ValueError("completed conversion inputs changed")
+    if document["config"] != config:
+        raise ValueError("completed conversion configuration changed")
+    if document["content_digest_excludes"] != list(
+            _CONVERSION_CONTENT_DIGEST_EXCLUDES):
+        raise ValueError("completed conversion content-digest exclusions changed")
+    digest = _conversion_content_digest(destination)
+    if document["content_digest"] != digest:
+        raise ValueError("completed conversion content digest mismatch")
+    checksums.verify(destination)
+    return document
+
+
+# ── Visualization ─────────────────────────────────────────────────────────────
+
+
+def read_visualization_image(path: Path, role: str):
+    """Decode one required diagnostic image or fail the conversion."""
+    image = cv2.imread(str(path))
+    if image is None:
+        raise RuntimeError(
+            f"failed to read requested {role} visualization image: {path}")
+    return image
+
+
+def create_visualization(
+    original, adjusted, lat, lng, computed_compass_angle, compass_angle_val,
+    all_metadata, current_idx, frame_idx, total_frames,
+    trajectory_km, output_path, heading_optical_axis_true_deg=None,
+):
+    """Create 4-panel visualization figure adapted for Mapillary data."""
+    try:
+        import matplotlib
+    except ImportError as exc:  # pragma: no cover - BUILD carries the dep
+        raise SystemExit(
+            "--visualize needs matplotlib; it is a declared dependency of the "
+            "bazel target, so an ImportError here means the target was run "
+            f"outside bazel without it installed ({exc})")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # The green arrow shows the selected heading source. Frames remain
+    # unrotated; this arrow is metadata, not a pixel operation.
+    if heading_optical_axis_true_deg is None:
+        heading_optical_axis_true_deg = computed_compass_angle
+    selected_heading = heading_optical_axis_true_deg % 360
+
+    fig, axes = plt.subplots(2, 2, figsize=(20, 12))
+
+    # Panel 1: Original panorama
+    ax1 = axes[0, 0]
+    display_original = cv2.resize(original, (960, 480))
+    display_original = cv2.cvtColor(display_original, cv2.COLOR_BGR2RGB)
+    ax1.imshow(display_original)
+    ax1.set_title(
+        f"Original Panorama (Frame {frame_idx}/{total_frames}, "
+        f"computed: {computed_compass_angle:.1f}°, selected: {selected_heading:.1f}°)",
+        fontsize=11,
+    )
+    ax1.axis("off")
+
+    # Panel 2: stored frame (unrotated)
+    ax2 = axes[0, 1]
+    display_adjusted = cv2.resize(adjusted, (960, 480))
+    display_adjusted = cv2.cvtColor(display_adjusted, cv2.COLOR_BGR2RGB)
+    ax2.imshow(display_adjusted)
+    ax2.set_title("Stored Frame (unrotated, as captured)", fontsize=11)
+    ax2.axis("off")
+
+    # Panel 3: GPS trajectory map
+    ax3 = axes[1, 0]
+    ref_lat = all_metadata[0]["lat"]
+    ref_lon = all_metadata[0]["lng"]
+
+    all_x = []
+    all_y = []
+    for m in all_metadata:
+        x, y = geometry.enu_from_latlon(m["lat"], m["lng"], ref_lat, ref_lon)
+        all_x.append(x)
+        all_y.append(y)
+
+    ax3.plot(all_x, all_y, "b-", alpha=0.3, linewidth=0.5)
+
+    # Past points
+    past_x = all_x[: current_idx + 1]
+    past_y = all_y[: current_idx + 1]
+    ax3.scatter(past_x, past_y, c="green", s=10, alpha=0.5, label="Processed")
+    ax3.scatter([all_x[current_idx]], [all_y[current_idx]], c="red", s=100, marker="o",
+                zorder=5, label="Current")
+
+    # Selected-heading arrow on trajectory
+    arrow_len = max(20, (max(all_x) - min(all_x) + max(all_y) - min(all_y)) / 40)
+    corr_angle = math.radians(90 - selected_heading)
+    dx = arrow_len * math.cos(corr_angle)
+    dy = arrow_len * math.sin(corr_angle)
+    ax3.arrow(all_x[current_idx], all_y[current_idx], dx, dy,
+              head_width=arrow_len * 0.25, head_length=arrow_len * 0.15,
+              fc="green", ec="darkgreen", zorder=6)
+
+    # Cumulative distance to this frame
+    cum_dist = 0
+    for i in range(1, current_idx + 1):
+        cum_dist += geometry.haversine_m(
+            all_metadata[i - 1]["lat"], all_metadata[i - 1]["lng"],
+            all_metadata[i]["lat"], all_metadata[i]["lng"],
+        )
+
+    ax3.set_xlabel("East (m)")
+    ax3.set_ylabel("North (m)")
+    ax3.set_title(
+        f"GPS Trajectory — Frame {frame_idx}/{total_frames}, "
+        f"{cum_dist/1000:.1f}/{trajectory_km:.1f} km",
+    )
+    ax3.legend(loc="upper right")
+    ax3.set_aspect("equal")
+    ax3.grid(True, alpha=0.3)
+
+    # Panel 4: Compass rose — show all three headings
+    ax4 = axes[1, 1]
+    ax4.set_xlim(-1.5, 1.5)
+    ax4.set_ylim(-1.5, 1.5)
+    ax4.set_aspect("equal")
+
+    circle = plt.Circle((0, 0), 1, fill=False, color="black", linewidth=2)
+    ax4.add_patch(circle)
+
+    for label, (ddx, ddy) in {"N": (0, 1.2), "E": (1.2, 0), "S": (0, -1.2), "W": (-1.2, 0)}.items():
+        ax4.text(ddx, ddy, label, ha="center", va="center", fontsize=14, fontweight="bold")
+
+    # computed_compass_angle (blue)
+    rig_angle = math.radians(90 - computed_compass_angle)
+    rig_x = 0.9 * math.cos(rig_angle)
+    rig_y = 0.9 * math.sin(rig_angle)
+    ax4.arrow(0, 0, rig_x, rig_y, head_width=0.12, head_length=0.08,
+              fc="blue", ec="blue", linewidth=2, alpha=0.7)
+
+    # compass_angle (red)
+    travel_angle = math.radians(90 - compass_angle_val)
+    travel_x = 0.9 * math.cos(travel_angle)
+    travel_y = 0.9 * math.sin(travel_angle)
+    ax4.arrow(0, 0, travel_x, travel_y, head_width=0.12, head_length=0.08,
+              fc="red", ec="red", linewidth=2)
+
+    # selected heading (green)
+    corr_rose_angle = math.radians(90 - selected_heading)
+    corr_rose_x = 0.9 * math.cos(corr_rose_angle)
+    corr_rose_y = 0.9 * math.sin(corr_rose_angle)
+    ax4.arrow(0, 0, corr_rose_x, corr_rose_y, head_width=0.12, head_length=0.08,
+              fc="green", ec="darkgreen", linewidth=2)
+
+    ax4.set_title(
+        f"compass: {compass_angle_val:.0f}° (red)  "
+        f"computed: {computed_compass_angle:.0f}° (blue)  "
+        f"selected optical axis: {selected_heading:.0f}° (green)",
+        fontsize=10,
+    )
+    ax4.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(str(output_path), dpi=100, bbox_inches="tight")
+    plt.close()
+
+
+# ── pipeline_metadata.json ────────────────────────────────────────────────────
+
+
+def build_azimuth_convention(is_equirect: bool) -> dict:
+    """Machine-readable mapping from stored columns to world bearings."""
+    if is_equirect:
+        return {
+            "images_rotated": False,
+            "frame": "camera (as captured)",
+            "camera_frame": geometry.CAMERA_FRAME,
+            "bearing_increases": "left_to_right",
+            "raw_mapillary_fields_reference": "optical_axis_true_north_cw",
+            "selected_heading_per_frame":
+                "intrinsics.csv:heading_optical_axis_true_deg",
+            "column0_per_frame":
+                "intrinsics.csv:heading_column0_true_deg",
+            "column0_from_optical_axis_formula":
+                "heading_column0_true_deg = "
+                "(heading_optical_axis_true_deg - 180) mod 360",
+            "world_bearing_formula":
+                "bearing_world_true_cw_deg = "
+                "(heading_column0_true_deg + 360 * col / width) mod 360",
+        }
+    return {
+        "images_rotated": False,
+        "frame": "camera (as captured)",
+        "camera_frame": geometry.CAMERA_FRAME,
+        "raw_mapillary_fields_reference": "optical_axis_true_north_cw",
+        "selected_heading_per_frame":
+            "intrinsics.csv:heading_optical_axis_true_deg",
+        "world_bearing_formula": (
+            "bearing_world_true_cw_deg = "
+            "(heading_optical_axis_true_deg + "
+            "degrees(atan((2*col/width - 1) * "
+            "tan(radians(hfov_deg)/2)))) mod 360"),
+        "distortion": "k1,k2 recorded in intrinsics.csv, NOT applied",
+    }
+
+
+def build_pipeline_metadata(*, dataset_name: str, metadata: list[dict],
+                            is_equirect: bool, stats: dict, scores: dict,
+                            heading_source: str, offset_info: dict,
+                            nominal_forward_info: dict | None,
+                            substituted_count: int, image_dir_name: str,
+                            num_written: int, resize, min_spacing: float,
+                            jpeg_quality: int, max_heading_error_deg: float,
+                            max_heading_source_disagreement_deg: float,
+                            max_perspective_offset_std_deg: float,
+                            tracking_video: dict | None = None) -> dict:
+    """Assemble pipeline_metadata.json. Pure — no I/O, unit-testable.
+
+    Everything a consumer needs to interpret the images at all lives here:
+    whether column-to-azimuth holds (is_equirectangular), that nothing is
+    north-aligned, where positions came from, and the azimuth/mount-offset
+    conventions (see build_azimuth_convention).
+    """
+    heading_field = HEADING_FIELDS[heading_source]
+    sel = scores[heading_source]
+    captured_at_ms = metadata[0]["captured_at"]
+    capture_date = datetime.fromtimestamp(
+        captured_at_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    component_sequences = sorted({m.get("sequence_id", "") for m in metadata} - {""})
+    geometry_sources = Counter(m.get("geometry_source", "") for m in metadata)
+    sample_hfov, sample_vfov = fov_from_camera_parameters(metadata[0])
+    disagreements = [_circ_err(m["computed_compass_angle"], m["compass_angle"])
+                     for m in metadata]
+    med_disagreement = (round(statistics.median(disagreements), 2)
+                        if disagreements else None)
+
+    return {
+        "dataset_name": dataset_name,
+        "source": "mapillary",
+        "sequence_id": metadata[0]["sequence_id"],
+        "component_sequence_ids": component_sequences,
+        "stitched_from_n_sequences": len(component_sequences),
+        "projection": "equirectangular" if is_equirect else "perspective",
+        "is_equirectangular": is_equirect,
+        "north_aligned": False,
+        "azimuth_convention": build_azimuth_convention(is_equirect),
+        "camera_type": metadata[0].get("camera_type", ""),
+        "camera_parameters": metadata[0].get("camera_parameters"),
+        "hfov_deg": round(sample_hfov, 3) if sample_hfov else None,
+        "vfov_deg": round(sample_vfov, 3) if sample_vfov else None,
+        "intrinsics_csv": "intrinsics.csv",
+        # How many frames' lens the API got wrong. Non-zero means those rows
+        # carry an estimate, not a measurement -- see focal_source in
+        # intrinsics.csv for which ones.
+        "focals_substituted": substituted_count,
+        "image_dir": image_dir_name,
+        "geometry_source_counts": dict(geometry_sources),
+        "resize_max_width": resize,
+        "min_spacing_m": min_spacing,
+        "capture_date": capture_date,
+        "captured_at_ms": captured_at_ms,
+        "num_images": num_written,
+        "resolution": f"{metadata[0]['width']}x{metadata[0]['height']}",
+        "heading_source_recommendation": {
+            "selected_raw_field": heading_field,
+            "authority": dict(DIAGNOSTIC_AUTHORITY),
+            "requires_human_visual_approval": True,
+        },
+        "heading_source_scores": scores,
+        "approved_nominal_forward": nominal_forward_info,
+        "nominal_forward_course_alignment_within_review_threshold": (
+            bool(sel["median_abs_course_delta_deg"] is not None
+                 and sel["median_abs_course_delta_deg"]
+                 <= max_heading_error_deg)
+            if is_equirect and nominal_forward_info is not None else None),
+        "heading_sources_median_disagreement_deg": med_disagreement,
+        "heading_sources_disagree": (
+            None if is_equirect else bool(
+                med_disagreement is not None
+                and med_disagreement > max_heading_source_disagreement_deg)),
+        "camera_pans_relative_to_travel": (
+            None if is_equirect else bool(
+                offset_info["n_samples"] > 0
+                and offset_info["circular_std_deg"]
+                > max_perspective_offset_std_deg)),
+        "nominal_forward_course_review_threshold_deg": max_heading_error_deg,
+        "heading_course_diagnostic": offset_info,
+        "jpeg_quality": jpeg_quality,
+        "bbox": {
+            "south": stats["south"],
+            "north": stats["north"],
+            "west": stats["west"],
+            "east": stats["east"],
+        },
+        "extent_km": {
+            "width": round(stats["width_km"], 3),
+            "height": round(stats["height_km"], 3),
+            "area_km2": round(stats["area_km2"], 3),
+        },
+        "trajectory_km": round(stats["trajectory_km"], 3),
+        **({"video": tracking_video} if tracking_video is not None else {}),
+    }
+
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Convert Mapillary panorama sequence to VIGOR-format dataset"
+    )
+    parser.add_argument("--sequence_dir", required=True, help="Mapillary sequence directory")
+    parser.add_argument("--vigor_dir", required=True, help="Output VIGOR directory")
+    parser.add_argument("--dataset_name", required=True, help="Dataset/city name")
+    parser.add_argument("--heading_source", choices=("auto", "computed", "compass"),
+                        required=True,
+                        help="Heading recorded per frame: Mapillary's SfM "
+                             "'computed_compass_angle', the magnetometer "
+                             "'compass_angle', or 'auto' (validate both against "
+                             "the GPS travel bearing and pick the better one)")
+    parser.add_argument("--max_heading_error_deg", type=float, required=True,
+                        help="Review threshold for the approved nominal-forward "
+                             "world-bearing versus GPS-course diagnostic")
+    parser.add_argument("--max_perspective_offset_std_deg", type=float, required=True,
+                        help="Report a perspective capture as hand-held rather than "
+                             "fixed-mount above this camera-to-travel offset spread. "
+                             "Informational only — a panning camera is still usable")
+    parser.add_argument("--max_heading_source_disagreement_deg", type=float,
+                        required=True,
+                        help="Warn when a perspective capture's two heading sources "
+                             "(SfM vs magnetometer) disagree by more than this median "
+                             "amount, meaning at least one is wrong")
+    parser.add_argument(
+        "--nominal_forward_calibration", type=Path,
+        help="Optional approved dataset-bound nominal-forward record. Without "
+             "it, heading/course comparisons remain optical-axis diagnostics "
+             "and cannot approve a heading source.")
+    parser.add_argument(
+        "--tracking_video_manifest", type=Path,
+        help="Optional farfield.synthetic_hold_video.v1 manifest for the dense "
+             "Mapillary tracking video.")
+    parser.add_argument("--jpeg_quality", type=int, required=True,
+                        help="JPEG output quality")
+    parser.add_argument("--resize", type=int, required=True,
+                        help="Resize to this max width, keeping aspect ratio; "
+                             "0 stores original resolution")
+    parser.add_argument("--num_workers", type=int, default=NUM_WORKERS,
+                        help="Number of parallel workers")
+    parser.add_argument("--trim_start", type=float, default=0,
+                        help="Trim first N%% of trajectory (e.g. 50 = keep last "
+                             "half); 0 (the default) trims nothing")
+    parser.add_argument("--trim_end", type=float, default=0,
+                        help="Trim last N%% of trajectory; 0 (the default) trims "
+                             "nothing")
+    parser.add_argument("--min_spacing", type=float, required=True,
+                        help="Min spacing in meters between consecutive images; "
+                             "0 keeps all")
+    parser.add_argument("--visualize", action="store_true",
+                        help="Generate 4-panel visualization images and mp4 video")
+    args = parser.parse_args(argv)
+
+    sequence_dir = Path(args.sequence_dir)
+    final_vigor_dir = Path(args.vigor_dir)
+    resize = args.resize or None
+
+    try:
+        download_manifest = extract_stitch.validate_download_directory(
+            sequence_dir)
+    except (artifact.ArtifactError, FileNotFoundError, OSError,
+            ValueError) as error:
+        print(f"ERROR: invalid completed Mapillary download: {error}")
+        return 1
+    input_download = _download_identity(sequence_dir, download_manifest)
+
+    print("=" * 60)
+    print(f"Mapillary → VIGOR Conversion: {args.dataset_name}")
+    print("=" * 60)
+
+    # ── Step 1: Load metadata ──
+    print("\n[1/6] Loading Mapillary metadata...")
+    metadata = load_sequence_metadata(sequence_dir, download_manifest)
+    print(f"  Found {len(metadata)} images")
+    if not metadata:
+        print("ERROR: No images found")
+        sys.exit(1)
+
+    # Apply trim
+    orig_count = len(metadata)
+    if args.trim_start > 0 or args.trim_end > 0:
+        n = len(metadata)
+        i_start = int(n * args.trim_start / 100)
+        i_end = int(n * (1 - args.trim_end / 100))
+        metadata = metadata[i_start:i_end]
+        print(f"  Trimmed: kept indices {i_start}-{i_end} ({len(metadata)}/{orig_count} images)")
+
+    # Apply min spacing
+    if args.min_spacing > 0:
+        filtered = [metadata[0]]
+        for m in metadata[1:]:
+            d = geometry.haversine_m(filtered[-1]["lat"], filtered[-1]["lng"],
+                                     m["lat"], m["lng"])
+            if d >= args.min_spacing:
+                filtered.append(m)
+        print(f"  Min spacing {args.min_spacing}m: kept {len(filtered)}/{len(metadata)} images")
+        metadata = filtered
+
+    if not metadata:
+        print("ERROR: No images after filtering")
+        sys.exit(1)
+
+    tracking_video = None
+    if args.tracking_video_manifest is not None:
+        try:
+            tracking_video = _load_tracking_video_manifest(
+                args.tracking_video_manifest,
+                dataset_name=args.dataset_name,
+                download_manifest=download_manifest,
+                input_download=input_download,
+                metadata=metadata,
+            )
+        except (artifact.ArtifactError, OSError, ValueError) as error:
+            print(f"ERROR: invalid tracking video manifest: {error}")
+            return 1
+
+    sample = metadata[0]
+    print(f"  Resolution: {sample['width']}x{sample['height']}")
+    print(f"  Camera type: {sample['camera_type']}")
+    is_equirect = classify_projection(metadata)
+    print(f"  Projection: {'equirectangular (360)' if is_equirect else 'perspective (limited FOV)'}")
+    if not is_equirect:
+        hfov, vfov = fov_from_camera_parameters(sample)
+        if hfov is None:
+            print("ERROR: perspective images need camera_parameters to recover FOV; "
+                  "none present. Re-download metadata with the current api.py "
+                  "(FULL_SEARCH_FIELDS includes camera_parameters).")
+            sys.exit(1)
+        print(f"  FOV: {hfov:.1f}° horizontal x {vfov:.1f}° vertical "
+              f"(focal_norm={sample['camera_parameters'][0]:.4f})")
+        print("  Frames are stored as captured — per-frame heading + intrinsics "
+              "go to intrinsics.csv.")
+
+    approved_nominal = None
+    nominal_forward_info = None
+    if args.nominal_forward_calibration is not None:
+        try:
+            approved_nominal = nominal_forward.load(
+                args.nominal_forward_calibration,
+                expected_dataset=args.dataset_name)
+        except ValueError as error:
+            print(f"ERROR: invalid nominal-forward calibration: {error}")
+            return 1
+        nominal_forward_info = {
+            "path": str(args.nominal_forward_calibration.resolve()),
+            "sha256": artifact.sha256_file(args.nominal_forward_calibration),
+            "schema": nominal_forward.SCHEMA,
+            "version": approved_nominal.version,
+            "mounting_id": approved_nominal.mounting_id,
+            "bearing_camera_cw_deg": approved_nominal.bearing_camera_cw_deg,
+            "operator": approved_nominal.operator,
+            "approved_at": approved_nominal.approved_at,
+        }
+
+    # ── Step 2: Compute GPS stats ──
+    print("\n[2/6] Computing GPS statistics...")
+    stats = compute_bbox_and_stats(metadata)
+    print(f"  Bounding box: {stats['south']:.6f},{stats['west']:.6f} → "
+          f"{stats['north']:.6f},{stats['east']:.6f}")
+    print(f"  Extent: {stats['width_km']:.2f} × {stats['height_km']:.2f} km "
+          f"({stats['area_km2']:.2f} km²)")
+    print(f"  Trajectory length: {stats['trajectory_km']:.2f} km")
+
+    # ── Step 3a: Heading source selection + validation ──
+    print("\n[3/6] Heading source selection...")
+    nominal_bearing = (None if approved_nominal is None
+                       else approved_nominal.bearing_camera_cw_deg)
+    scores = {name: score_heading_source(
+                  metadata, field, nominal_bearing)
+              for name, field in HEADING_FIELDS.items()}
+    for name, s in scores.items():
+        print(f"  {HEADING_FIELDS[name]:24} median err vs GPS bearing: "
+              f"{s['median_abs_course_delta_deg']}°  "
+              f"(mean {s['mean_abs_course_delta_deg']}°, "
+              f"exactly-0.0 frames: {100 * s['frac_exactly_zero']:.1f}%)")
+
+    if args.heading_source != "auto":
+        heading_source = args.heading_source
+        print(f"  Requested: {HEADING_FIELDS[heading_source]}")
+    elif is_equirect and approved_nominal is not None:
+        # Only an approved nominal-forward ray makes course agreement relevant
+        # to an automatic source recommendation.
+        # Exclude degenerate fields first. A source that is exactly 0.0 on
+        # nearly every frame carries no heading but can still win on median
+        # course error by chance.
+        usable = {n: s for n, s in scores.items()
+                  if s["median_abs_course_delta_deg"] is not None
+                  and s["frac_exactly_zero"] < 0.5}
+        if not usable:
+            usable = {n: s for n, s in scores.items()
+                      if s["median_abs_course_delta_deg"] is not None}
+            print("  WARNING: every heading source is mostly exactly 0.0; "
+                  "the recorded reference azimuth will not be trustworthy")
+        heading_source = min(
+            usable, key=lambda n: usable[n]["median_abs_course_delta_deg"])
+        dropped = [HEADING_FIELDS[n] for n in scores if n not in usable]
+        if dropped:
+            print(f"  Excluded as degenerate (mostly exactly 0.0): {', '.join(dropped)}")
+        print(f"  Auto-selected: {HEADING_FIELDS[heading_source]}")
+    else:
+        # Without a nominal-forward annotation (and for a limited-FOV capture),
+        # ranking by course agreement can select the 180-degree-wrong field.
+        # Prefer Mapillary's SfM-derived bearing, which is more reliable than a
+        # device magnetometer (especially around steel hulls), unless SfM mostly
+        # failed and returned exact zeros.
+        zero_frac = scores["computed"]["frac_exactly_zero"]
+        if zero_frac > 0.2:
+            heading_source = "compass"
+            print(f"  Auto-selected: compass_angle "
+                  f"(computed_compass_angle is exactly 0.0 on "
+                  f"{100*zero_frac:.0f}% of frames — SfM did not solve)")
+        else:
+            heading_source = "computed"
+            print("  Auto-selected: computed_compass_angle "
+                  "(SfM-derived; preferred over the magnetometer for "
+                  "perspective captures)")
+        # Cross-check the two independent sources against each other. This is
+        # the only meaningful consistency test available when the camera's
+        # pointing direction is unconstrained by the direction of travel.
+        diffs = [_circ_err(m["computed_compass_angle"], m["compass_angle"])
+                 for m in metadata]
+        med_diff = statistics.median(diffs) if diffs else None
+        print(f"  computed vs compass: median disagreement {med_diff:.1f}°")
+        if med_diff is not None and med_diff > args.max_heading_source_disagreement_deg:
+            print(f"  WARNING: the two heading sources disagree by {med_diff:.1f}° "
+                  f"(> {args.max_heading_source_disagreement_deg}°), so at least one is "
+                  f"wrong and bearings from the selected one may be off by that much. "
+                  f"Recorded in pipeline_metadata.json as heading_sources_disagree.")
+
+    sel = scores[heading_source]
+    approved_course_check = is_equirect and approved_nominal is not None
+    if not is_equirect:
+        # A limited-FOV camera need not point along travel, so course disagreement
+        # is mount geometry rather than a heading error. The value is recorded
+        # per frame; offset spread distinguishes a fixed mount from a panning one.
+        print(f"  Perspective capture: skipping the GPS-bearing gate "
+              f"(median delta {sel['median_abs_course_delta_deg']}° is mount "
+              "geometry, not error). "
+              f"Consistency is checked via the offset spread below.")
+    elif not approved_course_check:
+        print("  No approved nominal-forward annotation: source selection and "
+              "optical-axis/course comparisons are diagnostic only.")
+    elif (sel["median_abs_course_delta_deg"] is None
+          or sel["median_abs_course_delta_deg"]
+          > args.max_heading_error_deg):
+        print(f"  WARNING: '{HEADING_FIELDS[heading_source]}' disagrees with the GPS "
+              "course after applying the approved nominal-forward ray "
+              f"(median {sel['median_abs_course_delta_deg']}° > "
+              f"{args.max_heading_error_deg}°). For a forward-facing 360 rig these "
+              "should track each other; retain this as a review warning, not "
+              "automatic heading authority.")
+
+    heading_field = HEADING_FIELDS[heading_source]
+    for m in metadata:
+        m["heading_optical_axis_true_deg"] = float(m[heading_field]) % 360.0
+        m["heading_column0_true_deg"] = (
+            optical_axis_to_column0_true_deg(
+                m["heading_optical_axis_true_deg"])
+            if is_equirect else None)
+
+    # ── Step 3b: camera-to-travel offset diagnostic ──
+    print("\n[3/6] Camera-to-travel offset diagnostic...")
+    offset_info = compute_heading_course_offset(
+        metadata, heading_field, nominal_bearing)
+    mean_offset = offset_info["mean_offset_cw_deg"]
+    spread = offset_info["circular_std_deg"]
+    print(f"  circular mean offset {mean_offset}° "
+          f"(circular std: {spread}°, n={offset_info['n_samples']} pairs) — "
+          "diagnostic only")
+
+    if not is_equirect:
+        # Report the mount, do not gate on it. A large spread means the camera
+        # was hand-held and panned rather than fixed to the vessel — which is
+        # perfectly usable, because the per-frame heading describes where the
+        # camera actually pointed regardless of where the vessel was going. The
+        # thing that would make bearings unreliable is a wrong heading, and that
+        # is cross-checked between the two heading sources above.
+        if offset_info["n_samples"] == 0:
+            print("  No GPS motion pairs, so the camera-to-travel offset is "
+                  "undefined (stationary capture).")
+        elif spread is not None and spread > args.max_perspective_offset_std_deg:
+            print(f"  Camera pans relative to travel (offset spread {spread:.1f}°): "
+                  f"hand-held, not a fixed mount. Per-frame heading still applies; "
+                  f"do not assume heading == direction of travel for this dataset.")
+        else:
+            print(f"  Mount looks fixed (offset spread {spread:.1f}°)")
+
+    # ── Step 4: Process images ──
+    # Publish directly under the canonical reader lane; keeping a second name
+    # behind a symlink would make the otherwise immutable dataset tree depend
+    # on mutable filesystem indirection.
+    image_dir_name = "panorama"
+    conversion_inputs = _conversion_inputs(
+        sequence_dir, args.nominal_forward_calibration, tracking_video)
+    conversion_config = {
+        "dataset_name": args.dataset_name,
+        "heading_source": args.heading_source,
+        "heading_source_selected": heading_field,
+        "nominal_forward_calibration": nominal_forward_info,
+        "max_heading_error_deg": args.max_heading_error_deg,
+        "max_perspective_offset_std_deg":
+            args.max_perspective_offset_std_deg,
+        "max_heading_source_disagreement_deg":
+            args.max_heading_source_disagreement_deg,
+        "jpeg_quality": args.jpeg_quality,
+        "resize": resize,
+        "trim_start": args.trim_start,
+        "trim_end": args.trim_end,
+        "min_spacing": args.min_spacing,
+        "visualize": args.visualize,
+    }
+    incomplete_path = final_vigor_dir.with_name(
+        final_vigor_dir.name + artifact.INCOMPLETE_SUFFIX)
+    if final_vigor_dir.exists() or final_vigor_dir.is_symlink():
+        if incomplete_path.exists() or incomplete_path.is_symlink():
+            print(f"ERROR: both completed and incomplete conversions exist: "
+                  f"{final_vigor_dir}, {incomplete_path}")
+            return 1
+        try:
+            validate_completed_conversion(
+                final_vigor_dir, input_download=input_download,
+                inputs=conversion_inputs, config=conversion_config)
+        except (artifact.ArtifactError, FileNotFoundError, OSError,
+                ValueError) as error:
+            print(f"ERROR: completed conversion cannot be reused: {error}")
+            return 1
+        completed_audit = audit_dataset.audit(final_vigor_dir)
+        if completed_audit.failed:
+            completed_audit.report()
+            print("ERROR: completed conversion failed its dataset audit")
+            return 1
+        print(f"Validated completed conversion: {final_vigor_dir}")
+        return 0
+    try:
+        incomplete_vigor_dir = create_conversion_staging(final_vigor_dir)
+    except FileExistsError as error:
+        print(f"ERROR: {error}; refusing to overwrite or mix conversion "
+              "identities")
+        return 1
+    vigor_dir = incomplete_vigor_dir
+    frames_dir = vigor_dir / image_dir_name
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Zero-padded so a plain string sort is temporal order, which is what
+    # detection ingest relies on when it sorts frames by pano_id.
+    pad = max(4, len(str(len(metadata) - 1)))
+    for i, meta in enumerate(metadata):
+        meta["pano_id"] = f"f{i:0{pad}d}"
+
+    print(f"\n[4/6] Processing {len(metadata)} images with {args.num_workers} workers...")
+    print(f"  Output dir: {image_dir_name}/")
+    if resize:
+        print(f"  Resizing to max width: {resize}")
+
+    work_items = [
+        (i, meta, frames_dir, args.jpeg_quality, resize, meta["pano_id"])
+        for i, meta in enumerate(metadata)
+    ]
+
+    results = {}  # idx -> output_filename
+    errors = []
+    with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {executor.submit(process_single_image, item): item[0] for item in work_items}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Writing frames"):
+            idx, filename, error = future.result()
+            if error:
+                errors.append(error)
+            else:
+                results[idx] = filename
+
+    if errors:
+        print(f"  ERROR: {len(errors)} images could not be processed:")
+        for err in errors[:5]:
+            print(f"    {err}")
+        return 1
+
+    print(f"  Successfully processed {len(results)}/{len(metadata)} images")
+
+    # ── Step 5: Write output files ──
+    print("\n[5/6] Writing output files...")
+
+    # pano_id_mapping.csv
+    mapping_path = vigor_dir / "pano_id_mapping.csv"
+    with open(mapping_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["pano_id", "lat", "lon", "filename"])
+        writer.writeheader()
+        for i, meta in enumerate(metadata):
+            if i not in results:
+                continue
+            writer.writerow({
+                "pano_id": meta["pano_id"],
+                "lat": meta["lat"],
+                "lon": meta["lng"],
+                "filename": results[i],
+            })
+    print(f"  Wrote {mapping_path} ({len(results)} entries)")
+
+    # frames_gps.csv — the per-frame table the farfield pipeline reads
+    # (idx, dist_m, video_t_s). Nothing else writes this file; the schema
+    # mirrors the self-collected legs. Without a tracking-video manifest,
+    # video_t_s remains seconds since the first kept capture. With one, it is
+    # the manifest's exact quantized address in the synthetic hold video.
+    gps_path = vigor_dir / "frames_gps.csv"
+    kept = [(i, m) for i, m in enumerate(metadata) if i in results]
+    t0_ms = kept[0][1]["captured_at"] if kept else 0
+    cumulative_m = 0.0
+    with open(gps_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "idx", "video_t_s", "sensor_elapsed_s", "dist_m", "latitude",
+            "longitude", "altitude_m", "speed_mps", "frame_file",
+        ])
+        writer.writeheader()
+        for out_idx, (i, meta) in enumerate(kept):
+            if out_idx > 0:
+                prev = kept[out_idx - 1][1]
+                step = geometry.haversine_m(prev["lat"], prev["lng"],
+                                            meta["lat"], meta["lng"])
+                cumulative_m += step
+                dt = (meta["captured_at"] - prev["captured_at"]) / 1000.0
+                # -1 marks "undefined", the convention the self-collected legs
+                # use when the platform is stationary or the interval is
+                # degenerate.
+                speed = round(step / dt, 3) if dt > 0 else -1.0
+            else:
+                speed = -1.0
+            t_s = round((meta["captured_at"] - t0_ms) / 1000.0, 3)
+            video_t_s = (t_s if tracking_video is None else
+                         tracking_video["video_t_s"][
+                             meta["sequence_position"]])
+            writer.writerow({
+                "idx": out_idx,
+                "video_t_s": video_t_s,
+                "sensor_elapsed_s": t_s,
+                "dist_m": round(cumulative_m, 1),
+                "latitude": f"{meta['lat']:.7f}",
+                "longitude": f"{meta['lng']:.7f}",
+                "altitude_m": "",
+                "speed_mps": speed,
+                "frame_file": results[i],
+            })
+    print(f"  Wrote {gps_path} ({len(kept)} rows, {cumulative_m/1000:.2f} km)")
+
+    # intrinsics.csv preserves both raw Mapillary fields, the selected optical
+    # axis bearing, and the explicitly derived leftmost-column bearing.
+    intrinsics_path = vigor_dir / "intrinsics.csv"
+    # Unphysical focals are repaired here rather than at download time, so
+    # the raw sidecars keep exactly what the API said.
+    substituted = ({} if is_equirect
+                   else repair_implausible_focals([m for _, m in kept]))
+    with open(intrinsics_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "idx", "pano_id", "projection", "width", "height", "focal_norm",
+            "k1", "k2", "hfov_deg", "vfov_deg",
+            "computed_compass_angle_true_deg", "compass_angle_true_deg",
+            "heading_optical_axis_true_deg", "heading_column0_true_deg",
+            "selected_heading_source", "focal_source",
+        ])
+        writer.writeheader()
+        for out_idx, (i, meta) in enumerate(kept):
+            params = list(meta.get("camera_parameters") or [None, None, None])
+            replacement = substituted.get(meta["pano_id"])
+            if replacement is not None:
+                params[0] = replacement
+                meta = dict(meta, camera_parameters=params)
+            if is_equirect:
+                # An equirectangular frame spans the full sphere; the lens
+                # model is meaningless and Mapillary's camera_parameters for
+                # these is a placeholder (e.g. [0.85, 0, 0]).
+                params = [None, None, None]
+                hfov, vfov = 360.0, 180.0
+            else:
+                hfov, vfov = fov_from_camera_parameters(meta)
+                meta["heading_column0_true_deg"] = (
+                    meta["heading_optical_axis_true_deg"] - hfov / 2.0) % 360.0
+            stored_w = min(meta["width"], resize) if resize else meta["width"]
+            scale = stored_w / meta["width"]
+            writer.writerow({
+                "idx": out_idx,
+                "pano_id": meta["pano_id"],
+                "projection": "equirectangular" if is_equirect else "perspective",
+                # Dimensions as stored on disk, so a consumer computing
+                # focal in pixels does not have to know the resize factor.
+                "width": int(round(meta["width"] * scale)),
+                "height": int(round(meta["height"] * scale)),
+                "focal_norm": params[0],
+                "k1": params[1] if len(params) > 1 else None,
+                "k2": params[2] if len(params) > 2 else None,
+                "hfov_deg": round(hfov, 4) if hfov else None,
+                "vfov_deg": round(vfov, 4) if vfov else None,
+                "computed_compass_angle_true_deg": round(
+                    float(meta["computed_compass_angle"]) % 360.0, 3),
+                "compass_angle_true_deg": round(
+                    float(meta["compass_angle"]) % 360.0, 3),
+                "heading_optical_axis_true_deg": round(
+                    meta["heading_optical_axis_true_deg"], 3),
+                "heading_column0_true_deg": round(
+                    meta["heading_column0_true_deg"], 3),
+                "selected_heading_source": heading_field,
+                "focal_source": (
+                    "n/a" if is_equirect
+                    else "substituted_implausible" if replacement is not None
+                    else "api"),
+            })
+    print(f"  Wrote {intrinsics_path} ({len(kept)} rows"
+          + (f", {len(substituted)} focal(s) substituted" if substituted else "")
+          + ")")
+
+    # extraction_log.csv
+    log_path = vigor_dir / "extraction_log.csv"
+    with open(log_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "frame_idx", "pano_id", "mapillary_id", "sequence_id",
+            "sequence_position", "camera_type", "geometry_source", "lat", "lng",
+            "computed_compass_angle", "compass_angle",
+            "heading_optical_axis_true_deg", "heading_column0_true_deg",
+            "captured_at", "original_path", "output_filename",
+        ])
+        writer.writeheader()
+        for i, meta in enumerate(metadata):
+            if i not in results:
+                continue
+            writer.writerow({
+                "frame_idx": i,
+                "pano_id": meta["pano_id"],
+                "mapillary_id": meta["id"],
+                "sequence_id": meta.get("sequence_id", ""),
+                "sequence_position": meta.get("sequence_position", ""),
+                "camera_type": meta.get("camera_type", ""),
+                "geometry_source": meta.get("geometry_source", ""),
+                "lat": meta["lat"],
+                "lng": meta["lng"],
+                "computed_compass_angle": meta["computed_compass_angle"],
+                "compass_angle": meta["compass_angle"],
+                "heading_optical_axis_true_deg":
+                    meta["heading_optical_axis_true_deg"],
+                "heading_column0_true_deg": meta["heading_column0_true_deg"],
+                "captured_at": meta["captured_at"],
+                "original_path": meta["image_path"],
+                "output_filename": results[i],
+            })
+    print(f"  Wrote {log_path}")
+
+    # pipeline_metadata.json
+    meta_path = vigor_dir / "pipeline_metadata.json"
+    pipeline_meta = build_pipeline_metadata(
+        dataset_name=args.dataset_name,
+        metadata=metadata,
+        is_equirect=is_equirect,
+        stats=stats,
+        scores=scores,
+        heading_source=heading_source,
+        offset_info=offset_info,
+        nominal_forward_info=nominal_forward_info,
+        substituted_count=len(substituted),
+        image_dir_name=image_dir_name,
+        num_written=len(results),
+        resize=resize,
+        min_spacing=args.min_spacing,
+        jpeg_quality=args.jpeg_quality,
+        max_heading_error_deg=args.max_heading_error_deg,
+        max_heading_source_disagreement_deg=args.max_heading_source_disagreement_deg,
+        max_perspective_offset_std_deg=args.max_perspective_offset_std_deg,
+        tracking_video=(None if tracking_video is None
+                        else tracking_video["video"]),
+    )
+    with open(meta_path, "w") as f:
+        json.dump(pipeline_meta, f, indent=2)
+    print(f"  Wrote {meta_path}")
+
+    # ── Step 6: Visualizations (optional) ──
+    if args.visualize:
+        vis_dir = vigor_dir / "visualizations"
+        vis_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n[6/6] Creating {len(metadata)} visualizations (all frames)...")
+        visualized = 0
+        for idx in tqdm(range(len(metadata)), desc="Visualizing"):
+            meta = metadata[idx]
+            if idx not in results:
+                continue
+
+            try:
+                original = read_visualization_image(
+                    Path(meta["image_path"]), "original")
+                adjusted = read_visualization_image(
+                    frames_dir / results[idx], "stored")
+
+                # Contiguous numbering is the ffmpeg input contract even when
+                # spacing selected a sparse subset of metadata indices.
+                vis_path = vis_dir / f"vis_{visualized:04d}.jpg"
+                create_visualization(
+                    original, adjusted,
+                    meta["lat"], meta["lng"],
+                    meta["computed_compass_angle"],
+                    meta["compass_angle"],
+                    metadata, idx, idx + 1, len(metadata),
+                    stats["trajectory_km"],
+                    vis_path,
+                    heading_optical_axis_true_deg=
+                        meta["heading_optical_axis_true_deg"],
+                )
+                read_visualization_image(vis_path, "rendered")
+            except Exception as error:
+                print("ERROR: requested visualization failed; diagnostic "
+                      f"conversion remains incomplete: {error}")
+                return 1
+            visualized += 1
+        if visualized != len(results):
+            print("ERROR: requested visualization coverage is incomplete: "
+                  f"rendered {visualized}, expected {len(results)}")
+            return 1
+        print(f"  Saved to {vis_dir}")
+
+        # Compile into video
+        video_name = f"{args.dataset_name.lower()}_alignment.mp4"
+        video_path = vigor_dir / video_name
+        ffmpeg_cmd = [
+            "ffmpeg", "-framerate", "10",
+            "-i", str(vis_dir / "vis_%04d.jpg"),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            str(video_path), "-y",
+        ]
+        print(f"  Encoding video: {video_path}")
+        encoded = subprocess.run(ffmpeg_cmd, capture_output=True)
+        if encoded.returncode != 0 or not video_path.is_file():
+            print("ERROR: ffmpeg failed to create the requested visualization "
+                  "video; diagnostic conversion remains incomplete")
+            return 1
+        print(f"  Video saved: {video_path}")
+    else:
+        print("\n[6/6] Skipping visualizations (use --visualize to enable)")
+
+    # ── Summary ──
+    print("\n" + "=" * 60)
+    print("Validating completed dataset contract...")
+    try:
+        download_after = extract_stitch.validate_download_directory(
+            sequence_dir)
+        if _download_identity(sequence_dir, download_after) != input_download:
+            raise ValueError("completed download identity changed")
+        if args.tracking_video_manifest is not None:
+            tracking_after = _load_tracking_video_manifest(
+                args.tracking_video_manifest,
+                dataset_name=args.dataset_name,
+                download_manifest=download_after,
+                input_download=input_download,
+                metadata=metadata,
+            )
+            if tracking_after["inputs"] != tracking_video["inputs"]:
+                raise ValueError("tracking video identity changed")
+    except (artifact.ArtifactError, FileNotFoundError, OSError,
+            ValueError) as error:
+        print(f"ERROR: source input changed during conversion: {error}")
+        return 1
+    content_digest = _conversion_content_digest(vigor_dir)
+    provenance.write(
+        vigor_dir,
+        generator=CONVERSION_GENERATOR,
+        inputs=conversion_inputs,
+        config=conversion_config,
+        content_digest=content_digest,
+        extra={
+            "input_download": input_download,
+            "content_digest_excludes": list(
+                _CONVERSION_CONTENT_DIGEST_EXCLUDES),
+            "complete": True,
+        },
+    )
+    _create_initial_checksums(vigor_dir)
+    try:
+        validate_completed_conversion(
+            vigor_dir, input_download=input_download,
+            inputs=conversion_inputs, config=conversion_config,
+            allow_incomplete=True)
+    except (artifact.ArtifactError, FileNotFoundError, OSError,
+            ValueError) as error:
+        print(f"ERROR: conversion failed its identity validation: {error}")
+        return 1
+    audit = audit_dataset.audit(vigor_dir)
+    if audit.failed:
+        audit.report()
+        print(f"ERROR: conversion failed its dataset audit; diagnostic output "
+              f"remains at {vigor_dir}")
+        return 1
+    artifact.publish_directory_no_clobber(vigor_dir, final_vigor_dir)
+
+    print("Conversion Complete!")
+    print("=" * 60)
+    print(f"  Output: {final_vigor_dir}")
+    print(f"  Frames: {final_vigor_dir / image_dir_name} "
+          f"({len(results)} images, unrotated)")
+    print(f"  Bounding box (for satellite download):")
+    print(f"    --bbox {stats['south']:.6f} {stats['west']:.6f} "
+          f"{stats['north']:.6f} {stats['east']:.6f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1096,6 +1096,7 @@ filelock==3.18.0 \
     #   python-discovery
     #   torch
     #   transformers
+    #   ultralytics
     #   virtualenv
 flask==3.0.3 \
     --hash=sha256:34e815dfaa43340d1d15a5c3a02b8476004037eb4840b34910c6e21679d288f3 \
@@ -1103,6 +1104,11 @@ flask==3.0.3 \
     # via
     #   -c constraints.txt
     #   dash
+flatbuffers==25.12.19 \
+    --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+    # via
+    #   -c constraints.txt
+    #   onnxruntime
 fonttools==4.59.1 \
     --hash=sha256:01158376b8a418a0bae9625c476cebfcfcb5e6761e9d243b219cd58341e7afbb \
     --hash=sha256:02e4fdf27c550dded10fe038a5981c29f81cb9bc649ff2eaa48e80dab8998f97 \
@@ -2433,6 +2439,7 @@ matplotlib==3.9.2 \
     #   supervision
     #   torchcfm
     #   torchdyn
+    #   ultralytics
 matplotlib-inline==0.1.7 \
     --hash=sha256:8423b23ec666be3d16e16b60bdd8ac4e86e840ebd1dd11a30b9f117f2fa0ab90 \
     --hash=sha256:df192d39a4ff8f21b1895d72e6a13f5fcc5099f00fa84384e0ea28c2cc0653ca
@@ -2886,6 +2893,7 @@ numpy==2.3.5 \
     #   matplotlib
     #   mosek
     #   numba
+    #   onnxruntime
     #   opencv-python
     #   opencv-python-headless
     #   osmnx
@@ -2916,6 +2924,8 @@ numpy==2.3.5 \
     #   torchsde
     #   torchvision
     #   transformers
+    #   ultralytics
+    #   ultralytics-thop
 nvidia-cublas-cu12==12.8.3.14 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:3f0e05e7293598cf61933258b73e66a160c27d59c4422670bf0b79348c04be44 \
     --hash=sha256:93a4e0e386cc7f6e56c822531396de8170ed17068a1e18f987574895044cd8c3 \
@@ -2995,6 +3005,12 @@ nvidia-cusparselt-cu12==0.6.3 ; platform_machine == 'x86_64' and sys_platform ==
     # via
     #   -c constraints.txt
     #   torch
+nvidia-ml-py==13.610.43 \
+    --hash=sha256:65437eb73d68d0c62c931ca4d45038472faff03bd0b8729abba4b899f70d60f2 \
+    --hash=sha256:f13c72698edef492f985cc225f14faafe68ae065a2e407f45bdf6f4b9b43fde8
+    # via
+    #   -c constraints.txt
+    #   ultralytics
 nvidia-nccl-cu12==2.26.2 ; platform_machine == 'x86_64' and sys_platform == 'linux' \
     --hash=sha256:5c196e95e832ad30fbbb50381eb3cbd1fadd5675e587a548563993609af19522 \
     --hash=sha256:694cf3879a206553cc9d7dbda76b13efaf610fdb70a50cba303de1b0d1530ac6
@@ -3033,6 +3049,34 @@ omegaconf==2.3.0 \
     #   dinov3
     #   hydra-core
     #   mapprior
+onnxruntime==1.29.0 \
+    --hash=sha256:07c5907474dec4a2792fd7626b753dc66707808385a6d9eecf993db0066a9d0f \
+    --hash=sha256:0d4f427afac434b0070fe992b540ddf20a7aff2265f760f314d91331935b6b98 \
+    --hash=sha256:11264bb58f7b7cf6af835ab10d36838d73680580820fd6f51d90124a1ca8f449 \
+    --hash=sha256:16925ef8497e2c07e4b5ae15b504079b3ab3f65e22c58efd10dde0f3caea969a \
+    --hash=sha256:1ea91cef3b971506e51ae9c37c16d027774ec64994a524ec1bdfb027d68a9832 \
+    --hash=sha256:2945e1f82f81f27e88decea88c7861f45baea23818950d467bf3909aa303119e \
+    --hash=sha256:2b80d8c7ec2cc7438e4da3760b88c24568cba72c9ace96d668800a6c79419acb \
+    --hash=sha256:3a3814c041251d6a77fdf513fb282056538ee826d2f1178a0df3c549d3fff6ba \
+    --hash=sha256:4a3129ae56e70d2618ff773920166916310370a7e3cacb60b9e0e8910092725f \
+    --hash=sha256:4acf2b4948b7ede87221ca6332344b8facdc8059d6ac751a7d367d04532b02dd \
+    --hash=sha256:4b940b0d777590c7e20bf298f5c16af1ea6ad1b400a1c822a6be192f64f4d954 \
+    --hash=sha256:4eae472cf7dc3107dec1bb53cd6d142d1964616d08aae48654cd4254b2363c4b \
+    --hash=sha256:533f8370ce124304e5cb08ab961836cf755631e3dd77adc5f3bbdab70c2b7d99 \
+    --hash=sha256:6c0c37b92f67ed68dd36221ce0403e1d9bd4f7efce724439978a2597848530e5 \
+    --hash=sha256:85f8e8406c52658735fe5c7fbfd3ebaa1ed340768324f6252e4274e374580a23 \
+    --hash=sha256:939e5d65f332e6d399774b2bd0d3559fd8fa629c1e77833db29d968d2384f23d \
+    --hash=sha256:be0f8ed688cfb1d4d5765a137193b7bfab0c8ea214eed99260b380bb525a3a7f \
+    --hash=sha256:c1ad3f437153fe77f9d01a08fbaac0beb030e09b8a80ace1603bcf69b6c95481 \
+    --hash=sha256:d2fb19e848f7c33ed8d3182b52504aaa11c5e8da438bbb47296f85b133cbcf6b \
+    --hash=sha256:d67673c5367727860922c5262d724472f1b5539fb7ccf4c81a638f9b71719803 \
+    --hash=sha256:dc61a79cb39afd66ab3f01fd2c23591a7f01de89c1668e1fb6315067fc279164 \
+    --hash=sha256:e2128f31f449e922c62dbe5d8b6b7b079f0bcaf2d56a102fa203cb6e5bb5ab19 \
+    --hash=sha256:e417ef8628dcce310d2d53023e750ea298ec14d4341ae6dc3a572bfd9bc7fa97 \
+    --hash=sha256:e74b278af1d949876f5d91d1268fd6c680e79f2bac194967394eaba9fdf69e7e
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 open-clip-torch==2.32.0 \
     --hash=sha256:0220bc111162527eb738c1fe20dbfd6ea45dfe44726b54a4de18d3945d8f2f00 \
     --hash=sha256:80b35b43e37afc2b6173aa5ab0ad68744ab3a3211e624f72dfe743a162707637
@@ -3061,6 +3105,7 @@ opencv-python==4.11.0.86 \
     #   lightglue
     #   mapprior
     #   supervision
+    #   ultralytics
 opencv-python-headless==4.11.0.86 \
     --hash=sha256:0e0a27c19dd1f40ddff94976cfe43066fbbe9dfbb2ec1907d66c19caef42a57b \
     --hash=sha256:48128188ade4a7e517237c8e1e11a9cdf5c282761473383e77beb875bb1e61ca \
@@ -3137,6 +3182,7 @@ packaging==25.0 \
     #   matplotlib
     #   nbconvert
     #   nox
+    #   onnxruntime
     #   plotly
     #   pymgl
     #   pyogrio
@@ -3329,6 +3375,7 @@ pillow==10.4.0 \
     #   sentence-transformers
     #   supervision
     #   torchvision
+    #   ultralytics
 platformdirs==4.3.8 \
     --hash=sha256:3d512d96e16bcb959a814c9f348431070822a6496326a4be0911c40b5a74c2bc \
     --hash=sha256:ff7059bb7eb1179e2685604f4aaf157cfd9535242bd23742eadc3c13542139b4
@@ -3363,6 +3410,7 @@ polars==1.27.1 \
     #   -c constraints.txt
     #   -r third_party/python/requirements_3_12.in
     #   av2
+    #   ultralytics
 poly-matrix @ git+https://github.com/utiasASRL/poly_matrix.git@671d6b7704fcc82817189dbbc87814c429b2e15d
     # via
     #   -c constraints.txt
@@ -3582,6 +3630,7 @@ protobuf==5.29.0rc2 \
     #   -r third_party/python/requirements_3_12.in
     #   google-api-core
     #   googleapis-common-protos
+    #   onnxruntime
     #   proto-plus
     #   tensorboard
 psutil==7.0.0 \
@@ -3601,6 +3650,7 @@ psutil==7.0.0 \
     #   ipykernel
     #   marimo
     #   rerun-sdk
+    #   ultralytics
 ptyprocess==0.7.0 ; os_name != 'nt' or (sys_platform != 'emscripten' and sys_platform != 'win32') \
     --hash=sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35 \
     --hash=sha256:5c5d0a3b48ceee0b48485e0c26037c0acd7d29765ca3fbb5cb3831d347423220
@@ -4283,6 +4333,7 @@ pyyaml==6.0.2 \
     #   supervision
     #   timm
     #   transformers
+    #   ultralytics
     #   yacs
 pyzmq==27.0.1 \
     --hash=sha256:05a94233fdde585eb70924a6e4929202a747eea6ed308a6171c4f1c715bbe39e \
@@ -4531,6 +4582,7 @@ requests==2.32.4 \
     #   osmnx
     #   supervision
     #   transformers
+    #   ultralytics
 requests[socks]==2.32.4 ; platform_machine == 'x86_64' \
     --hash=sha256:27babd3cda2a6d50b30443204ee89830707d396671944c998b5975b031ac2b2c \
     --hash=sha256:27d0316682c8a29834d3264820024b62a36942083d52caf2f14c0591336d3422
@@ -5310,6 +5362,8 @@ torch==2.7.0+cu128 \
     #   torchmetrics
     #   torchsde
     #   torchvision
+    #   ultralytics
+    #   ultralytics-thop
 torch-kdtree @ git+https://github.com/ewfuentes/torch_kdtree.git@583b92b105fcc7aefdc0020136229f9ed32566b7
     # via
     #   -c constraints.txt
@@ -5382,6 +5436,7 @@ torchvision==0.22.0+cu128 \
     #   sam-2
     #   timm
     #   torchdyn
+    #   ultralytics
 tornado==6.5.2 \
     --hash=sha256:06ceb1300fd70cb20e43b1ad8aaee0266e69e7ced38fa910ad2e03285009ce7c \
     --hash=sha256:2436822940d37cde62771cff8774f4f00b3c8024fe482e16ca8387b8a2724db6 \
@@ -5515,6 +5570,18 @@ tzdata==2025.3 \
     # via
     #   -c constraints.txt
     #   pandas
+ultralytics==8.4.117 \
+    --hash=sha256:0c0c91cd8a6587a22f0acb07b2bc7261a2fe8660afc03bc8061b6945c34a8eee \
+    --hash=sha256:859a16eebc707f8b1b6e259d01f70040287f2e97c12c9ee0c5e6309484db3a2f
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
+ultralytics-thop==2.1.6 \
+    --hash=sha256:0ec2df8ebd3db35795e1f80cdc8bce6734446dbe989bca1b0c89396353f0f08c \
+    --hash=sha256:23f7b8ad124fa3432c1a7de9279102c4fdda699216032a7dff49f87ec3d1a3af
+    # via
+    #   -c constraints.txt
+    #   ultralytics
 universal-pathlib==0.3.10 \
     --hash=sha256:4487cbc90730a48cfb64f811d99e14b6faed6d738420cd5f93f59f48e6930bfb \
     --hash=sha256:dfaf2fb35683d2eb1287a3ed7b215e4d6016aa6eaf339c607023d22f90821c66

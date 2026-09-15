@@ -1,15 +1,21 @@
+import json
 import math
+from pathlib import Path
+import tempfile
 import unittest
+import warnings
 
 import common.torch.load_torch_deps  # noqa: F401
 import torch
 import pandas as pd
 
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
+    _assert_matrix_aligned,
     SafaPlusNormalizedLandmarkAggregator,
     SafaPlusNormalizedLandmarkAggregatorConfig,
     SingleSimilarityMatrixAggregator,
 )
+from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from experimental.overhead_matching.swag.filter.particle_filter import (
     wag_observation_log_likelihood_from_similarity_matrix,
 )
@@ -17,6 +23,78 @@ from experimental.overhead_matching.swag.filter.particle_filter import (
 
 def _make_metadata(n: int = 4) -> pd.DataFrame:
     return pd.DataFrame({"pano_id": [f"p{i}" for i in range(n)]})
+
+
+def _make_satellite_metadata(n: int = 4) -> pd.DataFrame:
+    return pd.DataFrame({
+        "path": [Path(f"/satellite/sat_{i}.jpg") for i in range(n)],
+    })
+
+
+class TestSimilarityMatrixIdentity(unittest.TestCase):
+    def _write_sidecar(self, matrix_path, panoramas, satellites):
+        matrix_path.with_suffix(".json").write_text(json.dumps({
+            "matrix_identity": vd.similarity_matrix_identity(
+                panoramas, satellites),
+        }))
+
+    def test_reordered_panoramas_with_same_shape_are_rejected(self):
+        panoramas = _make_metadata(3)
+        satellites = _make_satellite_metadata(2)
+        with tempfile.TemporaryDirectory() as temporary:
+            matrix_path = Path(temporary) / "similarity.pt"
+            self._write_sidecar(matrix_path, panoramas, satellites)
+
+            reordered = panoramas.iloc[[1, 0, 2]].reset_index(drop=True)
+            with self.assertRaisesRegex(ValueError, "panorama_ids_sha256"):
+                _assert_matrix_aligned(
+                    torch.zeros(3, 2), reordered, satellites, matrix_path,
+                    require_identity=True)
+
+    def test_reordered_satellites_with_same_shape_are_rejected_even_if_legacy_allowed(self):
+        panoramas = _make_metadata(3)
+        satellites = _make_satellite_metadata(2)
+        with tempfile.TemporaryDirectory() as temporary:
+            matrix_path = Path(temporary) / "similarity.pt"
+            self._write_sidecar(matrix_path, panoramas, satellites)
+
+            reordered = satellites.iloc[[1, 0]].reset_index(drop=True)
+            with self.assertRaisesRegex(ValueError, "satellite_filenames_sha256"):
+                _assert_matrix_aligned(
+                    torch.zeros(3, 2), panoramas, reordered, matrix_path,
+                    allow_legacy_identity=True, require_identity=True)
+
+    def test_missing_sidecar_requires_explicit_legacy_opt_in_when_strict(self):
+        panoramas = _make_metadata(2)
+        satellites = _make_satellite_metadata(2)
+        with tempfile.TemporaryDirectory() as temporary:
+            matrix_path = Path(temporary) / "no_identity.pt"
+            with warnings.catch_warnings(record=True) as caught:
+                _assert_matrix_aligned(
+                    torch.zeros(2, 2), panoramas, satellites, matrix_path)
+            self.assertEqual(caught, [])
+            with self.assertRaisesRegex(
+                    ValueError, "allow_legacy_similarity_identity"):
+                _assert_matrix_aligned(
+                    torch.zeros(2, 2), panoramas, satellites, matrix_path,
+                    require_identity=True)
+            with self.assertWarnsRegex(RuntimeWarning, "legacy artifact"):
+                _assert_matrix_aligned(
+                    torch.zeros(2, 2), panoramas, satellites, matrix_path,
+                    allow_legacy_identity=True, require_identity=True)
+
+    def test_malformed_identity_is_rejected(self):
+        panoramas = _make_metadata(2)
+        satellites = _make_satellite_metadata(2)
+        with tempfile.TemporaryDirectory() as temporary:
+            matrix_path = Path(temporary) / "similarity.pt"
+            matrix_path.with_suffix(".json").write_text(json.dumps({
+                "matrix_identity": [],
+            }))
+            with self.assertRaisesRegex(ValueError, "must be a JSON object"):
+                _assert_matrix_aligned(
+                    torch.zeros(2, 2), panoramas, satellites, matrix_path,
+                    require_identity=True)
 
 
 class TestSingleSimilarityMatrixAggregator(unittest.TestCase):
@@ -70,7 +148,7 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
 
     def _make(self, img_sim, lm_sim, image_sigma=0.187, landmark_sigma=0.72,
               landmark_use_raw_residual=False):
-        meta = _make_metadata(img_sim.shape[0])
+        meta = _make_metadata(lm_sim.shape[0])
         return SafaPlusNormalizedLandmarkAggregator(
             image_similarity_matrix=img_sim,
             landmark_similarity_matrix=lm_sim,
@@ -126,6 +204,15 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
         self.assertAlmostEqual(
             (out[2] - log_p_img[2]).item(), expected_lm_at_max, places=4
         )
+
+    def test_landmark_only_uses_no_image_likelihood(self):
+        lm_sim = torch.tensor([[0.0, 0.5, 1.0]])
+        agg = self._make(None, lm_sim, landmark_sigma=0.5)
+
+        out = agg("p0")
+
+        torch.testing.assert_close(
+            out - out.max(), torch.tensor([-2.0, -0.5, 0.0]))
 
     def test_landmark_residual_decreases_likelihood_quadratically(self):
         """log_p_lm[j] − log_p_lm[j*] should be exactly −0.5 (r_norm / σ_lm)^2."""

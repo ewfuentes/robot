@@ -1,0 +1,6 @@
+kind: SafaPlusNormalizedLandmarkAggregatorConfig
+image_similarity_matrix_path: /data/farfield_matching/artifacts/loci_wag_similarity/mount_washington_20260815_leg1/dinov3_wag_nohinge_best_20260913_v1/similarity.pt
+landmark_similarity_matrix_path: /data/farfield_matching/artifacts/loci_correspondence_scores/mount_washington_20260815_leg1/paper_full_multisource_1d45cb6_hungarian0p8_unique_20260914_v1/raw_similarity.pt
+image_sigma: 0.1809
+landmark_sigma: 0.4673
+landmark_use_raw_residual: false

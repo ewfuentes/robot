@@ -97,6 +97,11 @@ class VigorDatasetConfig(NamedTuple):
     load_cache_debug: bool = False
     panorama_landmark_radius_px: float = 640
     landmark_correspondence_inflation_factor: float = 1.0
+    # Optional external artifact payloads.  The legacy VIGOR layout remains
+    # the default, but far-field datasets are frozen problem definitions and
+    # keep derived satellite/OSM data in typed artifact directories.
+    satellite_dir: None | Path = None
+    landmark_path: None | Path = None
 
 
 class VigorDatasetItem(NamedTuple):
@@ -134,6 +139,36 @@ def series_to_dict_with_index(series: pd.Series, index_key: str = "index"):
 
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+SIMILARITY_MATRIX_IDENTITY_SCHEMA = "swag_similarity_matrix_identity/v1"
+
+
+def _hash_ordered_strings(values) -> str:
+    """Hash an ordered string sequence without delimiter ambiguity."""
+    digest = hashlib.sha256(b"swag_ordered_strings/v1\0")
+    values = [str(value) for value in values]
+    digest.update(len(values).to_bytes(8, "big"))
+    for value in values:
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def similarity_matrix_identity(
+        panorama_metadata: pd.DataFrame,
+        satellite_metadata: pd.DataFrame) -> dict:
+    """Return the positional row/column identity for a similarity matrix."""
+    panorama_ids = panorama_metadata["pano_id"].astype(str).tolist()
+    satellite_filenames = [
+        Path(path).name for path in satellite_metadata["path"]]
+    return {
+        "schema": SIMILARITY_MATRIX_IDENTITY_SCHEMA,
+        "panorama_count": len(panorama_ids),
+        "panorama_ids_sha256": _hash_ordered_strings(panorama_ids),
+        "satellite_count": len(satellite_filenames),
+        "satellite_filenames_sha256": _hash_ordered_strings(
+            satellite_filenames),
+    }
 
 
 def _warn_skipped_non_image_files(loader: str, dir_path: Path, skipped: list[Path]) -> None:
@@ -181,12 +216,29 @@ def load_panorama_metadata(path: Path, zoom_level: int):
 
 def load_landmark_geojson(path: Path, zoom_level: int):
     from experimental.overhead_matching.swag.model.semantic_landmark_utils import prune_landmark
+    from experimental.overhead_matching.swag.farfield.catalog import schema as catalog_schema
 
     if path.suffix == ".feather":
         df = gpd.read_feather(path)
     else:
         df = gpd.read_file(path)
 
+    # Far-field catalogs store all OSM properties as canonical JSON in one
+    # compact `tags` column.  Decode and validate that representation before
+    # adding runtime-only columns, because the strict catalog reader rejects
+    # unexpected persisted fields such as geometry_px/pruned_props.
+    if catalog_schema.REQUIRED_COLUMNS.issubset(df.columns):
+        decoded_tags = catalog_schema.tag_dicts(df)
+        if df.crs is None or df.crs.to_epsg() != 4326:
+            raise ValueError(
+                f"compact far-field catalog CRS must be EPSG:4326, got "
+                f"{df.crs}")
+        pruned_props = [prune_landmark(tags) for tags in decoded_tags]
+    else:
+        # Backward-compatible path for the original wide OSMnx Feathers and
+        # GeoJSON files, where each OSM key is a separate column.
+        pruned_props = df.apply(
+            lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
 
     def convert_geometry_to_pixels(geometry):
         def coord_transform(lon, lat):
@@ -196,7 +248,7 @@ def load_landmark_geojson(path: Path, zoom_level: int):
         return shapely.ops.transform(coord_transform, geometry)
 
     df["geometry_px"] = df["geometry"].apply(convert_geometry_to_pixels)
-    df["pruned_props"] = df.apply(lambda row: prune_landmark(row.dropna().to_dict()), axis=1)
+    df["pruned_props"] = pruned_props
 
     return df
 
@@ -467,13 +519,35 @@ class VigorDataset(torch.utils.data.Dataset):
             dataset_path = [dataset_path]
         elif isinstance(dataset_path, str):
             dataset_path = [Path(dataset_path)]
+        else:
+            dataset_path = [Path(path) for path in dataset_path]
+
+        if (config.satellite_dir is not None
+                or config.landmark_path is not None) \
+                and len(dataset_path) != 1:
+            raise ValueError(
+                "explicit satellite_dir/landmark_path overrides require "
+                "exactly one dataset_path")
+        if (config.satellite_dir is not None
+                or config.landmark_path is not None) \
+                and (config.satellite_tensor_cache_info is not None
+                     or config.panorama_tensor_cache_info is not None):
+            raise ValueError(
+                "external satellite_dir/landmark_path overrides require "
+                "tensor caches to be disabled until their namespace binds "
+                "the external artifact identities")
 
         sat_metadatas = []
         pano_metadatas = []
         landmark_metadatas = []
         log_progress(f"Starting dataset init for {[p.name for p in dataset_path]}")
         for p in dataset_path:
-            sat_metadata = load_satellite_metadata(p / config.satellite_subdir, config.satellite_zoom_level)
+            satellite_dir = (
+                Path(config.satellite_dir)
+                if config.satellite_dir is not None
+                else p / config.satellite_subdir)
+            sat_metadata = load_satellite_metadata(
+                satellite_dir, config.satellite_zoom_level)
             sat_metadata["dataset_key"] = p.name  # Track which dataset this came from
             log_progress(f"Loaded satellite metadata: {len(sat_metadata)} items")
             pano_metadata = load_panorama_metadata(p / "panorama", config.satellite_zoom_level)
@@ -482,9 +556,12 @@ class VigorDataset(torch.utils.data.Dataset):
 
             if config.should_load_landmarks:
                 landmark_start_load_time = time.time()
-                landmark_path = p / "landmarks" / f"{config.landmark_version}.feather"
-                if not landmark_path.exists():
-                    landmark_path = landmark_path.with_suffix('.geojson')
+                if config.landmark_path is not None:
+                    landmark_path = Path(config.landmark_path)
+                else:
+                    landmark_path = p / "landmarks" / f"{config.landmark_version}.feather"
+                    if not landmark_path.exists():
+                        landmark_path = landmark_path.with_suffix('.geojson')
                 landmark_metadata = load_landmark_geojson(
                     landmark_path, config.satellite_zoom_level)
                 landmark_metadatas.append(landmark_metadata)

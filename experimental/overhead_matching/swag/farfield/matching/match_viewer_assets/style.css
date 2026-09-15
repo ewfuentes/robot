@@ -1,0 +1,91 @@
+body{font-family:sans-serif;background:#161616;color:#ddd;margin:16px}
+a{color:#8bf}code{color:#cfc}
+.q{background:#1b2430;border-left:3px solid #4af;padding:8px 12px;
+border-radius:5px;max-width:100%;margin:6px 0}
+table{border-collapse:collapse;margin:8px 0;width:100%;
+max-width:100%}
+td,th{padding:4px 10px;font-size:13px;border-bottom:1px solid #303030;
+text-align:left;vertical-align:top}th{color:#89a;font-size:11.5px;
+text-transform:uppercase;letter-spacing:.08em}
+.instance{color:#3c8;font-weight:bold}.category{color:#89f}
+.wide{color:#fa2}.conf{font-variant-numeric:tabular-nums}
+.agree{color:#3ecf8e}.iffy{color:#e3b341}
+.disagree{color:#f2777a;font-weight:bold}
+img{height:120px;border-radius:4px;margin:3px 3px 0 0;
+vertical-align:top}
+h2{margin-top:26px;border-top:1px solid #2c2c2c;padding-top:14px;
+font-size:19px}
+.nomatch{color:#999}
+.links{font-size:12.5px;margin:6px 0}
+.nochips{color:#a88;font-size:12.5px;font-style:italic;margin:6px 0}
+
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(420px,46vw);
+gap:18px;align-items:start}
+/* A grid child defaults to min-width:auto, which is its *content* width -- a
+   1000px panorama chip then widens the column and slides under the map. This
+   plus the scrolling .chips strip keeps wide evidence inside its own pane.
+   min-width:0 is the whole fix; the column needs no overflow of its own. */
+.list{min-width:0;overflow-wrap:anywhere}
+.short-anchor{display:block;height:0;overflow:hidden;scroll-margin-top:170px}
+.card[id],tr[id]{scroll-margin-top:170px}
+.no-match-table{table-layout:fixed}
+.no-match-table th:nth-child(1){width:120px}
+.no-match-table th:nth-child(2){width:90px}
+.chips{display:flex;gap:5px;overflow-x:auto;padding-bottom:5px;
+scrollbar-width:thin}
+.chips img{flex:0 0 auto;height:120px;width:auto;max-width:none}
+.rows{font-size:12.5px}
+.rows td{padding:3px 8px}
+.osm{white-space:nowrap}
+@media (max-width:1100px){.wrap{grid-template-columns:1fr}
+.mapcol{position:static !important;height:70vh !important}}
+.mapcol{position:sticky;top:12px;height:calc(100vh - 28px);display:flex;
+flex-direction:column;gap:6px}
+#cv{flex:1;width:100%;background:#0e1319;border:1px solid #2b3540;
+border-radius:6px;cursor:grab;touch-action:none;display:block;min-height:0}
+#cv.drag{cursor:grabbing}
+.mapbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;
+color:#8fa3b5}
+.mapbar button{background:#1b2430;color:#cfe0f0;border:1px solid #34455a;
+border-radius:4px;padding:3px 9px;font-size:12px;cursor:pointer;
+font-family:inherit}
+.mapbar button:hover{background:#243244}
+.mapbar a{background:#1b2430;border:1px solid #34455a;border-radius:4px;
+padding:3px 9px;text-decoration:none}
+.mapbar a:hover{background:#243244}
+#ll-what{color:#cfe0f0}
+.mapbar button[aria-pressed=true]{background:#2d4358;border-color:#4af}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:#8fa3b5}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;
+margin-right:4px;vertical-align:middle}
+.tip{min-height:34px;font-size:12px;color:#cfe0f0;background:#131a22;
+border:1px solid #263140;border-radius:5px;padding:5px 8px;
+overflow-wrap:anywhere}
+.card{border-left:3px solid #2b3540;padding-left:10px;margin:0 0 6px 0}
+.card.sel{border-left-color:#fa2;background:#1a1c1f}
+h2{cursor:pointer}
+h2:hover{color:#fff}
+.mapnote{color:#c93;font-size:12px;margin:4px 0}
+.pin{color:#8fa3b5;font-size:11.5px}
+
+.note-panel{position:sticky;top:0;z-index:4;background:#131a22;
+border:1px solid #34455a;border-radius:6px;padding:9px 10px;margin:0 0 12px;
+box-shadow:0 5px 16px rgba(0,0,0,.35)}
+.note-panel-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+#match-note-heading{font-size:12px;color:#cfe0f0;overflow-wrap:anywhere}
+#match-note-text{display:block;box-sizing:border-box;width:100%;min-height:82px;
+resize:vertical;background:#0e1319;color:#dfe8f0;border:1px solid #34455a;
+border-radius:4px;padding:7px 8px;font:13px/1.4 sans-serif}
+#match-note-text:disabled{color:#718090}
+.note-controls{display:flex;align-items:center;gap:6px;margin-top:6px}
+.note-controls button,.note-select{background:#1b2430;color:#cfe0f0;
+border:1px solid #34455a;border-radius:4px;padding:3px 9px;cursor:pointer;
+font:12px sans-serif}
+.note-controls button:disabled{opacity:.4;cursor:default}
+.note-select{margin-left:6px;white-space:nowrap}
+.note-select.has-note{color:#ffd27a;border-color:#8c6a2c;background:#302718}
+.note-select.unsaved-note{color:#ffb347;border-color:#ffb347}
+.note-status{font-size:11.5px;color:#8fa3b5;margin-left:auto}
+.note-status.connected{color:#70c99a}.note-status.failed{color:#f2777a}
+.note-status.readonly{color:#c99a55}
+#match-note-updated{font-size:11px;color:#718090;margin-left:4px}

@@ -93,10 +93,11 @@ def load_v2_pickle(pickle_path: Path) -> dict | None:
 
 
 def iter_city_directories(base_path: Path):
-    """Iterate over city directories in a base path.
+    """Iterate over city directories or one versioned artifact directory.
 
     Args:
-        base_path: Path containing city subdirectories.
+        base_path: Path containing city subdirectories, or a direct artifact
+            directory containing embeddings/embeddings.pkl.
 
     Yields:
         Tuple of (city_name, city_dir) for each city directory found.
@@ -106,6 +107,10 @@ def iter_city_directories(base_path: Path):
     """
     if not base_path.exists():
         raise FileNotFoundError(f"Embedding base path does not exist: {base_path}")
+
+    if (base_path / "embeddings" / "embeddings.pkl").is_file():
+        yield base_path.name, base_path
+        return
 
     city_dirs = [d for d in base_path.iterdir() if d.is_dir()]
     if not city_dirs:

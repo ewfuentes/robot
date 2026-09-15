@@ -217,6 +217,8 @@ py_library(
   ],
   deps = [
     requirement("pandas"),
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
   ]
 )
 
