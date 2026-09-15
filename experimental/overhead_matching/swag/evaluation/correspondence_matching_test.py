@@ -204,6 +204,17 @@ class TestPrecomputeRawCostData(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(similarity).all())
 
+        self.dataset._satellite_landmark_nonempty_patches = np.array([0, 1])
+        self.dataset._satellite_landmark_offsets = np.array([0, 2, 4])
+        self.dataset._satellite_landmark_indices = np.array([0, 1, 1, 2])
+        fast_similarity = cm.similarity_from_raw_data(
+            raw, self.dataset,
+            cm.MatchingMethod.HUNGARIAN,
+            cm.AggregationMode.SUM,
+            prob_threshold=0.0,
+        )
+        self.assertTrue(torch.equal(fast_similarity, similarity))
+
 
 class TestComputePairsCostMatrix(unittest.TestCase):
     def test_small_pairs(self):
