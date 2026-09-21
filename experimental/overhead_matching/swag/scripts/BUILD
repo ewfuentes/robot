@@ -3,6 +3,12 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_binary(
+    name="semantic_paper_eval",
+    srcs=["semantic_paper_eval.py"],
+    deps=[":export_correspondence_similarity"],
+)
+
+py_binary(
   name="stage_cvgtext_for_vigor",
   srcs=["stage_cvgtext_for_vigor.py"],
 )
