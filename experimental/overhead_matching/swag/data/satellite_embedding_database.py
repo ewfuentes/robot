@@ -6,11 +6,14 @@ from torch.nn.utils.rnn import pad_sequence
 import experimental.overhead_matching.swag.data.vigor_dataset as vig_dataset
 
 
-def build_embeddings_from_model(model: torch.nn.Module,
-                                dataloader: torch.utils.data.DataLoader,
-                                model_input_from_dataloader: callable,
-                                device: torch.device = "cuda:0",
-                                verbose: bool = True) -> torch.Tensor:
+def build_embeddings_from_model(
+        model: torch.nn.Module,
+        dataloader: torch.utils.data.DataLoader,
+        model_input_from_dataloader: callable,
+        device: torch.device = "cuda:0",
+        verbose: bool = True,
+        output_device: torch.device | str | None = None,
+) -> torch.Tensor:
     """Embeddings will match the order of the dataloader"""
 
     model.to(device)
@@ -24,6 +27,8 @@ def build_embeddings_from_model(model: torch.nn.Module,
             # Keep only the embedding outputs
             if isinstance(embeddings, tuple):
                 embeddings = embeddings[0]
+            if output_device is not None:
+                embeddings = embeddings.to(output_device)
             inf_results.extend(embeddings.unbind(0))
     # pad_sequence handles both fixed-size (B, num_embeddings, D) and variable-length
     # (skip_aggregation) embeddings. For variable-length, shorter sequences are NaN-padded
@@ -63,4 +68,3 @@ def calculate_cos_similarity_against_database(normalized_pano_embedding, normali
     similarity = torch.clamp(similarity, -1.0, 1.0)  # some floating points are just over/under
         
     return similarity
-

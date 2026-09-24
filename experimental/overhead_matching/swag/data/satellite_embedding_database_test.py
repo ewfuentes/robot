@@ -46,7 +46,13 @@ class SatelliteEmbeddingDatabaseTest(unittest.TestCase):
 
         # verification
         self.assertEqual(database.shape, (dataset.num_satellite_patches, EMBEDDING_DIM))
+        self.assertEqual(database.device.type, "cpu")
         self.assertTrue(torch.allclose(database[:, 0], pixels_in_order))
+
+        offloaded = sed.build_satellite_db(
+            model, dataloader, device="cpu", output_device="meta")
+        self.assertEqual(offloaded.shape, database.shape)
+        self.assertEqual(offloaded.device.type, "meta")
 
     def test_cosine_similarity(self):
         EMBEDDING_DIM = 16

@@ -3,9 +3,11 @@
 This is the start-to-finish contract for applying the released LOCI
 late-fusion pipeline to a far-field dataset. It records the stable scientific
 choices, reuse boundaries, commands, and validation requirements. It does not
-inventory completed runs: the manifests under
-`/data/farfield_matching/artifacts` are the source of truth for active versions,
-inputs, counts, hashes, and completion state.
+inventory completed runs. `paper/table_common.py` is the source of truth for
+the dataset roster, selected catalog version, and paper search box
+(`area625` or `fetch_bbox`). The manifests under
+`/data/farfield_matching/artifacts` are the source of truth for the bytes,
+inputs, counts, hashes, and completion state of materialized artifacts.
 
 The [LOCI input guide](../../experimental/overhead_matching/swag/farfield/loci/README.md)
 describes region, OSM, satellite, and VLM input production. The separate
@@ -15,13 +17,16 @@ system.
 ## Pipeline and reuse boundaries
 
 ```text
-complete catalog + all scope trajectories
-                  |
-                  v
-       ~150 km2 region and z20 grid
-           /                 \
-          v                   v
-LOCI-pruned OSM          satellite patches
+table_common paper group + selected catalog
+                 |                 |
+                 |        direct untrimmed composite
+                 |                 |
+                 +--------+--------+
+                          v
+          contained ~150 km2 region and z20 grid
+                    /                 \
+                   v                   v
+       LOCI-pruned map sources   satellite patches
           |                   |
 panorama VLM tags        released WAG
           |                   |
@@ -56,11 +61,16 @@ the published artifact.
 
 ## Spatial input contract
 
-The region artifact owns every spatial decision. Starting from a complete OSM
-catalog bbox, the producer insets all four sides by the same metric distance
-until the region is about 150 km2. It caps that inset rather than excluding any
-canonical trajectory point or violating the configured trajectory clearance.
-The resulting area may therefore be larger than the target.
+The selected group in `paper/table_common.py` owns the canonical trajectories,
+catalog version, and paper search box. The LOCI region producer follows that
+catalog to its direct untrimmed parent and uses the parent's proved source
+coverage as the stable derivation frame. It insets all four sides by the same
+metric distance until the region is about 150 km2, capping the inset rather
+than excluding a canonical trajectory point or violating the configured
+trajectory clearance. The resulting area may therefore be larger than the
+target. Publication also requires the complete LOCI patch footprint to fit
+inside the table-selected paper box; a paper-box shift that breaks containment
+must fail explicitly.
 
 The region also records the exact Web-Mercator lattice. Distinguish these
 bounds:
@@ -70,19 +80,20 @@ bounds:
 - `grid.footprint_bbox_wsen` includes each patch's complete source-pixel
   footprint and is the coverage boundary for both imagery and OSM.
 
-The OSM producer reads the complete catalog and retains LOCI-vocabulary OSM
-geometries that intersect the full patch footprint. It does not apply a second
-implicit trim, and crossing lines or polygons remain whole. The selected
-catalog must cover that footprint according to its own manifest. The satellite
-producer must likewise prove complete source coverage of the footprint before
-publication.
+The map producer reads the selected catalog's direct untrimmed composite so
+that OSM, ENC, FAA, and any other collected source are available. It retains
+whole geometries that intersect the full patch footprint and applies only the
+LOCI tag-vocabulary pruning; it does not apply a second catalog trim or clip
+crossing lines and polygons. The direct parent must prove complete source
+coverage of the footprint. The satellite producer must likewise prove complete
+source coverage before publication.
 
 Use the persisted region grid everywhere downstream; do not reconstruct a bbox
 or lattice from a dataset name.
 
 ## Panorama VLM contract
 
-New runs use `gemini-3.1-pro-preview` with the stock LOCI
+New runs use `gemini-3-flash-preview` with the stock LOCI
 `panov2_tuned_prompt` request:
 
 - the exact pinned system prompt, user prompt, and response schema;
@@ -92,7 +103,7 @@ New runs use `gemini-3.1-pro-preview` with the stock LOCI
 - thinking level `HIGH`.
 
 The serialized request JSON is model-agnostic. Pass
-`--model gemini-3.1-pro-preview` to `farfield/loci:vlm_requests` so the request
+`--model gemini-3-flash-preview` to `farfield/loci:vlm_requests` so the request
 manifest binds the intended submission model, and submit the bundle with that
 same model. Changing only the model still requires a new immutable annotation
 version.
@@ -207,11 +218,13 @@ dependent runs together.
 
 ## Procedure for a new dataset
 
-1. Choose the complete catalog and every trajectory that will share its map.
-   Generate the approximately 150 km2 region and its z20 lattice.
-2. Generate and validate the footprint-complete OSM and satellite artifacts.
+1. Choose the `table_common` paper group. Resolve its selected catalog and
+   canonical trajectories, follow the catalog to its direct untrimmed parent,
+   and generate the contained approximately 150 km2 region and z20 lattice.
+2. Generate and validate the footprint-complete multi-source map and satellite
+   artifacts.
 3. Render or select the adopted 2048 px pinholes. Generate the exact LOCI
-   request bundle, bind the Pro model in its manifest, submit it, validate all
+   request bundle, bind the Flash model in its manifest, submit it, validate all
    responses, and build the pano-v2 annotation payload.
 4. Extend the shared 768-D tag dictionary for any new recognized values.
 5. Export the semantic correspondence matrix and its strict ordered-identity
@@ -261,7 +274,8 @@ result-shaping setting changes.
 At minimum, validate:
 
 - every trajectory lies within the region with its promised clearance;
-- the complete catalog and imagery source cover the full patch footprint;
+- the direct untrimmed catalog parent and imagery source cover the full patch
+  footprint, which is itself contained by the table-selected paper box;
 - every expected satellite patch and panorama is present exactly once;
 - VLM request and response keys exactly match the mapping table;
 - the tag dictionary covers every recognized value with finite float32 768-D

@@ -1,6 +1,7 @@
 py_library(
     name = "table_common",
     srcs = ["table_common.py"],
+    visibility = ["//experimental/overhead_matching/swag:__subpackages__"],
 )
 
 py_binary(

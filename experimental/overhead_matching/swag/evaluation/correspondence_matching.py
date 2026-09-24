@@ -519,9 +519,11 @@ def precompute_raw_cost_data(
     # Collect unique OSM landmarks from satellite metadata
     osm_lm_idx_to_tags: dict[int, dict[str, str]] = {}
     dropped_empty = 0
-    for sat_idx in range(num_sats):
-        sat_meta = dataset._satellite_metadata.iloc[sat_idx]
-        lm_idxs = sat_meta.get("landmark_idxs", [])
+    if hasattr(dataset, "_satellite_landmark_indices"):
+        landmark_groups = (dataset._satellite_landmark_indices,)
+    else:
+        landmark_groups = dataset._satellite_metadata["landmark_idxs"]
+    for lm_idxs in landmark_groups:
         if lm_idxs is None:
             continue
         for lm_idx in lm_idxs:
@@ -713,16 +715,29 @@ def similarity_from_raw_data(
 
     osm_idx_to_col = {idx: col for col, idx in enumerate(raw.osm_lm_indices)}
 
-    sat_col_positions = []
-    for sat_idx in range(num_sats):
-        sat_meta = dataset._satellite_metadata.iloc[sat_idx]
-        lm_idxs = sat_meta.get("landmark_idxs", [])
+    # Full-area LOCI lattices expose their already-grouped spatial join.  In
+    # the usual Hungarian+sum+dustbin case, independent per-row maxima are the
+    # exact optimum unless two rows choose the same landmark.  Only those rare
+    # conflicts need the general matcher below.
+    fast = (
+        method is MatchingMethod.HUNGARIAN
+        and aggregation is AggregationMode.SUM
+        and use_dustbin
+        and hasattr(dataset, "_satellite_landmark_offsets")
+    )
+    if fast:
+        return _similarity_from_grouped_landmarks(
+            raw, dataset, similarity, osm_idx_to_col, prob_threshold,
+            uniqueness_weighted)
+
+    nonempty_sat_col_positions = []
+    for sat_idx, lm_idxs in enumerate(
+            dataset._satellite_metadata["landmark_idxs"]):
         if lm_idxs is None:
-            sat_col_positions.append([])
-        else:
-            sat_col_positions.append(
-                [osm_idx_to_col[i] for i in lm_idxs if i in osm_idx_to_col]
-            )
+            continue
+        cols = [osm_idx_to_col[i] for i in lm_idxs if i in osm_idx_to_col]
+        if cols:
+            nonempty_sat_col_positions.append((sat_idx, cols))
 
     for pano_idx in tqdm(range(num_panos), desc="Building similarity matrix"):
         pano_id = dataset._panorama_metadata.iloc[pano_idx]["pano_id"]
@@ -736,10 +751,7 @@ def similarity_from_raw_data(
             if uniqueness_weighted else None
         )
 
-        for sat_idx in range(num_sats):
-            cols = sat_col_positions[sat_idx]
-            if not cols:
-                continue
+        for sat_idx, cols in nonempty_sat_col_positions:
             sub_cost = pano_cost[:, cols]
             result = match_and_aggregate(
                 sub_cost, method, aggregation, prob_threshold,
@@ -748,4 +760,67 @@ def similarity_from_raw_data(
             )
             similarity[pano_idx, sat_idx] = result.similarity_score
 
+    return similarity
+
+
+def _similarity_from_grouped_landmarks(
+    raw: RawCorrespondenceData,
+    dataset,
+    similarity: torch.Tensor,
+    osm_idx_to_col: dict[int, int],
+    prob_threshold: float,
+    uniqueness_weighted: bool,
+) -> torch.Tensor:
+    """Exact fast path for grouped patch/landmark associations."""
+    patches = dataset._satellite_landmark_nonempty_patches
+    offsets = dataset._satellite_landmark_offsets
+    landmark_indices = dataset._satellite_landmark_indices
+    cols = np.fromiter(
+        (osm_idx_to_col.get(int(index), -1) for index in landmark_indices),
+        dtype=np.int64, count=len(landmark_indices))
+    if np.any(cols < 0):
+        raise ValueError("grouped landmark join contains an unencoded landmark")
+    lengths = np.diff(offsets)
+
+    for pano_idx in tqdm(
+            range(len(dataset._panorama_metadata)),
+            desc="Building similarity matrix"):
+        pano_id = dataset._panorama_metadata.iloc[pano_idx]["pano_id"]
+        rows = raw.pano_id_to_lm_rows.get(pano_id)
+        if not rows:
+            continue
+        pano_cost = np.asarray(raw.cost_matrix[rows])
+        weights = (
+            compute_uniqueness_weights(pano_cost, prob_threshold)
+            if uniqueness_weighted else np.ones(len(rows), dtype=np.float32))
+        values = pano_cost[:, cols]
+        maxima = np.maximum.reduceat(values, offsets[:-1], axis=1)
+        active = maxima >= prob_threshold
+        scores = np.sum(maxima * active * weights[:, None], axis=0)
+
+        if len(rows) > 1:
+            best_ids = np.empty_like(maxima, dtype=np.int64)
+            sentinel = len(raw.osm_lm_indices)
+            for row in range(len(rows)):
+                repeated = np.repeat(maxima[row], lengths)
+                candidates = np.where(
+                    values[row] == repeated, cols, sentinel)
+                best_ids[row] = np.minimum.reduceat(candidates, offsets[:-1])
+            conflicts = np.zeros(len(patches), dtype=bool)
+            for left in range(len(rows)):
+                for right in range(left + 1, len(rows)):
+                    conflicts |= (
+                        active[left] & active[right]
+                        & (best_ids[left] == best_ids[right]))
+            for group_index in np.flatnonzero(conflicts):
+                sat_idx = int(patches[group_index])
+                sat_cols = cols[offsets[group_index]:offsets[group_index + 1]]
+                scores[group_index] = match_and_aggregate(
+                    pano_cost[:, sat_cols], MatchingMethod.HUNGARIAN,
+                    AggregationMode.SUM, prob_threshold,
+                    uniqueness_weights=weights,
+                    use_dustbin=True).similarity_score
+
+        similarity[pano_idx, torch.from_numpy(patches)] = torch.from_numpy(
+            scores.astype(np.float32, copy=False))
     return similarity

@@ -28,11 +28,15 @@ Load an existing raw artifact and re-run only the similarity-matrix step:
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 import warnings
 
 import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
 import numpy as np
+import pandas as pd
+import shapely
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -42,6 +46,7 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
 from experimental.overhead_matching.swag.evaluation import (
     correspondence_matching as cm,
 )
+from experimental.overhead_matching.swag.farfield.loci import region
 from experimental.overhead_matching.swag.evaluation import retrieval_metrics as rm
 from experimental.overhead_matching.swag.model.additional_panorama_extractors import (
     extract_panorama_data_across_cities,
@@ -104,6 +109,21 @@ def _resolve_landmark_path(
 def _satellite_landmark_indices_sha256(dataset) -> str:
     """Hash the exact ordered landmark-index association used by aggregation."""
     digest = hashlib.sha256(b"swag_satellite_landmark_indices/v1\0")
+    if hasattr(dataset, "_satellite_landmark_offsets"):
+        patches = dataset._satellite_landmark_nonempty_patches
+        offsets = dataset._satellite_landmark_offsets
+        indices = dataset._satellite_landmark_indices
+        group = 0
+        for patch in range(len(dataset._satellite_metadata)):
+            if group < len(patches) and patches[group] == patch:
+                values = indices[offsets[group]:offsets[group + 1]]
+                group += 1
+            else:
+                values = ()
+            digest.update(len(values).to_bytes(8, "big"))
+            for index in values:
+                digest.update(int(index).to_bytes(8, "big", signed=True))
+        return digest.hexdigest()
     for value in dataset._satellite_metadata["landmark_idxs"]:
         indices = [] if value is None else [int(index) for index in value]
         digest.update(len(indices).to_bytes(8, "big"))
@@ -271,6 +291,107 @@ def load_vigor_dataset(
     return vd.VigorDataset(dataset_path, config)
 
 
+def load_region_dataset(dataset_path: Path, region_path: Path,
+                        landmark_path: Path, inflation_factor: float):
+    """Build the LOCI metadata view directly from its imagery-free lattice."""
+    _, plan = region.load_region(region_path)
+    grid = plan["grid"]
+    zoom = grid["zoom"]
+    n_x, n_y = grid["shape_xy"]
+    min_x, min_y = grid["min_pixel_xy"]
+    stride = grid["stride_px"]
+
+    x = min_x + np.arange(n_x) * stride
+    y = min_y + np.arange(n_y) * stride
+    scale = region.DEFAULT_TILE_PX * 2 ** zoom
+    lon = x / scale * 360.0 - 180.0
+    lat = np.degrees(np.arctan(np.sinh(np.pi * (1.0 - 2.0 * y / scale))))
+    lon_text = np.asarray([f"{value:.8f}" for value in lon])
+    lat_text = np.asarray([f"{value:.8f}" for value in lat])
+    x_order = np.argsort(lon_text, kind="stable")
+    y_order = np.argsort(lat_text, kind="stable")
+    ordered_lon_text = lon_text[x_order]
+    ordered_lat_text = lat_text[y_order]
+    paths = np.fromiter((
+        f"satellite_{latitude}_{longitude}.jpg"
+        for latitude in ordered_lat_text
+        for longitude in ordered_lon_text
+    ), dtype=object, count=n_x * n_y)
+    satellites = pd.DataFrame({
+        "lat": np.repeat(lat[y_order], n_x),
+        "lon": np.tile(lon[x_order], n_y),
+        "web_mercator_y": np.repeat(y[y_order], n_x),
+        "web_mercator_x": np.tile(x[x_order], n_y),
+        "zoom_level": zoom,
+        "path": paths,
+    })
+    panoramas = vd.load_panorama_metadata(dataset_path / "panorama", zoom)
+    landmarks = vd.load_landmark_geojson(landmark_path, zoom)
+
+    cache_key = hashlib.sha256(
+        f"loci_spatial_join/v1\0{region_path}\0{landmark_path}\0"
+        f"{inflation_factor}".encode()
+    ).hexdigest()[:20]
+    cache_path = Path("/tmp") / f"loci_spatial_join_{cache_key}.npz"
+    if cache_path.is_file():
+        cached = np.load(cache_path)
+        nonempty_patches = cached["patches"]
+        offsets = cached["offsets"]
+        landmark_matches = cached["landmarks"]
+    else:
+        tree = shapely.STRtree(landmarks.geometry_px)
+        patch_match_chunks = []
+        landmark_match_chunks = []
+        half = grid["source_px"] * inflation_factor / 2.0
+        chunk_size = 50_000
+        for start in range(0, len(satellites), chunk_size):
+            chunk = satellites.iloc[start:start + chunk_size]
+            boxes = shapely.box(
+                chunk.web_mercator_x.to_numpy() - half,
+                chunk.web_mercator_y.to_numpy() - half,
+                chunk.web_mercator_x.to_numpy() + half,
+                chunk.web_mercator_y.to_numpy() + half)
+            matches = tree.query(boxes, predicate="intersects")
+            patch_match_chunks.append(matches[0].astype(np.int64) + start)
+            landmark_match_chunks.append(matches[1].astype(np.int64))
+        patch_matches = np.concatenate(patch_match_chunks)
+        landmark_matches = np.concatenate(landmark_match_chunks)
+        order = np.argsort(patch_matches, kind="stable")
+        patch_matches = patch_matches[order]
+        landmark_matches = landmark_matches[order]
+        nonempty_patches, counts = np.unique(
+            patch_matches, return_counts=True)
+        offsets = np.concatenate(([0], np.cumsum(counts)))
+        partial_cache = cache_path.with_suffix(".partial.npz")
+        np.savez(partial_cache, patches=nonempty_patches, offsets=offsets,
+                 landmarks=landmark_matches)
+        os.replace(partial_cache, cache_path)
+    return SimpleNamespace(
+        _config=SimpleNamespace(
+            landmark_correspondence_inflation_factor=inflation_factor),
+        _satellite_metadata=satellites,
+        _panorama_metadata=panoramas,
+        _landmark_metadata=landmarks,
+        _satellite_landmark_nonempty_patches=nonempty_patches,
+        _satellite_landmark_offsets=offsets,
+        _satellite_landmark_indices=landmark_matches)
+
+
+def load_dataset(args):
+    if args.region_path is not None:
+        if args.satellite_dir is not None or args.landmark_path is None:
+            raise ValueError(
+                "--region_path requires --landmark_path and excludes "
+                "--satellite_dir")
+        return load_region_dataset(
+            args.dataset_path.expanduser().resolve(),
+            args.region_path.expanduser().resolve(),
+            args.landmark_path.expanduser().resolve(), args.inflation_factor)
+    return load_vigor_dataset(
+        args.dataset_path.expanduser().resolve(), args.landmark_version,
+        args.inflation_factor, args.satellite_dir, args.landmark_path)
+
+
 def load_panorama_tags(pano_v2_bases: list[Path]) -> dict[str, list[dict]]:
     """Load VLM tags without silently mixing legs that reuse panorama IDs."""
     result = {}
@@ -324,9 +445,7 @@ def build_raw_cost_data(args) -> cm.RawCorrespondenceData:
 
     dataset_path = args.dataset_path.expanduser().resolve()
     print(f"Loading dataset from {dataset_path}")
-    dataset = load_vigor_dataset(
-        dataset_path, args.landmark_version, args.inflation_factor,
-        args.satellite_dir, args.landmark_path)
+    dataset = load_dataset(args)
     print(
         f"  {len(dataset._panorama_metadata)} panos, "
         f"{len(dataset._satellite_metadata)} sats, "
@@ -429,6 +548,10 @@ def main():
         help="External satellite payload directory (default: dataset layout).",
     )
     parser.add_argument(
+        "--region_path", type=Path, default=None,
+        help="Use a LOCI region lattice directly without satellite images.",
+    )
+    parser.add_argument(
         "--landmark_path", type=Path, default=None,
         help="External landmark Feather/GeoJSON path (default: dataset layout).",
     )
@@ -471,6 +594,8 @@ def main():
     parser.add_argument("--ks", type=str, default="1,5,10",
                         help="Comma-separated top-k values for retrieval metrics "
                              "(used with --compute_similarity).")
+    parser.add_argument("--skip_retrieval_metrics", action="store_true",
+                        help="Skip VIGOR retrieval metrics for localization-only exports.")
     parser.add_argument("--allow_missing_text_embeddings", action="store_true",
                         help="Silently substitute zero vectors for text values "
                              "not found in the embeddings pickle. Not recommended.")
@@ -508,9 +633,7 @@ def main():
         f"uniqueness={args.uniqueness_weighted}, "
         f"dustbin={not args.no_dustbin})"
     )
-    dataset = load_vigor_dataset(
-        dataset_path, args.landmark_version, args.inflation_factor,
-        args.satellite_dir, args.landmark_path)
+    dataset = load_dataset(args)
     landmark_path = _resolve_landmark_path(
         dataset_path, args.landmark_version, args.landmark_path)
     validate_raw_identity(
@@ -526,12 +649,13 @@ def main():
         use_dustbin=not args.no_dustbin,
     )
 
-    ks = [int(k) for k in args.ks.split(",")]
-    metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
-    city_name = dataset_path.name
-    print(f"\nMetrics for {city_name}:")
-    for key, value in metrics.items():
-        print(f"  {key}: {value:.4f}")
+    if not args.skip_retrieval_metrics:
+        ks = [int(k) for k in args.ks.split(",")]
+        metrics = rm.compute_top_k_metrics(similarity, dataset, ks=ks)
+        city_name = dataset_path.name
+        print(f"\nMetrics for {city_name}:")
+        for key, value in metrics.items():
+            print(f"  {key}: {value:.4f}")
 
     sim_path = output_path.parent / (output_path.stem + "_similarity.pt")
     torch.save(similarity, sim_path)
@@ -539,6 +663,8 @@ def main():
     identity_path.write_text(json.dumps({
         "matrix_identity": vd.similarity_matrix_identity(
             dataset._panorama_metadata, dataset._satellite_metadata),
+        "panorama_filenames": [
+            Path(path).name for path in dataset._panorama_metadata["path"]],
         "method": args.method,
         "aggregation": args.aggregation,
         "prob_threshold": args.prob_threshold,

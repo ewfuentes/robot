@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Publish the OSM landmarks needed by one LOCI region.
+"""Publish the map landmarks needed by one LOCI region.
 
-The source is the immutable far-field catalog, complete within its recorded
-bounding box. LOCI deliberately uses a different semantic vocabulary from
-the far-field bearing matcher, so this producer derives a separate typed
-artifact rather than reusing a far-field semantic trim. Geometry is selected
+The selected paper catalog identifies its direct untrimmed source composite,
+which carries the same OSM, ENC, FAA, or other typed sources as the paper
+pipeline. LOCI deliberately uses a different semantic vocabulary from the
+far-field bearing matcher, so this producer derives a separate typed artifact
+rather than reusing the spatially clipped paper catalog. Geometry is selected
 with ``intersects`` against the union envelope of the exact satellite patch
-footprints. In particular,
-lines and polygons crossing the region boundary are retained whole; a
-representative-point clip would incorrectly discard them.
+footprints. Lines and polygons crossing the region boundary are retained
+whole; a representative-point clip would incorrectly discard them.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ from experimental.overhead_matching.swag.farfield.loci import region
 from experimental.overhead_matching.swag.model import semantic_landmark_utils
 
 
-SCHEMA = "loci_osm_landmarks/v1"
+SCHEMA = "loci_osm_landmarks/v2"
+LEGACY_SCHEMA = "loci_osm_landmarks/v1"
 ARTIFACT_KIND = "loci_osm_landmarks"
 GENERATOR = "//experimental/overhead_matching/swag/farfield/loci:osm"
 LANDMARK_OUTPUT = "landmarks.feather"
@@ -56,31 +57,38 @@ def _vocabulary_digest() -> str:
         list(semantic_landmark_utils._TAGS_TO_KEEP))
 
 
-def _validate_source_catalog(
-        catalog_dir: Path, *, catalog_dataset: str) \
-        -> tuple[artifact.ArtifactRef, artifact.ArtifactManifest, object]:
-    catalog_dir = Path(catalog_dir).resolve()
-    reference = artifact.open_artifact(
-        catalog_dir, expected_kind=paths_lib.CATALOGS,
-        expected_dataset=catalog_dataset)
-    manifest = artifact.load_manifest(catalog_dir)
-    if manifest.config.get("schema") != schema.FULL_ARTIFACT_SCHEMA:
-        raise LociOsmError(
-            "LOCI OSM input must be a full catalog artifact, not a "
-            f"semantic trim: {catalog_dir}")
-    payload = catalog_dir / "catalog.feather"
+def _load_source_catalog(reference: artifact.ArtifactRef) -> object:
+    source_dir = Path(reference.path)
+    manifest = artifact.load_manifest(source_dir)
+    payload = source_dir / "catalog.feather"
     if manifest.declared_outputs != ("catalog.feather",):
         raise LociOsmError(
-            f"full catalog declares unexpected outputs: {catalog_dir}")
+            f"untrimmed catalog declares unexpected outputs: {source_dir}")
     frame = schema.read_frame(payload)
     if frame.crs is None or frame.crs.to_epsg() != 4326:
         raise LociOsmError(
-            f"full catalog must use EPSG:4326, found {frame.crs}")
-    return reference, manifest, frame
+            f"untrimmed catalog must use EPSG:4326, found {frame.crs}")
+    return frame
+
+
+def _resolve_paper_catalog(farfield_root: Path, paper_group: str) \
+        -> tuple[object, region.PaperCatalogInputs]:
+    try:
+        group, catalog_dir = region.resolve_paper_group(
+            farfield_root, paper_group)
+        catalog = region.load_paper_catalog(catalog_dir, group=group)
+    except region.RegionError as error:
+        raise LociOsmError(
+            f"cannot resolve current paper group {paper_group!r}: {error}") \
+            from error
+    return group, catalog
 
 
 def _validate_region_lineage(
-        region_dir: Path, catalog_ref: artifact.ArtifactRef, *, dataset: str) \
+        region_dir: Path, *, farfield_root: Path, dataset: str,
+        paper_group: str,
+        expected_trajectory_datasets: tuple[str, ...],
+        catalog: region.PaperCatalogInputs) \
         -> tuple[artifact.ArtifactRef, dict]:
     region_ref, plan = region.load_region(region_dir)
     if region_ref.dataset != dataset:
@@ -88,10 +96,72 @@ def _validate_region_lineage(
             f"region dataset mismatch: expected {dataset!r}, found "
             f"{region_ref.dataset!r}")
     manifest = artifact.load_manifest(region_dir)
-    if catalog_ref not in manifest.upstreams:
+    plan_datasets = tuple(
+        plan.get("trajectory", {}).get("datasets", ()))
+    configured_datasets = tuple(
+        manifest.config.get("trajectory_datasets", ()))
+    if (plan_datasets != expected_trajectory_datasets
+            or configured_datasets != expected_trajectory_datasets):
         raise LociOsmError(
-            "region was not derived from the selected full catalog: "
-            f"{region_dir}")
+            "region trajectories disagree with the current table_common "
+            f"paper group {paper_group!r}")
+    try:
+        current_trajectory = region.load_trajectory_extent(
+            farfield_root, expected_trajectory_datasets)
+        region.require_trajectory_coverage(
+            plan["bbox_wsen"], current_trajectory,
+            minimum_margin_m=float(plan.get(
+                "minimum_trajectory_margin_m",
+                region.DEFAULT_MINIMUM_TRAJECTORY_MARGIN_M)),
+            metric_reference_lat_deg=plan.get("metric_reference_lat_deg"))
+    except (KeyError, TypeError, ValueError, region.RegionError) as error:
+        raise LociOsmError(
+            "region no longer covers the current canonical trajectories") \
+            from error
+    footprint_bbox = plan["grid"]["footprint_bbox_wsen"]
+    try:
+        region._require_footprint_coverage(
+            catalog.selected_region_bbox_wsen, footprint_bbox)
+        region._require_footprint_coverage(
+            catalog.source_bbox_wsen, footprint_bbox)
+    except region.RegionError as error:
+        raise LociOsmError(
+            "region footprint is not covered by the current "
+            f"table_common paper group {paper_group!r}") from error
+
+    catalogs = tuple(
+        reference for reference in manifest.upstreams
+        if reference.kind == paths_lib.CATALOGS)
+    if len(catalogs) != 1:
+        raise LociOsmError(
+            "region must have exactly one catalog upstream")
+
+    authority_keys = (
+        "paper_group",
+        "paper_region_bbox_wsen",
+        "untrimmed_catalog_manifest_digest",
+    )
+    if any(key in manifest.config for key in authority_keys):
+        if catalogs != (catalog.selected_ref,):
+            raise LociOsmError(
+                "region was not derived from the current table_common-"
+                "selected paper catalog")
+        expected_config = {
+            "paper_group": paper_group,
+            "paper_region_bbox_wsen": list(
+                catalog.selected_region_bbox_wsen),
+            "catalog_manifest_digest": catalog.selected_ref.manifest_digest,
+            "untrimmed_catalog_manifest_digest": (
+                catalog.untrimmed_ref.manifest_digest),
+        }
+        if any(manifest.config.get(key) != value
+               for key, value in expected_config.items()):
+            raise LociOsmError(
+                "region config disagrees with its selected paper catalog")
+    elif manifest.config.get("catalog_manifest_digest") \
+            != catalogs[0].manifest_digest:
+        raise LociOsmError(
+            "legacy region config disagrees with its catalog upstream")
     return region_ref, plan
 
 
@@ -101,9 +171,7 @@ def select_landmarks(frame, footprint_bbox_wsen) -> tuple[object, dict]:
         footprint_bbox_wsen, "satellite footprint bbox")
     footprint = shapely.box(west, south, east, north)
 
-    osm_mask = frame["landmark_type"].eq("osm")
-    spatial_mask = osm_mask & frame.geometry.intersects(footprint)
-    spatial = frame.loc[spatial_mask]
+    spatial = frame.loc[frame.geometry.intersects(footprint)]
     decoded = schema.tag_dicts(spatial)
 
     keep_positions: list[int] = []
@@ -119,7 +187,7 @@ def select_landmarks(frame, footprint_bbox_wsen) -> tuple[object, dict]:
     output = schema.build_frame(
         ids=selected["id"].tolist(),
         geometries=selected.geometry.tolist(),
-        landmark_types=["osm"] * len(selected),
+        landmark_types=selected["landmark_type"].tolist(),
         tags=pruned_records,
         crs="EPSG:4326",
     )
@@ -135,11 +203,16 @@ def select_landmarks(frame, footprint_bbox_wsen) -> tuple[object, dict]:
         "schema": SCHEMA,
         "footprint_bbox_wsen": [west, south, east, north],
         "source_rows": int(len(frame)),
-        "source_osm_rows": int(osm_mask.sum()),
-        "spatially_intersecting_osm_rows": int(len(spatial)),
+        "source_rows_by_landmark_type": dict(sorted(Counter(
+            frame["landmark_type"]).items())),
+        "spatially_intersecting_rows": int(len(spatial)),
+        "spatially_intersecting_rows_by_landmark_type": dict(sorted(Counter(
+            spatial["landmark_type"]).items())),
         "empty_loci_tag_rows_dropped": int(
             len(spatial) - len(output)),
         "output_rows": int(len(output)),
+        "output_rows_by_landmark_type": dict(sorted(Counter(
+            output["landmark_type"]).items())),
         "output_geometry_types": geometry_types,
         "output_tag_occurrences": int(tag_occurrences),
         "output_unique_tag_keys": int(len({
@@ -152,17 +225,23 @@ def select_landmarks(frame, footprint_bbox_wsen) -> tuple[object, dict]:
 
 
 def _config(*, region_ref: artifact.ArtifactRef,
-            catalog_ref: artifact.ArtifactRef, plan: dict,
-            artifact_dataset: str) -> dict:
+            catalog: region.PaperCatalogInputs, plan: dict,
+            paper_group: str, artifact_dataset: str,
+            source_landmark_types: list[str],
+            required_landmark_types: list[str]) -> dict:
     grid = plan["grid"]
     config = {
         "schema": SCHEMA,
+        "paper_group": paper_group,
         "region_manifest_digest": region_ref.manifest_digest,
-        "catalog_manifest_digest": catalog_ref.manifest_digest,
+        "catalog_manifest_digest": catalog.selected_ref.manifest_digest,
+        "untrimmed_catalog_manifest_digest": (
+            catalog.untrimmed_ref.manifest_digest),
         "footprint_bbox_wsen": grid["footprint_bbox_wsen"],
         "spatial_predicate": "geometry.intersects(footprint_bbox_wsen)",
         "geometry_clipped": False,
-        "landmark_type": "osm",
+        "source_landmark_types": source_landmark_types,
+        "required_landmark_types": required_landmark_types,
         "tag_pruner": (
             "experimental.overhead_matching.swag.model."
             "semantic_landmark_utils.prune_landmark"),
@@ -173,8 +252,8 @@ def _config(*, region_ref: artifact.ArtifactRef,
             "tags": "canonical JSON containing only LOCI-kept key/value pairs",
         },
     }
-    if catalog_ref.dataset != artifact_dataset:
-        config["catalog_dataset"] = catalog_ref.dataset
+    if catalog.selected_ref.dataset != artifact_dataset:
+        config["catalog_dataset"] = catalog.selected_ref.dataset
     return config
 
 
@@ -184,10 +263,11 @@ def load_loci_osm_artifact(path: Path) \
     path = Path(path).resolve()
     reference = artifact.open_artifact(path, expected_kind=ARTIFACT_KIND)
     manifest = artifact.load_manifest(path)
-    if manifest.config.get("schema") != SCHEMA:
+    artifact_schema = manifest.config.get("schema")
+    if artifact_schema not in (LEGACY_SCHEMA, SCHEMA):
         raise LociOsmError(
             f"unsupported LOCI OSM schema in {path}: "
-            f"{manifest.config.get('schema')!r}")
+            f"{artifact_schema!r}")
     if manifest.declared_outputs != (LANDMARK_OUTPUT, STATS_OUTPUT):
         raise LociOsmError(
             f"unexpected LOCI OSM outputs in {path}: "
@@ -199,8 +279,16 @@ def load_loci_osm_artifact(path: Path) \
     if frame.crs is None or frame.crs.to_epsg() != 4326:
         raise LociOsmError(
             f"LOCI OSM Feather must use EPSG:4326, found {frame.crs}")
-    if not frame["landmark_type"].eq("osm").all():
+    if artifact_schema == LEGACY_SCHEMA \
+            and not frame["landmark_type"].eq("osm").all():
         raise LociOsmError("LOCI OSM Feather contains non-OSM rows")
+    if artifact_schema == SCHEMA:
+        configured_types = manifest.config.get("source_landmark_types")
+        if (not isinstance(configured_types, list)
+                or configured_types != sorted(set(configured_types))
+                or not set(frame["landmark_type"]).issubset(configured_types)):
+            raise LociOsmError(
+                "LOCI map Feather source types disagree with its manifest")
     records = schema.tag_dicts(frame)
     for index, (raw, props) in enumerate(zip(frame["tags"], records)):
         if not props:
@@ -219,7 +307,7 @@ def load_loci_osm_artifact(path: Path) \
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise LociOsmError(f"cannot read {path / STATS_OUTPUT}: {error}") \
             from error
-    if stats.get("schema") != SCHEMA:
+    if stats.get("schema") != artifact_schema:
         raise LociOsmError(f"invalid LOCI OSM stats schema in {path}")
     if stats.get("output_rows") != len(frame):
         raise LociOsmError(
@@ -227,23 +315,36 @@ def load_loci_osm_artifact(path: Path) \
     return reference, frame, stats
 
 
-def materialize(*, farfield_root: Path, dataset: str, region_dir: Path,
-                catalog_dir: Path, version: str,
-                catalog_dataset: str | None = None) -> artifact.ArtifactRef:
+def materialize(*, farfield_root: Path, dataset: str, paper_group: str,
+                region_dir: Path, version: str) -> artifact.ArtifactRef:
     farfield_root = Path(farfield_root).resolve()
     dataset = artifact.require_identifier(dataset, "artifact dataset")
     version = artifact.require_identifier(version, "artifact version")
-    expected_catalog_dataset = artifact.require_identifier(
-        catalog_dataset if catalog_dataset is not None else dataset,
-        "catalog dataset")
-    catalog_ref, _, source = _validate_source_catalog(
-        catalog_dir, catalog_dataset=expected_catalog_dataset)
+    group, catalog = _resolve_paper_catalog(
+        farfield_root, paper_group)
     region_ref, plan = _validate_region_lineage(
-        Path(region_dir).resolve(), catalog_ref, dataset=dataset)
+        Path(region_dir).resolve(), farfield_root=farfield_root,
+        dataset=dataset,
+        paper_group=paper_group,
+        expected_trajectory_datasets=group.sequences,
+        catalog=catalog)
+    source = _load_source_catalog(catalog.untrimmed_ref)
+    source_landmark_types = sorted(
+        source["landmark_type"].unique().tolist())
+    required_landmark_types = sorted(group.landmark_types)
+    missing_sources = sorted(
+        set(required_landmark_types) - set(source_landmark_types))
+    if missing_sources:
+        raise LociOsmError(
+            f"untrimmed catalog is missing required landmark sources: "
+            f"{missing_sources}")
     config = _config(
-        region_ref=region_ref, catalog_ref=catalog_ref, plan=plan,
-        artifact_dataset=dataset)
-    upstreams = (region_ref, catalog_ref)
+        region_ref=region_ref, catalog=catalog, plan=plan,
+        paper_group=paper_group, artifact_dataset=dataset,
+        source_landmark_types=source_landmark_types,
+        required_landmark_types=required_landmark_types)
+    upstreams = (
+        region_ref, catalog.selected_ref, catalog.untrimmed_ref)
     stage_config_digest = artifact.sha256_json(config)
     identity = artifact_identity.compute(
         kind=ARTIFACT_KIND, dataset=dataset,
@@ -286,12 +387,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--farfield_root", type=Path,
                         default=paths_lib.DEFAULT_ROOT)
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--paper_group", required=True)
     parser.add_argument("--region_dir", required=True, type=Path)
-    parser.add_argument("--catalog_dir", required=True, type=Path)
-    parser.add_argument(
-        "--catalog_dataset",
-        help="dataset identity recorded by --catalog_dir (default: "
-             "--dataset); set this for a shared artifact scope")
     parser.add_argument("--version", required=True)
     return parser.parse_args()
 
@@ -300,8 +397,8 @@ def main() -> None:
     args = parse_args()
     reference = materialize(
         farfield_root=args.farfield_root, dataset=args.dataset,
-        region_dir=args.region_dir, catalog_dir=args.catalog_dir,
-        version=args.version, catalog_dataset=args.catalog_dataset)
+        paper_group=args.paper_group, region_dir=args.region_dir,
+        version=args.version)
     print(reference.path)
 
 

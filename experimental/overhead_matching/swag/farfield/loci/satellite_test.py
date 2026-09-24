@@ -319,6 +319,144 @@ class FakeChunkImageServerClient:
 
 
 class SatelliteTest(unittest.TestCase):
+    def test_google_xyz_chunk_falls_back_whole_chunk_only_on_404(self):
+        grid = _grid_with_source_shape(2, 1)
+        zoom = grid["zoom"]
+        x_min, y_min, _, _ = grid["source_tile_range_xyxy"]
+        template = satellite.DEFAULT_GOOGLE_TILE_URL_TEMPLATE
+        google_values = {
+            (x, y_min): _jpeg_bytes((x % 251, 71, 133))
+            for x in range(x_min, x_min + 2)
+        }
+        request = satellite._provider_request_contract(
+            satellite.GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER,
+            "https://example.invalid/ImageServer",
+            source_index_url=None,
+            catalog_where="State='ME' AND Category=1",
+            lock_raster_ids=(18,),
+            image_server_chunk_tiles=15)
+        self.assertEqual(request["google_tile_url_template"], template)
+        self.assertEqual(request["google_imagery_version"], "live_unpinned")
+        self.assertEqual(
+            request["google_drift_policy"],
+            satellite.GOOGLE_LIVE_DRIFT_POLICY)
+        self.assertEqual(request["export_raster_function"], "None")
+        self.assertEqual(request["export_mosaic_operation"], "MT_LAST")
+        audit_client = FakeImageServerClient(_image_catalog_covering(
+            satellite._rendered_footprint_bbox_wsen(grid), (18,)))
+        audit = satellite.audit_coverage(
+            audit_client, {"grid": grid}, _image_server_metadata(),
+            service_url=request["service_url"], source_index_url=None,
+            provider_mode=satellite.GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER,
+            catalog_where=request["catalog_where"], lock_raster_ids=(18,),
+            image_server_raster_function="None",
+            image_server_mosaic_operation="MT_LAST",
+            image_server_chunk_tiles=15)
+        self.assertEqual(
+            audit["provider"]["primary"]["imagery_version"],
+            "live_unpinned")
+        fallback_rule = audit["provider"]["fallback"]["export"][
+            "mosaic_rule"]
+        self.assertEqual(fallback_rule["mosaicOperation"], "MT_LAST")
+
+        for missing_google, expected_source, expected_format in (
+                (False, satellite.GOOGLE_XYZ_SOURCE, "JPEG"),
+                (True, satellite.MAINE_IMAGE_SERVER_FALLBACK_SOURCE, "PNG")):
+            with self.subTest(missing_google=missing_google), \
+                    TemporaryDirectory() as temporary:
+                client = satellite.GoogleXyzMaineFallbackClient(
+                    request["service_url"],
+                    google_tile_url_template=template,
+                    catalog_where=request["catalog_where"],
+                    lock_raster_ids=request["lock_raster_ids"],
+                    raster_function=request["export_raster_function"],
+                    mosaic_operation=request["export_mosaic_operation"])
+                missing_coordinate = (x_min + 1, y_min)
+
+                def response(url, *, params=None, missing_is_error=False):
+                    if url.endswith("/exportImage"):
+                        return SimpleNamespace(
+                            headers={"Content-Type": "image/png"},
+                            content=_png_bytes(
+                                (19, 83, 147), size=(512, 256)))
+                    coordinate = next(
+                        coordinate for coordinate in google_values
+                        if url == template.format(
+                            z=zoom, x=coordinate[0], y=coordinate[1]))
+                    if missing_google and coordinate == missing_coordinate:
+                        self.assertTrue(missing_is_error)
+                        raise satellite.MissingTileError("fake HTTP 404")
+                    return SimpleNamespace(
+                        headers={"Content-Type": "image/jpeg"},
+                        content=google_values[coordinate])
+
+                client._get = mock.Mock(side_effect=response)
+                build_dir = Path(temporary)
+                first = satellite.ensure_source_tiles(
+                    build_dir, grid, client, workers=2,
+                    image_server_chunk_tiles=15,
+                    source_chunking_contract=(
+                        satellite._google_maine_chunk_contract(15)))
+                self.assertEqual(first["downloaded"], 2)
+                export_calls = [
+                    call for call in client._get.call_args_list
+                    if call.args[0].endswith("/exportImage")
+                ]
+                self.assertEqual(len(export_calls), int(missing_google))
+                if export_calls:
+                    mosaic_rule = json.loads(
+                        export_calls[0].kwargs["params"]["mosaicRule"])
+                    self.assertEqual(mosaic_rule["lockRasterIds"], [18])
+                    self.assertEqual(
+                        mosaic_rule["mosaicOperation"], "MT_LAST")
+                for x in range(x_min, x_min + 2):
+                    path = satellite._tile_cache_path(
+                        build_dir, zoom, x, y_min)
+                    with Image.open(path) as image:
+                        self.assertEqual(image.format, expected_format)
+                    if not missing_google:
+                        self.assertEqual(path.read_bytes(),
+                                         google_values[(x, y_min)])
+                receipt_path, = (build_dir / "source_tile_chunks").rglob(
+                    "*.json")
+                receipt = json.loads(receipt_path.read_text())
+                self.assertEqual(receipt["schema"],
+                                 satellite.GOOGLE_MAINE_CHUNK_SCHEMA)
+                self.assertEqual(receipt["source"], expected_source)
+                source_manifest = satellite.write_source_tile_manifest(
+                    build_dir, grid, {
+                        "type": (
+                            satellite.GOOGLE_XYZ_MAINE_FALLBACK_PROVIDER),
+                    })
+                published_sources = {
+                    record["source"] for record in json.loads(
+                        source_manifest["path"].read_text())["tiles"]
+                }
+                self.assertEqual(published_sources, {expected_source})
+                calls_before_resume = len(client._get.call_args_list)
+                resumed = satellite.ensure_source_tiles(
+                    build_dir, grid, client, workers=2,
+                    image_server_chunk_tiles=15,
+                    source_chunking_contract=(
+                        satellite._google_maine_chunk_contract(15)))
+                self.assertEqual(resumed["resumed"], 2)
+                self.assertEqual(len(client._get.call_args_list),
+                                 calls_before_resume)
+
+        client = satellite.GoogleXyzMaineFallbackClient(
+            request["service_url"], google_tile_url_template=template,
+            catalog_where=request["catalog_where"],
+            lock_raster_ids=request["lock_raster_ids"],
+            raster_function=request["export_raster_function"],
+            mosaic_operation=request["export_mosaic_operation"])
+        client._get = mock.Mock(
+            side_effect=satellite.SatelliteError("fake HTTP 403"))
+        with self.assertRaisesRegex(satellite.SatelliteError, "403"):
+            client.fetch_tile_chunk(zoom, x_min, y_min, 2, 1)
+        self.assertFalse(any(
+            call.args[0].endswith("/exportImage")
+            for call in client._get.call_args_list))
+
     def test_wms_chunk_reprojects_to_exact_grid_and_resumes(self):
         layer = "pohang_2022_1225cm"
         service_url = "https://example.invalid/wms"
@@ -574,6 +712,58 @@ class SatelliteTest(unittest.TestCase):
         with self.assertRaisesRegex(
                 satellite.MissingTileError, "all-black no-data"):
             client.fetch_tile(19, 158_288, 190_104)
+
+    def test_image_server_export_records_service_rendering_contract(self):
+        service_url = "https://example.invalid/ImageServer"
+        clause = "Category=1 AND Name LIKE '%_45'"
+        client = satellite.ArcGisImageServerClient(
+            service_url, catalog_where=clause, lock_raster_ids=(10,),
+            raster_function="None", mosaic_operation="MT_LAST")
+        client._get = mock.Mock(return_value=SimpleNamespace(
+            headers={"Content-Type": "image/png"},
+            content=_png_bytes((10, 20, 30))))
+
+        client.fetch_tile(19, 158_288, 190_104)
+
+        parameters = client._get.call_args.kwargs["params"]
+        self.assertEqual(
+            json.loads(parameters["renderingRule"]),
+            {"rasterFunction": "None"})
+        self.assertEqual(
+            json.loads(parameters["mosaicRule"])["mosaicOperation"],
+            "MT_LAST")
+        grid = _tiny_grid()
+        catalog_client = FakeImageServerClient(_image_catalog_covering(
+            satellite._rendered_footprint_bbox_wsen(grid), (10,)))
+        audit = satellite.audit_coverage(
+            catalog_client, {"grid": grid}, _image_server_metadata(),
+            service_url=service_url, source_index_url=None,
+            provider_mode=satellite.IMAGE_SERVER_PROVIDER,
+            catalog_where=clause, lock_raster_ids=(10,),
+            image_server_raster_function="None",
+            image_server_mosaic_operation="MT_LAST")
+        self.assertEqual(
+            audit["provider_request"]["export_raster_function"], "None")
+        self.assertEqual(
+            audit["provider"]["export"]["rendering_rule"],
+            {"rasterFunction": "None"})
+        self.assertEqual(
+            audit["provider_request"]["export_mosaic_operation"], "MT_LAST")
+        self.assertEqual(
+            audit["provider"]["export"]["mosaic_rule"]["mosaicOperation"],
+            "MT_LAST")
+
+    def test_esri_rings_decode_holes_and_disjoint_parts(self):
+        geometry = satellite._geometry_from_esri_rings([
+            [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],
+            [[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]],
+            [[5, 0], [7, 0], [7, 2], [5, 2], [5, 0]],
+        ])
+
+        self.assertEqual(geometry.geom_type, "MultiPolygon")
+        self.assertEqual(geometry.area, 16)
+        self.assertEqual(len(geometry.geoms), 2)
+        self.assertEqual(sum(len(part.interiors) for part in geometry.geoms), 1)
 
     def test_image_server_chunk_export_bbox_and_pixel_split_are_exact(self):
         client = satellite.ArcGisImageServerClient(
@@ -1134,6 +1324,28 @@ class SatelliteTest(unittest.TestCase):
             clean_manifest = satellite.write_source_tile_manifest(
                 clean_dir, grid, provider)
             clean_manifest_bytes = clean_manifest["path"].read_bytes()
+
+            sharded_dir = root / "sharded"
+            sharded_client = FakeChunkImageServerClient()
+            first_shard = satellite.ensure_source_tiles(
+                sharded_dir, grid, sharded_client, workers=1,
+                image_server_chunk_tiles=3,
+                source_shard_count=2, source_shard_index=0)
+            second_shard = satellite.ensure_source_tiles(
+                sharded_dir, grid, sharded_client, workers=1,
+                image_server_chunk_tiles=3,
+                source_shard_count=2, source_shard_index=1)
+            self.assertEqual(first_shard["total"], 9)
+            self.assertEqual(second_shard["total"], 6)
+            self.assertCountEqual(sharded_client.chunk_calls, [
+                (grid["zoom"], x_min, y_min, 3, 3),
+                (grid["zoom"], x_min + 3, y_min, 2, 3),
+            ])
+            sharded_manifest = satellite.write_source_tile_manifest(
+                sharded_dir, grid, provider)
+            self.assertEqual(
+                sharded_manifest["path"].read_bytes(), clean_manifest_bytes)
+
             calls_after_first = len(client.chunk_calls)
             resumed = satellite.ensure_source_tiles(
                 clean_dir, grid, client, workers=8,
