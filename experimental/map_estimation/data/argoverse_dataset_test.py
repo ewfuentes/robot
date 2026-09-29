@@ -1,7 +1,7 @@
-"""Tests for the log index, against the real log snippet.
+"""Tests for the log index, against the real log snippets.
 
 Unlike `av2_log_test`, which builds synthetic empty trees because what it checks is path logic,
-these read actual data. That is the point: the snippet is a genuine `tbv` log laid out exactly
+these read actual data. That is the point: the snippets are genuine `tbv` logs laid out exactly
 as the downloader writes it, so a dataset that resolves paths correctly here resolves them
 correctly against `/data`, and the devkit parsers get exercised on the way through.
 """
@@ -13,21 +13,22 @@ from experimental.map_estimation.data import argoverse_dataset as ad
 from experimental.map_estimation.data import argoverse_layout as al
 from experimental.map_estimation.data import av2_log
 
-# The snippet mirrors S3, so it is a dataset *root* -- the log sits at `tbv/<log_id>` under it,
+# The snippet mirrors S3, so it is a dataset *root* -- logs sit at `tbv/<log_id>` under it,
 # not directly inside it.
 BASE_PATH = Path("external/argoverse_snippet")
 LOG_ID = "07YOTznatmYypvQYpzviEcU3yGPsyaGg__Spring_2020"
+LOG_IDS = [LOG_ID, "i1qcWZ15fSD2vfLljK8EgVPdyUWNgbp9__Winter_2021"]
 
 
 class ArgoverseDatasetTest(unittest.TestCase):
     def setUp(self) -> None:
         self.request = al.TbvRequest()
 
-    def test_discovers_the_log_on_disk(self):
+    def test_discovers_the_logs_on_disk(self):
         dataset = ad.ArgoverseDataset(self.request, root=BASE_PATH)
 
-        self.assertEqual(dataset.get_log_ids(), [LOG_ID])
-        self.assertEqual(len(dataset), 1)
+        self.assertEqual(dataset.get_log_ids(), LOG_IDS)
+        self.assertEqual(len(dataset), 2)
 
     def test_named_log_ids_are_used_verbatim(self):
         dataset = ad.ArgoverseDataset(self.request, log_ids=[LOG_ID], root=BASE_PATH)

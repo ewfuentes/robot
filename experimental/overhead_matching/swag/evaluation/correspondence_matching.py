@@ -20,9 +20,11 @@ disk. There is no in-memory-only "build similarity directly" shortcut.
 
 import enum
 import math
+import multiprocessing
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
@@ -81,6 +83,7 @@ class MatchingMethod(enum.Enum):
 
 class AggregationMode(enum.Enum):
     SUM = "sum"
+    COUNT = "count"
     MAX = "max"
     LOG_ODDS = "log_odds"
 
@@ -106,6 +109,8 @@ def _aggregate_score(
         weights = [1.0] * len(match_probs)
     if aggregation == AggregationMode.SUM:
         return sum(p * w for p, w in zip(match_probs, weights))
+    elif aggregation == AggregationMode.COUNT:
+        return sum(weights)
     elif aggregation == AggregationMode.MAX:
         return max(p * w for p, w in zip(match_probs, weights))
     elif aggregation == AggregationMode.LOG_ODDS:
@@ -121,15 +126,21 @@ def _aggregate_score(
 def compute_uniqueness_weights(
     cost_matrix: np.ndarray,
     prob_threshold: float = 0.3,
+    weighting: str = "inverse_log",
 ) -> np.ndarray:
     """Compute per-pano-landmark uniqueness weights from the cost matrix.
 
-    Weight = 1 / log2(1 + count of OSM landmarks with P(match) > threshold).
+    Default weight = 1 / log2(1 + count of OSM landmarks with P(match) >= threshold).
     A pano landmark matching 1 OSM landmark gets weight 1.0; one matching
-    100 gets weight ~0.15.
+    100 gets weight ~0.15. `inverse_count` instead uses 1 / max(1, count).
     """
     match_counts = (cost_matrix >= prob_threshold).sum(axis=1)
-    return 1.0 / np.log2(1.0 + np.maximum(match_counts, 1).astype(np.float64))
+    counts = np.maximum(match_counts, 1).astype(np.float64)
+    if weighting == "inverse_count":
+        return 1.0 / counts
+    if weighting == "inverse_log":
+        return 1.0 / np.log2(1.0 + counts)
+    raise ValueError(f"Unknown uniqueness weighting: {weighting}")
 
 
 def match_and_aggregate(
@@ -662,6 +673,38 @@ def precompute_raw_cost_data(
 # Similarity matrix
 # ---------------------------------------------------------------------------
 
+def _score_panorama(task, raw, sat_col_positions, method, aggregation,
+                    prob_threshold, uniqueness_weighted, use_dustbin,
+                    uniqueness_weighting):
+    pano_idx, pano_id = task
+    scores = np.zeros(len(sat_col_positions), dtype=np.float32)
+    rows = raw.pano_id_to_lm_rows.get(pano_id)
+    if not rows:
+        return pano_idx, scores
+    pano_cost = raw.cost_matrix[rows]
+    weights = (
+        compute_uniqueness_weights(pano_cost, prob_threshold, uniqueness_weighting)
+        if uniqueness_weighted else None
+    )
+    for sat_idx, cols in enumerate(sat_col_positions):
+        if cols:
+            scores[sat_idx] = match_and_aggregate(
+                pano_cost[:, cols], method, aggregation, prob_threshold,
+                uniqueness_weights=weights, use_dustbin=use_dustbin,
+            ).similarity_score
+    return pano_idx, scores
+
+
+def _init_similarity_worker(score_panorama):
+    # Fork shares the raw matrix; only panorama IDs and result rows cross the queue.
+    global _worker_score_panorama
+    _worker_score_panorama = score_panorama
+
+
+def _score_in_worker(task):
+    return _worker_score_panorama(task)
+
+
 def similarity_from_raw_data(
     raw: RawCorrespondenceData,
     dataset,  # VigorDataset
@@ -670,12 +713,19 @@ def similarity_from_raw_data(
     prob_threshold: float = 0.3,
     uniqueness_weighted: bool = False,
     use_dustbin: bool = True,
+    uniqueness_weighting: str = "inverse_log",
+    workers: int = 1,
 ) -> torch.Tensor:
     """Build similarity matrix from precomputed raw cost data.
 
     See `match_and_aggregate` for the meaning of `use_dustbin`. Pass
     `use_dustbin=False` to reproduce legacy (post-hoc threshold) artifacts.
+    `workers > 1` uses forked CPU workers and must run before CUDA initialization.
     """
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    if workers > 1 and torch.cuda.is_initialized():
+        raise ValueError("Parallel scoring requires a fresh CPU process; use --from_raw")
     num_panos = len(dataset._panorama_metadata)
     num_sats = len(dataset._satellite_metadata)
     similarity = torch.zeros(num_panos, num_sats)
@@ -693,28 +743,23 @@ def similarity_from_raw_data(
                 [osm_idx_to_col[i] for i in lm_idxs if i in osm_idx_to_col]
             )
 
-    for pano_idx in tqdm(range(num_panos), desc="Building similarity matrix"):
-        pano_id = dataset._panorama_metadata.iloc[pano_idx]["pano_id"]
-        rows = raw.pano_id_to_lm_rows.get(pano_id)
-        if rows is None:
-            continue
-        pano_cost = raw.cost_matrix[rows]
-
-        u_weights = (
-            compute_uniqueness_weights(pano_cost, prob_threshold)
-            if uniqueness_weighted else None
-        )
-
-        for sat_idx in range(num_sats):
-            cols = sat_col_positions[sat_idx]
-            if not cols:
-                continue
-            sub_cost = pano_cost[:, cols]
-            result = match_and_aggregate(
-                sub_cost, method, aggregation, prob_threshold,
-                uniqueness_weights=u_weights,
-                use_dustbin=use_dustbin,
-            )
-            similarity[pano_idx, sat_idx] = result.similarity_score
+    score_panorama = partial(
+        _score_panorama, raw=raw, sat_col_positions=sat_col_positions,
+        method=method, aggregation=aggregation, prob_threshold=prob_threshold,
+        uniqueness_weighted=uniqueness_weighted, use_dustbin=use_dustbin,
+        uniqueness_weighting=uniqueness_weighting,
+    )
+    tasks = enumerate(dataset._panorama_metadata["pano_id"])
+    if workers == 1:
+        for idx, scores in tqdm(map(score_panorama, tasks), total=num_panos,
+                                desc="Building similarity matrix"):
+            similarity[idx] = torch.from_numpy(scores)
+    else:
+        with multiprocessing.get_context("fork").Pool(
+            workers, initializer=_init_similarity_worker, initargs=(score_panorama,),
+        ) as pool:
+            for idx, scores in tqdm(pool.imap_unordered(_score_in_worker, tasks),
+                                    total=num_panos, desc="Building similarity matrix"):
+                similarity[idx] = torch.from_numpy(scores)
 
     return similarity
