@@ -32,8 +32,9 @@ jobs:
           clang-format-18 --dry-run --Werror **/*.cc **/*.hh
 
   unit-test:
-    continue-on-error: true
     strategy:
+      # Let the other build config finish when one fails.
+      fail-fast: false
       matrix:
         build-config: [gcc, clang]
         os: [self-hosted]
