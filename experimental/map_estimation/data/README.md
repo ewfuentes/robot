@@ -197,9 +197,9 @@ bazel test //experimental/map_estimation/data/...   # no credentials, no S3
 ```
 
 The tests need no AWS credentials and never list S3. Most build synthetic directory trees, since
-what they check is path logic; `argoverse_dataset_test` reads a real `tbv` log from the
+what they check is path logic; `argoverse_dataset_test` discovers two real `tbv` logs from the
 `@argoverse_snippet` archive, which Bazel fetches once and caches. That archive **mirrors S3 the
-way `/data` does** -- the log sits at `tbv/<log_id>` inside it, so the snippet is a dataset
+way `/data` does** -- each log sits at `tbv/<log_id>` inside it, so the snippet is a dataset
 *root* and `root=` is all a test has to override.
 
 ## Using the upstream `av2` package
