@@ -3,9 +3,48 @@ load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel", "py_package")
 
 py_binary(
-    name="semantic_paper_eval",
-    srcs=["semantic_paper_eval.py"],
-    deps=[":export_correspondence_similarity"],
+    name = "semantic_paper_eval",
+    srcs = ["semantic_paper_eval.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+        "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+        ":export_correspondence_similarity",
+    ],
+)
+
+py_binary(
+    name = "train_representation_ablation",
+    srcs = ["train_representation_ablation.py"],
+    deps = [
+        requirement("msgspec"),
+        requirement("numpy"),
+        requirement("torch"),
+        requirement("tensorboard"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+        "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+        "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+        ":correspondence_configs",
+        ":precompute_value_embeddings",
+        ":train_landmark_correspondence",
+    ],
+)
+
+py_test(
+    name = "semantic_representation_test",
+    srcs = ["semantic_representation_test.py"],
+    deps = [
+        requirement("numpy"),
+        requirement("torch"),
+        "//common/torch:load_torch_deps",
+        "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+        ":semantic_paper_eval",
+        ":train_representation_ablation",
+        ":train_landmark_correspondence",
+    ],
 )
 
 py_binary(
