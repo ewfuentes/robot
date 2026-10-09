@@ -222,6 +222,25 @@ def get_osm_tags_schema() -> dict:
 
 
 
+class SceneDescription(BaseModel):
+    """Free-text street-scene description for the CrossText2Loc baseline (image-only, no map data).
+
+    The two list fields come first so the model transcribes signage and enumerates the scene
+    before writing the paragraph, mirroring CVG-Text's OCR -> segmentation -> GPT-4o chain.
+    """
+    legible_text: List[str] = Field(
+        description="Each legible permanent-sign string, quoted exactly, with its direction relative to you.")
+    scene_elements: List[str] = Field(
+        description="Short phrases for the notable road, building and environment elements.")
+    description: str = Field(description="The final first-person paragraph, 80-120 words.")
+
+
+def get_scene_description_schema() -> dict:
+    schema = _add_required_no_add_props(_resolve_refs(SceneDescription.model_json_schema()))
+    schema["propertyOrdering"] = ["legible_text", "scene_elements", "description"]
+    return schema
+
+
 def compute_bounds_for_polygon(pano_loc_px, geometry):
     pano_y, pano_x = pano_loc_px
     # We need to compute the interval that the polygon occupies.
@@ -766,6 +785,43 @@ Bounding box coordinates are normalized 0-1000, where (0,0) is top-left and (100
 """,
 }
 
+SYSTEM_PROMPTS['scene_description'] = """<task_requirements>
+You are a pedestrian describing your surroundings in natural language so that a friend who only has a map (satellite imagery or OpenStreetMap) can work out where you are. Write one first-person, present-tense paragraph, as if reporting your position over the phone.
+</task_requirements>
+
+<input_data>
+You receive a single 360-degree equirectangular street-level panorama, aligned so that the horizontal position in the image is a compass direction: the left edge faces south, one quarter of the way across faces west, the centre faces north, three quarters across faces east, and the right edge faces south again. Interpret directions as: "in front of me" = the centre (north), "to my left" = the left half (west), "to my right" = the right half (east), "behind me" = the two edges (south).
+Work out the orientation of the road you are on from where it extends toward: if it recedes toward the centre and the edges it runs north-south; if it recedes toward the quarter and three-quarter positions it runs east-west; describe curves and other angles similarly.
+You have no map, GPS, address, or place database. Everything you write must be visible in the panorama.
+</input_data>
+
+<description_path>
+Analyse the scene progressively and write the description in this order. If a step has nothing to report, skip it silently.
+1. Road characteristics: the road you are standing on (its orientation, e.g. "running from south to north"; number of lanes; surface; markings such as crosswalks, bike lanes, turn arrows, medians), nearby intersections, sidewalks, traffic signs and signals.
+2. Scene text and signage: transcribe the legible text on permanent signs - shop and business names, street name signs, building names or numbers, bus stop signs, lettering on buildings - quoting each exactly as written in single quotes and saying where it is relative to you. Read carefully before deciding; if a sign is not clearly legible, leave it out. Ignore text on vehicles, on people, and on temporary posters or advertisements.
+3. Buildings: colour, material, height in storeys, evident function (houses, shops, offices, warehouses, churches, schools), and how they are arranged along each side of the road.
+4. Overall environment: vegetation (trees, hedges, lawns, parks), parking, infrastructure (power lines, fences, bridges, rail, water), open land, the kind of area (urban commercial, suburban residential, rural, industrial), and the general atmosphere.
+</description_path>
+
+<response_demands>
+- 80 to 120 words in a single paragraph, first person, present tense, beginning with "I am on", "I am at", or "I am in front of".
+- Use simple directional cues: in front of me, behind me, to my left, to my right, ahead, on the left/right side of the road. You may add a compass direction after a cue once or twice where it helps, e.g. "to my left (west)"; never add one after a phrase that already states a compass direction.
+- Prefer concrete, permanent, location-identifying details. Do not describe the sky, weather, sunlight, shadows, time of day, vehicles, or people.
+- Never write about what is absent or uncertain: no sentences such as "there are no signs", "no buildings are visible", or "unfortunately". The one exception is the road itself: an unmarked road or a road without sidewalks may be described that way. If a step has nothing else to report, skip it silently and spend the words on what is there.
+- Never name the city, neighbourhood, district, street, park, business, or building unless you can read that name on a sign in the images. Do not infer names from architecture, language, or style.
+- Respond with JSON matching the schema: "legible_text" lists each transcribed permanent-sign string with its direction, "scene_elements" lists the notable elements you found in steps 1, 3 and 4, and "description" is the final paragraph.
+</response_demands>
+
+<examples>
+Style examples only; their details come from other places and must not be reused.
+1. "I am currently at a ZEBRA CROSSING intersection, and the nearby roads are marked with 'ONLY' straight or turn arrows, as well as a green bike lane. In front of me is a store called 'Andy's Deli', while to my right is 'Mattress Firm'. Behind me to the left is a store called 'PARAGON'. The area is surrounded by mixed-use buildings about five stories high, with stone exteriors."
+2. "I am at an intersection with a clear zebra crossing and white gridlines on the ground. In front of me is a multi-storey building with a large billboard prominently displayed on it. Traffic lights are present to control vehicle flow. To my left, there are several fast food restaurants including 'Black Burger' and a convenience store. The area is bustling with activity, typical of a city centre."
+3. "I am on a two-lane road running from south to north, with a marked crosswalk visible in the foreground. On the left side (west), grassy areas and trees line the road, creating a pleasant environment. A traffic sign reading 'No U-Turns' is positioned on the right side. The area is well-lit with overhead power lines and poles, and the road is bordered by a fence. The surroundings are suburban, with single-storey brick houses set back behind low fences."
+</examples>
+"""
+
+scene_description_user_prompt = "Describe your surroundings based on the panorama above."
+
 panorama_user_prompt = """
 Based on the four images above (which show the same location from yaws 0°, 90°, 180°, and 270° respectively), extract the OpenStreetMap-relevant landmarks.
 """
@@ -1034,6 +1090,9 @@ def create_panorama_description_requests(args):
     """
     from pathlib import Path
 
+    if getattr(args, 'prompt_type', 'panorama') == 'scene_description':
+        return _create_scene_description_requests(args)
+
     pinhole_dir = Path(args.pinhole_dir)
     output_base = Path(args.output_base) / 'panorama_sentence_requests'
     output_base.mkdir(parents=True, exist_ok=True)
@@ -1198,6 +1257,58 @@ def create_panorama_description_requests(args):
     print("Use vertex_batch_manager to submit batch jobs to GCP.")
 
 
+SCENE_DESCRIPTION_PANO_SIZE = (4096, 2048)  # native Mapillary size; VIGOR 2048x1024 panos are upsampled 2x (CVG-Text used 2048x1024)
+
+
+def _encode_panorama_resized(image_path: Path) -> str:
+    """Base64 JPEG of an equirect panorama resized to CVG-Text's 2048x1024."""
+    import io
+    from PIL import Image
+    im = Image.open(image_path).convert("RGB")
+    if im.size != SCENE_DESCRIPTION_PANO_SIZE:
+        im = im.resize(SCENE_DESCRIPTION_PANO_SIZE, Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _create_scene_description_requests(args):
+    """CrossText2Loc-style scene descriptions: one request per full equirect panorama (north at centre)."""
+    panorama_dir = Path(args.panorama_dir)
+    output_base = Path(args.output_base) / 'panorama_sentence_requests'
+    output_base.mkdir(parents=True, exist_ok=True)
+    panos = sorted(p for p in panorama_dir.iterdir() if p.suffix.lower() in ('.jpg', '.jpeg', '.png'))
+    if args.pano_ids_file is not None:
+        keep = set(line.strip() for line in open(args.pano_ids_file) if line.strip())
+        panos = [p for p in panos if p.stem.split(',')[0] in keep]
+    if args.max_panoramas is not None:
+        panos = panos[:args.max_panoramas]
+    print(f"Scene descriptions: {len(panos)} panoramas from {panorama_dir}")
+    schema = get_scene_description_schema()
+    batch, batch_size, batch_idx, total = [], 0, 0, 0
+    for start in range(0, len(panos), 1000):
+        chunk = panos[start:start + 1000]
+        with Pool(args.num_workers) as pool:
+            encoded = list(tqdm.tqdm(pool.imap(_encode_panorama_resized, chunk), total=len(chunk),
+                                     desc="Encoding panoramas", disable=args.disable_tqdm))
+        for path, b64 in zip(chunk, encoded):
+            request = _create_panorama_batch_request(
+                custom_id=path.stem, user_prompt=scene_description_user_prompt,
+                system_prompt=SYSTEM_PROMPTS['scene_description'], images=[("image/jpeg", b64)],
+                schema=schema, media_resolution=args.media_resolution, thinking_level=args.thinking_level)
+            size = len(json.dumps(request).encode('utf-8'))
+            if batch and (batch_size + size > MAX_BATCH_FILE_SIZE_GCP or len(batch) >= args.max_requests_per_batch):
+                _write_panorama_batch(output_base, batch_idx, batch)
+                batch, batch_size, batch_idx = [], 0, batch_idx + 1
+            batch.append(request)
+            batch_size += size
+            total += 1
+    if batch:
+        _write_panorama_batch(output_base, batch_idx, batch)
+        batch_idx += 1
+    print(f"Created {total} scene-description requests in {batch_idx} batch file(s) under {output_base}")
+
+
 def _write_panorama_batch(output_base, batch_idx, batch_requests):
     """Helper function to write a panorama batch file (Gemini format).
 
@@ -1331,13 +1442,16 @@ if __name__ == "__main__":
     # Panorama landmark extraction (Gemini-only)
     panorama_parser = subparsers.add_parser('create_panorama_sentences',
                                             help='Create batch requests for panorama landmark extraction (Gemini format)')
-    panorama_parser.add_argument('--pinhole_dir', type=str, required=True,
-                                 help='Directory containing panorama subfolders with pinhole images')
+    panorama_parser.add_argument('--pinhole_dir', type=str, default=None,
+                                 help='Directory containing panorama subfolders with pinhole images (panorama/osm_tags prompts)')
+    panorama_parser.add_argument('--panorama_dir', type=str, default=None,
+                                 help='Directory of full equirect panoramas (scene_description prompt)')
     panorama_parser.add_argument('--output_base', type=str, default="/tmp/",
                                  help='Base path for output batch request files')
     panorama_parser.add_argument('--prompt_type', type=str, default='panorama',
-                                 choices=['panorama', 'osm_tags'],
-                                 help='Prompt type: "panorama" (natural language descriptions) or "osm_tags" (structured OSM tags)')
+                                 choices=['panorama', 'osm_tags', 'scene_description'],
+                                 help='Prompt type: "panorama" (natural language landmark descriptions), "osm_tags" (structured OSM tags), '
+                                      'or "scene_description" (CrossText2Loc-style free-text scene description from the full panorama)')
     panorama_parser.add_argument('--num_workers', type=int, default=8,
                                  help='Number of parallel workers for image encoding')
     panorama_parser.add_argument('--max_requests_per_batch', type=int, default=10000,
