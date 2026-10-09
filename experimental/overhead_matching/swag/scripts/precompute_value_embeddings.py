@@ -157,6 +157,7 @@ def embed_texts_vertex(
     task_type: str = "SEMANTIC_SIMILARITY",
     batch_size: int = 250,
     output_dimensionality: int = 768,
+    auto_truncate: bool | None = None,
 ) -> np.ndarray:
     """Embed texts using Vertex AI.
 
@@ -169,6 +170,7 @@ def embed_texts_vertex(
     config = EmbedContentConfig(
         task_type=task_type,
         output_dimensionality=output_dimensionality,
+        **({"auto_truncate": auto_truncate} if auto_truncate is not None else {}),
     )
 
     all_embeddings = []
