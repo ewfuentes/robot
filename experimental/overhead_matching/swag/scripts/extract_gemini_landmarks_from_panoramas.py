@@ -81,6 +81,8 @@ class PipelineConfig:
     media_resolution: str = "MEDIA_RESOLUTION_HIGH"
     thinking_level: str = "HIGH"
     pinhole_dir_override: Path | None = None
+    max_panoramas: int | None = None
+    pano_ids_file: Path | None = None
 
     def __post_init__(self):
         self._date_suffix = datetime.now().strftime("%y%m%d")
@@ -346,12 +348,15 @@ def stage_requests(config: PipelineConfig):
             "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
             "--",
             "create_panorama_sentences",
-            "--pinhole_dir", str(config.pinhole_dir),
+            *(["--panorama_dir", str(config.panorama_dir)] if config.prompt_type == "scene_description"
+              else ["--pinhole_dir", str(config.pinhole_dir)]),
             "--output_base", str(config.sentence_requests_dir),
             "--prompt_type", config.prompt_type,
             "--num_workers", "8",
             "--media_resolution", config.media_resolution,
             "--thinking_level", config.thinking_level,
+            *(["--max_panoramas", str(config.max_panoramas)] if config.max_panoramas else []),
+            *(["--pano_ids_file", str(config.pano_ids_file)] if config.pano_ids_file else []),
         ],
         "create panorama sentence requests",
         dry_run=config.dry_run,
@@ -550,14 +555,53 @@ def stage_embeddings(config: PipelineConfig):
     )
 
 
+def stage_captions(config: PipelineConfig):
+    """Stage 7 (scene_description): collect {pano_id: description} from the batch predictions."""
+    import json
+    out = config.output_base / config.name / "scene_descriptions.json"
+    if config.dry_run:
+        print(f"  [DRY RUN] Would parse {config.sentences_dir}/**/predictions.jsonl -> {out}")
+        return
+    captions, errors = {}, 0
+    for pred in sorted(config.sentences_dir.rglob("predictions.jsonl")):
+        for line in open(pred):
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            try:
+                d = json.loads(rec["response"]["candidates"][0]["content"]["parts"][0]["text"])
+                captions[rec["key"].split(",")[0]] = {
+                    "key": rec["key"], "description": d["description"],
+                    "legible_text": d.get("legible_text", []), "scene_elements": d.get("scene_elements", [])}
+            except Exception:
+                errors += 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(captions, indent=1))
+    print(f"  {len(captions)} scene descriptions ({errors} unparseable records) -> {out}")
+
+
+def _stage_pinhole_or_skip(config: PipelineConfig):
+    if config.prompt_type == "scene_description":
+        print("  scene_description sends the full panorama; no pinhole extraction needed")
+        return
+    stage_pinhole(config)
+
+
+def _stage_embeddings_or_captions(config: PipelineConfig):
+    if config.prompt_type == "scene_description":
+        stage_captions(config)
+        return
+    stage_embeddings(config)
+
+
 STAGE_FUNCS = {
-    Stage.PINHOLE: stage_pinhole,
+    Stage.PINHOLE: _stage_pinhole_or_skip,
     Stage.REQUESTS: stage_requests,
     Stage.UPLOAD: stage_upload,
     Stage.SUBMIT: stage_submit,
     Stage.WAIT: stage_wait,
     Stage.DOWNLOAD: stage_download,
-    Stage.EMBEDDINGS: stage_embeddings,
+    Stage.EMBEDDINGS: _stage_embeddings_or_captions,
 }
 
 
@@ -640,7 +684,7 @@ def main():
     )
     parser.add_argument(
         "--prompt_type", default="osm_tags",
-        choices=["osm_tags", "panorama"],
+        choices=["osm_tags", "panorama", "scene_description"],
         help="Prompt type (default: osm_tags)",
     )
     parser.add_argument(
@@ -677,6 +721,14 @@ def main():
     parser.add_argument(
         "--pinhole_dir", type=Path, default=None,
         help="Override computed pinhole dir (skips stage 1 pinhole extraction)",
+    )
+    parser.add_argument(
+        "--max_panoramas", type=int, default=None,
+        help="Only request the first N panoramas (subset runs)",
+    )
+    parser.add_argument(
+        "--pano_ids_file", type=Path, default=None,
+        help="Only request panoramas whose id is listed in this file (one per line)",
     )
     parser.add_argument(
         "--dry_run", action="store_true",
@@ -718,6 +770,8 @@ def main():
         media_resolution=args.media_resolution,
         thinking_level=args.thinking_level,
         pinhole_dir_override=args.pinhole_dir,
+        max_panoramas=args.max_panoramas,
+        pano_ids_file=args.pano_ids_file,
     )
 
     run_pipeline(config)
