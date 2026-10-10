@@ -9,9 +9,15 @@ py_package(
   name = "swag_package",
   packages = ["common", "experimental"],
   deps = [
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
     "//experimental/overhead_matching/swag/filter:particle_filter",
+    "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
     "//experimental/overhead_matching/swag/model:patch_embedding",
+    "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
+    "//experimental/overhead_matching/swag/scripts:correspondence_configs",
   ],
 )
 
@@ -23,7 +29,13 @@ py_wheel(
   abi = "none",
   platform = "any",
   tags = ["manual"],
-  requires = ["torch", "torchvision", "msgspec", "numpy", "tqdm"],
+  requires = [
+    "torch", "torchvision", "msgspec", "numpy", "tqdm",
+    # The landmark modules: correspondence matching and its model's config, the
+    # extractor's prompt and schema, and vigor_dataset's OSM landmark loading.
+    "pandas", "scipy", "psutil", "pydantic", "openai", "ollama", "requests",
+    "geopandas", "shapely", "pyarrow", "lmdb", "pyyaml",
+  ],
   python_requires = ">=3.12",
   deps = [":swag_package"],
 )
