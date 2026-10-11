@@ -270,6 +270,115 @@ class TestCrossFeatureVectorization(unittest.TestCase):
         np.testing.assert_allclose(gpu, cpu, atol=1e-5, rtol=1e-5)
 
 
+def _random_tags(rng, n, keys, values, housenumbers):
+    """Tag bundles drawing 0-4 keys each from `keys`, values from `values` (some
+    without embeddings), and housenumbers from `housenumbers`."""
+    out = []
+    for _ in range(n):
+        tags = {}
+        for k in rng.choice(keys, size=rng.integers(0, 5), replace=False):
+            tags[str(k)] = (str(rng.choice(housenumbers)) if k == "addr:housenumber"
+                            else str(rng.choice(values)))
+        out.append(tags)
+    return out
+
+
+class TestIndexedCrossFeatures(unittest.TestCase):
+    def setUp(self):
+        self.dim = 16
+        rng = np.random.default_rng(7)
+        torch.manual_seed(7)
+        # Model keys only: the reference compares every shared key, while the
+        # vectorized paths (before and after indexing) read only TAG_KEY_TO_IDX's.
+        keys = ["name", "amenity", "shop", "addr:housenumber", "addr:street",
+                "building"]
+        values = [f"v{i}" for i in range(12)]
+        # v10 and v11 have no embedding.
+        self.text_embeddings = {v: torch.randn(self.dim) for v in values[:10]}
+        housenumbers = ["100", "100-110", "105", "200", "12B", "x"]
+        self.pano = _random_tags(rng, 9, keys, values, housenumbers)
+        self.osm = _random_tags(rng, 60, keys, values, housenumbers)
+        self.device = torch.device("cpu")
+
+    def test_matches_python_loop(self):
+        index = cm.build_osm_text_index(
+            self.osm, self.text_embeddings, self.dim, self.device)
+        got = cm.compute_cross_features_indexed(
+            self.pano, index, self.text_embeddings, self.dim, self.device)
+        want = _compute_cross_features_for_pairs_reference(
+            self.pano, self.osm, self.text_embeddings)
+        np.testing.assert_allclose(got.numpy(), want, atol=1e-5, rtol=1e-5)
+
+    def test_chunks_and_row_slices_change_nothing(self):
+        index = cm.build_osm_text_index(
+            self.osm, self.text_embeddings, self.dim, self.device)
+        whole = cm.compute_cross_features_indexed(
+            self.pano, index, self.text_embeddings, self.dim, self.device)
+        chunked = cm.compute_cross_features_indexed(
+            self.pano, index, self.text_embeddings, self.dim, self.device,
+            osm_chunk_size=7)
+        np.testing.assert_allclose(chunked.numpy(), whole.numpy(), atol=1e-6)
+        part = cm.compute_cross_features_indexed(
+            self.pano, index.rows(10, 25), self.text_embeddings, self.dim, self.device)
+        np.testing.assert_allclose(part.numpy(), whole[:, 10:25].numpy(), atol=1e-6)
+
+    def test_no_pano_text_leaves_only_housenumbers(self):
+        pano = [{"addr:housenumber": "100-110"}, {}]
+        index = cm.build_osm_text_index(
+            self.osm, self.text_embeddings, self.dim, self.device)
+        got = cm.compute_cross_features_indexed(
+            pano, index, self.text_embeddings, self.dim, self.device)
+        want = _compute_cross_features_for_pairs_reference(
+            pano, self.osm, self.text_embeddings)
+        np.testing.assert_allclose(got.numpy(), want, atol=1e-6)
+        self.assertTrue((got[..., :3] == 0).all())
+
+    def test_osm_values_without_embeddings_leave_only_housenumbers(self):
+        pano = [{"name": "v0"}, {"addr:housenumber": "5"}]
+        osm = [{"name": "zzz"}, {"amenity": "qq", "addr:housenumber": "5"}]
+        index = cm.build_osm_text_index(osm, self.text_embeddings, self.dim, self.device)
+        got = cm.compute_cross_features_indexed(
+            pano, index, self.text_embeddings, self.dim, self.device)
+        want = _compute_cross_features_for_pairs_reference(
+            pano, osm, self.text_embeddings)
+        np.testing.assert_allclose(got.numpy(), want, atol=1e-6)
+        self.assertEqual(float(got[1, 1, 3]), 1.0)
+
+    def test_prepared_cost_matrix_is_the_model_on_the_reference_features(self):
+        cfg = CorrespondenceClassifierConfig(
+            encoder=TagBundleEncoderConfig(
+                text_input_dim=self.dim, text_proj_dim=4, per_tag_dim=4),
+            mlp_hidden_dim=4, dropout=0.0)
+        model = CorrespondenceClassifier(cfg).eval()
+        args = (model, self.text_embeddings, self.dim, self.device)
+        prepared = cm.prepare_osm_landmarks(
+            self.osm, *args, allow_missing_text_embeddings=True)
+        got = cm.compute_cost_matrix_prepared(
+            self.pano, prepared, *args, max_pairs_per_batch=13,
+            allow_missing_text_embeddings=True, osm_chunk_size=11)
+
+        pano_reprs = cm.batch_encode_landmarks(
+            self.pano, self.text_embeddings, self.dim, model, self.device,
+            allow_missing_text_embeddings=True)
+        osm_reprs = cm.batch_encode_landmarks(
+            self.osm, self.text_embeddings, self.dim, model, self.device,
+            allow_missing_text_embeddings=True)
+        cross = torch.from_numpy(_compute_cross_features_for_pairs_reference(
+            self.pano, self.osm, self.text_embeddings))
+        n_p, n_o = len(self.pano), len(self.osm)
+        with torch.no_grad():
+            want = torch.sigmoid(model.classify_from_reprs(
+                pano_reprs.unsqueeze(1).expand(n_p, n_o, -1).reshape(n_p * n_o, -1),
+                osm_reprs.unsqueeze(0).expand(n_p, n_o, -1).reshape(n_p * n_o, -1),
+                cross.reshape(n_p * n_o, -1),
+            ).squeeze(-1)).reshape(n_p, n_o).numpy()
+        np.testing.assert_allclose(got, want, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(
+            cm.compute_pairs_cost_matrix(
+                self.pano, self.osm, *args, allow_missing_text_embeddings=True),
+            want, atol=1e-5, rtol=1e-5)
+
+
 class TestMatchAndAggregate(unittest.TestCase):
     def test_empty_cost_matrix_returns_zero_score(self):
         result = cm.match_and_aggregate(
