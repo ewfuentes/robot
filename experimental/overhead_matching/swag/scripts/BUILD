@@ -388,6 +388,7 @@ py_binary(
 py_library(
   name="panorama_to_pinhole_lib",
   srcs=["panorama_to_pinhole.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
   deps=[
     requirement("numpy"),
     requirement("scipy"),
