@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import pickle
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -16,6 +17,15 @@ from torch.utils.data import DataLoader
 
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
     FixedEmbeddingClassifier,
+)
+from experimental.overhead_matching.swag.model.semantic_landmark_utils import (
+    custom_id_from_props,
+)
+from experimental.overhead_matching.swag.scripts.correspondence_configs import (
+    CorrespondenceClassifierMlpConfig,
+    CorrespondenceEncoderConfig,
+    CorrespondenceTrainConfig,
+    save_config,
 )
 from experimental.overhead_matching.swag.scripts import (
     semantic_paper_eval as evaluation,
@@ -269,6 +279,125 @@ class SemanticRepresentationTest(unittest.TestCase):
         )
         self.assertTrue((output / "complete.json").exists())
         self.assertTrue((audit_dir / "identity.json").exists())
+
+    def test_tags_text_matches_osm_serialization(self):
+        self.assertEqual(training.tags_text({"b": "2", "a": "1"}), "a=1, b=2")
+
+    def prepare_fixture(self):
+        """One labelled panorama per city; one OSM bundle missing from keys.json."""
+        data, pano, osm, source = [
+            self.root / name for name in ("data", "pano", "osm", "source")
+        ]
+        prompt = (
+            "Set 1 (street-level observations):\n 0. amenity=cafe; name=Joe's\n"
+            " 1. building=yes; addr:housenumber=5\n\nSet 2 (map database):\n"
+            " 0. amenity=cafe; name=Joe's\n 1. building=yes; addr:housenumber=7\n"
+        )
+        response = {
+            "matches": [
+                {
+                    "set_1_id": 0,
+                    "set_2_matches": [0],
+                    "negatives": [{"set_2_id": 1, "difficulty": "hard"}],
+                },
+                {
+                    "set_1_id": 1,
+                    "set_2_matches": [],
+                    "negatives": [{"set_2_id": 0, "difficulty": "easy"}],
+                },
+            ]
+        }
+        row = {
+            "key": "p1",
+            "request": {"contents": [{"parts": [{"text": prompt}]}]},
+            "response": {
+                "candidates": [{"content": {"parts": [{"text": json.dumps(response)}]}}]
+            },
+        }
+        tag = lambda key, value: {"key": key, "value": value}  # noqa: E731
+        landmarks = [
+            dict(
+                primary_tag=tag("amenity", "cafe"),
+                additional_tags=[tag("name", "Joe's")],
+                description="A cafe named Joe's.",
+            ),
+            dict(primary_tag=tag("bogus", "x"), additional_tags=[], description="x"),
+            dict(
+                primary_tag=tag("building", "yes"),
+                additional_tags=[tag("addr:housenumber", "5")],
+                description="A building at 5.",
+            ),
+        ]
+        for city in ("Train", "Val"):
+            (data / city).mkdir(parents=True)
+            (data / city / "predictions.jsonl").write_text(json.dumps(row) + "\n")
+            (pano / city / "embeddings").mkdir(parents=True)
+            with (pano / city / "embeddings/embeddings.pkl").open("wb") as f:
+                pickle.dump({"panoramas": {"p1,1.0,2.0": {"landmarks": landmarks}}}, f)
+        osm.mkdir()
+        (osm / "keys.json").write_text(
+            json.dumps([custom_id_from_props({"amenity": "cafe", "name": "Joe's"})])
+        )
+        source.mkdir()
+        (source / "manifest.json").write_text(json.dumps({"model": "m", "sample": {}}))
+        (source / "requests.jsonl").write_text(
+            json.dumps({"key": "k", "request": {"contents": [{"parts": [{"text": "old"}]}]}})
+            + "\n"
+        )
+        config = CorrespondenceTrainConfig(
+            data_dir=data,
+            text_embeddings_path=self.root / "unused.pkl",
+            output_dir=self.root / "baseline",
+            train_city="Train",
+            val_city="Val",
+            include_difficulties=["positive", "easy", "hard"],
+            batch_size=2,
+            num_epochs=1,
+            lr=1e-3,
+            weight_decay=0.0,
+            warmup_fraction=0.0,
+            gradient_clip_norm=1.0,
+            use_amp=False,
+            num_workers=0,
+            seed=0,
+            encoder=CorrespondenceEncoderConfig(text_input_dim=768, text_proj_dim=8),
+            classifier=CorrespondenceClassifierMlpConfig(mlp_hidden_dim=8, dropout=0.0),
+        )
+        save_config(config, self.root / "config.yaml")
+        return lambda pano_text: argparse.Namespace(
+            root=self.root / pano_text,
+            config=self.root / "config.yaml",
+            osm_embeddings_dir=osm,
+            osm_source_dir=source,
+            pano_source_dir=pano,
+            supplement_dir=self.root / f"{pano_text}_supplement",
+            pano_text=pano_text,
+        )
+
+    def test_prepare_pano_text_variants_and_supplement(self):
+        make_args = self.prepare_fixture()
+        expected = {
+            "descriptions": ["A cafe named Joe's.", "A building at 5."],
+            "tag_strings": ["amenity=cafe, name=Joe's", "addr:housenumber=5, building=yes"],
+        }
+        for pano_text, texts in expected.items():
+            args = make_args(pano_text)
+            training.prepare(args)
+            self.assertEqual(json.loads((args.root / "pano_texts.json").read_text()), texts)
+            prepared = json.loads((args.root / "prepared.json").read_text())
+            self.assertEqual(prepared["pano_text"], pano_text)
+            self.assertEqual(prepared["supplemental_osm_rows"], 1)
+            for city in ("Train", "Val"):
+                pairs = np.load(args.root / f"{city}_pairs.npz")
+                self.assertEqual(pairs["pano_idx"].tolist(), [0, 0, 1])
+                self.assertEqual(pairs["osm_idx"].tolist(), [0, 1, 0])
+                self.assertEqual(pairs["labels"].tolist(), [1.0, 0.0, 0.0])
+            request = json.loads((args.supplement_dir / "requests.jsonl").read_text())
+            self.assertTrue(
+                request["request"]["contents"][0]["parts"][0]["text"].endswith(
+                    json.dumps({"addr:housenumber": "7", "building": "yes"})
+                )
+            )
 
     def test_embedding_batches_preserve_byte_limit(self):
         self.assertEqual(list(training.batches(["x"] * 251, 0)), [(0, 250), (250, 251)])

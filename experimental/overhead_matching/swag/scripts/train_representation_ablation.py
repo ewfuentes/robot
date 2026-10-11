@@ -1,4 +1,8 @@
-"""Two fixed-embedding correspondence ablations using simple_v1_v5's training loop."""
+"""Fixed-embedding correspondence ablations using simple_v1_v5's training loop.
+
+The panorama text is chosen at ``prepare`` time (VLM sentence or sorted
+``key=value`` string); the OSM text is chosen per ``train`` run.
+"""
 
 import argparse
 from collections import Counter
@@ -52,6 +56,13 @@ def write_json(path, data):
     tmp.replace(path)
 
 
+def tags_text(tags):
+    """Serialize a tag bundle exactly as the OSM ``tag_strings`` embeddings were."""
+    text = ", ".join(f"{k}={v}" for k, v in sorted(tags.items()))
+    assert text, "Empty tag bundle"
+    return text
+
+
 def prepare(args):
     root, base_config = args.root, args.config
     osm, osm_base = args.osm_embeddings_dir, args.osm_source_dir
@@ -86,7 +97,7 @@ def prepare(args):
                 if tags:
                     # Exactly mirror the label generator's formatting and parser.
                     tags = parse_tag_string("; ".join(f"{k}={v}" for k, v in tags))
-                    filtered.append((tags, lm["description"], i))
+                    filtered.append((tags, lm.get("description"), i))
             panos[clean] = filtered
         del pano_data
         pano_idx, osm_idx, labels, difficulties, pano_ids = [], [], [], [], []
@@ -141,12 +152,15 @@ def prepare(args):
                         )
                         if difficulty not in config.include_difficulties:
                             continue
-                        description = source[a][1]
-                        assert isinstance(description, str) and description.strip()
-                        if description not in text_rows:
-                            text_rows[description] = len(texts)
-                            texts.append(description)
-                        pr = text_rows[description]
+                        if args.pano_text == "descriptions":
+                            text = source[a][1]
+                            assert isinstance(text, str) and text.strip()
+                        else:
+                            text = tags_text(set1[a])
+                        if text not in text_rows:
+                            text_rows[text] = len(texts)
+                            texts.append(text)
+                        pr = text_rows[text]
                         record_key = (pid, source[a][2])
                         if record_key not in seen_records:
                             records.append(
@@ -219,7 +233,8 @@ def prepare(args):
         root / "prepared.json",
         dict(
             cities=stats,
-            unique_pano_sentences=len(texts),
+            pano_text=args.pano_text,
+            unique_pano_texts=len(texts),
             base_osm_rows=len(osm_keys),
             supplemental_osm_rows=len(missing),
             note="All baseline pairs retained in original order. Supplement uses the exact parsed osm training tags.",
@@ -228,7 +243,8 @@ def prepare(args):
     print(
         "Prepared",
         len(texts),
-        "pano sentences;",
+        args.pano_text,
+        "pano texts;",
         len(missing),
         "supplemental osm bundles",
         flush=True,
@@ -308,7 +324,7 @@ def embed_inputs(args):
         inputs = [
             sentences[k]
             if variant == "descriptions"
-            else ", ".join(f"{a}={b}" for a, b in sorted(v["tags"].items()))
+            else tags_text(v["tags"])
             for k, v in missing.items()
         ]
         path = root / f"supplement_{variant}.npy"
@@ -416,6 +432,7 @@ def train(args):
     root, base_config, osm = args.root, args.config, args.osm_embeddings_dir
     variant = args.variant
     assert (root / "embedding_complete.json").exists()
+    pano_text = json.loads((root / "prepared.json").read_text())["pano_text"]
     config = load_config(base_config)
     reference = load_config(root / "baseline_config.yaml")
     assert config == reference, "Baseline configuration changed after preparation"
@@ -453,7 +470,7 @@ def train(args):
         output / "ablation.json",
         dict(
             variant=variant,
-            pano_input="pano sentence embedding",
+            pano_input=pano_text,
             osm_input=variant,
             dimensions=768,
             encoder="none",
@@ -593,6 +610,12 @@ def main(argv=None):
                 required=True,
                 help="City directories containing embeddings/embeddings.pkl",
             )
+            command.add_argument(
+                "--pano-text",
+                choices=["descriptions", "tag_strings"],
+                required=True,
+                help="Panorama landmark text to embed: VLM sentence or sorted key=value",
+            )
         if action == "check":
             command.add_argument(
                 "--checkpoint",
@@ -601,7 +624,10 @@ def main(argv=None):
             )
         if action == "train":
             command.add_argument(
-                "--variant", choices=["descriptions", "tag_strings"], required=True
+                "--variant",
+                choices=["descriptions", "tag_strings"],
+                required=True,
+                help="OSM text embeddings to pair with the prepared panorama text",
             )
     args = parser.parse_args(argv)
     {"prepare": prepare, "embed": embed_inputs, "check": check, "train": train}[

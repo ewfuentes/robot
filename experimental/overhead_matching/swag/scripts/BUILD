@@ -41,6 +41,8 @@ py_test(
         requirement("torch"),
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
+        "//experimental/overhead_matching/swag/model:semantic_landmark_utils",
+        ":correspondence_configs",
         ":semantic_paper_eval",
         ":train_representation_ablation",
         ":train_landmark_correspondence",
