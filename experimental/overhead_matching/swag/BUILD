@@ -18,6 +18,7 @@ py_package(
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:semantic_landmark_extractor",
     "//experimental/overhead_matching/swag/scripts:correspondence_configs",
+    "//experimental/overhead_matching/swag/scripts:panorama_to_pinhole_lib",
   ],
 )
 
@@ -35,6 +36,8 @@ py_wheel(
     # extractor's prompt and schema, and vigor_dataset's OSM landmark loading.
     "pandas", "scipy", "psutil", "pydantic", "openai", "ollama", "requests",
     "geopandas", "shapely", "pyarrow", "lmdb", "pyyaml",
+    # panorama_to_pinhole: the pinhole crops sent to the landmark extractor.
+    "pillow",
   ],
   python_requires = ">=3.12",
   deps = [":swag_package"],
