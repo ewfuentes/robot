@@ -134,7 +134,6 @@ def run_histogram_filter_on_path(
     true_latlons: torch.Tensor | None = None,
     convergence_radii: list[int] | None = None,
     elapsed_s: torch.Tensor | None = None,
-    step_distance_m: torch.Tensor | None = None,
     slow_drop: torch.Tensor | None = None,
 ) -> HistogramPathResult:
     """Run histogram filter on a single path.
@@ -150,8 +149,6 @@ def run_histogram_filter_on_path(
         convergence_radii: List of radii in meters for convergence metrics
         elapsed_s: (path_len,) robot clock at each pano, seconds from the path
             start. Required when config.slow_stream_delay_s > 0.
-        step_distance_m: (path_len - 1,) distance of each step in meters (for the
-            Wiener blur of lagged observations). Required with a slow stream.
         slow_drop: (path_len,) bool; True = this pano's slow-stream observation
             is lost. None = nothing dropped.
 
@@ -160,11 +157,8 @@ def run_histogram_filter_on_path(
     """
     slow_names = {"none": (), "landmark": ("landmark",), "all": ("all", "image", "landmark")}[
         config.slow_streams]
-    if slow_names:
-        if config.slow_stream_delay_s > 0 and elapsed_s is None:
-            raise ValueError("slow_stream_delay_s > 0 needs elapsed_s (pano timestamps or an assumed speed)")
-        if step_distance_m is None:
-            raise ValueError("a slow stream needs step_distance_m")
+    if slow_names and config.slow_stream_delay_s > 0 and elapsed_s is None:
+        raise ValueError("slow_stream_delay_s > 0 needs elapsed_s (pano timestamps or an assumed speed)")
 
     mean_history = [belief.get_mean_latlon()]
     mode_history = [belief.get_mode_latlon()]
@@ -188,39 +182,40 @@ def run_histogram_filter_on_path(
             print("Not tracking convergence: convergence_radii not provided")
 
     path_len = len(path_pano_ids)
-    # Lagged observations waiting for the clock: [capture_step, (num_patches,)
-    # log-likelihood, cumulative odometry since capture (deg), distance since capture (m)]
-    pending: list[list] = []
+    # Observations in flight: capture step of each, and their per-cell
+    # log-likelihood grids stacked (N, rows, cols). Every motion step is
+    # applied to this stack with the same operator as to the belief, so a
+    # lagged observation joins the belief having gone through the same
+    # shifts, interpolation and blur it would have as part of the belief.
+    # The lag therefore only changes which observations are in the belief.
+    pending_steps: list[int] = []
+    pending_grids: torch.Tensor | None = None
 
     def observe(step_idx: int) -> None:
+        nonlocal pending_grids
         streams = log_likelihood_aggregator.streams(path_pano_ids[step_idx])
         fast = [v for k, v in streams.items() if k not in slow_names]
         slow = [v for k, v in streams.items() if k in slow_names]
         if fast:
             belief.apply_observation(sum(fast[1:], fast[0]), mapping)
         if slow and not (slow_drop is not None and bool(slow_drop[step_idx])):
-            pending.append([step_idx, sum(slow[1:], slow[0]),
-                            torch.zeros(2, device=motion_deltas.device, dtype=motion_deltas.dtype), 0.0])
+            grid = belief.cell_log_likelihood_grid(sum(slow[1:], slow[0]), mapping)
+            # The grid's scale is irrelevant after normalization; anchor its
+            # max at 0 so exp() in the propagation cannot overflow.
+            grid = (grid - grid.max()).unsqueeze(0)
+            pending_steps.append(step_idx)
+            pending_grids = grid if pending_grids is None else torch.cat([pending_grids, grid])
         # Integrate every lagged observation whose latency has elapsed.
-        still_pending = []
-        for entry in pending:
-            cap, obs_log_ll, cum_delta, cum_dist = entry
+        keep = []
+        for i, cap in enumerate(pending_steps):
             waited = 0.0 if elapsed_s is None else float(elapsed_s[step_idx] - elapsed_s[cap])
             if waited + 1e-9 < config.slow_stream_delay_s:
-                still_pending.append(entry)
-                continue
-            grid = belief.cell_log_likelihood_grid(obs_log_ll, mapping)
-            if cap != step_idx:
-                # Carry the likelihood forward: shift by the odometry since
-                # capture, blur by the noise accumulated over that distance.
-                # Subtract the max so exp() in the shift cannot overflow.
-                peak = grid.max()
-                grid = propagate_log_grid(
-                    grid - peak, belief.grid_spec, cum_delta, config.motion_noise_frac,
-                    belief.get_mean_latlon(), blur_distance_m=cum_dist,
-                ) + peak
-            belief.apply_cell_log_likelihood(grid)
-        pending[:] = still_pending
+                keep.append(i)
+            else:
+                belief.apply_cell_log_likelihood(pending_grids[i])
+        if len(keep) != len(pending_steps):
+            pending_steps[:] = [pending_steps[i] for i in keep]
+            pending_grids = pending_grids[keep] if keep else None
 
     for step_idx in range(path_len - 1):
         # Observation update
@@ -238,11 +233,14 @@ def run_histogram_filter_on_path(
                 )
                 prob_mass_by_radius[radius].append(prob_mass)
 
-        # Motion prediction
-        belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac)
-        for entry in pending:
-            entry[2] = entry[2] + motion_deltas[step_idx]
-            entry[3] += float(step_distance_m[step_idx])
+        # Motion prediction, applied identically to the belief and to the
+        # observations in flight (same delta, same reference point).
+        reference_latlon = belief.get_mean_latlon()
+        belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac, reference_latlon)
+        if pending_grids is not None:
+            pending_grids = propagate_log_grid(
+                pending_grids, belief.grid_spec, motion_deltas[step_idx],
+                config.motion_noise_frac, reference_latlon)
 
     # Final observation
     observe(path_len - 1)
@@ -483,14 +481,14 @@ def evaluate_histogram_on_paths(
                 if convergence_radii else None
             )
 
-            # Clock and per-step distances for the latency model
-            elapsed_s = step_dist_m = slow_drop = None
+            # Clock for the latency model
+            elapsed_s = slow_drop = None
             if config.slow_streams != "none":
-                positions = vigor_dataset.get_panorama_positions(path).to(device)
-                step_dist_m = step_distances_m(positions)
                 if config.slow_stream_delay_s > 0:
+                    positions = vigor_dataset.get_panorama_positions(path).to(device)
                     elapsed_s = elapsed_seconds(
-                        path, step_dist_m, pano_times_s, config.assumed_speed_m_s)
+                        path, step_distances_m(positions), pano_times_s,
+                        config.assumed_speed_m_s)
                 if config.slow_stream_dropout > 0:
                     slow_drop = torch.rand(len(path), generator=generator, device=device) \
                         < config.slow_stream_dropout
@@ -506,7 +504,6 @@ def evaluate_histogram_on_paths(
                 true_latlons=true_latlons,
                 convergence_radii=convergence_radii,
                 elapsed_s=elapsed_s,
-                step_distance_m=step_dist_m,
                 slow_drop=slow_drop,
             )
 

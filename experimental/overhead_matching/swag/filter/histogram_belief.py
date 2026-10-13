@@ -194,14 +194,16 @@ def _shift_grid(
     """Shift belief grid by fractional cell amounts using bilinear interpolation.
 
     Args:
-        log_belief: Log probability tensor of shape (H, W)
+        log_belief: Log probability tensor of shape (H, W), or a batch (N, H, W)
+            of grids that all move by the same amount
         shift_rows: Shift amount in rows (positive = shift down)
         shift_cols: Shift amount in columns (positive = shift right)
 
     Returns:
-        Shifted log belief tensor
+        Shifted log belief tensor, same shape as the input
     """
-    H, W = log_belief.shape
+    batched = log_belief.dim() == 3
+    H, W = log_belief.shape[-2:]
     device = log_belief.device
     dtype = log_belief.dtype
 
@@ -216,34 +218,53 @@ def _shift_grid(
 
     # Apply shift (convert cell shift to [-1,1] range)
     # To shift content by +N cells, we sample from position -N
-    grid_y = grid_y - (2 * shift_rows / (H - 1))
-    grid_x = grid_x - (2 * shift_cols / (W - 1))
+    grid_y = grid_y - (2 * float(shift_rows) / (H - 1))
+    grid_x = grid_x - (2 * float(shift_cols) / (W - 1))
 
     grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
-    belief_prob = belief_prob.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+    belief_prob = belief_prob.reshape(-1, 1, H, W)  # (N, 1, H, W)
+    grid = grid.expand(belief_prob.shape[0], -1, -1, -1)
 
     # Sample with bilinear interpolation, zeros outside boundary
     shifted = F.grid_sample(
         belief_prob, grid, mode="bilinear", padding_mode="zeros", align_corners=True
     )
 
-    return torch.log(shifted.squeeze() + 1e-40)
+    shifted = shifted.reshape(-1, H, W) if batched else shifted.reshape(H, W)
+    return torch.log(shifted + 1e-40)
+
+
+# Below this the Gaussian kernel is a delta; the blur is skipped entirely.
+MIN_BLUR_SIGMA_CELLS = 0.1
+
+
+def blur_sigma_cells(
+    grid_spec: "GridSpec", distance_m, motion_noise_frac: float, ref_lat_deg: float
+):
+    """Wiener blur std in cells for `distance_m` of travel: ``frac * sqrt(d)``
+    metres, converted through the grid's metres-per-pixel at `ref_lat_deg`."""
+    m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
+    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(distance_m))
+    sigma_cells = (sigma_m / m_per_px) / grid_spec.cell_size_px
+    return sigma_cells.item() if isinstance(sigma_cells, torch.Tensor) else sigma_cells
 
 
 def _blur_log_grid(log_grid: torch.Tensor, sigma_cells: float) -> torch.Tensor:
     """Isotropic Gaussian blur of a log grid in probability space.
 
     Zero padding = absorbing boundary. Returns the input unchanged below
-    0.1 cells, where the kernel would be a delta anyway.
+    MIN_BLUR_SIGMA_CELLS, where the kernel would be a delta anyway.
     """
-    if sigma_cells < 0.1:
+    if sigma_cells < MIN_BLUR_SIGMA_CELLS:
         return log_grid
 
+    batched = log_grid.dim() == 3
+    H, W = log_grid.shape[-2:]
     kernel = _make_gaussian_kernel_1d(sigma_cells, log_grid.device)
-    prob = torch.exp(log_grid)
+    prob = torch.exp(log_grid).reshape(-1, 1, H, W)
     pad_size = len(kernel) // 2
     prob = F.pad(
-        prob.unsqueeze(0).unsqueeze(0),
+        prob,
         (pad_size, pad_size, pad_size, pad_size),
         mode="constant",
         value=0,
@@ -251,7 +272,8 @@ def _blur_log_grid(log_grid: torch.Tensor, sigma_cells: float) -> torch.Tensor:
     # Separable convolution: rows (vertical kernel) then columns.
     prob = F.conv2d(prob, kernel.view(1, 1, -1, 1))
     prob = F.conv2d(prob, kernel.view(1, 1, 1, -1))
-    return torch.log(prob.squeeze() + 1e-40)
+    prob = prob.reshape(-1, H, W) if batched else prob.reshape(H, W)
+    return torch.log(prob + 1e-40)
 
 
 def propagate_log_grid(
@@ -260,23 +282,21 @@ def propagate_log_grid(
     motion_delta_deg: torch.Tensor,
     motion_noise_frac: float,
     reference_latlon: torch.Tensor,
-    blur_distance_m: float | None = None,
 ) -> torch.Tensor:
-    """Apply the motion model (shift by delta, Wiener blur) to any log grid.
+    """Apply one motion step (shift by delta, Wiener blur) to any log grid.
 
-    Used on the belief by ``HistogramBelief.apply_motion`` and on a lagged
-    observation's log-likelihood grid, which must be carried forward by the
-    odometry accumulated between capture and integration:
-    ``p(o_k | x_t) = (L_k * N(0, sigma^2 d))`` shifted by the cumulative delta.
+    Used on the belief by ``HistogramBelief.apply_motion`` and, step by step
+    with the same deltas, on the log-likelihood grids of observations that
+    are still in flight (see evaluate_histogram_on_paths), so a lagged
+    observation joins the belief having been carried through exactly the
+    motion updates the belief went through since its capture. `log_grid`
+    may be a batch (N, H, W) of grids that all move by this step.
 
     Args:
         motion_delta_deg: (2,) [delta_lat, delta_lon] in degrees.
         motion_noise_frac: Wiener noise intensity in m/sqrt(m); blur std is
-            ``motion_noise_frac * sqrt(blur_distance_m)``.
+            ``motion_noise_frac * sqrt(step distance)``.
         reference_latlon: point used for the degrees -> pixels conversion.
-        blur_distance_m: distance over which the noise accumulated. Defaults
-            to the delta's own length (a single step); pass the path length
-            for a multi-step window.
 
     Returns the propagated grid, not normalized.
     """
@@ -298,13 +318,9 @@ def propagate_log_grid(
     # `motion_noise_frac` shares units with OdometryNoiseConfig.
     ref_lat_deg = float(ref[0])
     m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
-    if blur_distance_m is None:
-        delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
-        blur_distance_m = delta_magnitude_px * m_per_px
-    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(blur_distance_m, dtype=torch.float64))
-    sigma_cells = (sigma_m / m_per_px) / grid_spec.cell_size_px
-    if isinstance(sigma_cells, torch.Tensor):
-        sigma_cells = sigma_cells.item()
+    delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
+    sigma_cells = blur_sigma_cells(
+        grid_spec, delta_magnitude_px * m_per_px, motion_noise_frac, ref_lat_deg)
 
     shifted = _shift_grid(log_grid, shift_rows, shift_cols)
     return _blur_log_grid(shifted, sigma_cells)

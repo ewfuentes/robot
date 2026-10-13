@@ -793,17 +793,21 @@ class TestPropagateLogGrid(unittest.TestCase):
         belief = self._belief()
         out = propagate_log_grid(
             belief.get_log_belief(), belief.grid_spec, torch.zeros(2), 0.141,
-            belief.get_mean_latlon(), blur_distance_m=0.0,
+            belief.get_mean_latlon(),
         )
         self.assertTrue(torch.allclose(out.exp(), belief.get_belief(), rtol=1e-3, atol=1e-9))
 
-    def test_blur_distance_override_spreads_more(self):
+    def test_batched_propagation_matches_per_grid(self):
         belief = self._belief()
-        delta = torch.tensor([0.0, 0.0001])
-        args = (belief.get_log_belief(), belief.grid_spec, delta, 0.141, belief.get_mean_latlon())
-        single_step = propagate_log_grid(*args)
-        long_window = propagate_log_grid(*args, blur_distance_m=1e6)
-        self.assertLess(long_window.max().item(), single_step.max().item())
+        g = torch.Generator().manual_seed(1)
+        other = -2.0 * torch.rand_like(belief.get_log_belief(), generator=g) if False else \
+            -2.0 * torch.rand(belief.get_log_belief().shape, generator=g)
+        delta = torch.tensor([0.0003, 0.0005])
+        args = (belief.grid_spec, delta, 5.0, belief.get_mean_latlon())  # big noise: blur runs
+        stacked = propagate_log_grid(torch.stack([belief.get_log_belief(), other]), *args)
+        self.assertEqual(tuple(stacked.shape), (2, *belief.get_log_belief().shape))
+        self.assertTrue(torch.allclose(stacked[0], propagate_log_grid(belief.get_log_belief(), *args), atol=1e-5))
+        self.assertTrue(torch.allclose(stacked[1], propagate_log_grid(other, *args), atol=1e-5))
 
     def test_apply_observation_split_is_exact(self):
         grid_spec = GridSpec(

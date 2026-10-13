@@ -54,9 +54,15 @@ class _World:
         n_cols = self.grid_spec.num_cols
         row, col0 = self.grid_spec.num_rows // 2, 3
         self.true_cells = [(row, col0 + i) for i in range(path_len)]
-        lat, lon = zip(*[self.grid_spec.cell_indices_to_latlon(
-            torch.tensor(float(r)), torch.tensor(float(c))) for r, c in self.true_cells])
-        self.true_latlons = torch.stack([torch.stack(lat), torch.stack(lon)], dim=-1).to(torch.float32)
+        # Cell centers in float64 so each step is an exact whole-cell shift
+        # (GridSpec's own float32 lat/lon would quantize the steps by ~7 px).
+        gs = self.grid_spec
+        rows = torch.tensor([r for r, _ in self.true_cells], dtype=torch.float64)
+        cols = torch.tensor([c for _, c in self.true_cells], dtype=torch.float64)
+        lat, lon = web_mercator.pixel_coords_to_latlon(
+            gs.origin_row_px + (rows + 0.5) * gs.cell_size_px,
+            gs.origin_col_px + (cols + 0.5) * gs.cell_size_px, gs.zoom_level)
+        self.true_latlons = torch.stack([lat, lon], dim=-1)
         self.motion_deltas = self.true_latlons[1:] - self.true_latlons[:-1]
         self.path = [f"p{i}" for i in range(path_len)]
         image = {pid: torch.zeros(self.num_patches) for pid in self.path}
@@ -79,7 +85,7 @@ class _World:
             belief=belief, motion_deltas=self.motion_deltas, path_pano_ids=self.path,
             log_likelihood_aggregator=agg, mapping=self.mapping, config=config,
             true_latlons=self.true_latlons, convergence_radii=[50],
-            elapsed_s=elapsed, step_distance_m=self.step_dist,
+            elapsed_s=elapsed,
         )
 
 
@@ -121,9 +127,41 @@ class TestLatencyModel(unittest.TestCase):
             motion_deltas=w.motion_deltas, path_pano_ids=w.path,
             log_likelihood_aggregator=w.agg, mapping=w.mapping, config=config,
             true_latlons=w.true_latlons, convergence_radii=[50],
-            step_distance_m=w.step_dist, slow_drop=torch.ones(len(w.path), dtype=torch.bool))
+            slow_drop=torch.ones(len(w.path), dtype=torch.bool))
         self.assertTrue(torch.allclose(out.final_belief.get_log_belief(),
                                        ref.final_belief.get_log_belief(), atol=1e-6))
+
+    def test_lag_only_changes_which_observations_are_in_the_belief(self):
+        """Integrating pano k's landmark evidence two steps late must leave the
+        belief at the end identical to a no-lag run that simply never saw the
+        observations still in flight at the end (the last two panos). Exact
+        here because the steps are whole cells; with fractional shifts the
+        bilinear resampling of a product is not the product of resamplings,
+        and carrying the in-flight grids through the same per-step operator
+        is the closest the histogram filter can get."""
+        w = self.w
+        step_m = float(w.step_dist[0])
+        for noise in (0.0, 0.141):
+            lagged = HistogramFilterConfig(motion_noise_frac=noise, slow_streams="landmark",
+                                           slow_stream_delay_s=1.5 * step_m, assumed_speed_m_s=1.0)
+            elapsed = elapsed_seconds(w.path, w.step_dist, None, 1.0)
+            out = run_histogram_filter_on_path(
+                belief=HistogramBelief.from_uniform(w.grid_spec, DEVICE),
+                motion_deltas=w.motion_deltas, path_pano_ids=w.path,
+                log_likelihood_aggregator=w.agg, mapping=w.mapping, config=lagged,
+                elapsed_s=elapsed)
+            landmark = dict(w.agg.landmark)
+            for pid in w.path[-2:]:
+                landmark[pid] = torch.zeros(w.num_patches)
+            ref = run_histogram_filter_on_path(
+                belief=HistogramBelief.from_uniform(w.grid_spec, DEVICE),
+                motion_deltas=w.motion_deltas, path_pano_ids=w.path,
+                log_likelihood_aggregator=_TwoStream(w.agg.image, landmark),
+                mapping=w.mapping, config=HistogramFilterConfig(motion_noise_frac=noise))
+            a, b = out.final_belief.get_belief(), ref.final_belief.get_belief()
+            self.assertTrue(torch.allclose(a, b, atol=1e-4),  # bilinear resampling at integer positions
+                            f"noise={noise} max|diff|={(a - b).abs().max().item():.3e} "
+                            f"peak={a.max().item():.3f} argmax {a.argmax().item()} vs {b.argmax().item()}")
 
     def test_lagged_observations_are_carried_forward(self):
         """With a two-step lag the landmark evidence about pano k lands when the
