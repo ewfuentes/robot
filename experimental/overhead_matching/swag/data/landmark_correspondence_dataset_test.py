@@ -18,6 +18,7 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     compute_cross_features,
     encode_tag_bundle,
     parse_housenumber,
+    parse_prompt_landmarks,
 )
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
     NUM_CROSS_FEATURES,
@@ -28,6 +29,55 @@ from experimental.overhead_matching.swag.model.landmark_correspondence_model imp
 # The smallest key that actually exists in TAG_KEY_TO_IDX, used for tests.
 _SOME_KEY = next(iter(TAG_KEY_TO_IDX))
 _NAME_KEY = "name" if "name" in TAG_KEY_TO_IDX else _SOME_KEY
+
+
+class TestParsePromptLandmarks(unittest.TestCase):
+    # Shapes taken from real chicago_seattle_panov2_tuned_v4 prompts: values may
+    # contain the "; " separator or newlines, and the parser must invert the join.
+    PROMPT = (
+        "Set 1 (street-level observations):\n"
+        " 0. highway=residential; name=West 15th Street\n"
+        " 1. highway=motorway; name=Kennedy Expressway; Dan Ryan Expressway; ref=I 90;I 94\n"
+        " 2. name=Chicago Patrolmen's Federal Credit Union ; building=yes; building=commercial\n"
+        "\n"
+        "Set 2 (map database):\n"
+        " 0. addr:housenumber=1444; building=yes\n"
+        " 1. name=South Dearborn Street; description=South Dearborn St has reopened.\n"
+        "\n"
+        "https://example.com/x; highway=primary; lanes=4\n"
+        " 2. historic=memorial; inscription=Jack Brickhouse\nHall of Fame\n1917-1998; name=Jack Brickhouse statue"
+    )
+
+    def setUp(self):
+        self.set1, self.set2 = parse_prompt_landmarks(self.PROMPT)
+
+    def test_indices_stay_aligned(self):
+        self.assertEqual((len(self.set1), len(self.set2)), (3, 3))
+
+    def test_well_formed_items_unchanged(self):
+        self.assertEqual(self.set1[0], {"highway": "residential", "name": "West 15th Street"})
+        self.assertEqual(self.set2[0], {"addr:housenumber": "1444", "building": "yes"})
+
+    def test_separator_inside_value_is_kept(self):
+        self.assertEqual(self.set1[1], {"highway": "motorway",
+                                        "name": "Kennedy Expressway; Dan Ryan Expressway",
+                                        "ref": "I 90;I 94"})
+
+    def test_newline_inside_value_keeps_following_tags(self):
+        self.assertEqual(self.set2[1], {"name": "South Dearborn Street",
+                                        "description": "South Dearborn St has reopened.\n\nhttps://example.com/x",
+                                        "highway": "primary", "lanes": "4"})
+        self.assertEqual(self.set2[2], {"historic": "memorial",
+                                        "inscription": "Jack Brickhouse\nHall of Fame\n1917-1998",
+                                        "name": "Jack Brickhouse statue"})
+
+    def test_whitespace_stripped_and_repeated_key_keeps_last(self):
+        self.assertEqual(self.set1[2], {"name": "Chicago Patrolmen's Federal Credit Union",
+                                        "building": "commercial"})
+
+    def test_missing_set2_marker_raises(self):
+        with self.assertRaises(ValueError):
+            parse_prompt_landmarks("Set 1 (street-level observations):\n 0. building=yes")
 
 
 class TestParseHousenumber(unittest.TestCase):
