@@ -154,6 +154,13 @@ class TestComputeCrossFeatures(unittest.TestCase):
         self.assertAlmostEqual(feats[0], 1.0, places=5)
         self.assertAlmostEqual(feats[1], 1.0, places=5)
 
+    def test_off_whitelist_shared_key_ignored(self):
+        emb = {"a": torch.tensor([1.0, 0.0]), "b": torch.tensor([1.0, 0.0])}
+        feats = compute_cross_features(
+            {"not_a_model_key": "a"}, {"not_a_model_key": "b"}, text_embeddings=emb,
+        )
+        self.assertEqual(feats[:3], [0.0, 0.0, 0.0])
+
     def test_housenumber_overlap_exact(self):
         # Range 100-110 overlaps single value 105.
         feats = compute_cross_features(

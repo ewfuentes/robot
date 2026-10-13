@@ -37,7 +37,6 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     HOUSENUMBER_KEY,
     NUM_CROSS_FEATURES,
     _pad_side,
-    compute_cross_features,
     encode_tag_bundle,
     parse_housenumber,
 )
@@ -260,6 +259,83 @@ def batch_encode_landmarks(
     return torch.cat(all_reprs, dim=0)
 
 
+@dataclass
+class PreparedOsmLandmarks:
+    """A list of OSM landmarks encoded once, to score many panoramas against with
+    `compute_cost_matrix_prepared`: their tag-bundle representations and their
+    text index for the cross features."""
+    reprs: torch.Tensor        # (N, repr_dim) on the model's device
+    text_index: "OsmTextIndex"
+
+    def __len__(self) -> int:
+        return self.reprs.shape[0]
+
+
+def prepare_osm_landmarks(
+    osm_tags_list: list[dict[str, str]],
+    model,  # CorrespondenceClassifier
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    device: torch.device,
+    allow_missing_text_embeddings: bool = False,
+) -> PreparedOsmLandmarks:
+    reprs = batch_encode_landmarks(
+        osm_tags_list, text_embeddings, text_input_dim, model, device,
+        allow_missing_text_embeddings=allow_missing_text_embeddings,
+    ).to(device)
+    return PreparedOsmLandmarks(
+        reprs, build_osm_text_index(osm_tags_list, text_embeddings, text_input_dim, device),
+    )
+
+
+def compute_cost_matrix_prepared(
+    pano_tags_list: list[dict[str, str]],
+    osm: PreparedOsmLandmarks,
+    model,  # CorrespondenceClassifier
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    device: torch.device,
+    max_pairs_per_batch: int = 50000,
+    allow_missing_text_embeddings: bool = False,
+    osm_chunk_size: int = 32768,
+) -> np.ndarray:
+    """(n_pano, n_osm) P(match) of each pano tag bundle against landmarks
+    prepared once with `prepare_osm_landmarks`. The cross features for every pair
+    are computed in one call, (n_pano, n_osm, NUM_CROSS_FEATURES) on `device`;
+    the classifier then works through the landmarks in chunks."""
+    n_pano = len(pano_tags_list)
+    n_osm = len(osm)
+    if n_pano == 0 or n_osm == 0:
+        return np.zeros((n_pano, n_osm), dtype=np.float32)
+
+    pano_reprs = batch_encode_landmarks(
+        pano_tags_list, text_embeddings, text_input_dim, model, device,
+        allow_missing_text_embeddings=allow_missing_text_embeddings,
+    ).to(device)
+
+    cross_all = compute_cross_features_indexed(
+        pano_tags_list, osm.text_index, text_embeddings, text_input_dim, device,
+        osm_chunk_size=osm_chunk_size,
+    )
+    out = np.zeros((n_pano, n_osm), dtype=np.float32)
+    for start in range(0, n_osm, osm_chunk_size):
+        end = min(start + osm_chunk_size, n_osm)
+        c = end - start
+        cross = cross_all[:, start:end].reshape(n_pano * c, -1)
+        pano_exp = pano_reprs.unsqueeze(1).expand(n_pano, c, -1).reshape(n_pano * c, -1)
+        osm_exp = osm.reprs[start:end].unsqueeze(0).expand(n_pano, c, -1).reshape(n_pano * c, -1)
+        probs = []
+        for s in range(0, n_pano * c, max_pairs_per_batch):
+            e = min(s + max_pairs_per_batch, n_pano * c)
+            with torch.no_grad():
+                logits = model.classify_from_reprs(
+                    pano_exp[s:e], osm_exp[s:e], cross[s:e],
+                ).squeeze(-1)
+            probs.append(torch.sigmoid(logits))
+        out[:, start:end] = torch.cat(probs).reshape(n_pano, c).cpu().numpy()
+    return out
+
+
 def compute_pairs_cost_matrix(
     pano_tags_list: list[dict[str, str]],
     osm_tags_list: list[dict[str, str]],
@@ -273,46 +349,21 @@ def compute_pairs_cost_matrix(
     """Compute (n_pano, n_osm) P(match) for arbitrary tag-dict lists.
 
     Lightweight helper for interactive / small-batch use (e.g. the panorama
-    viewer). Larger workflows should use `precompute_raw_cost_data` instead.
+    viewer). Larger workflows should use `precompute_raw_cost_data` instead;
+    to score many panoramas against the same landmarks, `prepare_osm_landmarks`
+    once and call `compute_cost_matrix_prepared`.
     """
-    n_pano = len(pano_tags_list)
-    n_osm = len(osm_tags_list)
-    if n_pano == 0 or n_osm == 0:
-        return np.zeros((n_pano, n_osm), dtype=np.float32)
-
-    pano_reprs = batch_encode_landmarks(
-        pano_tags_list, text_embeddings, text_input_dim, model, device,
+    if len(pano_tags_list) == 0 or len(osm_tags_list) == 0:
+        return np.zeros((len(pano_tags_list), len(osm_tags_list)), dtype=np.float32)
+    osm = prepare_osm_landmarks(
+        osm_tags_list, model, text_embeddings, text_input_dim, device,
         allow_missing_text_embeddings=allow_missing_text_embeddings,
     )
-    osm_reprs = batch_encode_landmarks(
-        osm_tags_list, text_embeddings, text_input_dim, model, device,
+    return compute_cost_matrix_prepared(
+        pano_tags_list, osm, model, text_embeddings, text_input_dim, device,
+        max_pairs_per_batch=max_pairs_per_batch,
         allow_missing_text_embeddings=allow_missing_text_embeddings,
     )
-
-    cross = _compute_cross_features_gpu(
-        pano_tags_list, osm_tags_list, text_embeddings, text_input_dim, device,
-    )
-    cross_tensor = torch.from_numpy(cross.reshape(n_pano * n_osm, -1))
-
-    pano_exp = pano_reprs.unsqueeze(1).expand(
-        n_pano, n_osm, -1,
-    ).reshape(-1, pano_reprs.shape[1])
-    osm_exp = osm_reprs.unsqueeze(0).expand(
-        n_pano, n_osm, -1,
-    ).reshape(-1, osm_reprs.shape[1])
-
-    total_pairs = n_pano * n_osm
-    chunks = []
-    for s in range(0, total_pairs, max_pairs_per_batch):
-        e = min(s + max_pairs_per_batch, total_pairs)
-        with torch.no_grad():
-            logits = model.classify_from_reprs(
-                pano_exp[s:e].to(device),
-                osm_exp[s:e].to(device),
-                cross_tensor[s:e].to(device),
-            ).squeeze(-1)
-            chunks.append(torch.sigmoid(logits).cpu().numpy())
-    return np.concatenate(chunks).reshape(n_pano, n_osm)
 
 
 def _LandmarkTextTensors(tags_list: list[dict[str, str]],
@@ -357,90 +408,140 @@ def _LandmarkTextTensors(tags_list: list[dict[str, str]],
     return text, text_norm, has_text, has_key, hn_lo, hn_hi
 
 
-def _compute_cross_features_gpu(
-    pano_tags_list: list[dict[str, str]],
+@dataclass
+class OsmTextIndex:
+    """The text side of a list of OSM landmarks, for computing cross features
+    against many panoramas without rebuilding it each time.
+
+    Tag values repeat heavily across landmarks, so each landmark keeps, per tag
+    key, an index into one table of the distinct values' text embeddings, rather
+    than a dense (NUM_TAG_KEYS, text_input_dim) tensor that is almost all zeros.
+    """
+    value_text: torch.Tensor   # (V, text_input_dim): the distinct values' embeddings
+    value_norm: torch.Tensor   # (V,): their L2 norms
+    value_idx: torch.Tensor    # (N, NUM_TAG_KEYS) int64: -1 where no key or no text
+    hn_lo: torch.Tensor        # (N,): parsed housenumber bounds, nan when absent
+    hn_hi: torch.Tensor
+
+    def __len__(self) -> int:
+        return self.value_idx.shape[0]
+
+    def rows(self, start: int, end: int) -> "OsmTextIndex":
+        """The landmarks [start, end), sharing the value table."""
+        return OsmTextIndex(self.value_text, self.value_norm,
+                            self.value_idx[start:end],
+                            self.hn_lo[start:end], self.hn_hi[start:end])
+
+
+def build_osm_text_index(
     osm_tags_list: list[dict[str, str]],
     text_embeddings: dict[str, torch.Tensor],
     text_input_dim: int,
     device: torch.device,
-    osm_chunk_size: int = 2048,
-) -> np.ndarray:
-    """Vectorized 4-feature cross computation on the GPU.
+) -> OsmTextIndex:
+    """Index `osm_tags_list` for `compute_cross_features_indexed`."""
+    n = len(osm_tags_list)
+    value_idx = torch.full((n, NUM_TAG_KEYS), -1, dtype=torch.int64)
+    hn_lo = torch.full((n,), float("nan"))
+    hn_hi = torch.full((n,), float("nan"))
+    value_to_row: dict[str, int] = {}
+    for i, tags in enumerate(osm_tags_list):
+        for k, v in tags.items():
+            idx = TAG_KEY_TO_IDX.get(k)
+            if idx is not None and v in text_embeddings:
+                row = value_to_row.setdefault(v, len(value_to_row))
+                value_idx[i, idx] = row
+            if k == HOUSENUMBER_KEY:
+                hn_lo[i], hn_hi[i] = parse_housenumber(v)
+    value_text = torch.zeros(len(value_to_row), text_input_dim)
+    for v, row in value_to_row.items():
+        value_text[row] = text_embeddings[v]
+    value_text = value_text.to(device)
+    return OsmTextIndex(
+        value_text=value_text,
+        value_norm=value_text.norm(dim=-1),
+        value_idx=value_idx.to(device),
+        hn_lo=hn_lo.to(device),
+        hn_hi=hn_hi.to(device),
+    )
 
-    Produces (n_pano, n_osm, NUM_CROSS_FEATURES) numpy array matching the
-    Python-loop reference implementation (in correspondence_matching_test.py)
-    up to floating point tolerance.
+
+def compute_cross_features_indexed(
+    pano_tags_list: list[dict[str, str]],
+    osm: OsmTextIndex,
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    device: torch.device,
+    osm_chunk_size: int = 32768,
+) -> torch.Tensor:
+    """The 4 cross features of every (pano, OSM) pair: (n_pano, n_osm,
+    NUM_CROSS_FEATURES) on `device`, the same as the Python-loop reference
+    (correspondence_matching_test.py) up to floating point tolerance.
+
+    Only the (pano landmark, key) pairs with text can contribute, so their
+    similarities to every distinct OSM value are computed once, then gathered for
+    each OSM landmark that has text at the same key.
     """
     n_pano = len(pano_tags_list)
-    n_osm = len(osm_tags_list)
+    n_osm = len(osm)
+    result = torch.zeros(n_pano, n_osm, NUM_CROSS_FEATURES, device=device)
     if n_pano == 0 or n_osm == 0:
-        return np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
+        return result
 
-    (pano_text, pano_text_norm, pano_has_text, pano_has_key,
+    (pano_text, pano_text_norm, pano_has_text, _pano_has_key,
      pano_hn_lo, pano_hn_hi) = _LandmarkTextTensors(
         pano_tags_list, text_embeddings, text_input_dim, device,
     )
-    (osm_text, osm_text_norm, osm_has_text, osm_has_key,
-     osm_hn_lo, osm_hn_hi) = _LandmarkTextTensors(
-        osm_tags_list, text_embeddings, text_input_dim, device,
-    )
 
+    # The pano's (landmark, key) pairs with text, and their similarity to every
+    # distinct OSM value: (Q, V).
+    q_pano, q_key = torch.nonzero(pano_has_text > 0, as_tuple=True)
+    eps = 1e-8
+    q_sim = (pano_text[q_pano, q_key] @ osm.value_text.T) / (
+        pano_text_norm[q_pano, q_key].unsqueeze(1) * osm.value_norm.unsqueeze(0) + eps
+    )
     name_key_idx = TAG_KEY_TO_IDX.get("name")
 
-    eps = 1e-8
-    result = np.zeros((n_pano, n_osm, NUM_CROSS_FEATURES), dtype=np.float32)
-
-    # Chunk over OSM axis so the (n_pano, chunk, NUM_TAG_KEYS) intermediates stay
-    # bounded; flat memory ~ n_pano * chunk * NUM_TAG_KEYS floats.
     for start in range(0, n_osm, osm_chunk_size):
         end = min(start + osm_chunk_size, n_osm)
-        osm_text_c = osm_text[start:end]
-        osm_text_norm_c = osm_text_norm[start:end]
-        osm_has_text_c = osm_has_text[start:end]
-        osm_has_key_c = osm_has_key[start:end]
-        osm_hn_lo_c = osm_hn_lo[start:end]
-        osm_hn_hi_c = osm_hn_hi[start:end]
+        c = end - start
 
-        # Dot product per key: (n_pano, chunk, NUM_TAG_KEYS)
-        dot_ijk = torch.einsum("ikd,jkd->ijk", pano_text, osm_text_c)
-        norm_prod = (
-            pano_text_norm.unsqueeze(1) * osm_text_norm_c.unsqueeze(0)
-        )
-        sim_ijk = dot_ijk / (norm_prod + eps)
+        if len(q_pano) > 0 and osm.value_text.shape[0] > 0:
+            # Each pair's OSM value at the same key: (Q, c), -1 where none.
+            v = osm.value_idx[start:end][:, q_key].T
+            valid = v >= 0
+            sim = torch.gather(q_sim, 1, v.clamp(min=0))
+            idx = q_pano.unsqueeze(1).expand(-1, c)
 
-        valid_ijk = (
-            pano_has_key.unsqueeze(1) * osm_has_key_c.unsqueeze(0)
-            * pano_has_text.unsqueeze(1) * osm_has_text_c.unsqueeze(0)
-        )
-        sim_masked = sim_ijk * valid_ijk
+            # text_max: max over valid keys; 0 when there are none.
+            text_max = torch.full((n_pano, c), -float("inf"), device=device)
+            text_max.scatter_reduce_(
+                0, idx, torch.where(valid, sim, torch.full_like(sim, -float("inf"))),
+                reduce="amax")
+            count = torch.zeros(n_pano, c, device=device).scatter_add_(
+                0, idx, valid.to(sim.dtype))
+            text_max = torch.where(count > 0, text_max, torch.zeros_like(text_max))
 
-        # text_max: max over keys with a valid sim; when no valid key, 0.
-        very_neg = torch.full_like(sim_ijk, -float("inf"))
-        sim_for_max = torch.where(valid_ijk > 0, sim_ijk, very_neg)
-        text_max = sim_for_max.max(dim=-1).values
-        any_valid = (valid_ijk.sum(dim=-1) > 0)
-        text_max = torch.where(any_valid, text_max, torch.zeros_like(text_max))
+            # text_mean: sum / count, 0 when count is 0.
+            total = torch.zeros(n_pano, c, device=device).scatter_add_(
+                0, idx, sim * valid)
+            text_mean = total / count.clamp(min=1)
 
-        # text_mean: sum(sim) / count, 0 if count=0.
-        valid_count = valid_ijk.sum(dim=-1)
-        text_mean = sim_masked.sum(dim=-1) / valid_count.clamp(min=1)
-        text_mean = torch.where(
-            valid_count > 0, text_mean, torch.zeros_like(text_mean),
-        )
+            # text_name: the similarity at the "name" key, if both have text there.
+            text_name = torch.zeros(n_pano, c, device=device)
+            if name_key_idx is not None:
+                is_name = q_key == name_key_idx
+                text_name[q_pano[is_name]] = (sim * valid)[is_name]
 
-        # text_name: sim at the "name" key if both sides have text there, else 0.
-        if name_key_idx is not None:
-            name_sim = sim_ijk[..., name_key_idx]
-            name_valid = valid_ijk[..., name_key_idx]
-            text_name = name_sim * name_valid
-        else:
-            text_name = torch.zeros_like(text_mean)
+            result[:, start:end, 0] = text_max
+            result[:, start:end, 1] = text_mean
+            result[:, start:end, 2] = text_name
 
         # Housenumber range overlap.
         plo = pano_hn_lo.unsqueeze(1)
         phi = pano_hn_hi.unsqueeze(1)
-        olo = osm_hn_lo_c.unsqueeze(0)
-        ohi = osm_hn_hi_c.unsqueeze(0)
+        olo = osm.hn_lo[start:end].unsqueeze(0)
+        ohi = osm.hn_hi[start:end].unsqueeze(0)
         hn_valid = (
             torch.isfinite(plo) & torch.isfinite(phi)
             & torch.isfinite(olo) & torch.isfinite(ohi)
@@ -448,14 +549,25 @@ def _compute_cross_features_gpu(
         hn_overlap = (
             ((plo >= olo) & (plo <= ohi)) | ((olo >= plo) & (olo <= phi))
         ) & hn_valid
-        hn_overlap_f = hn_overlap.to(torch.float32)
-
-        chunk = torch.stack(
-            [text_max, text_mean, text_name, hn_overlap_f], dim=-1,
-        )
-        result[:, start:end] = chunk.cpu().numpy()
+        result[:, start:end, 3] = hn_overlap.to(result.dtype)
 
     return result
+
+
+def _compute_cross_features_gpu(
+    pano_tags_list: list[dict[str, str]],
+    osm_tags_list: list[dict[str, str]],
+    text_embeddings: dict[str, torch.Tensor],
+    text_input_dim: int,
+    device: torch.device,
+) -> np.ndarray:
+    """(n_pano, n_osm, NUM_CROSS_FEATURES) cross features as numpy: indexes the
+    OSM side and calls `compute_cross_features_indexed`. To score many panoramas
+    against the same landmarks, build the index once instead."""
+    osm = build_osm_text_index(osm_tags_list, text_embeddings, text_input_dim, device)
+    return compute_cross_features_indexed(
+        pano_tags_list, osm, text_embeddings, text_input_dim, device,
+    ).cpu().numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +640,9 @@ def precompute_raw_cost_data(
         allow_missing_text_embeddings=allow_missing_text_embeddings,
     )
     _log(f"  OSM representations: {osm_reprs.shape}")
+    osm_text_index = build_osm_text_index(
+        osm_tags_list, text_embeddings, text_input_dim, device,
+    )
     _log_memory("after encoding OSM landmarks")
 
     pano_ids = sorted(dataset._panorama_metadata.pano_id.values)
@@ -594,16 +709,13 @@ def precompute_raw_cost_data(
         osm_cost_chunks = []
         for osm_start in range(0, n_osm, osm_chunk_size):
             osm_end = min(osm_start + osm_chunk_size, n_osm)
-            osm_chunk_tags = osm_tags_list[osm_start:osm_end]
             n_osm_chunk = osm_end - osm_start
 
-            cross_feats = _compute_cross_features_gpu(
-                all_pano_tags, osm_chunk_tags, text_embeddings,
-                text_input_dim, device,
+            cross_feats = compute_cross_features_indexed(
+                all_pano_tags, osm_text_index.rows(osm_start, osm_end),
+                text_embeddings, text_input_dim, device,
             )
-            cross_tensor = torch.from_numpy(
-                cross_feats.reshape(n_pano_lm * n_osm_chunk, -1),
-            )
+            cross_tensor = cross_feats.reshape(n_pano_lm * n_osm_chunk, -1).cpu()
 
             pano_exp = pano_reprs.unsqueeze(1).expand(
                 n_pano_lm, n_osm_chunk, -1,
