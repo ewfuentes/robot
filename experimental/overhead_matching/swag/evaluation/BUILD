@@ -249,6 +249,7 @@ py_test(
   deps = [
     requirement("torch"),
     requirement("numpy"),
+    requirement("scipy"),
     requirement("pandas"),
     "//common/torch:load_torch_deps",
     ":correspondence_matching",

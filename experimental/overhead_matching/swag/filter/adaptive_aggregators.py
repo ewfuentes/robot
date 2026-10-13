@@ -125,12 +125,16 @@ def _load_similarity_matrix(path: Path) -> torch.Tensor:
     """
     data = torch.load(path, weights_only=False, map_location="cpu")
     if isinstance(data, dict):
-        if "similarity" in data:
-            return data["similarity"]
-        raise ValueError(
-            f"Similarity matrix file {path} is a dict but has no 'similarity' key. "
-            f"Available keys: {list(data.keys())}"
-        )
+        if "similarity" not in data:
+            raise ValueError(
+                f"Similarity matrix file {path} is a dict but has no 'similarity' key. "
+                f"Available keys: {list(data.keys())}"
+            )
+        data = data["similarity"]
+    if data.layout != torch.strided:
+        # Landmark matrices are ~95% zeros and are saved sparse CSR (20x smaller
+        # on disk); every consumer indexes rows, so densify on load.
+        data = data.to_dense()
     return data
 
 

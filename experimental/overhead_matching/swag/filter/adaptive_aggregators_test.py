@@ -231,5 +231,25 @@ class TestSafaPlusNormalizedLandmarkAggregator(unittest.TestCase):
             )
 
 
+class TestLoadSimilarityMatrix(unittest.TestCase):
+    def test_sparse_csr_file_loads_dense(self):
+        import tempfile
+        from pathlib import Path
+        from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
+            _load_similarity_matrix,
+        )
+        torch.manual_seed(0)
+        sim = torch.rand(6, 30)
+        sim[sim < 0.9] = 0.0
+        with tempfile.TemporaryDirectory() as tmp:
+            sparse_path, dense_path = Path(tmp) / "s.pt", Path(tmp) / "d.pt"
+            torch.save(sim.to_sparse_csr(), sparse_path)
+            torch.save({"similarity": sim}, dense_path)
+            for path in (sparse_path, dense_path):
+                loaded = _load_similarity_matrix(path)
+                self.assertEqual(loaded.layout, torch.strided)
+                self.assertTrue(torch.equal(loaded, sim))
+
+
 if __name__ == "__main__":
     unittest.main()

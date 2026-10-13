@@ -28,6 +28,7 @@ from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401 — must precede torch import
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
@@ -156,27 +157,48 @@ def save_raw_cost_data(
     output_path: Path,
     model_path: Path,
     text_embeddings_path: Path,
+    prune_threshold: float = 0.0,
 ) -> None:
-    """Write raw data as .npy (cost matrix) + .pt (metadata).
+    """Write raw data as a cost matrix file + .pt (metadata).
 
-    When `raw.cost_matrix_path` is set (stream-to-disk path), the cost matrix
-    bytes are already at that location and we just record the path. Otherwise
-    we save the in-RAM array next to ``output_path``.
+    With `prune_threshold > 0` the cost matrix is stored as a pruned CSR
+    `.npz` (only P >= threshold; ~1% of the entries, see
+    `cm.prune_cost_matrix_to_csr`), and a dense `.npy` the precompute
+    streamed to disk is removed once the `.npz` is written. Otherwise the
+    dense `.npy` is kept as before: when `raw.cost_matrix_path` is set
+    (stream-to-disk path) the bytes are already there and we just record the
+    path, else the in-RAM array is saved next to ``output_path``.
 
     `model_path` and `text_embeddings_path` are recorded in the .pt for
     provenance — they are the inputs that produced this cost matrix.
     """
-    if raw.cost_matrix_path is not None:
-        cost_npy_path = raw.cost_matrix_path
-        print(f"Cost matrix already streamed to {cost_npy_path} "
+    if prune_threshold > 0:
+        cost_path = output_path.parent / (output_path.stem + "_cost_matrix.npz")
+        print(f"Pruning cost matrix ({raw.cost_matrix.shape}) to P >= {prune_threshold} "
+              f"and saving CSR to {cost_path}...")
+        csr = cm.prune_cost_matrix_to_csr(raw.cost_matrix, prune_threshold)
+        sp.save_npz(cost_path, csr)
+        print(f"  kept {csr.nnz} of {csr.shape[0] * csr.shape[1]} entries")
+        if raw.cost_matrix_path is not None:
+            streamed = Path(raw.cost_matrix_path)
+            raw.cost_matrix = csr  # drop the memmap before unlinking its file
+            streamed.unlink()
+            print(f"  removed the streamed dense matrix {streamed}")
+        raw.cost_matrix = csr
+        raw.cost_matrix_path = None
+        raw.prune_threshold = prune_threshold
+    elif raw.cost_matrix_path is not None:
+        cost_path = raw.cost_matrix_path
+        print(f"Cost matrix already streamed to {cost_path} "
               f"(shape={raw.cost_matrix.shape}); skipping np.save.")
     else:
-        cost_npy_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
-        print(f"Saving cost matrix ({raw.cost_matrix.shape}) to {cost_npy_path}...")
-        np.save(cost_npy_path, raw.cost_matrix)
+        cost_path = output_path.parent / (output_path.stem + "_cost_matrix.npy")
+        print(f"Saving cost matrix ({raw.cost_matrix.shape}) to {cost_path}...")
+        np.save(cost_path, raw.cost_matrix)
 
     save_dict = {
-        "cost_matrix_path": str(cost_npy_path),
+        "cost_matrix_path": str(cost_path),
+        "prune_threshold": raw.prune_threshold,
         "model_path": str(Path(model_path).expanduser().resolve()),
         "text_embeddings_path": str(Path(text_embeddings_path).expanduser().resolve()),
         "pano_id_to_lm_rows": raw.pano_id_to_lm_rows,
@@ -186,7 +208,44 @@ def save_raw_cost_data(
     }
     torch.save(save_dict, output_path, pickle_protocol=4)
     print(f"Saved metadata to {output_path}")
-    print(f"Raw cost data saved: {cost_npy_path} + {output_path}")
+    print(f"Raw cost data saved: {cost_path} + {output_path}")
+
+
+def convert_raw_to_csr(raw_path: Path, prune_threshold: float) -> None:
+    """Rewrite an existing dense raw export in place as a pruned CSR `.npz`.
+
+    Only the cost-matrix file and the two metadata fields change; the
+    dense `.npy` is left for the caller to delete once satisfied.
+    """
+    data = torch.load(raw_path, weights_only=False)
+    if data.get("prune_threshold") is not None:
+        print(f"{raw_path} already holds pruned CSR data (threshold "
+              f"{data['prune_threshold']}); nothing to do")
+        return
+    dense_path = _resolve_cost_matrix_path(raw_path, data)
+    csr_path = raw_path.parent / (raw_path.stem + "_cost_matrix.npz")
+    print(f"Pruning {dense_path} to P >= {prune_threshold} -> {csr_path}")
+    csr = cm.prune_cost_matrix_to_csr(cm.load_cost_matrix(dense_path), prune_threshold)
+    sp.save_npz(csr_path, csr)
+    data["cost_matrix_path"] = str(csr_path)
+    data["prune_threshold"] = prune_threshold
+    torch.save(data, raw_path, pickle_protocol=4)
+    print(f"  kept {csr.nnz} of {csr.shape[0] * csr.shape[1]} entries; rewrote {raw_path}")
+    print(f"  the dense matrix is no longer read: rm {dense_path}")
+
+
+def _resolve_cost_matrix_path(raw_path: Path, data: dict) -> Path:
+    # The recorded path is absolute and goes stale if the dataset moves;
+    # fall back to the file saved next to the .pt (the write-side layout).
+    recorded = Path(data["cost_matrix_path"])
+    if recorded.exists():
+        return recorded
+    for suffix in (recorded.suffix, ".npz", ".npy"):
+        sibling = raw_path.parent / (raw_path.stem + "_cost_matrix" + suffix)
+        if sibling.exists():
+            print(f"  Recorded cost-matrix path is stale ({recorded}); using sibling {sibling}")
+            return sibling
+    raise FileNotFoundError(f"cost matrix for {raw_path}: {recorded} (no sibling either)")
 
 
 def load_raw_cost_data(raw_path: Path) -> cm.RawCorrespondenceData:
@@ -195,23 +254,16 @@ def load_raw_cost_data(raw_path: Path) -> cm.RawCorrespondenceData:
     if "cost_matrix" in data:
         cost_matrix = data["cost_matrix"]
     else:
-        # The recorded path is absolute and goes stale if the dataset moves;
-        # fall back to the .npy saved next to the .pt (the write-side layout).
-        cost_npy = Path(data["cost_matrix_path"])
-        if not cost_npy.exists():
-            sibling = raw_path.parent / (raw_path.stem + "_cost_matrix.npy")
-            if sibling.exists():
-                print(f"  Recorded cost-matrix path is stale ({cost_npy}); "
-                      f"using sibling {sibling}")
-                cost_npy = sibling
-        print(f"  Memory-mapping cost matrix from {cost_npy}")
-        cost_matrix = np.load(cost_npy, mmap_mode="r")
+        cost_path = _resolve_cost_matrix_path(raw_path, data)
+        print(f"  Loading cost matrix from {cost_path}")
+        cost_matrix = cm.load_cost_matrix(cost_path)
     return cm.RawCorrespondenceData(
         cost_matrix=cost_matrix,
         pano_id_to_lm_rows=data["pano_id_to_lm_rows"],
         pano_lm_tags=data["pano_lm_tags"],
         osm_lm_indices=data["osm_lm_indices"],
         osm_lm_tags=data["osm_lm_tags"],
+        prune_threshold=data.get("prune_threshold"),
     )
 
 
@@ -271,6 +323,13 @@ def main():
     parser.add_argument("--allow_missing_text_embeddings", action="store_true",
                         help="Silently substitute zero vectors for text values "
                              "not found in the embeddings pickle. Not recommended.")
+    parser.add_argument("--prune_threshold", type=float, default=0.3,
+                        help="Store the cost matrix as pruned CSR keeping only P(match) >= "
+                             "this (lossless for every matcher threshold >= it; the "
+                             "campaign's lowest is 0.5). 0 keeps the dense .npy.")
+    parser.add_argument("--convert_raw_to_csr", action="store_true",
+                        help="With --from_raw: rewrite that dense raw export in place as "
+                             "pruned CSR at --prune_threshold, then continue.")
     parser.add_argument("--stream_cost_matrix", action="store_true",
                         help="Stream the cost matrix directly to a memmapped "
                              ".npy on disk during precompute, instead of "
@@ -287,10 +346,16 @@ def main():
 
     # Stage 1: obtain RawCorrespondenceData — either by loading or by running inference.
     if args.from_raw is not None:
-        raw = load_raw_cost_data(args.from_raw.expanduser().resolve())
+        raw_path = args.from_raw.expanduser().resolve()
+        if args.convert_raw_to_csr:
+            if args.prune_threshold <= 0:
+                parser.error("--convert_raw_to_csr needs --prune_threshold > 0")
+            convert_raw_to_csr(raw_path, args.prune_threshold)
+        raw = load_raw_cost_data(raw_path)
     else:
         raw = build_raw_cost_data(args)
-        save_raw_cost_data(raw, output_path, args.model_path, args.text_embeddings_path)
+        save_raw_cost_data(raw, output_path, args.model_path, args.text_embeddings_path,
+                           prune_threshold=args.prune_threshold)
 
     print(
         f"  {raw.cost_matrix.shape[0]} pano landmarks × "
@@ -329,8 +394,9 @@ def main():
         print(f"  {key}: {value:.4f}")
 
     sim_path = output_path.parent / (output_path.stem + "_similarity.pt")
-    torch.save(similarity, sim_path)
-    print(f"\nSaved similarity matrix {similarity.shape} to {sim_path}")
+    # ~95% zeros: sparse CSR is ~20x smaller on disk; _load_similarity_matrix densifies.
+    torch.save(similarity.to_sparse_csr(), sim_path)
+    print(f"\nSaved similarity matrix {similarity.shape} (sparse CSR) to {sim_path}")
 
 
 if __name__ == "__main__":
