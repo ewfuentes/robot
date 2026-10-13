@@ -76,21 +76,18 @@ class SemanticRepresentationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cross features"):
             model(pano, osm, cross_features=torch.ones(5, 4))
 
-    def test_shared_training_loop_and_supplemental_rows(self):
+    def test_shared_training_loop(self):
         osm_dir = self.root / "osm"
         osm_dir.mkdir()
         np.save(
             self.root / "pano_embeddings.npy",
             np.random.default_rng(1).normal(size=(4, 768)).astype("float32"),
         )
-        np.save(osm_dir / "descriptions.npy", np.ones((1, 768), dtype="float32"))
         np.save(
-            self.root / "supplement_descriptions.npy",
-            np.full((1, 768), 2, dtype="float32"),
+            osm_dir / "descriptions.npy",
+            np.stack([np.ones(768), np.full(768, 2)]).astype("float32"),
         )
-        (self.root / "prepared.json").write_text(
-            json.dumps({"base_osm_rows": 1, "supplemental_osm_rows": 1})
-        )
+        (self.root / "prepared.json").write_text(json.dumps({"base_osm_rows": 2}))
         np.savez(
             self.root / "Train_pairs.npz",
             pano_idx=[0, 1, 2, 3],
@@ -116,8 +113,8 @@ class SemanticRepresentationTest(unittest.TestCase):
         val_loss, metrics = evaluate(model, loader, torch.device("cpu"))
         self.assertTrue(np.isfinite(val_loss))
         self.assertTrue(np.isfinite(metrics["auc_roc"]))
-        # An OSM array that is not the prepared population breaks the supplement offset.
-        np.save(osm_dir / "descriptions.npy", np.ones((2, 768), dtype="float32"))
+        # An OSM array that is not the prepared population is refused.
+        np.save(osm_dir / "descriptions.npy", np.ones((3, 768), dtype="float32"))
         with self.assertRaises(AssertionError):
             training.FixedEmbeddingPairs(self.root, osm_dir, "Train", "descriptions")
 
@@ -184,12 +181,9 @@ class SemanticRepresentationTest(unittest.TestCase):
             evaluation.score_matrix(path, rows, columns, settings, 1), 0
         )
 
-    def test_embedding_without_supplement_uses_repository_provider(self):
+    def test_embedding_uses_repository_provider(self):
         (self.root / "pano_texts.json").write_text(json.dumps(["first", "second"]))
-        (self.root / "prepared.json").write_text(
-            json.dumps({"supplemental_osm_rows": 0})
-        )
-        args = argparse.Namespace(root=self.root, supplement_dir=self.root / "absent")
+        args = argparse.Namespace(root=self.root)
         with patch(
             "experimental.overhead_matching.swag.scripts.precompute_value_embeddings.embed_texts_vertex",
             return_value=np.ones((2, 768), dtype="float32"),
@@ -197,9 +191,7 @@ class SemanticRepresentationTest(unittest.TestCase):
             training.embed_inputs(args)
         self.assertFalse(embed.call_args.kwargs["auto_truncate"])
         self.assertTrue((self.root / "embedding_complete.json").exists())
-        self.assertEqual(
-            np.load(self.root / "supplement_descriptions.npy").shape, (0, 768)
-        )
+        self.assertEqual(np.load(self.root / "pano_embeddings.npy").shape, (2, 768))
 
     def test_audit_and_score_cli_with_relocated_inputs(self):
         _, checkpoint = self.legacy_checkpoint()
@@ -295,7 +287,7 @@ class SemanticRepresentationTest(unittest.TestCase):
         )
 
     def prepare_fixture(self):
-        """One labelled panorama per city; one OSM bundle missing from keys.json."""
+        """One labelled panorama per city; one OSM bundle whose map value has trailing whitespace."""
         data, pano, osm, source = [
             self.root / name for name in ("data", "pano", "osm", "source")
         ]
@@ -345,17 +337,17 @@ class SemanticRepresentationTest(unittest.TestCase):
             (pano / city / "embeddings").mkdir(parents=True)
             with (pano / city / "embeddings/embeddings.pkl").open("wb") as f:
                 pickle.dump({"panoramas": {"p1,1.0,2.0": {"landmarks": landmarks}}}, f)
+        population = [
+            {"amenity": "cafe", "name": "Joe's"},
+            {"building": "yes", "addr:housenumber": "7 "},  # parser strips the space
+        ]
         osm.mkdir()
-        (osm / "keys.json").write_text(
-            json.dumps([custom_id_from_props({"amenity": "cafe", "name": "Joe's"})])
-        )
+        (osm / "keys.json").write_text(json.dumps([custom_id_from_props(t) for t in population]))
         for variant in ("descriptions", "tag_strings"):
-            np.save(osm / f"{variant}.npy", np.ones((1, 768), dtype="float32"))
+            np.save(osm / f"{variant}.npy", np.ones((2, 768), dtype="float32"))
         source.mkdir()
-        (source / "manifest.json").write_text(json.dumps({"model": "m", "sample": {}}))
-        (source / "requests.jsonl").write_text(
-            json.dumps({"key": "k", "request": {"contents": [{"parts": [{"text": "old"}]}]}})
-            + "\n"
+        (source / "manifest.json").write_text(
+            json.dumps({"sample": {custom_id_from_props(t): {"tags": t} for t in population}})
         )
         config = CorrespondenceTrainConfig(
             data_dir=data,
@@ -383,11 +375,10 @@ class SemanticRepresentationTest(unittest.TestCase):
             osm_embeddings_dir=osm,
             osm_source_dir=source,
             pano_source_dir=pano,
-            supplement_dir=self.root / f"{pano_text}_supplement",
             pano_text=pano_text,
         )
 
-    def test_prepare_pano_text_variants_and_supplement(self):
+    def test_prepare_pano_text_variants_and_whitespace_lookup(self):
         make_args = self.prepare_fixture()
         expected = {
             "descriptions": ["A cafe named Joe's.", "A building at 5."],
@@ -399,18 +390,21 @@ class SemanticRepresentationTest(unittest.TestCase):
             self.assertEqual(json.loads((args.root / "pano_texts.json").read_text()), texts)
             prepared = json.loads((args.root / "prepared.json").read_text())
             self.assertEqual(prepared["pano_text"], pano_text)
-            self.assertEqual(prepared["supplemental_osm_rows"], 1)
+            self.assertEqual(prepared["base_osm_rows"], 2)
             for city in ("Train", "Val"):
                 pairs = np.load(args.root / f"{city}_pairs.npz")
                 self.assertEqual(pairs["pano_idx"].tolist(), [0, 0, 1])
                 self.assertEqual(pairs["osm_idx"].tolist(), [0, 1, 0])
                 self.assertEqual(pairs["labels"].tolist(), [1.0, 0.0, 0.0])
-            request = json.loads((args.supplement_dir / "requests.jsonl").read_text())
-            self.assertTrue(
-                request["request"]["contents"][0]["parts"][0]["text"].endswith(
-                    json.dumps({"addr:housenumber": "7", "building": "yes"})
-                )
-            )
+                self.assertEqual(prepared["cities"][city]["whitespace_resolved_osm_pairs"], 1)
+
+    def test_prepare_refuses_unresolvable_osm_bundle(self):
+        make_args = self.prepare_fixture()
+        # Simulate a parser that truncates "addr:housenumber=7" out of the prompt bundle.
+        path = self.root / "data/Train/predictions.jsonl"
+        path.write_text(path.read_text().replace("building=yes; addr:housenumber=7", "building=yes"))
+        with self.assertRaisesRegex(AssertionError, "OSM entities match"):
+            training.prepare(make_args("descriptions"))
 
     def test_embedding_batches_preserve_byte_limit(self):
         self.assertEqual(list(training.batches(["x"] * 251, 0)), [(0, 250), (250, 251)])

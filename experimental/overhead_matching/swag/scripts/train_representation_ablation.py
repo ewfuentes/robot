@@ -24,8 +24,8 @@ directory or cloud project):
     --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
     --osm-embeddings-dir $OSM_EMBEDDINGS_DIR \
     --osm-source-dir $OSM_SOURCE_DIR --pano-source-dir $PANO_SOURCE_DIR \
-    --supplement-dir $SUPPLEMENT_DIR --pano-text descriptions
-  bazel run ... -- embed --root $EXPERIMENT_DIR --supplement-dir $SUPPLEMENT_DIR
+    --pano-text descriptions
+  bazel run ... -- embed --root $EXPERIMENT_DIR
   bazel run ... -- check --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
     --osm-embeddings-dir $OSM_EMBEDDINGS_DIR [--checkpoint best_model.pt]
   bazel run ... -- train --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
@@ -34,33 +34,28 @@ directory or cloud project):
 Inputs. BASELINE_CONFIG is the baseline correspondence training YAML: label data
 directory, train and validation cities, optimizer settings, classifier
 width/dropout, and seed. OSM_EMBEDDINGS_DIR holds aligned keys.json,
-descriptions.npy and tag_strings.npy. OSM_SOURCE_DIR holds the original
-manifest.json and requests.jsonl used to generate the OSM descriptions; prepare
-copies the request template for any exact parsed training tag bundle missing
-from the OSM embedding population. PANO_SOURCE_DIR holds
+descriptions.npy and tag_strings.npy. OSM_SOURCE_DIR holds the manifest.json
+whose sample tags that population was generated from. PANO_SOURCE_DIR holds
 <city>/embeddings/embeddings.pkl with the original panorama landmark tags and
 descriptions.
 
 prepare verifies labels, landmark ordering, and difficulty selection against
 the existing correspondence parser, checks that both OSM arrays have one row per
 keys.json entry, then writes pair indices, panorama texts,
-input hashes, and a frozen copy of the baseline configuration. If supplemental
-OSM bundles are needed, submit the generated requests with your existing batch
-workflow and collect a key-to-sentence mapping as SUPPLEMENT_DIR/sentences.json;
-this driver does not submit them. Supplemental bundles exist because training
-pairs carry the OSM tags as the baseline label parser read them back from the
-prompt, and that parser truncates values at an unescaped "; " or newline and
-strips trailing whitespace. Such a bundle hashes to a key absent from the
-full-map keys.json, so a sentence and a tag string are generated for the
-truncated bundle itself rather than for the original entity, keeping the
-ablation's view of those pairs identical to the baseline's. On the paper
-training set this is 19 bundles and 73 of 194,936 pairs.
+input hashes, and a frozen copy of the baseline configuration. Training pairs
+carry the OSM tags as the label parser reads them back from the prompt, which
+strips whitespace the map data keeps, so a parsed bundle can hash differently
+from its entity; prepare resolves such bundles by applying the same stripping
+to the population's tags and requires exactly one match. A bundle that still
+does not resolve stops preparation: that means the parser is not inverting the
+prompt format (the pre-#744 parser truncated values at "; " and newlines) and
+must be fixed rather than patched around. prepared.json counts the resolved
+pairs per city.
 
 embed calls Vertex AI through the repository embedding helper with your
 configured credentials/project/location, preserving text-embedding-005,
 SEMANTIC_SIMILARITY, 768 dimensions and auto_truncate=False, with bounded
-requests and resumable output; it also handles a preparation with no
-supplemental bundles. train uses CUDA and the existing correspondence
+requests and resumable output. train uses CUDA and the existing correspondence
 training/evaluation functions, writes under EXPERIMENT_DIR/<variant>, refuses to
 overwrite an existing run, and selects the best checkpoint by validation ROC
 AUC. Repeat train with --variant tag_strings for the other OSM text. For KV/KV,
@@ -138,10 +133,17 @@ def tags_text(tags):
     return text
 
 
+def parser_whitespace(tags):
+    """Apply the label parser's whitespace handling to original tag values."""
+    return {
+        str(k).strip(): "\n".join(line.strip() for line in str(v).split("\n")).strip()
+        for k, v in tags.items()
+    }
+
+
 def prepare(args):
     root, base_config = args.root, args.config
-    osm, osm_base = args.osm_embeddings_dir, args.osm_source_dir
-    pano, supplement = args.pano_source_dir, args.supplement_dir
+    osm, osm_base, pano = args.osm_embeddings_dir, args.osm_source_dir, args.pano_source_dir
     assert not (root / "prepared.json").exists(), "Already prepared"
     root.mkdir(parents=True, exist_ok=True)
     config = load_config(base_config)
@@ -150,7 +152,16 @@ def prepare(args):
         rows = np.load(osm / f"{variant}.npy", mmap_mode="r").shape[0]
         assert rows == len(osm_keys), (variant, rows, len(osm_keys), "keys.json rows")
     osm_rows = {key: i for i, key in enumerate(osm_keys)}
-    texts, text_rows, records, missing, stats = [], {}, [], {}, {}
+    # The parser strips whitespace that the map data keeps, so a parsed bundle may
+    # hash differently from its entity. Resolve those through the same stripping;
+    # anything else (e.g. a truncating parser) must fail here, not be patched over.
+    population = json.loads((osm_base / "manifest.json").read_text())["sample"]
+    assert set(population) == set(osm_rows), "manifest.json does not back keys.json"
+    normalized = {}
+    for key, entry in population.items():
+        normalized.setdefault(custom_id_from_props(parser_whitespace(entry["tags"])), []).append(key)
+    del population
+    texts, text_rows, records, stats = [], {}, [], {}
     save_config(config, root / "baseline_config.yaml")
     for city in [config.train_city, config.val_city]:
         with (pano / city / "embeddings/embeddings.pkl").open("rb") as f:
@@ -179,7 +190,7 @@ def prepare(args):
             panos[clean] = filtered
         del pano_data
         pano_idx, osm_idx, labels, difficulties, pano_ids = [], [], [], [], []
-        seen_records = set()
+        seen_records, whitespace_resolved = set(), 0
         files = list((config.data_dir / city).rglob("predictions.jsonl"))
         assert files
         for file in files:
@@ -252,8 +263,17 @@ def prepare(args):
                             seen_records.add(record_key)
                         key = custom_id_from_props(set2[b])
                         if key not in osm_rows:
-                            osm_rows[key] = len(osm_rows)
-                            missing[key] = {"tags": set2[b], "datasets": [city]}
+                            candidates = normalized.get(
+                                custom_id_from_props(parser_whitespace(set2[b])), []
+                            )
+                            assert len(candidates) == 1, (
+                                city,
+                                pid,
+                                set2[b],
+                                f"{len(candidates)} OSM entities match this parsed bundle",
+                            )
+                            key = candidates[0]
+                            whitespace_resolved += 1
                         pano_idx.append(pr)
                         osm_idx.append(osm_rows[key])
                         labels.append(label)
@@ -280,6 +300,7 @@ def prepare(args):
             pairs=len(labels),
             difficulties=dict(Counter(difficulties)),
             panorama_landmarks=len(seen_records),
+            whitespace_resolved_osm_pairs=whitespace_resolved,
             label_files=[str(p) for p in files],
             label_file_sha256=[
                 hashlib.sha256(p.read_bytes()).hexdigest() for p in files
@@ -288,25 +309,6 @@ def prepare(args):
         print(city, stats[city], flush=True)
     write_json(root / "pano_texts.json", texts)
     write_json(root / "pano_landmark_index.json", records)
-    write_json(root / "osm_keys.json", list(osm_rows))
-    if missing:
-        supplement.mkdir(exist_ok=False)
-        manifest = json.loads((osm_base / "manifest.json").read_text())
-        manifest.update(sample=missing, unique_population=len(missing))
-        write_json(supplement / "manifest.json", manifest)
-        template = json.loads((osm_base / "requests.jsonl").open().readline())
-        requests = []
-        for key, entry in missing.items():
-            request = json.loads(json.dumps(template))
-            request["key"] = key
-            request["request"]["contents"][0]["parts"][0]["text"] = (
-                "Produce a short natural language description for this landmark: "
-                + json.dumps(entry["tags"], sort_keys=True)
-            )
-            requests.append(request)
-        (supplement / "requests.jsonl").write_text(
-            "".join(json.dumps(r) + "\n" for r in requests)
-        )
     write_json(
         root / "prepared.json",
         dict(
@@ -314,19 +316,10 @@ def prepare(args):
             pano_text=args.pano_text,
             unique_pano_texts=len(texts),
             base_osm_rows=len(osm_keys),
-            supplemental_osm_rows=len(missing),
-            note="All baseline pairs retained in original order. Supplement uses the exact parsed osm training tags.",
+            note="All baseline pairs retained in original order.",
         ),
     )
-    print(
-        "Prepared",
-        len(texts),
-        args.pano_text,
-        "pano texts;",
-        len(missing),
-        "supplemental osm bundles",
-        flush=True,
-    )
+    print("Prepared", len(texts), args.pano_text, "pano texts", flush=True)
 
 
 def batches(texts, start):
@@ -350,7 +343,7 @@ def embed_inputs(args):
         embed_texts_vertex,
     )
 
-    root, supplement = args.root, args.supplement_dir
+    root = args.root
     config = dict(
         model="text-embedding-005", output_dimensionality=768, auto_truncate=False
     )
@@ -380,45 +373,6 @@ def embed_inputs(args):
             matrix.flush()
             write_json(checkpoint, dict(rows=bounds[-1][1], total=len(texts)))
             print("Pano embeddings", bounds[-1][1], "/", len(texts), flush=True)
-    missing_count = json.loads((root / "prepared.json").read_text())[
-        "supplemental_osm_rows"
-    ]
-    if missing_count and not (supplement / "sentences.json").exists():
-        print(
-            "Pano embeddings complete; collect supplemental sentences then rerun embed.",
-            flush=True,
-        )
-        return
-    missing = (
-        json.loads((supplement / "manifest.json").read_text())["sample"]
-        if missing_count
-        else {}
-    )
-    sentences = (
-        json.loads((supplement / "sentences.json").read_text()) if missing_count else {}
-    )
-    assert set(missing) == set(sentences)
-    for variant in ["descriptions", "tag_strings"]:
-        inputs = [
-            sentences[k]
-            if variant == "descriptions"
-            else tags_text(v["tags"])
-            for k, v in missing.items()
-        ]
-        path = root / f"supplement_{variant}.npy"
-        if not path.exists():
-            values = (
-                np.concatenate(
-                    [
-                        embed_texts_vertex(inputs[a:b], **config)
-                        for a, b in batches(inputs, 0)
-                    ]
-                )
-                if inputs
-                else np.empty((0, 768), dtype=np.float32)
-            )
-            assert values.shape == (len(inputs), 768) and np.isfinite(values).all()
-            np.save(path, values)
     write_json(
         root / "embedding_complete.json",
         dict(
@@ -427,7 +381,6 @@ def embed_inputs(args):
             task_type="SEMANTIC_SIMILARITY",
             auto_truncate=False,
             pano_rows=len(texts),
-            supplemental_osm_rows=len(missing),
         ),
     )
 
@@ -437,19 +390,23 @@ class FixedEmbeddingPairs(Dataset):
         self.pairs = dict(np.load(root / f"{city}_pairs.npz"))
         self.pano = np.load(root / "pano_embeddings.npy", mmap_mode="r")
         self.osm = np.load(osm / f"{variant}.npy", mmap_mode="r")
-        self.extra = np.load(root / f"supplement_{variant}.npy")
         prepared = json.loads((root / "prepared.json").read_text())
-        # The supplement offset below assumes the OSM array is the prepared population.
-        assert len(self.osm) == prepared["base_osm_rows"], (len(self.osm), prepared["base_osm_rows"])
-        assert len(self.extra) == prepared["supplemental_osm_rows"]
+        assert len(self.osm) == prepared["base_osm_rows"], (
+            len(self.osm),
+            prepared["base_osm_rows"],
+            "OSM array is not the prepared population",
+        )
+        assert self.pairs["osm_idx"].max() < len(self.osm), (
+            "pairs reference rows beyond the OSM population (root prepared with "
+            "supplemental rows); re-run prepare"
+        )
 
     def __len__(self):
         return len(self.pairs["labels"])
 
     def __getitem__(self, i):
         a, b = self.pairs["pano_idx"][i], self.pairs["osm_idx"][i]
-        osm = self.osm[b] if b < len(self.osm) else self.extra[b - len(self.osm)]
-        return self.pano[a], osm, self.pairs["labels"][i]
+        return self.pano[a], self.osm[b], self.pairs["labels"][i]
 
 
 def collate_fixed(batch):
@@ -570,7 +527,6 @@ def train(args):
             base_config=str(base_config),
             pano_embeddings=str(root / "pano_embeddings.npy"),
             osm_embeddings=str(osm / f"{variant}.npy"),
-            supplemental_embeddings=str(root / f"supplement_{variant}.npy"),
             config_note="encoder and text_embeddings_path fields retained for baseline provenance but unused; ablation.json specifies actual inputs",
         ),
     )
@@ -674,19 +630,12 @@ def main(argv=None):
                 required=True,
                 help="keys.json, descriptions.npy and tag_strings.npy",
             )
-        if action in ("prepare", "embed"):
-            command.add_argument(
-                "--supplement-dir",
-                type=Path,
-                required=True,
-                help="Supplemental OSM requests and collected sentences",
-            )
         if action == "prepare":
             command.add_argument(
                 "--osm-source-dir",
                 type=Path,
                 required=True,
-                help="Original OSM manifest.json and requests.jsonl",
+                help="manifest.json whose sample tags back keys.json",
             )
             command.add_argument(
                 "--pano-source-dir",
