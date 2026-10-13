@@ -88,6 +88,9 @@ class SemanticRepresentationTest(unittest.TestCase):
             self.root / "supplement_descriptions.npy",
             np.full((1, 768), 2, dtype="float32"),
         )
+        (self.root / "prepared.json").write_text(
+            json.dumps({"base_osm_rows": 1, "supplemental_osm_rows": 1})
+        )
         np.savez(
             self.root / "Train_pairs.npz",
             pano_idx=[0, 1, 2, 3],
@@ -113,6 +116,10 @@ class SemanticRepresentationTest(unittest.TestCase):
         val_loss, metrics = evaluate(model, loader, torch.device("cpu"))
         self.assertTrue(np.isfinite(val_loss))
         self.assertTrue(np.isfinite(metrics["auc_roc"]))
+        # An OSM array that is not the prepared population breaks the supplement offset.
+        np.save(osm_dir / "descriptions.npy", np.ones((2, 768), dtype="float32"))
+        with self.assertRaises(AssertionError):
+            training.FixedEmbeddingPairs(self.root, osm_dir, "Train", "descriptions")
 
     def test_export_matches_archived_head_and_resumes(self):
         legacy, checkpoint = self.legacy_checkpoint()
@@ -282,6 +289,10 @@ class SemanticRepresentationTest(unittest.TestCase):
 
     def test_tags_text_matches_osm_serialization(self):
         self.assertEqual(training.tags_text({"b": "2", "a": "1"}), "a=1, b=2")
+        # Repeated keys collapse to the last value, as in the parser and exporter.
+        self.assertEqual(
+            training.tags_text([("name", "A"), ("b", "2"), ("name", "B")]), "b=2, name=B"
+        )
 
     def prepare_fixture(self):
         """One labelled panorama per city; one OSM bundle missing from keys.json."""
@@ -338,6 +349,8 @@ class SemanticRepresentationTest(unittest.TestCase):
         (osm / "keys.json").write_text(
             json.dumps([custom_id_from_props({"amenity": "cafe", "name": "Joe's"})])
         )
+        for variant in ("descriptions", "tag_strings"):
+            np.save(osm / f"{variant}.npy", np.ones((1, 768), dtype="float32"))
         source.mkdir()
         (source / "manifest.json").write_text(json.dumps({"model": "m", "sample": {}}))
         (source / "requests.jsonl").write_text(

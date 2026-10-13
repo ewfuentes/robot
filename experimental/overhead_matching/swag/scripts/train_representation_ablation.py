@@ -42,7 +42,8 @@ from the OSM embedding population. PANO_SOURCE_DIR holds
 descriptions.
 
 prepare verifies labels, landmark ordering, and difficulty selection against
-the existing correspondence parser, then writes pair indices, panorama texts,
+the existing correspondence parser, checks that both OSM arrays have one row per
+keys.json entry, then writes pair indices, panorama texts,
 input hashes, and a frozen copy of the baseline configuration. If supplemental
 OSM bundles are needed, submit the generated requests with your existing batch
 workflow and collect a key-to-sentence mapping as SUPPLEMENT_DIR/sentences.json;
@@ -66,6 +67,11 @@ AUC. Repeat train with --variant tag_strings for the other OSM text. For KV/KV,
 prepare a second root with --pano-text tag_strings, run embed there, and train
 with --variant tag_strings. check --checkpoint FILE validates an archived
 checkpoint without training.
+
+Panorama tag strings use the label parser's dictionary form (repeated keys
+collapse to the last value), which is also what the structured baseline encodes
+at export time. Evaluation-side tag strings must be built the same way; the
+archived KV/KV evaluation inputs instead kept repeated keys for 48 landmark rows.
 """
 
 import argparse
@@ -121,8 +127,13 @@ def write_json(path, data):
 
 
 def tags_text(tags):
-    """Serialize a tag bundle exactly as the OSM ``tag_strings`` embeddings were."""
-    text = ", ".join(f"{k}={v}" for k, v in sorted(tags.items()))
+    """Serialize a tag bundle exactly as the OSM ``tag_strings`` embeddings were.
+
+    Accepts a dict or (key, value) pairs; pairs collapse through dict() so repeated
+    keys keep the last value, as the label parser and the baseline exporter do.
+    Evaluation inputs built elsewhere must use this same form.
+    """
+    text = ", ".join(f"{k}={v}" for k, v in sorted(dict(tags).items()))
     assert text, "Empty tag bundle"
     return text
 
@@ -135,6 +146,9 @@ def prepare(args):
     root.mkdir(parents=True, exist_ok=True)
     config = load_config(base_config)
     osm_keys = json.loads((osm / "keys.json").read_text())
+    for variant in ["descriptions", "tag_strings"]:
+        rows = np.load(osm / f"{variant}.npy", mmap_mode="r").shape[0]
+        assert rows == len(osm_keys), (variant, rows, len(osm_keys), "keys.json rows")
     osm_rows = {key: i for i, key in enumerate(osm_keys)}
     texts, text_rows, records, missing, stats = [], {}, [], {}, {}
     save_config(config, root / "baseline_config.yaml")
@@ -424,6 +438,10 @@ class FixedEmbeddingPairs(Dataset):
         self.pano = np.load(root / "pano_embeddings.npy", mmap_mode="r")
         self.osm = np.load(osm / f"{variant}.npy", mmap_mode="r")
         self.extra = np.load(root / f"supplement_{variant}.npy")
+        prepared = json.loads((root / "prepared.json").read_text())
+        # The supplement offset below assumes the OSM array is the prepared population.
+        assert len(self.osm) == prepared["base_osm_rows"], (len(self.osm), prepared["base_osm_rows"])
+        assert len(self.extra) == prepared["supplemental_osm_rows"]
 
     def __len__(self):
         return len(self.pairs["labels"])
