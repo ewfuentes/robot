@@ -271,6 +271,53 @@ class TestCrossFeatureVectorization(unittest.TestCase):
 
 
 class TestMatchAndAggregate(unittest.TestCase):
+    def test_ablation_scores_and_parallel_export(self):
+        # The third OSM landmark lies outside these patches but still counts
+        # toward global uniqueness. Include exact-threshold and zero-count rows.
+        cost = np.array([[0.9, 0.8, 0.85], [0.1, 0.95, 0.1],
+                         [0.1, 0.2, 0.3]], dtype=np.float32)
+        weights = cm.compute_uniqueness_weights(cost, 0.8, "inverse_count")
+        np.testing.assert_allclose(weights, [1 / 3, 1, 1])
+        np.testing.assert_allclose(
+            cm.compute_uniqueness_weights(cost, 0.8), [0.5, 1, 1])
+        with self.assertRaises(ValueError):
+            cm.compute_uniqueness_weights(cost, weighting="invalid")
+
+        raw = cm.RawCorrespondenceData(
+            cost_matrix=cost, pano_id_to_lm_rows={"p0": [0, 1, 2], "empty": []},
+            pano_lm_tags=[], osm_lm_indices=[0, 1, 2], osm_lm_tags=[],
+        )
+        dataset = _build_fake_dataset(
+            ["missing", "p0", "empty"], [{}, {}, {}], [[0, 1], [], [0]],
+        )
+        for aggregation, expected in [
+            (cm.AggregationMode.SUM, [1.25, 0, 0.3]),
+            (cm.AggregationMode.COUNT, [4 / 3, 0, 1 / 3]),
+            (cm.AggregationMode.MAX, [0.95, 0, 0.3]),
+        ]:
+            with self.subTest(aggregation=aggregation):
+                kwargs = dict(
+                    aggregation=aggregation, prob_threshold=0.8,
+                    uniqueness_weighted=True, uniqueness_weighting="inverse_count",
+                )
+                serial = cm.similarity_from_raw_data(raw, dataset, **kwargs)
+                parallel = cm.similarity_from_raw_data(raw, dataset, workers=2, **kwargs)
+                self.assertTrue(torch.equal(serial, parallel))
+                np.testing.assert_allclose(serial[1].numpy(), expected, rtol=1e-6)
+                self.assertEqual(serial[[0, 2]].count_nonzero().item(), 0)
+
+        unweighted = cm.match_and_aggregate(
+            cost[:, :2], cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.COUNT,
+            prob_threshold=0.8,
+        )
+        self.assertEqual(unweighted.similarity_score, 2)
+        self.assertEqual(unweighted.pano_lm_indices, [0, 1])
+        empty = cm.match_and_aggregate(
+            cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.COUNT,
+            prob_threshold=1.0,
+        )
+        self.assertEqual(empty.similarity_score, 0)
+
     def test_empty_cost_matrix_returns_zero_score(self):
         result = cm.match_and_aggregate(
             np.zeros((0, 5)), cm.MatchingMethod.HUNGARIAN,

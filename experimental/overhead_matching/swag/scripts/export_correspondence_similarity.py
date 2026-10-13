@@ -246,12 +246,17 @@ def main():
                         choices=["hungarian", "greedy"],
                         help="Matching method (used with --compute_similarity).")
     parser.add_argument("--aggregation", type=str, default="sum",
-                        choices=["sum", "max", "log_odds"],
+                        choices=[mode.value for mode in cm.AggregationMode],
                         help="Aggregation mode (used with --compute_similarity).")
     parser.add_argument("--prob_threshold", type=float, default=0.3,
                         help="Min P(match) to include (used with --compute_similarity).")
     parser.add_argument("--uniqueness_weighted", action="store_true",
                         help="Weight matched pairs by pano landmark uniqueness.")
+    parser.add_argument("--uniqueness_weighting", default="inverse_log",
+                        choices=["inverse_log", "inverse_count"],
+                        help="Weight formula when --uniqueness_weighted is enabled.")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="CPU processes for similarity aggregation from --from_raw.")
     parser.add_argument("--no_dustbin", action="store_true",
                         help="Disable the Hungarian dustbin (augment with "
                              "threshold-valued sink columns). With the "
@@ -273,6 +278,8 @@ def main():
                              "end. Use when the cost matrix would exceed "
                              "available RAM.")
     args = parser.parse_args()
+    if args.workers < 1 or (args.workers > 1 and args.from_raw is None):
+        parser.error("--workers must be positive; multiple workers require --from_raw")
 
     dataset_path = args.dataset_path.expanduser().resolve()
     output_path = args.output_path.expanduser().resolve()
@@ -298,6 +305,7 @@ def main():
         f"Building similarity matrix (method={args.method}, "
         f"agg={args.aggregation}, threshold={args.prob_threshold}, "
         f"uniqueness={args.uniqueness_weighted}, "
+        f"weighting={args.uniqueness_weighting}, workers={args.workers}, "
         f"dustbin={not args.no_dustbin})"
     )
     dataset = load_vigor_dataset(dataset_path, args.landmark_version,
@@ -309,6 +317,8 @@ def main():
         args.prob_threshold,
         uniqueness_weighted=args.uniqueness_weighted,
         use_dustbin=not args.no_dustbin,
+        uniqueness_weighting=args.uniqueness_weighting,
+        workers=args.workers,
     )
 
     ks = [int(k) for k in args.ks.split(",")]
