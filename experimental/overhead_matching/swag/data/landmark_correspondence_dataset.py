@@ -307,7 +307,9 @@ def compute_cross_features(
     """
     features: list[float] = []
 
-    shared_keys = set(pano_tags.keys()) & set(osm_tags.keys())
+    # Only the model's keys count, matching the vectorized inference path in
+    # evaluation/correspondence_matching.py.
+    shared_keys = {k for k in pano_tags if k in osm_tags and k in TAG_KEY_TO_IDX}
     if text_embeddings is not None:
         text_sims: list[float] = []
         name_sim = 0.0

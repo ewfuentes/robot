@@ -35,7 +35,6 @@ from experimental.overhead_matching.swag.data.landmark_correspondence_dataset im
     HOUSENUMBER_KEY,
     NUM_CROSS_FEATURES,
     _pad_side,
-    compute_cross_features,
     encode_tag_bundle,
     parse_housenumber,
 )

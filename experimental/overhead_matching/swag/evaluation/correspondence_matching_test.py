@@ -288,10 +288,9 @@ class TestIndexedCrossFeatures(unittest.TestCase):
         self.dim = 16
         rng = np.random.default_rng(7)
         torch.manual_seed(7)
-        # Model keys only: the reference compares every shared key, while the
-        # vectorized paths (before and after indexing) read only TAG_KEY_TO_IDX's.
+        # "lit" and "wikidata" are not model keys: every path must ignore them.
         keys = ["name", "amenity", "shop", "addr:housenumber", "addr:street",
-                "building"]
+                "building", "lit", "wikidata"]
         values = [f"v{i}" for i in range(12)]
         # v10 and v11 have no embedding.
         self.text_embeddings = {v: torch.randn(self.dim) for v in values[:10]}
