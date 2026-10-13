@@ -1,9 +1,7 @@
 """Latency model of the histogram path evaluation: slow streams are captured at
 every pano, carried forward by odometry, and integrated once their delay elapsed."""
 
-import tempfile
 import unittest
-from pathlib import Path
 
 import common.torch.load_torch_deps  # noqa: F401
 import torch
@@ -20,7 +18,6 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
 from experimental.overhead_matching.swag.scripts.evaluate_histogram_on_paths import (
     HistogramFilterConfig,
     elapsed_seconds,
-    load_pano_times_s,
     run_histogram_filter_on_path,
     step_distances_m,
 )
@@ -80,7 +77,7 @@ class _World:
         belief = HistogramBelief.from_uniform(self.grid_spec, DEVICE)
         elapsed = None
         if config.slow_streams != "none" and config.slow_stream_delay_s > 0:
-            elapsed = elapsed_seconds(self.path, self.step_dist, None, config.assumed_speed_m_s)
+            elapsed = elapsed_seconds(self.step_dist, config.speed_m_s)
         return run_histogram_filter_on_path(
             belief=belief, motion_deltas=self.motion_deltas, path_pano_ids=self.path,
             log_likelihood_aggregator=agg, mapping=self.mapping, config=config,
@@ -113,7 +110,7 @@ class TestLatencyModel(unittest.TestCase):
     def test_delay_longer_than_path_is_image_only(self):
         w = self.w
         ref = w.run(w.image_only)
-        out = w.run(w.agg, slow_streams="landmark", slow_stream_delay_s=1e9, assumed_speed_m_s=2.0)
+        out = w.run(w.agg, slow_streams="landmark", slow_stream_delay_s=1e9, speed_m_s=2.0)
         self.assertTrue(torch.allclose(out.final_belief.get_log_belief(),
                                        ref.final_belief.get_log_belief(), atol=1e-6))
 
@@ -143,8 +140,8 @@ class TestLatencyModel(unittest.TestCase):
         step_m = float(w.step_dist[0])
         for noise in (0.0, 0.141):
             lagged = HistogramFilterConfig(motion_noise_frac=noise, slow_streams="landmark",
-                                           slow_stream_delay_s=1.5 * step_m, assumed_speed_m_s=1.0)
-            elapsed = elapsed_seconds(w.path, w.step_dist, None, 1.0)
+                                           slow_stream_delay_s=1.5 * step_m, speed_m_s=1.0)
+            elapsed = elapsed_seconds(w.step_dist, 1.0)
             out = run_histogram_filter_on_path(
                 belief=HistogramBelief.from_uniform(w.grid_spec, DEVICE),
                 motion_deltas=w.motion_deltas, path_pano_ids=w.path,
@@ -170,7 +167,7 @@ class TestLatencyModel(unittest.TestCase):
         w = self.w
         step_m = float(w.step_dist[0])
         out = w.run(w.agg, slow_streams="landmark", slow_stream_delay_s=1.5 * step_m,
-                    assumed_speed_m_s=1.0)
+                    speed_m_s=1.0)
         err_m = 6_371_000.0 * torch.deg2rad(out.mode_history[-1] - w.true_latlons[-1]).norm()
         self.assertLess(err_m.item(), 0.5 * step_m)
         # Mass within 50 m should be high at the end: the lagged evidence was used.
@@ -181,45 +178,12 @@ class TestLatencyModel(unittest.TestCase):
 
 
 class TestElapsedSeconds(unittest.TestCase):
-    def test_timestamps_use_absolute_differences(self):
-        times = {"a": 100.0, "b": 103.0, "c": 110.0}
-        fwd = elapsed_seconds(["a", "b", "c"], torch.zeros(2), times, None)
-        bwd = elapsed_seconds(["c", "b", "a"], torch.zeros(2), times, None)
-        self.assertEqual(fwd.tolist(), [0.0, 3.0, 10.0])
-        self.assertEqual(bwd.tolist(), [0.0, 7.0, 10.0])
-
-    def test_missing_timestamp_raises(self):
-        with self.assertRaises(ValueError):
-            elapsed_seconds(["a", "zzz"], torch.zeros(1), {"a": 1.0}, None)
-
-    def test_assumed_speed_fallback_and_its_absence(self):
+    def test_distance_over_speed(self):
         dist = torch.tensor([10.0, 30.0])
-        self.assertEqual(elapsed_seconds(["a", "b", "c"], dist, None, 2.0).tolist(), [0.0, 5.0, 20.0])
-        with self.assertRaises(ValueError):
-            elapsed_seconds(["a", "b", "c"], dist, None, None)
-
-
-class TestLoadPanoTimes(unittest.TestCase):
-    def test_mapillary_captured_at_ms(self):
-        with tempfile.TemporaryDirectory() as d:
-            csv = Path(d) / "extraction_log.csv"
-            csv.write_text("frame_idx,mapillary_id,captured_at\n0,111,1000\n1,222,4500\n")
-            self.assertEqual(load_pano_times_s(csv), {"111": 1.0, "222": 4.5})
-
-    def test_video_time_joined_through_frame_idx(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            (d / "pano_id_mapping.csv").write_text("pano_id,frame_idx,video_time\nabc,6,\nxyz,20,\n")
-            log = d / "snowy_log.csv"
-            log.write_text("frame_idx,video_time\n6,2.0\n20,26.0\n99,30.0\n")
-            self.assertEqual(load_pano_times_s(log, d), {"abc": 2.0, "xyz": 26.0})
-
-    def test_no_times_raises(self):
-        with tempfile.TemporaryDirectory() as d:
-            csv = Path(d) / "extraction_log.csv"
-            csv.write_text("pano_id,frame_idx,video_time\nabc,1,\n")
+        self.assertEqual(elapsed_seconds(dist, 2.0).tolist(), [0.0, 5.0, 20.0])
+        for bad in (None, 0.0, -1.0):
             with self.assertRaises(ValueError):
-                load_pano_times_s(csv)
+                elapsed_seconds(dist, bad)
 
 
 if __name__ == "__main__":

@@ -677,7 +677,6 @@ py_library(
     requirement("torch"),
     requirement("tqdm"),
     requirement("msgspec"),
-    requirement("pandas"),
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//common/gps:web_mercator",
@@ -710,7 +709,6 @@ py_test(
   srcs=["evaluate_histogram_on_paths_test.py"],
   deps=[
     requirement("torch"),
-    requirement("pandas"),
     "//common/gps:web_mercator",
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/filter:histogram_belief",
