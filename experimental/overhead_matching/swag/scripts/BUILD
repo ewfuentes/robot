@@ -666,8 +666,8 @@ py_binary(
   ]
 )
 
-py_binary(
-  name="evaluate_histogram_on_paths",
+py_library(
+  name="evaluate_histogram_on_paths_lib",
   srcs=["evaluate_histogram_on_paths.py"],
   visibility=[
     "//common/python:__subpackages__",
@@ -677,6 +677,7 @@ py_binary(
     requirement("torch"),
     requirement("tqdm"),
     requirement("msgspec"),
+    requirement("pandas"),
     "//common/torch:load_torch_deps",
     "//common/torch:load_and_save_models",
     "//common/gps:web_mercator",
@@ -690,6 +691,31 @@ py_binary(
     "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     "//experimental/overhead_matching/swag/model:patch_embedding",
     "//experimental/overhead_matching/swag/model:swag_patch_embedding",
+  ]
+)
+
+py_binary(
+  name="evaluate_histogram_on_paths",
+  srcs=["evaluate_histogram_on_paths.py"],
+  main="evaluate_histogram_on_paths.py",
+  visibility=[
+    "//common/python:__subpackages__",
+    "//experimental/overhead_matching/swag:__subpackages__",
+  ],
+  deps=[":evaluate_histogram_on_paths_lib"],
+)
+
+py_test(
+  name="evaluate_histogram_on_paths_test",
+  srcs=["evaluate_histogram_on_paths_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("pandas"),
+    "//common/gps:web_mercator",
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/filter:histogram_belief",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
+    ":evaluate_histogram_on_paths_lib",
   ]
 )
 

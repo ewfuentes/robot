@@ -260,17 +260,23 @@ def propagate_log_grid(
     motion_delta_deg: torch.Tensor,
     motion_noise_frac: float,
     reference_latlon: torch.Tensor,
+    blur_distance_m: float | None = None,
 ) -> torch.Tensor:
     """Apply the motion model (shift by delta, Wiener blur) to any log grid.
 
-    This is the operator ``HistogramBelief.apply_motion`` applies to the
-    belief, factored out so it can be applied to other grids too.
+    Used on the belief by ``HistogramBelief.apply_motion`` and on a lagged
+    observation's log-likelihood grid, which must be carried forward by the
+    odometry accumulated between capture and integration:
+    ``p(o_k | x_t) = (L_k * N(0, sigma^2 d))`` shifted by the cumulative delta.
 
     Args:
         motion_delta_deg: (2,) [delta_lat, delta_lon] in degrees.
         motion_noise_frac: Wiener noise intensity in m/sqrt(m); blur std is
-            ``motion_noise_frac * sqrt(step distance)``.
+            ``motion_noise_frac * sqrt(blur_distance_m)``.
         reference_latlon: point used for the degrees -> pixels conversion.
+        blur_distance_m: distance over which the noise accumulated. Defaults
+            to the delta's own length (a single step); pass the path length
+            for a multi-step window.
 
     Returns the propagated grid, not normalized.
     """
@@ -292,9 +298,10 @@ def propagate_log_grid(
     ref_lat_deg = float(reference_latlon[0]) if isinstance(
         reference_latlon[0], torch.Tensor) else reference_latlon[0]
     m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
-    delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
-    delta_magnitude_m = delta_magnitude_px * m_per_px
-    sigma_m = motion_noise_frac * torch.sqrt(delta_magnitude_m)
+    if blur_distance_m is None:
+        delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
+        blur_distance_m = delta_magnitude_px * m_per_px
+    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(blur_distance_m))
     sigma_cells = (sigma_m / m_per_px) / grid_spec.cell_size_px
     if isinstance(sigma_cells, torch.Tensor):
         sigma_cells = sigma_cells.item()

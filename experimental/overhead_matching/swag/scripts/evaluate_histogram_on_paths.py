@@ -10,6 +10,7 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
     CellToPatchMapping,
     build_cell_to_patch_mapping,
+    propagate_log_grid,
 )
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     ObservationLogLikelihoodAggregator,
@@ -30,6 +31,7 @@ import shutil
 import msgspec
 import json
 import math
+import pandas as pd
 import common.torch.load_torch_deps
 import torch
 import tqdm
@@ -74,6 +76,17 @@ class HistogramFilterConfig:
     source_px: int | None = None
     odometry_noise: OdometryNoiseConfig | None = None  # Optional odometry noise config
     max_chunk_gib: float = 2.0  # Peak GPU memory per chunk for cell-to-patch mapping
+    # Observation latency model. Streams named in `slow_streams` (see
+    # ObservationLogLikelihoodAggregator.streams) are captured at every pano
+    # but only integrated once the robot's clock has advanced by
+    # `slow_stream_delay_s` since capture, carried forward by the odometry
+    # accumulated meanwhile. Other streams are integrated immediately.
+    slow_stream_delay_s: float = 0.0
+    slow_streams: str = "none"  # "none" | "landmark" | "all"
+    slow_stream_dropout: float = 0.0  # fraction of slow-stream observations lost (seeded)
+    # Clock source when the dataset has no per-pano timestamps: elapsed time =
+    # distance travelled / assumed_speed_m_s. Required in that case if delay > 0.
+    assumed_speed_m_s: float | None = None
 
     @property
     def footprint_px(self) -> float:
@@ -120,6 +133,9 @@ def run_histogram_filter_on_path(
     config: HistogramFilterConfig,
     true_latlons: torch.Tensor | None = None,
     convergence_radii: list[int] | None = None,
+    elapsed_s: torch.Tensor | None = None,
+    step_distance_m: torch.Tensor | None = None,
+    slow_drop: torch.Tensor | None = None,
 ) -> HistogramPathResult:
     """Run histogram filter on a single path.
 
@@ -132,10 +148,24 @@ def run_histogram_filter_on_path(
         config: Filter configuration
         true_latlons: (path_len, 2) ground truth positions for convergence metrics
         convergence_radii: List of radii in meters for convergence metrics
+        elapsed_s: (path_len,) robot clock at each pano, seconds from the path
+            start. Required when config.slow_stream_delay_s > 0.
+        step_distance_m: (path_len - 1,) distance of each step in meters (for the
+            Wiener blur of lagged observations). Required with a slow stream.
+        slow_drop: (path_len,) bool; True = this pano's slow-stream observation
+            is lost. None = nothing dropped.
 
     Returns:
         HistogramPathResult with mean/variance history and convergence metrics
     """
+    slow_names = {"none": (), "landmark": ("landmark",), "all": ("all", "image", "landmark")}[
+        config.slow_streams]
+    if slow_names:
+        if config.slow_stream_delay_s > 0 and elapsed_s is None:
+            raise ValueError("slow_stream_delay_s > 0 needs elapsed_s (pano timestamps or an assumed speed)")
+        if step_distance_m is None:
+            raise ValueError("a slow stream needs step_distance_m")
+
     mean_history = [belief.get_mean_latlon()]
     mode_history = [belief.get_mode_latlon()]
     variance_history = [belief.get_variance_deg_sq()]
@@ -158,11 +188,43 @@ def run_histogram_filter_on_path(
             print("Not tracking convergence: convergence_radii not provided")
 
     path_len = len(path_pano_ids)
+    # Lagged observations waiting for the clock: [capture_step, (num_patches,)
+    # log-likelihood, cumulative odometry since capture (deg), distance since capture (m)]
+    pending: list[list] = []
+
+    def observe(step_idx: int) -> None:
+        streams = log_likelihood_aggregator.streams(path_pano_ids[step_idx])
+        fast = [v for k, v in streams.items() if k not in slow_names]
+        slow = [v for k, v in streams.items() if k in slow_names]
+        if fast:
+            belief.apply_observation(sum(fast[1:], fast[0]), mapping)
+        if slow and not (slow_drop is not None and bool(slow_drop[step_idx])):
+            pending.append([step_idx, sum(slow[1:], slow[0]),
+                            torch.zeros(2, device=motion_deltas.device, dtype=motion_deltas.dtype), 0.0])
+        # Integrate every lagged observation whose latency has elapsed.
+        still_pending = []
+        for entry in pending:
+            cap, obs_log_ll, cum_delta, cum_dist = entry
+            waited = 0.0 if elapsed_s is None else float(elapsed_s[step_idx] - elapsed_s[cap])
+            if waited + 1e-9 < config.slow_stream_delay_s:
+                still_pending.append(entry)
+                continue
+            grid = belief.cell_log_likelihood_grid(obs_log_ll, mapping)
+            if cap != step_idx:
+                # Carry the likelihood forward: shift by the odometry since
+                # capture, blur by the noise accumulated over that distance.
+                # Subtract the max so exp() in the shift cannot overflow.
+                peak = grid.max()
+                grid = propagate_log_grid(
+                    grid - peak, belief.grid_spec, cum_delta, config.motion_noise_frac,
+                    belief.get_mean_latlon(), blur_distance_m=cum_dist,
+                ) + peak
+            belief.apply_cell_log_likelihood(grid)
+        pending[:] = still_pending
 
     for step_idx in range(path_len - 1):
         # Observation update
-        obs_log_ll = log_likelihood_aggregator(path_pano_ids[step_idx])
-        belief.apply_observation(obs_log_ll, mapping)
+        observe(step_idx)
 
         mean_history.append(belief.get_mean_latlon())
         mode_history.append(belief.get_mode_latlon())
@@ -178,10 +240,12 @@ def run_histogram_filter_on_path(
 
         # Motion prediction
         belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac)
+        for entry in pending:
+            entry[2] = entry[2] + motion_deltas[step_idx]
+            entry[3] += float(step_distance_m[step_idx])
 
     # Final observation
-    obs_log_ll = log_likelihood_aggregator(path_pano_ids[-1])
-    belief.apply_observation(obs_log_ll, mapping)
+    observe(path_len - 1)
     mean_history.append(belief.get_mean_latlon())
     mode_history.append(belief.get_mode_latlon())
     variance_history.append(belief.get_variance_deg_sq())
@@ -206,6 +270,68 @@ def run_histogram_filter_on_path(
         final_belief=belief,
         prob_mass_by_radius=prob_mass_tensors,
     )
+
+
+def load_pano_times_s(csv_path: Path, dataset_path: Path | None = None) -> dict[str, float]:
+    """Per-pano capture time in seconds from an extraction log.
+
+    Mapillary logs carry `captured_at` (ms since epoch) keyed by `mapillary_id`;
+    video-derived datasets carry `video_time` (s) keyed by `uuid` or `pano_id`.
+    A log keyed only by `frame_idx` (Boston's pre-trim video log) is joined to
+    pano ids through `<dataset_path>/pano_id_mapping.csv`. Only differences
+    between panos are ever used.
+    """
+    df = pd.read_csv(csv_path)
+    if "captured_at" in df.columns:
+        t = df["captured_at"].astype(float) / 1000.0
+    elif "video_time" in df.columns:
+        t = df["video_time"].astype(float)
+    else:
+        raise ValueError(f"{csv_path}: no captured_at or video_time column (columns: {list(df.columns)})")
+    id_col = next((c for c in ("mapillary_id", "uuid", "pano_id") if c in df.columns), None)
+    if id_col is not None:
+        ids = df[id_col].astype(str)
+    elif "frame_idx" in df.columns and dataset_path is not None:
+        mapping = pd.read_csv(Path(dataset_path) / "pano_id_mapping.csv")
+        frame_to_pano = dict(zip(mapping["frame_idx"].astype(int), mapping["pano_id"].astype(str)))
+        ids = df["frame_idx"].astype(int).map(frame_to_pano)
+    else:
+        raise ValueError(f"{csv_path}: no pano id column (columns: {list(df.columns)})")
+    ok = t.notna() & ids.notna()
+    if not ok.any():
+        raise ValueError(f"{csv_path}: no row has both a pano id and a time")
+    return dict(zip(ids[ok], t[ok]))
+
+
+def step_distances_m(true_latlons: torch.Tensor) -> torch.Tensor:
+    """(path_len - 1,) haversine distance between consecutive panos."""
+    return torch.stack([
+        vd.EARTH_RADIUS_M * find_d_on_unit_circle(true_latlons[i], true_latlons[i + 1])
+        for i in range(len(true_latlons) - 1)
+    ]).to(true_latlons.device)
+
+
+def elapsed_seconds(
+    path: list[str],
+    step_dist_m: torch.Tensor,
+    pano_times_s: dict[str, float] | None,
+    assumed_speed_m_s: float | None,
+) -> torch.Tensor:
+    """Robot clock along a path, seconds from its first pano.
+
+    With timestamps: cumulative |dt| between consecutive panos (paths run the
+    source trajectory forwards or backwards). Without: distance / assumed speed.
+    """
+    if pano_times_s is not None:
+        missing = [pid for pid in path if pid not in pano_times_s]
+        if missing:
+            raise ValueError(f"{len(missing)} path panos have no timestamp, e.g. {missing[:3]}")
+        t = torch.tensor([pano_times_s[pid] for pid in path], dtype=torch.float64)
+        return torch.cat([torch.zeros(1, dtype=torch.float64), torch.cumsum(t.diff().abs(), 0)])
+    if assumed_speed_m_s is None:
+        raise ValueError("no pano timestamps: pass --assumed-speed-m-s")
+    d = step_dist_m.to(torch.float64).cpu()
+    return torch.cat([torch.zeros(1, dtype=torch.float64), torch.cumsum(d, 0)]) / assumed_speed_m_s
 
 
 def get_distance_error_from_estimate_history(
@@ -264,6 +390,7 @@ def evaluate_histogram_on_paths(
     device: torch.device = "cuda:0",
     save_intermediate_states: bool = False,
     convergence_radii: list[int] | None = None,
+    pano_times_s: dict[str, float] | None = None,
 ) -> None:
     """Evaluate histogram filter on paths.
 
@@ -277,6 +404,8 @@ def evaluate_histogram_on_paths(
         device: Torch device
         save_intermediate_states: Whether to save belief history
         convergence_radii: List of radii in meters for convergence metrics
+        pano_times_s: Per-pano capture times (see load_pano_times_s); needed
+            with a slow stream unless config.assumed_speed_m_s is set
     """
     all_final_error_meters = []        # using mean estimator
     all_final_mode_error_meters = []   # using argmax-cell (MAP / mode) estimator
@@ -354,6 +483,18 @@ def evaluate_histogram_on_paths(
                 if convergence_radii else None
             )
 
+            # Clock and per-step distances for the latency model
+            elapsed_s = step_dist_m = slow_drop = None
+            if config.slow_streams != "none":
+                positions = vigor_dataset.get_panorama_positions(path).to(device)
+                step_dist_m = step_distances_m(positions)
+                if config.slow_stream_delay_s > 0:
+                    elapsed_s = elapsed_seconds(
+                        path, step_dist_m, pano_times_s, config.assumed_speed_m_s)
+                if config.slow_stream_dropout > 0:
+                    slow_drop = torch.rand(len(path), generator=generator, device=device) \
+                        < config.slow_stream_dropout
+
             # Run filter
             result = run_histogram_filter_on_path(
                 belief=belief,
@@ -364,6 +505,9 @@ def evaluate_histogram_on_paths(
                 config=config,
                 true_latlons=true_latlons,
                 convergence_radii=convergence_radii,
+                elapsed_s=elapsed_s,
+                step_distance_m=step_dist_m,
+                slow_drop=slow_drop,
             )
 
             # Compute distance traveled
@@ -579,6 +723,24 @@ if __name__ == "__main__":
     parser.add_argument("--odometry-noise-seed", type=int, default=7919,
                         help="Seed for odometry noise generation")
 
+    # Observation latency model
+    parser.add_argument("--slow-streams", choices=["none", "landmark", "all"], default="none",
+                        help="Aggregator streams that arrive late: 'landmark' for the fused "
+                             "image+landmark aggregator, 'all' for single-stream aggregators "
+                             "whose whole observation is late, 'none' (default) = every "
+                             "observation integrated at capture.")
+    parser.add_argument("--slow-stream-delay-s", type=float, default=0.0,
+                        help="Latency from pano capture to belief integration for the slow "
+                             "streams, in seconds of robot clock.")
+    parser.add_argument("--slow-stream-dropout", type=float, default=0.0,
+                        help="Fraction of slow-stream observations lost (seeded per path).")
+    parser.add_argument("--pano-times-csv", type=str, default=None,
+                        help="Extraction log with per-pano times (captured_at ms or video_time s). "
+                             "Default: <dataset>/extraction_log.csv if it has usable times.")
+    parser.add_argument("--assumed-speed-m-s", type=float, default=None,
+                        help="Clock for datasets without timestamps (e.g. VIGOR): elapsed = "
+                             "distance / speed. Never applied when timestamps exist.")
+
     args = parser.parse_args()
 
     # Parse convergence radii
@@ -646,7 +808,29 @@ if __name__ == "__main__":
         source_px=source_px,
         odometry_noise=odometry_noise_config,
         max_chunk_gib=args.max_chunk_gib,
+        slow_stream_delay_s=args.slow_stream_delay_s,
+        slow_streams=args.slow_streams,
+        slow_stream_dropout=args.slow_stream_dropout,
+        assumed_speed_m_s=args.assumed_speed_m_s,
     )
+
+    # Per-pano clock for the latency model
+    pano_times_s = None
+    pano_times_source = None
+    if config.slow_streams != "none" and config.slow_stream_delay_s > 0:
+        times_csv = Path(args.pano_times_csv) if args.pano_times_csv else \
+            Path(args.dataset_path) / "extraction_log.csv"
+        try:
+            pano_times_s = load_pano_times_s(times_csv, Path(args.dataset_path))
+            pano_times_source = str(times_csv)
+        except (FileNotFoundError, ValueError) as e:
+            if args.pano_times_csv or config.assumed_speed_m_s is None:
+                raise SystemExit(f"No usable pano times ({e}); pass --pano-times-csv or "
+                                 f"--assumed-speed-m-s")
+        if pano_times_s is not None and config.assumed_speed_m_s is not None:
+            raise SystemExit("Dataset has timestamps; do not also pass --assumed-speed-m-s")
+        print(f"Latency model: slow_streams={config.slow_streams} delay={config.slow_stream_delay_s}s "
+              f"clock={'timestamps ' + pano_times_source if pano_times_s else f'{config.assumed_speed_m_s} m/s assumed'}")
 
     histogram_config_dict = {
         "motion_noise_frac": config.motion_noise_frac,
@@ -662,6 +846,11 @@ if __name__ == "__main__":
             "sigma_noise_frac": odometry_noise_config.sigma_noise_frac,
             "seed": odometry_noise_config.seed,
         }
+    histogram_config_dict["slow_streams"] = config.slow_streams
+    histogram_config_dict["slow_stream_delay_s"] = config.slow_stream_delay_s
+    histogram_config_dict["slow_stream_dropout"] = config.slow_stream_dropout
+    histogram_config_dict["assumed_speed_m_s"] = config.assumed_speed_m_s
+    histogram_config_dict["pano_times_source"] = pano_times_source
 
     with open(Path(args.output_path) / "histogram_config.json", "w") as f:
         json.dump(histogram_config_dict, f, indent=4)
@@ -676,4 +865,5 @@ if __name__ == "__main__":
         device=DEVICE,
         save_intermediate_states=args.save_intermediate_filter_states,
         convergence_radii=convergence_radii,
+        pano_times_s=pano_times_s,
     )
