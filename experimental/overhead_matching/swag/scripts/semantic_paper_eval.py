@@ -1,4 +1,49 @@
-"""Paper pipeline adapter: frozen 768-D inputs, unchanged correspondence matching."""
+"""Paper pipeline adapter: frozen 768-D inputs, unchanged correspondence matching.
+
+Scores panorama/OSM landmark pairs with a trained FixedEmbeddingClassifier and
+applies the paper's matching and aggregation to produce the panorama-to-satellite
+similarity matrix. It consumes separately prepared evaluation inputs:
+
+- Baseline raw metadata with archived panorama landmark rows, OSM indices/tags,
+  and a pano_id_to_lm_rows mapping.
+- An indices.npz containing pano and osm indices into the supplied embedding
+  arrays, ordered exactly like those archived rows/columns.
+- The baseline similarity and raw cost matrices for the audit, plus the VIGOR
+  dataset defining panorama and satellite-patch order.
+
+Training preparation covers the configured train/validation pairs; it does not
+create these full evaluation-city mappings. Retain all archived OSM columns,
+including those outside the current satellite grid, because they affect
+uniqueness weights.
+
+  bazel run //experimental/overhead_matching/swag/scripts:semantic_paper_eval -- audit \
+    --dataset-path $CITY_DATASET --raw-metadata $RAW_METADATA \
+    --audit-dir $AUDIT_DIR --reference-similarity $BASELINE_SIMILARITY \
+    --reference-cost-matrix $BASELINE_COST_MATRIX
+  bazel run //experimental/overhead_matching/swag/scripts:semantic_paper_eval -- score \
+    --dataset-path $CITY_DATASET --raw-metadata $RAW_METADATA \
+    --audit-dir $AUDIT_DIR --variant descriptions --checkpoint $CHECKPOINT \
+    --indices $EVALUATION_INDICES --pano-embeddings $PANO_EMBEDDINGS \
+    --osm-embeddings $OSM_EMBEDDINGS --output-dir $MATRIX_OUTPUT --workers 12
+
+Use --landmark-version if the dataset has multiple versions. The reference-cost
+argument overrides the location recorded in archived metadata. Scoring defaults
+to CUDA; --device cpu supports small checks. The audit verifies sampled baseline
+scores with threshold 0.8, Hungarian matching, sum aggregation, uniqueness
+weights, and dustbins. Scoring checks the audited dataset identity and writes
+cost_matrix.npy, similarity.pt, and complete.json.
+
+Parallel matching passes explicit metadata to spawned workers; each opens the
+cost matrix as a read-only memory map. There is no mutable module-level scoring
+state or dependency on a forked CUDA context. Use a separate output directory for
+each checkpoint/input combination: completed matrices are reused and partial
+inference is resumed. Existing external launch scripts must pass these explicit
+arguments.
+
+The resulting similarity matrix is input to the existing calibrate_sigma and
+evaluate_histogram_on_paths tools. This adapter does not perform final path
+evaluation or write paper tables.
+"""
 
 import argparse
 import hashlib
@@ -266,7 +311,9 @@ def score(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("audit", "score"):
         command = commands.add_parser(name)

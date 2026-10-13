@@ -1,7 +1,71 @@
-"""Fixed-embedding correspondence ablations using simple_v1_v5's training loop.
+"""Fixed-embedding semantic representation ablations on simple_v1_v5's training loop.
 
-The panorama text is chosen at ``prepare`` time (VLM sentence or sorted
-``key=value`` string); the OSM text is chosen per ``train`` run.
+Frozen-embedding alternatives to the structured-tag correspondence model. Each
+side of a pair is a 768-dimensional text-embedding-005 vector of one text. The
+panorama text is fixed per prepared root by `prepare --pano-text`: the VLM
+landmark sentence (descriptions) or the landmark's sorted literal key=value
+string (tag_strings). The OSM text is chosen per `train --variant`: generated
+sentences (descriptions) or sorted literal key=value text (tag_strings). The
+three paper variants are sentence/sentence, sentence/KV, and KV/KV; KV/KV needs
+its own prepared root and its own panorama embedding run because the panorama
+texts differ. FixedEmbeddingClassifier consumes [pano, osm, pano * osm] with no
+learned tag encoder or engineered cross features; its head is the structured
+model's Linear -> BatchNorm -> ReLU -> Dropout -> Linear, and the original
+classifier.* checkpoint keys, including BatchNorm statistics, stay compatible.
+
+Comparing any variant against the structured model also changes the encoder,
+cross features, and parameter count; it is not a format-only comparison.
+Comparing variants against each other changes only the named text.
+
+Workflow (all locations are explicit arguments; there is no default experiment
+directory or cloud project):
+
+  bazel run //experimental/overhead_matching/swag/scripts:train_representation_ablation -- prepare \
+    --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
+    --osm-embeddings-dir $OSM_EMBEDDINGS_DIR \
+    --osm-source-dir $OSM_SOURCE_DIR --pano-source-dir $PANO_SOURCE_DIR \
+    --supplement-dir $SUPPLEMENT_DIR --pano-text descriptions
+  bazel run ... -- embed --root $EXPERIMENT_DIR --supplement-dir $SUPPLEMENT_DIR
+  bazel run ... -- check --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
+    --osm-embeddings-dir $OSM_EMBEDDINGS_DIR [--checkpoint best_model.pt]
+  bazel run ... -- train --root $EXPERIMENT_DIR --config $BASELINE_CONFIG \
+    --osm-embeddings-dir $OSM_EMBEDDINGS_DIR --variant descriptions
+
+Inputs. BASELINE_CONFIG is the baseline correspondence training YAML: label data
+directory, train and validation cities, optimizer settings, classifier
+width/dropout, and seed. OSM_EMBEDDINGS_DIR holds aligned keys.json,
+descriptions.npy and tag_strings.npy. OSM_SOURCE_DIR holds the original
+manifest.json and requests.jsonl used to generate the OSM descriptions; prepare
+copies the request template for any exact parsed training tag bundle missing
+from the OSM embedding population. PANO_SOURCE_DIR holds
+<city>/embeddings/embeddings.pkl with the original panorama landmark tags and
+descriptions.
+
+prepare verifies labels, landmark ordering, and difficulty selection against
+the existing correspondence parser, then writes pair indices, panorama texts,
+input hashes, and a frozen copy of the baseline configuration. If supplemental
+OSM bundles are needed, submit the generated requests with your existing batch
+workflow and collect a key-to-sentence mapping as SUPPLEMENT_DIR/sentences.json;
+this driver does not submit them. Supplemental bundles exist because training
+pairs carry the OSM tags as the baseline label parser read them back from the
+prompt, and that parser truncates values at an unescaped "; " or newline and
+strips trailing whitespace. Such a bundle hashes to a key absent from the
+full-map keys.json, so a sentence and a tag string are generated for the
+truncated bundle itself rather than for the original entity, keeping the
+ablation's view of those pairs identical to the baseline's. On the paper
+training set this is 19 bundles and 73 of 194,936 pairs.
+
+embed calls Vertex AI through the repository embedding helper with your
+configured credentials/project/location, preserving text-embedding-005,
+SEMANTIC_SIMILARITY, 768 dimensions and auto_truncate=False, with bounded
+requests and resumable output; it also handles a preparation with no
+supplemental bundles. train uses CUDA and the existing correspondence
+training/evaluation functions, writes under EXPERIMENT_DIR/<variant>, refuses to
+overwrite an existing run, and selects the best checkpoint by validation ROC
+AUC. Repeat train with --variant tag_strings for the other OSM text. For KV/KV,
+prepare a second root with --pano-text tag_strings, run embed there, and train
+with --variant tag_strings. check --checkpoint FILE validates an archived
+checkpoint without training.
 """
 
 import argparse
@@ -567,7 +631,9 @@ def train(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     commands = parser.add_subparsers(dest="action", required=True)
     for action in ("prepare", "embed", "check", "train"):
         command = commands.add_parser(action)
