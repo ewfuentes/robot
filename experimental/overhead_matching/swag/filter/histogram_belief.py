@@ -280,28 +280,28 @@ def propagate_log_grid(
 
     Returns the propagated grid, not normalized.
     """
-    y0, x0 = web_mercator.latlon_to_pixel_coords(
-        reference_latlon[0], reference_latlon[1], grid_spec.zoom_level
-    )
+    # Degrees -> pixels in float64: at zoom 20 the map is 2^28 px wide, so a
+    # float32 conversion quantizes each coordinate to 16 px and a one-step
+    # delta picks up tens of pixels of rounding noise.
+    ref = torch.as_tensor(reference_latlon).to(torch.float64)
+    delta = torch.as_tensor(motion_delta_deg).to(torch.float64)
+    y0, x0 = web_mercator.latlon_to_pixel_coords(ref[0], ref[1], grid_spec.zoom_level)
     y1, x1 = web_mercator.latlon_to_pixel_coords(
-        reference_latlon[0] + motion_delta_deg[0],
-        reference_latlon[1] + motion_delta_deg[1],
-        grid_spec.zoom_level,
+        ref[0] + delta[0], ref[1] + delta[1], grid_spec.zoom_level,
     )
     delta_row_px = y1 - y0
     delta_col_px = x1 - x0
-    shift_rows = delta_row_px / grid_spec.cell_size_px
-    shift_cols = delta_col_px / grid_spec.cell_size_px
+    shift_rows = float(delta_row_px / grid_spec.cell_size_px)
+    shift_cols = float(delta_col_px / grid_spec.cell_size_px)
 
     # Noise sigma via Wiener scaling in meters, then back to cells, so that
     # `motion_noise_frac` shares units with OdometryNoiseConfig.
-    ref_lat_deg = float(reference_latlon[0]) if isinstance(
-        reference_latlon[0], torch.Tensor) else reference_latlon[0]
+    ref_lat_deg = float(ref[0])
     m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
     if blur_distance_m is None:
         delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
         blur_distance_m = delta_magnitude_px * m_per_px
-    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(blur_distance_m))
+    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(blur_distance_m, dtype=torch.float64))
     sigma_cells = (sigma_m / m_per_px) / grid_spec.cell_size_px
     if isinstance(sigma_cells, torch.Tensor):
         sigma_cells = sigma_cells.item()
