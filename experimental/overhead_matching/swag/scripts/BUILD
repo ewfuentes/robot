@@ -1052,14 +1052,6 @@ py_binary(
   ],
 )
 
-py_binary(
-  name="orientation_check",
-  srcs=["orientation_check.py"],
-  deps=[
-    requirement("numpy"),
-    requirement("Pillow"),
-  ],
-)
 
 py_binary(
   name="evaluate_cvgtext_crosstext2loc",
@@ -1090,18 +1082,11 @@ py_library(
 py_binary(
   name="export_ct2l_similarity",
   srcs=["export_ct2l_similarity.py"],
-  deps=[
-    requirement("torch"),
-    "//common/torch:load_torch_deps",
-    "//experimental/overhead_matching/swag/data:vigor_dataset",
-    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
-    "//experimental/overhead_matching/swag/model:crosstext2loc_encoder",
-    ":export_correspondence_similarity",
-  ],
+  deps=[":export_ct2l_similarity_lib"],
 )
 
-py_binary(
-  name="train_ct2l",
+py_library(
+  name="train_ct2l_lib",
   srcs=["train_ct2l.py"],
   deps=[
     requirement("torch"),
@@ -1115,11 +1100,20 @@ py_binary(
 )
 
 py_binary(
-  name="oracle_rerank_similarity",
-  srcs=["oracle_rerank_similarity.py"],
+  name="train_ct2l",
+  srcs=["train_ct2l.py"],
+  deps=[":train_ct2l_lib"],
+)
+
+py_test(
+  name="export_ct2l_similarity_test",
+  srcs=["export_ct2l_similarity_test.py"],
   deps=[
     requirement("torch"),
+    requirement("pandas"),
     "//common/torch:load_torch_deps",
     ":export_ct2l_similarity_lib",
+    ":train_ct2l_lib",
   ],
 )
+

@@ -55,13 +55,21 @@ def encode_images(model, preprocessor, paths: list[str], device: torch.device,
     return torch.cat(feats, dim=0)
 
 
+def tokenize(preprocessor, texts: list[str]) -> torch.Tensor:
+    """(len(texts), 300) token ids via the upstream tokenizer (context_length=300, truncate=True).
+
+    The upstream preprocessor squeezes dim 0, so a single text comes back 1-D; reshape restores the batch dim.
+    """
+    _, tokens = preprocessor(Image.new("RGB", (336, 336)), list(texts))
+    return tokens.reshape(len(texts), -1)
+
+
 @torch.no_grad()
 def encode_texts(model, preprocessor, texts: list[str], device: torch.device,
                  batch_size: int = 64, desc: str = "text") -> torch.Tensor:
-    """L2-normalised text embeddings via the upstream tokenizer (context_length=300, truncate=True)."""
-    dummy_image = Image.new("RGB", (336, 336))
+    """L2-normalised text embeddings, (len(texts), 768) on CPU, in input order."""
     feats = []
     for start in tqdm(range(0, len(texts), batch_size), desc=desc):
-        _, tokens = preprocessor(dummy_image, texts[start:start + batch_size])
+        tokens = tokenize(preprocessor, texts[start:start + batch_size])
         feats.append(F.normalize(model.encode_text(tokens.to(device)), dim=-1).cpu())
     return torch.cat(feats, dim=0)

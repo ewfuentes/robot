@@ -1091,7 +1091,11 @@ def create_panorama_description_requests(args):
     from pathlib import Path
 
     if getattr(args, 'prompt_type', 'panorama') == 'scene_description':
+        if args.panorama_dir is None:
+            raise SystemExit("--panorama_dir is required for --prompt_type scene_description")
         return _create_scene_description_requests(args)
+    if args.pinhole_dir is None:
+        raise SystemExit(f"--pinhole_dir is required for --prompt_type {args.prompt_type}")
 
     pinhole_dir = Path(args.pinhole_dir)
     output_base = Path(args.output_base) / 'panorama_sentence_requests'
@@ -1257,11 +1261,13 @@ def create_panorama_description_requests(args):
     print("Use vertex_batch_manager to submit batch jobs to GCP.")
 
 
-SCENE_DESCRIPTION_PANO_SIZE = (4096, 2048)  # native Mapillary size; VIGOR 2048x1024 panos are upsampled 2x (CVG-Text used 2048x1024)
+# Every environment sends Gemini the same pixel size: the native Mapillary 4096x2048. VIGOR's 2048x1024
+# panoramas are upsampled 2x (no new detail, but identical request geometry across environments).
+SCENE_DESCRIPTION_PANO_SIZE = (4096, 2048)
 
 
 def _encode_panorama_resized(image_path: Path) -> str:
-    """Base64 JPEG of an equirect panorama resized to CVG-Text's 2048x1024."""
+    """Base64 JPEG of an equirect panorama resized to SCENE_DESCRIPTION_PANO_SIZE."""
     import io
     from PIL import Image
     im = Image.open(image_path).convert("RGB")

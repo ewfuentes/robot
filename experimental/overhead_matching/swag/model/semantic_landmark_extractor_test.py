@@ -1,4 +1,5 @@
 
+import argparse
 import unittest
 import tempfile
 import json
@@ -613,6 +614,39 @@ class SemanticLandmarkExtractorTest(unittest.TestCase):
 
         # The landmark should be masked (True = invalid/masked)
         self.assertTrue(extractor_output.mask[0, 0].item())
+
+
+class SceneDescriptionTest(unittest.TestCase):
+    def test_schema_orders_lists_before_description(self):
+        schema = sle.get_scene_description_schema()
+        self.assertEqual(schema["propertyOrdering"], ["legible_text", "scene_elements", "description"])
+        self.assertEqual(set(schema["required"]), {"legible_text", "scene_elements", "description"})
+
+    def test_create_scene_description_requests_filters_and_batches(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            pano_dir = d / "panorama"
+            pano_dir.mkdir()
+            for pid in ("p1", "p2", "p3"):
+                Image.new("RGB", (8, 4), (10, 20, 30)).save(pano_dir / f"{pid},x.jpg")
+            (d / "ids.txt").write_text("p1\np3\n")
+            args = argparse.Namespace(
+                panorama_dir=str(pano_dir), output_base=str(d / "out"), pano_ids_file=str(d / "ids.txt"),
+                max_panoramas=None, num_workers=1, disable_tqdm=True, max_requests_per_batch=1,
+                media_resolution="MEDIA_RESOLUTION_HIGH", thinking_level="HIGH", prompt_type="scene_description")
+            sle.create_panorama_description_requests(args)
+            files = sorted((d / "out" / "panorama_sentence_requests").glob("*.jsonl"))
+            self.assertEqual(len(files), 2)  # max_requests_per_batch=1 -> one request per file
+            requests = [json.loads(line) for f in files for line in f.read_text().splitlines()]
+            self.assertEqual([r["key"] for r in requests], ["p1,x", "p3,x"])
+            body = json.dumps(requests[0])
+            self.assertIn(sle.scene_description_user_prompt, body)
+            self.assertIn("legible_text", body)
+
+    def test_pinhole_dir_required_for_landmark_prompts(self):
+        with self.assertRaises(SystemExit):
+            sle.create_panorama_description_requests(argparse.Namespace(prompt_type="osm_tags", pinhole_dir=None))
 
 
 if __name__ == "__main__":

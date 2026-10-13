@@ -28,19 +28,13 @@ import torch
 from experimental.overhead_matching.swag.data import vigor_dataset as vd
 from experimental.overhead_matching.swag.evaluation import retrieval_metrics
 from experimental.overhead_matching.swag.model import crosstext2loc_encoder as enc
-from experimental.overhead_matching.swag.scripts.export_correspondence_similarity import auto_detect_landmark_version
+from experimental.overhead_matching.swag.scripts.export_correspondence_similarity import (
+    auto_detect_landmark_version, load_vigor_dataset)
 
 
 def load_captions(path: Path) -> dict[str, str]:
     raw = json.loads(Path(path).read_text())
     return {k: (v["description"] if isinstance(v, dict) else v) for k, v in raw.items()}
-
-
-def load_dataset(dataset_path: Path, landmark_version: str) -> vd.VigorDataset:
-    """Geometry (patch grid, positives) always comes from `satellite/`, whatever gallery images are used."""
-    return vd.VigorDataset(dataset_path, vd.VigorDatasetConfig(
-        satellite_tensor_cache_info=None, panorama_tensor_cache_info=None, should_load_images=False,
-        should_load_landmarks=True, landmark_version=landmark_version))
 
 
 def gallery_image_paths(dataset: vd.VigorDataset, satellite_subdir: str) -> list[str]:
@@ -56,6 +50,14 @@ def gallery_image_paths(dataset: vd.VigorDataset, satellite_subdir: str) -> list
     if missing:
         raise FileNotFoundError(f"{len(missing)} gallery images missing under {satellite_subdir}/, e.g. {missing[0]}")
     return paths
+
+
+def similarity_with_zero_rows(captioned_similarity: torch.Tensor, captioned_rows: list[int], num_panos: int) -> torch.Tensor:
+    """Scatter (len(captioned_rows), num_sats) into (num_panos, num_sats); uncaptioned panoramas get all-zero rows,
+    exactly what the correspondence exporter does for a panorama with no landmarks."""
+    out = torch.zeros(num_panos, captioned_similarity.shape[1], dtype=captioned_similarity.dtype)
+    out[captioned_rows] = captioned_similarity
+    return out
 
 
 def _git_sha() -> str:
@@ -80,25 +82,25 @@ def main():
     args = parser.parse_args()
 
     landmark_version = args.landmark_version or auto_detect_landmark_version(args.dataset_path)
-    dataset = load_dataset(args.dataset_path, landmark_version)
+    dataset = load_vigor_dataset(args.dataset_path, landmark_version, 1.0)
     pano_ids = list(dataset._panorama_metadata.pano_id)
     gallery_paths = gallery_image_paths(dataset, args.satellite_subdir)
 
     captions = load_captions(args.captions_json)
-    texts = [captions.get(pid, "") for pid in pano_ids]
-    missing = [pid for pid, t in zip(pano_ids, texts) if not t]
-    print(f"{len(pano_ids)} panoramas ({len(missing)} without a caption -> empty text), "
+    has_caption = [i for i, pid in enumerate(pano_ids) if captions.get(pid)]
+    missing = [pid for pid in pano_ids if not captions.get(pid)]
+    print(f"{len(pano_ids)} panoramas ({len(missing)} without a caption -> all-zero row), "
           f"{len(gallery_paths)} gallery images from {args.satellite_subdir}/")
 
     device = torch.device(args.device)
     model, preprocessor = enc.build_model(args.checkpoint, device)
-    text_feats = enc.encode_texts(model, preprocessor, texts, device, args.text_batch_size)
+    text_feats = enc.encode_texts(model, preprocessor, [captions[pano_ids[i]] for i in has_caption], device,
+                                  args.text_batch_size)
     image_feats = enc.encode_images(model, preprocessor, gallery_paths, device, args.image_batch_size, args.num_workers,
                                     desc=args.satellite_subdir)
-    similarity = (text_feats @ image_feats.T).float()
+    similarity = similarity_with_zero_rows((text_feats @ image_feats.T).float(), has_caption, len(pano_ids))
 
     # Metrics over captioned panoramas only, so subset runs report something meaningful.
-    has_caption = [i for i, t in enumerate(texts) if t]
     captioned = copy.copy(dataset)
     captioned._panorama_metadata = dataset._panorama_metadata.iloc[has_caption].reset_index(drop=True)
     metrics = retrieval_metrics.compute_top_k_metrics(similarity[has_caption], captioned, ks=[1, 5, 10])

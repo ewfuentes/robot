@@ -431,3 +431,14 @@ py_library(
     "//common/torch:load_torch_deps",
   ],
 )
+
+py_test(
+  name="crosstext2loc_encoder_test",
+  srcs=["crosstext2loc_encoder_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("Pillow"),
+    "//common/torch:load_torch_deps",
+    ":crosstext2loc_encoder",
+  ],
+)

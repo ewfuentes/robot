@@ -791,7 +791,9 @@ contourpy==1.3.3 \
     #   matplotlib
     #   supervision
 crosstext2loc @ git+https://github.com/ewfuentes/CVG-Text.git@c3b5727fd8380c35c4f3886b590b8734131db34e
-    # via -r third_party/python/requirements_3_12.in
+    # via
+    #   -c constraints.txt
+    #   -r third_party/python/requirements_3_12.in
 cryptography==45.0.7 \
     --hash=sha256:06ce84dc14df0bf6ea84666f958e6080cdb6fe1231be2a51f3fc1267d9f3fb34 \
     --hash=sha256:16ede8a4f7929b4b7ff3642eba2bf79aa1d71f24ab6ee443935c0d269b6bc513 \

@@ -80,9 +80,9 @@ Region name = PBF stem with `-` -> `_`. Environments and extracts:
 Dated extracts come from `https://download.geofabrik.de/<continent>/<region>-<yymmdd>.osm.pbf`
 (e.g. `north-america/us/california/norcal-220101.osm.pbf`).
 
-## Throughput and disk (2026-09-28, 32-core host, 16 shards)
+## Throughput and disk
 
-THROUGHPUT_TABLE
+About 220 tiles/s with 16 shards on a 32-core host (2026-09-28); ~10 KB per tile.
 
 ## Fidelity gaps vs CVG-Text's tiles
 
