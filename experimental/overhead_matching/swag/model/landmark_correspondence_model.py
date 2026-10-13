@@ -113,6 +113,48 @@ class TagBundleEncoder(nn.Module):
         return torch.cat([mean_pool, max_pool], dim=-1)
 
 
+def correspondence_head(input_dim: int, hidden_dim: int, dropout: float) -> nn.Sequential:
+    """Shared head; preserve layer indices for existing checkpoint state dicts."""
+    return nn.Sequential(
+        nn.Linear(input_dim, hidden_dim),
+        nn.BatchNorm1d(hidden_dim),
+        nn.ReLU(),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, 1),
+    )
+
+
+class FixedEmbeddingClassifier(nn.Module):
+    """Match frozen sentence embeddings without a tag encoder or cross features."""
+
+    def __init__(self, hidden_dim=128, dropout=0.1, embedding_dim=768):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.classifier = correspondence_head(3 * embedding_dim, hidden_dim, dropout)
+
+    def forward(self, pano_text_embeddings, osm_text_embeddings, **unused):
+        if any(value.numel() for value in unused.values()):
+            raise ValueError("Fixed embeddings do not accept tag or cross features")
+        return self.classify_from_reprs(pano_text_embeddings, osm_text_embeddings)
+
+    def classify_from_reprs(self, pano_repr, osm_repr):
+        combined = torch.cat([pano_repr, osm_repr, pano_repr * osm_repr], dim=-1)
+        # Also support the broadcast pair blocks used during matrix export.
+        return self.classifier(combined.reshape(-1, 3 * self.embedding_dim)).reshape(
+            *combined.shape[:-1], 1)
+
+    @classmethod
+    def load_checkpoint(cls, path, device="cpu"):
+        """Load an archived or new best_model.pt for inference, including BN state."""
+        state = torch.load(path, weights_only=True, map_location="cpu")
+        hidden_dim, input_dim = state["classifier.0.weight"].shape
+        if input_dim % 3:
+            raise ValueError("Expected [pano, osm, pano * osm] classifier inputs")
+        model = cls(hidden_dim=hidden_dim, embedding_dim=input_dim // 3)
+        model.load_state_dict(state)
+        return model.to(device).eval()
+
+
 class CorrespondenceClassifier(nn.Module):
     """Twin encoder + cross-pair features + MLP classifier."""
 
@@ -124,12 +166,8 @@ class CorrespondenceClassifier(nn.Module):
         repr_dim = config.encoder.repr_dim
         mlp_input_dim = repr_dim * 3 + NUM_CROSS_FEATURES
 
-        self.classifier = nn.Sequential(
-            nn.Linear(mlp_input_dim, config.mlp_hidden_dim),
-            nn.BatchNorm1d(config.mlp_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.mlp_hidden_dim, 1),
+        self.classifier = correspondence_head(
+            mlp_input_dim, config.mlp_hidden_dim, config.dropout,
         )
 
     def forward(
