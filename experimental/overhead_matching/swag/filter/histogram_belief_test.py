@@ -11,6 +11,7 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     _shift_grid,
     segment_logsumexp,
     build_cell_to_patch_mapping,
+    propagate_log_grid,
 )
 from experimental.overhead_matching.swag.filter.particle_filter import (
     wag_observation_log_likelihood_from_similarity_matrix,
@@ -758,6 +759,57 @@ class TestApplyObservation(unittest.TestCase):
         # Should still sum to 1
         prob_sum = belief.get_belief().sum().item()
         self.assertAlmostEqual(prob_sum, 1.0, places=4)
+
+
+
+class TestPropagateLogGrid(unittest.TestCase):
+    """The motion operator factored out of apply_motion, reused for lagged observations."""
+
+    def _belief(self):
+        grid_spec = GridSpec.from_bounds_and_cell_size(
+            min_lat=37.70, max_lat=37.72, min_lon=-122.42, max_lon=-122.40,
+            zoom_level=20, cell_size_px=160.0,
+        )
+        belief = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
+        g = torch.Generator().manual_seed(0)
+        bump = -3.0 * torch.rand(grid_spec.num_rows, grid_spec.num_cols, generator=g)
+        belief.apply_cell_log_likelihood(bump)
+        return belief
+
+    def test_matches_apply_motion(self):
+        belief = self._belief()
+        delta = torch.tensor([0.0004, -0.0007])
+        ref = belief.clone()
+        ref.apply_motion(delta, 0.141)
+        out = propagate_log_grid(
+            belief.get_log_belief(), belief.grid_spec, delta, 0.141, belief.get_mean_latlon()
+        )
+        out = out - out.logsumexp(dim=(0, 1))
+        self.assertTrue(torch.allclose(out, ref.get_log_belief(), atol=1e-6))
+
+    def test_zero_delta_zero_distance_is_identity(self):
+        """No blur below 0.1 cells, and a zero shift is the identity up to the
+        bilinear resampling's float32 coordinate error (same as apply_motion)."""
+        belief = self._belief()
+        out = propagate_log_grid(
+            belief.get_log_belief(), belief.grid_spec, torch.zeros(2), 0.141,
+            belief.get_mean_latlon(),
+        )
+        self.assertTrue(torch.allclose(out.exp(), belief.get_belief(), rtol=1e-3, atol=1e-9))
+
+    def test_apply_observation_split_is_exact(self):
+        grid_spec = GridSpec(
+            zoom_level=20, cell_size_px=50.0, origin_row_px=0.0, origin_col_px=0.0,
+            num_rows=3, num_cols=3,
+        )
+        patches = torch.tensor([[75.0, 75.0], [25.0, 125.0]])
+        mapping = build_cell_to_patch_mapping(grid_spec, patches, 80.0, torch.device("cpu"))
+        obs = torch.tensor([-0.5, -2.0])
+        a = HistogramBelief.from_uniform(grid_spec, torch.device("cpu"))
+        b = a.clone()
+        a.apply_observation(obs, mapping)
+        b.apply_cell_log_likelihood(b.cell_log_likelihood_grid(obs, mapping))
+        self.assertTrue(torch.equal(a.get_log_belief(), b.get_log_belief()))
 
 
 if __name__ == "__main__":
