@@ -890,6 +890,7 @@ py_binary(
     requirement("pyarrow"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/data:landmark_correspondence_dataset",
   ]
 )
 

@@ -66,13 +66,21 @@ def parse_housenumber(value) -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 
 def parse_tag_string(tag_str: str) -> dict[str, str]:
-    """Parse 'key=value; key=value' into a dict."""
+    """Parse 'key=value; key=value' into a dict (a repeated key keeps its last value).
+
+    The prompt joins tags with "; ", so a fragment without "=" is the tail of the
+    previous value (e.g. "ref=I 90; I 94"), not a new tag. Keys and values are
+    whitespace-stripped.
+    """
     tags = {}
+    last_key = None
     for part in tag_str.split("; "):
-        part = part.strip()
         if "=" in part:
             k, v = part.split("=", 1)
-            tags[k.strip()] = v.strip()
+            last_key = k.strip()
+            tags[last_key] = v.strip()
+        elif last_key is not None:
+            tags[last_key] = (tags[last_key] + "; " + part).strip()
     return tags
 
 
@@ -103,13 +111,18 @@ def parse_prompt_landmarks(
         set1_text = set1_text[len(set1_header):]
 
     def parse_landmarks(text: str) -> list[dict[str, str]]:
-        landmarks = []
+        items = []
         for line in text.strip().split("\n"):
             line = line.strip()
             match = re.match(r"\d+\.\s+(.*)", line)
             if match:
-                landmarks.append(parse_tag_string(match.group(1)))
-        return landmarks
+                items.append(match.group(1))
+            elif items:
+                # A value containing a newline continues on the next line(s).
+                # ponytail: a continuation line that itself starts with "N. "
+                # would be read as a new item; never seen in practice.
+                items[-1] += "\n" + line
+        return [parse_tag_string(item) for item in items]
 
     return parse_landmarks(set1_text), parse_landmarks(set2_text)
 

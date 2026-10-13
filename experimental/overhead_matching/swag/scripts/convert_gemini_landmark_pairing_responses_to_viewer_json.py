@@ -4,59 +4,35 @@ Parses pano/OSM landmarks directly from the request prompt text embedded in
 each response record, so landmark indices match exactly what Gemini saw.
 """
 import json
-import re
 import sys
 from pathlib import Path
 
 import common.torch.load_torch_deps
 import experimental.overhead_matching.swag.data.vigor_dataset as vd
+from experimental.overhead_matching.swag.data.landmark_correspondence_dataset import (
+    parse_prompt_landmarks)
 
 
-def parse_prompt_landmarks(prompt_text):
-    """Parse Set 1 and Set 2 landmarks from the prompt text.
-
-    Returns (pano_landmarks, osm_landmarks) where each is a list of tag strings
-    in the same order as the prompt.
-    """
-    parts = prompt_text.split("Set 2 (map database):")
-    if len(parts) != 2:
-        return None, None
-
-    def extract_items(section):
-        items = []
-        for line in section.strip().split('\n'):
-            line = line.strip()
-            if not line or line.startswith('Set '):
-                continue
-            m = re.match(r'(\d+)\.\s+(.*)', line)
-            if m:
-                items.append(m.group(2).strip())
-        return items
-
-    pano_lms = extract_items(parts[0])
-    osm_lms = extract_items(parts[1])
-    return pano_lms, osm_lms
+def tags_str(tags):
+    """Viewer display string for a landmark's tag dict."""
+    return "; ".join(f"{k}={v}" for k, v in tags.items())
 
 
-def osm_ids_from_tags_str(tags_str, dataset):
-    """Look up OSM feature IDs for a tag string by matching against pruned_props."""
-    # Parse "key=value; key=value" back to a frozenset
-    pairs = set()
-    for kv in tags_str.split('; '):
-        kv = kv.strip()
-        if '=' in kv:
-            k, v = kv.split('=', 1)
-            pairs.add((k.strip(), v.strip()))
-    target_fs = frozenset(pairs)
+def normalized_props(pairs):
+    """Whitespace-stripped frozenset of (key, value) pairs, matching what the parser yields."""
+    return frozenset((k.strip(), v.strip()) for k, v in pairs)
 
-    matching = dataset._landmark_metadata[dataset._landmark_metadata["pruned_props"] == target_fs]
-    if matching.empty:
-        return []
 
+def osm_ids_by_props(dataset):
+    """Map normalized pruned_props -> OSM feature ids, built once for the lookup below."""
     def parse_id(x):
         return json.loads(x.replace('(', '[').replace(')', ']').replace("'", '"'))
 
-    return matching.id.apply(parse_id).values.tolist()
+    ids = {}
+    meta = dataset._landmark_metadata
+    for props, id_str in zip(meta["pruned_props"], meta["id"]):
+        ids.setdefault(normalized_props(props), []).append(parse_id(id_str))
+    return ids
 
 
 if len(sys.argv) < 3:
@@ -84,6 +60,7 @@ config = vd.VigorDatasetConfig(
     satellite_tensor_cache_info=None, panorama_tensor_cache_info=None,
     should_load_images=False, should_load_landmarks=True, landmark_version='v4_202001')
 dataset = vd.VigorDataset(dataset_path=Path(f'/data/overhead_matching/datasets/VIGOR/{city}/'), config=config)
+ids_by_props = osm_ids_by_props(dataset)
 
 # Load responses — parse landmarks from the embedded request prompt
 output = {}
@@ -116,15 +93,11 @@ for jsonl_file in jsonl_files:
 
             # Get the prompt that was sent to Gemini
             prompt_text = record["request"]["contents"][0]["parts"][0]["text"]
-            pano_tag_strs, osm_tag_strs = parse_prompt_landmarks(prompt_text)
-            if pano_tag_strs is None:
-                print(f"WARNING: Could not parse prompt for {pano_id}, skipping")
-                skipped += 1
-                continue
-
-            pano_lms = [{"tags": t} for t in pano_tag_strs]
-            osm_lms = [{"tags": t, "ids": osm_ids_from_tags_str(t, dataset), "index": i}
-                       for i, t in enumerate(osm_tag_strs)]
+            pano_tags, osm_tags = parse_prompt_landmarks(prompt_text)
+            pano_lms = [{"tags": tags_str(t)} for t in pano_tags]
+            osm_lms = [{"tags": tags_str(t), "ids": ids_by_props.get(normalized_props(t.items()), []),
+                        "index": i}
+                       for i, t in enumerate(osm_tags)]
 
             # Filter out matches with out-of-bounds indices (including negatives)
             valid_matches = []
@@ -150,7 +123,7 @@ for jsonl_file in jsonl_files:
 
             output[pano_id] = {"pano": pano_lms, "osm": osm_lms, "matches": matches}
 
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError) as exc:  # ValueError: bad JSON or prompt
             pano_id = record.get("key", "<unknown>")
             print(f"WARNING: Error processing record {pano_id}: {type(exc).__name__}: {exc}, skipping")
             skipped += 1
