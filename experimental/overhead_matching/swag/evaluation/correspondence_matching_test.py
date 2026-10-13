@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import common.torch.load_torch_deps  # noqa: F401
 
 import numpy as np
+import scipy.sparse as sp
 import pandas as pd
 import torch
 
@@ -399,6 +400,71 @@ class TestDustbinHungarian(unittest.TestCase):
         )
         self.assertEqual(result.match_probs, [])
         self.assertEqual(result.similarity_score, 0.0)
+
+
+class TestPrunedCsrRawData(unittest.TestCase):
+    """A pruned CSR cost matrix must give the same similarity matrix as the
+    dense one for every matcher we run above the prune threshold."""
+
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        self.cost = rng.random((9, 40), dtype=np.float32)
+        self.cost[rng.random((9, 40)) < 0.7] *= 0.3  # mostly small entries, like real data
+        sats = pd.DataFrame({"landmark_idxs": [list(range(0, 12)), list(range(10, 25)),
+                                               list(range(20, 40)), []]})
+        panos = pd.DataFrame({"pano_id": ["a", "b", "c", "empty"]})
+        self.dataset = SimpleNamespace(_panorama_metadata=panos, _satellite_metadata=sats)
+        self.rows = {"a": [0, 1, 2], "b": [3, 4, 5, 6], "c": [7, 8]}
+
+    def _raw(self, cost, prune=None):
+        return cm.RawCorrespondenceData(
+            cost_matrix=cost, pano_id_to_lm_rows=self.rows, pano_lm_tags=[()] * 9,
+            osm_lm_indices=list(range(40)), osm_lm_tags=[{}] * 40, prune_threshold=prune)
+
+    def test_prune_keeps_only_entries_at_or_above_threshold(self):
+        csr = cm.prune_cost_matrix_to_csr(self.cost, 0.3, chunk_rows=4)
+        dense = csr.toarray()
+        self.assertTrue(np.array_equal(dense, np.where(self.cost >= 0.3, self.cost, 0)))
+        self.assertEqual(csr.nnz, int((self.cost >= 0.3).sum()))
+        self.assertTrue(np.array_equal(cm.dense_rows(csr, [1, 7]), dense[[1, 7]]))
+
+    def test_save_load_roundtrip(self):
+        import tempfile
+        from pathlib import Path
+        csr = cm.prune_cost_matrix_to_csr(self.cost, 0.3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x_cost_matrix.npz"
+            sp.save_npz(path, csr)
+            loaded = cm.load_cost_matrix(path)
+            self.assertTrue(sp.issparse(loaded))
+            self.assertTrue(np.array_equal(loaded.toarray(), csr.toarray()))
+            npy = Path(tmp) / "x_cost_matrix.npy"
+            np.save(npy, self.cost)
+            self.assertTrue(np.array_equal(np.asarray(cm.load_cost_matrix(npy)), self.cost))
+
+    def test_similarity_matches_dense_for_every_campaign_setting(self):
+        dense = self._raw(self.cost)
+        pruned = self._raw(cm.prune_cost_matrix_to_csr(self.cost, 0.3), prune=0.3)
+        for method in cm.MatchingMethod:
+            for agg in cm.AggregationMode:
+                for threshold in (0.5, 0.8, 0.95):
+                    for weighting in ("inverse_log", "inverse_count"):
+                        kw = dict(method=method, aggregation=agg, prob_threshold=threshold,
+                                  uniqueness_weighted=True, uniqueness_weighting=weighting)
+                        a = cm.similarity_from_raw_data(dense, self.dataset, **kw)
+                        b = cm.similarity_from_raw_data(pruned, self.dataset, **kw)
+                        self.assertTrue(torch.equal(a, b), (method, agg, threshold, weighting))
+        a = cm.similarity_from_raw_data(dense, self.dataset, prob_threshold=0.8)
+        b = cm.similarity_from_raw_data(pruned, self.dataset, prob_threshold=0.8)
+        self.assertTrue(torch.equal(a, b))
+        self.assertGreater(float(a.abs().sum()), 0.0)
+
+    def test_pruned_data_refuses_lossy_settings(self):
+        pruned = self._raw(cm.prune_cost_matrix_to_csr(self.cost, 0.3), prune=0.3)
+        with self.assertRaises(ValueError):
+            cm.similarity_from_raw_data(pruned, self.dataset, prob_threshold=0.2)
+        with self.assertRaises(ValueError):
+            cm.similarity_from_raw_data(pruned, self.dataset, prob_threshold=0.8, use_dustbin=False)
 
 
 if __name__ == "__main__":

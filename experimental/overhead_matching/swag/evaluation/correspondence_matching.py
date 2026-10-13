@@ -30,6 +30,7 @@ from pathlib import Path
 import common.torch.load_torch_deps  # noqa: F401
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 from tqdm import tqdm
 
@@ -465,12 +466,47 @@ def _compute_cross_features_gpu(
 @dataclass
 class RawCorrespondenceData:
     """Precomputed P(match) data for all pano landmarks × all OSM landmarks."""
-    cost_matrix: np.ndarray  # (total_pano_lm, total_osm_lm) float32; np.memmap when streamed
+    # (total_pano_lm, total_osm_lm) float32; np.memmap when streamed; scipy CSR
+    # when pruned (see prune_cost_matrix_to_csr)
+    cost_matrix: np.ndarray | sp.csr_matrix
     pano_id_to_lm_rows: dict[str, list[int]]  # pano_id → row indices
     pano_lm_tags: list  # tags per pano landmark row (list of key=value tuples)
     osm_lm_indices: list[int]  # col_idx → dataset landmark_idx
     osm_lm_tags: list[dict[str, str]]  # tags per OSM landmark column
     cost_matrix_path: Path | None = None  # canonical .npy path when streamed
+    prune_threshold: float | None = None  # CSR matrices hold only P >= this
+
+
+def prune_cost_matrix_to_csr(cost_matrix, threshold: float,
+                             chunk_rows: int = 4096) -> sp.csr_matrix:
+    """Keep only P(match) >= threshold, as CSR; everything else becomes 0.
+
+    Lossless for every consumer whose own threshold is at least `threshold`:
+    Hungarian with the dustbin never picks an entry below its threshold,
+    greedy stops at it, and uniqueness counts entries at or above it.
+    Row chunks keep a memmapped dense matrix from ever being read whole.
+    """
+    blocks = []
+    for start in range(0, cost_matrix.shape[0], chunk_rows):
+        chunk = np.asarray(cost_matrix[start:start + chunk_rows], dtype=np.float32)
+        blocks.append(sp.csr_matrix(np.where(chunk >= threshold, chunk, np.float32(0))))
+    if not blocks:
+        return sp.csr_matrix(cost_matrix.shape, dtype=np.float32)
+    return sp.vstack(blocks, format="csr")
+
+
+def load_cost_matrix(path: Path):
+    """Memory-mapped dense .npy, or CSR from a pruned .npz."""
+    path = Path(path)
+    if path.suffix == ".npz":
+        return sp.load_npz(path).tocsr()
+    return np.load(path, mmap_mode="r")
+
+
+def dense_rows(cost_matrix, rows) -> np.ndarray:
+    """Dense (len(rows), total_osm_lm) float32 block of a dense or CSR matrix."""
+    block = cost_matrix[rows]
+    return block.toarray() if sp.issparse(block) else np.asarray(block)
 
 
 def precompute_raw_cost_data(
@@ -681,7 +717,7 @@ def _score_panorama(task, raw, sat_col_positions, method, aggregation,
     rows = raw.pano_id_to_lm_rows.get(pano_id)
     if not rows:
         return pano_idx, scores
-    pano_cost = raw.cost_matrix[rows]
+    pano_cost = dense_rows(raw.cost_matrix, rows)
     weights = (
         compute_uniqueness_weights(pano_cost, prob_threshold, uniqueness_weighting)
         if uniqueness_weighted else None
@@ -726,6 +762,16 @@ def similarity_from_raw_data(
         raise ValueError("workers must be positive")
     if workers > 1 and torch.cuda.is_initialized():
         raise ValueError("Parallel scoring requires a fresh CPU process; use --from_raw")
+    if raw.prune_threshold is not None:
+        # Entries below the prune threshold are gone; only lossless above it.
+        if prob_threshold < raw.prune_threshold:
+            raise ValueError(
+                f"prob_threshold={prob_threshold} is below the raw data's prune "
+                f"threshold {raw.prune_threshold}; re-export dense for lower thresholds")
+        if not use_dustbin:
+            raise ValueError(
+                "pruned raw data is only lossless with the dustbin; re-export dense "
+                "to reproduce --no_dustbin artifacts")
     num_panos = len(dataset._panorama_metadata)
     num_sats = len(dataset._satellite_metadata)
     similarity = torch.zeros(num_panos, num_sats)

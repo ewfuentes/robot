@@ -58,6 +58,7 @@ from experimental.overhead_matching.swag.scripts.export_correspondence_similarit
     load_vigor_dataset,
 )
 from experimental.overhead_matching.swag.evaluation import correspondence_matching as cm
+from experimental.overhead_matching.swag.filter.adaptive_aggregators import _load_similarity_matrix
 from experimental.overhead_matching.swag.model.landmark_correspondence_model import (
     FixedEmbeddingClassifier,
 )
@@ -97,8 +98,8 @@ def context(args):
 def audit(args):
     raw, dataset, cols, identity = context(args)
     cost_path = args.reference_cost_matrix or Path(raw["cost_matrix_path"])
-    cost = np.load(cost_path, mmap_mode="r")
-    reference = torch.load(args.reference_similarity, weights_only=False)
+    cost = cm.load_cost_matrix(cost_path)
+    reference = _load_similarity_matrix(args.reference_similarity)
     assert isinstance(reference, torch.Tensor)
     assert reference.shape == (len(identity["pano_ids"]), len(cols))
     errors = {(u, d): [] for u in [False, True] for d in [False, True]}
@@ -108,7 +109,7 @@ def audit(args):
         rows = raw["pano_id_to_lm_rows"].get(identity["pano_ids"][pi])
         if not rows:
             continue
-        values = cost[rows]
+        values = cm.dense_rows(cost, rows)
         weights = cm.compute_uniqueness_weights(values, 0.8)
         nonzero = torch.nonzero(reference[pi] > 0).flatten().numpy()
         si = np.unique(
@@ -292,7 +293,7 @@ def score(args):
     similarity = score_matrix(path, pano_rows, cols, settings, args.workers)
     assert np.isfinite(similarity).all() and (similarity >= 0).all()
     temporary = target / "similarity.partial.pt"
-    torch.save(torch.from_numpy(similarity), temporary)
+    torch.save(torch.from_numpy(similarity).to_sparse_csr(), temporary)
     temporary.replace(target / "similarity.pt")
     save(
         target / "complete.json",

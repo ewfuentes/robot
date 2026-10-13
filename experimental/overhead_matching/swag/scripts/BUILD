@@ -10,6 +10,7 @@ py_binary(
         requirement("torch"),
         "//common/torch:load_torch_deps",
         "//experimental/overhead_matching/swag/evaluation:correspondence_matching",
+        "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
         "//experimental/overhead_matching/swag/model:landmark_correspondence_model",
         ":export_correspondence_similarity",
     ],
@@ -1097,6 +1098,7 @@ py_binary(
     requirement("torch"),
     "//common/torch:load_torch_deps",
     "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/filter:adaptive_aggregators",
     ":export_correspondence_similarity",
   ],
 )
