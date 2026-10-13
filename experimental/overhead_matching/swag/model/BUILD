@@ -418,3 +418,27 @@ py_test(
     ":semantic_landmark_utils",
   ]
 )
+
+py_library(
+  name="crosstext2loc_encoder",
+  srcs=["crosstext2loc_encoder.py"],
+  visibility=["//experimental/overhead_matching/swag:__subpackages__"],
+  deps=[
+    requirement("torch"),
+    requirement("Pillow"),
+    requirement("tqdm"),
+    requirement("crosstext2loc"),
+    "//common/torch:load_torch_deps",
+  ],
+)
+
+py_test(
+  name="crosstext2loc_encoder_test",
+  srcs=["crosstext2loc_encoder_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("Pillow"),
+    "//common/torch:load_torch_deps",
+    ":crosstext2loc_encoder",
+  ],
+)

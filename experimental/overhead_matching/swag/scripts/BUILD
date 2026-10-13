@@ -1088,3 +1088,80 @@ py_binary(
     ":calibrate_sigma",
   ]
 )
+
+py_binary(
+  name="similarity_matrix_metrics",
+  srcs=["similarity_matrix_metrics.py"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    ":export_correspondence_similarity",
+  ],
+)
+
+
+py_binary(
+  name="evaluate_cvgtext_crosstext2loc",
+  srcs=["evaluate_cvgtext_crosstext2loc.py"],
+  deps=[
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:cvgtext_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:crosstext2loc_encoder",
+    requirement("torch"),
+    requirement("tqdm"),
+  ],
+)
+
+py_library(
+  name="export_ct2l_similarity_lib",
+  srcs=["export_ct2l_similarity.py"],
+  deps=[
+    requirement("torch"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/evaluation:retrieval_metrics",
+    "//experimental/overhead_matching/swag/model:crosstext2loc_encoder",
+    ":export_correspondence_similarity",
+  ],
+)
+
+py_binary(
+  name="export_ct2l_similarity",
+  srcs=["export_ct2l_similarity.py"],
+  deps=[":export_ct2l_similarity_lib"],
+)
+
+py_library(
+  name="train_ct2l_lib",
+  srcs=["train_ct2l.py"],
+  deps=[
+    requirement("torch"),
+    requirement("Pillow"),
+    "//common/torch:load_torch_deps",
+    "//experimental/overhead_matching/swag/data:vigor_dataset",
+    "//experimental/overhead_matching/swag/model:crosstext2loc_encoder",
+    ":export_correspondence_similarity",
+    ":export_ct2l_similarity_lib",
+  ],
+)
+
+py_binary(
+  name="train_ct2l",
+  srcs=["train_ct2l.py"],
+  deps=[":train_ct2l_lib"],
+)
+
+py_test(
+  name="export_ct2l_similarity_test",
+  srcs=["export_ct2l_similarity_test.py"],
+  deps=[
+    requirement("torch"),
+    requirement("pandas"),
+    "//common/torch:load_torch_deps",
+    ":export_ct2l_similarity_lib",
+    ":train_ct2l_lib",
+  ],
+)
+

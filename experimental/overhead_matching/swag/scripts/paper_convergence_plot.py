@@ -547,6 +547,15 @@ def main():
         help="Display label for the early-fusion method in legends and tables",
     )
     parser.add_argument(
+        "--extra_method",
+        action="append",
+        default=[],
+        metavar="KEY:LABEL:BASE_DIR:SUBDIR",
+        help="Register an additional method (after LOCI) from <BASE_DIR>/<env>/<SUBDIR>, e.g. "
+             "wag_ct2l_osm:WAG+CT2L-OSM:/data/.../260928_ct2l/wag_plus_ct2l_chicago_osm:wag_plus_ct2l_chicago_osm. "
+             "Repeatable; may cover a subset of envs (see --allow_partial_method_coverage).",
+    )
+    parser.add_argument(
         "--curve_radii",
         type=int,
         nargs="+",
@@ -645,6 +654,17 @@ def main():
     method_dirs["osm"] = register_optional(osm_base, args.osm_method)
     method_dirs["early"] = register_optional(early_base, args.early_method)
 
+    extra_labels: dict[str, str] = {}
+    for spec in args.extra_method:
+        try:
+            key, label, base, subdir = spec.split(":", 3)
+        except ValueError:
+            raise SystemExit(f"bad --extra_method {spec!r}; expected KEY:LABEL:BASE_DIR:SUBDIR")
+        if key in method_dirs:
+            raise SystemExit(f"--extra_method key {key!r} already used")
+        method_dirs[key] = register_optional(Path(base), subdir)
+        extra_labels[key] = label
+
     for spec in args.env_dir_override:
         try:
             env_part, path_part = spec.split("=", 1)
@@ -659,20 +679,23 @@ def main():
         method_dirs[method][env] = override
         print(f"  env override: {env}/{method} -> {override}")
 
-    method_names = ["safa", "osm", "early", "ours"]
+    method_names = ["safa", "osm", "early", "ours", *extra_labels]
     if early_base is None:
         method_names = [m for m in method_names if m != "early"]
+    extra_palette = ["#9C27B0", "#E91E63", "#795548", "#00BCD4", "#607D8B", "#CDDC39"]
     method_colors = {
         "safa": "#888888",
         "osm": "#FF9800",
         "early": "#4CAF50",
         "ours": "#2196F3",
+        **{k: extra_palette[i % len(extra_palette)] for i, k in enumerate(extra_labels)},
     }
     method_labels = {
         "safa": args.baseline_label,
         "osm": args.osm_label,
         "early": args.early_label,
         "ours": args.ours_label,
+        **extra_labels,
     }
 
     # Load data
