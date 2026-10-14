@@ -251,5 +251,47 @@ class TestLoadSimilarityMatrix(unittest.TestCase):
                 self.assertTrue(torch.equal(loaded, sim))
 
 
+class TestStreams(unittest.TestCase):
+    """``streams()`` exposes the per-stream terms whose sum is ``__call__``,
+    so the filter can integrate them with different latencies."""
+
+    def test_single_matrix_exposes_one_stream(self):
+        torch.manual_seed(0)
+        sim = torch.rand(2, 20)
+        agg = SingleSimilarityMatrixAggregator(
+            similarity_matrix=sim, panorama_metadata=_make_metadata(2),
+            sigma=0.2, device=torch.device("cpu"))
+        streams = agg.streams("p1")
+        self.assertEqual(list(streams), ["all"])
+        self.assertTrue(torch.equal(streams["all"], agg("p1")))
+
+    def test_fused_streams_sum_to_call(self):
+        torch.manual_seed(0)
+        img_sim = torch.randn(2, 30) * 0.3 + 0.4
+        lm_sim = torch.rand(2, 30)
+        agg = SafaPlusNormalizedLandmarkAggregator(
+            image_similarity_matrix=img_sim, landmark_similarity_matrix=lm_sim,
+            panorama_metadata=_make_metadata(2), image_sigma=0.187,
+            landmark_sigma=0.72, device=torch.device("cpu"))
+        streams = agg.streams("p0")
+        self.assertEqual(set(streams), {"image", "landmark"})
+        self.assertTrue(torch.equal(streams["image"] + streams["landmark"], agg("p0")))
+        self.assertTrue(torch.equal(
+            streams["image"],
+            wag_observation_log_likelihood_from_similarity_matrix(img_sim[0], 0.187)))
+
+    def test_fused_uninformative_landmark_row_has_no_landmark_stream(self):
+        torch.manual_seed(0)
+        img_sim = torch.randn(1, 30) * 0.3 + 0.4
+        lm_sim = torch.zeros(1, 30)
+        agg = SafaPlusNormalizedLandmarkAggregator(
+            image_similarity_matrix=img_sim, landmark_similarity_matrix=lm_sim,
+            panorama_metadata=_make_metadata(1), image_sigma=0.187,
+            landmark_sigma=0.72, device=torch.device("cpu"))
+        streams = agg.streams("p0")
+        self.assertEqual(list(streams), ["image"])
+        self.assertTrue(torch.equal(streams["image"], agg("p0")))
+
+
 if __name__ == "__main__":
     unittest.main()
