@@ -41,7 +41,7 @@ class _World:
     path heading east one cell per step. The landmark stream points at the
     true cell (log-likelihood 0 there, -4 elsewhere); the image stream is flat."""
 
-    def __init__(self, path_len=8):
+    def __init__(self, path_len=8, step_cells=1.0):
         self.grid_spec = GridSpec.from_bounds_and_cell_size(
             min_lat=37.70, max_lat=37.7035, min_lon=-122.42, max_lon=-122.4165,
             zoom_level=20, cell_size_px=50.0)
@@ -50,12 +50,12 @@ class _World:
         self.num_patches = centers_px.shape[0]
         n_cols = self.grid_spec.num_cols
         row, col0 = self.grid_spec.num_rows // 2, 3
-        self.true_cells = [(row, col0 + i) for i in range(path_len)]
-        # Cell centers in float64 so each step is an exact whole-cell shift
-        # (GridSpec's own float32 lat/lon would quantize the steps by ~7 px).
+        self.true_cells = [(row, int(round(col0 + i * step_cells))) for i in range(path_len)]
+        # Positions in float64 (GridSpec's own float32 lat/lon would quantize
+        # the steps by ~7 px); `step_cells` sets whole-cell or fractional steps.
         gs = self.grid_spec
-        rows = torch.tensor([r for r, _ in self.true_cells], dtype=torch.float64)
-        cols = torch.tensor([c for _, c in self.true_cells], dtype=torch.float64)
+        rows = torch.full((path_len,), float(row), dtype=torch.float64)
+        cols = torch.tensor([col0 + i * step_cells for i in range(path_len)], dtype=torch.float64)
         lat, lon = web_mercator.pixel_coords_to_latlon(
             gs.origin_row_px + (rows + 0.5) * gs.cell_size_px,
             gs.origin_col_px + (cols + 0.5) * gs.cell_size_px, gs.zoom_level)
@@ -131,14 +131,12 @@ class TestLatencyModel(unittest.TestCase):
     def test_lag_only_changes_which_observations_are_in_the_belief(self):
         """Integrating pano k's landmark evidence two steps late must leave the
         belief at the end identical to a no-lag run that simply never saw the
-        observations still in flight at the end (the last two panos). Exact
-        here because the steps are whole cells; with fractional shifts the
-        bilinear resampling of a product is not the product of resamplings,
-        and carrying the in-flight grids through the same per-step operator
-        is the closest the histogram filter can get."""
-        w = self.w
-        step_m = float(w.step_dist[0])
-        for noise in (0.0, 0.141):
+        observations still in flight at the end (the last two panos). Rewind
+        and replay makes this exact for fractional steps too, where the
+        bilinear resampling of a product is not the product of resamplings."""
+        for step_cells, noise in ((1.0, 0.0), (1.0, 0.141), (0.7, 0.0), (0.7, 0.141)):
+            w = _World(step_cells=step_cells)
+            step_m = float(w.step_dist[0])
             lagged = HistogramFilterConfig(motion_noise_frac=noise, slow_streams="landmark",
                                            slow_stream_delay_s=1.5 * step_m, speed_m_s=1.0)
             elapsed = elapsed_seconds(w.step_dist, 1.0)
@@ -156,9 +154,11 @@ class TestLatencyModel(unittest.TestCase):
                 log_likelihood_aggregator=_TwoStream(w.agg.image, landmark),
                 mapping=w.mapping, config=HistogramFilterConfig(motion_noise_frac=noise))
             a, b = out.final_belief.get_belief(), ref.final_belief.get_belief()
-            self.assertTrue(torch.allclose(a, b, atol=1e-4),  # bilinear resampling at integer positions
-                            f"noise={noise} max|diff|={(a - b).abs().max().item():.3e} "
-                            f"peak={a.max().item():.3f} argmax {a.argmax().item()} vs {b.argmax().item()}")
+            self.assertTrue(torch.allclose(a, b, atol=1e-5),
+                            f"step={step_cells} noise={noise} max|diff|={(a - b).abs().max().item():.3e}")
+            # Intermediate estimates differ by construction: at step t the lagged
+            # run lacks the observations captured in the last two steps.
+            self.assertFalse(torch.allclose(out.mean_history[1:-2], ref.mean_history[1:-2], atol=1e-6))
 
     def test_lagged_observations_are_carried_forward(self):
         """With a two-step lag the landmark evidence about pano k lands when the

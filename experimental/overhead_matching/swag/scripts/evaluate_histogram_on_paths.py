@@ -10,7 +10,6 @@ from experimental.overhead_matching.swag.filter.histogram_belief import (
     HistogramBelief,
     CellToPatchMapping,
     build_cell_to_patch_mapping,
-    propagate_log_grid,
 )
 from experimental.overhead_matching.swag.filter.adaptive_aggregators import (
     ObservationLogLikelihoodAggregator,
@@ -77,9 +76,10 @@ class HistogramFilterConfig:
     max_chunk_gib: float = 2.0  # Peak GPU memory per chunk for cell-to-patch mapping
     # Observation latency model. Streams named in `slow_streams` (see
     # ObservationLogLikelihoodAggregator.streams) are captured at every pano
-    # but only integrated once the robot's clock has advanced by
-    # `slow_stream_delay_s` since capture, carried forward by the odometry
-    # accumulated meanwhile. Other streams are integrated immediately.
+    # but become available only once the robot's clock has advanced by
+    # `slow_stream_delay_s` since capture. When one arrives the filter
+    # rewinds to the belief it held before that pano, integrates it there,
+    # and replays every later update. Other streams are integrated at once.
     slow_stream_delay_s: float = 0.0
     slow_streams: str = "none"  # "none" | "landmark" | "all"
     slow_stream_dropout: float = 0.0  # fraction of slow-stream observations lost (seeded)
@@ -181,79 +181,85 @@ def run_histogram_filter_on_path(
             print("Not tracking convergence: convergence_radii not provided")
 
     path_len = len(path_pano_ids)
-    # Observations in flight: capture step of each, and their per-cell
-    # log-likelihood grids stacked (N, rows, cols). Every motion step is
-    # applied to this stack with the same operator as to the belief, so a
-    # lagged observation joins the belief having gone through the same
-    # shifts, interpolation and blur it would have as part of the belief.
-    # The lag therefore only changes which observations are in the belief.
-    pending_steps: list[int] = []
-    pending_grids: torch.Tensor | None = None
+    # Out-of-sequence integration by rewind and replay. Over the lag window
+    # we keep, per step, the normalized log belief from before that step's
+    # observations (`snapshots`) and the per-patch fast / slow observation
+    # vectors. When a slow observation captured at k arrives at t, the belief
+    # is rewound to snapshots[k], the observation is applied at k, and every
+    # later update (motion, fast observations, slow observations that had
+    # already arrived, each at its own capture step) is replayed up to t.
+    # The result is exactly what the filter would hold had the observation
+    # been available at capture, interpolation and all; the lag only changes
+    # which observations are in the belief at each step.
+    snapshots: dict[int, torch.Tensor] = {}
+    fast_obs: dict[int, torch.Tensor | None] = {}
+    slow_obs: dict[int, torch.Tensor] = {}  # capture step -> (num_patches,)
+    in_flight: list[int] = []
+    arrived: set[int] = set()
 
-    def observe(step_idx: int) -> None:
-        nonlocal pending_grids
-        streams = log_likelihood_aggregator.streams(path_pano_ids[step_idx])
-        fast = [v for k, v in streams.items() if k not in slow_names]
-        slow = [v for k, v in streams.items() if k in slow_names]
-        if fast:
-            belief.apply_observation(sum(fast[1:], fast[0]), mapping)
-        if slow and not (slow_drop is not None and bool(slow_drop[step_idx])):
-            grid = belief.cell_log_likelihood_grid(sum(slow[1:], slow[0]), mapping)
-            # The grid's scale is irrelevant after normalization; anchor its
-            # max at 0 so exp() in the propagation cannot overflow.
-            grid = (grid - grid.max()).unsqueeze(0)
-            pending_steps.append(step_idx)
-            pending_grids = grid if pending_grids is None else torch.cat([pending_grids, grid])
-        # Integrate every lagged observation whose latency has elapsed.
-        keep = []
-        for i, cap in enumerate(pending_steps):
-            waited = 0.0 if elapsed_s is None else float(elapsed_s[step_idx] - elapsed_s[cap])
-            if waited + 1e-9 < config.slow_stream_delay_s:
-                keep.append(i)
-            else:
-                belief.apply_cell_log_likelihood(pending_grids[i])
-        if len(keep) != len(pending_steps):
-            pending_steps[:] = [pending_steps[i] for i in keep]
-            pending_grids = pending_grids[keep] if keep else None
+    def apply_observations_at(step: int) -> None:
+        if fast_obs[step] is not None:
+            belief.apply_observation(fast_obs[step], mapping)
+        if step in arrived:
+            belief.apply_observation(slow_obs[step], mapping)
 
-    for step_idx in range(path_len - 1):
-        # Observation update
-        observe(step_idx)
-
+    def record() -> None:
         mean_history.append(belief.get_mean_latlon())
         mode_history.append(belief.get_mode_latlon())
         variance_history.append(belief.get_variance_deg_sq())
 
-        # Track convergence after observation (before motion blurs the belief)
+    for step_idx in range(path_len):
+        if slow_names:
+            snapshots[step_idx] = belief.get_log_belief().clone()
+        streams = log_likelihood_aggregator.streams(path_pano_ids[step_idx])
+        fast = [v for k, v in streams.items() if k not in slow_names]
+        slow = [v for k, v in streams.items() if k in slow_names]
+        fast_obs[step_idx] = sum(fast[1:], fast[0]) if fast else None
+        if slow and not (slow_drop is not None and bool(slow_drop[step_idx])):
+            slow_obs[step_idx] = sum(slow[1:], slow[0])
+            in_flight.append(step_idx)
+
+        newly_arrived = [
+            k for k in in_flight
+            if elapsed_s is None
+            or float(elapsed_s[step_idx] - elapsed_s[k]) + 1e-9 >= config.slow_stream_delay_s
+        ]
+        if newly_arrived:
+            for k in newly_arrived:
+                in_flight.remove(k)
+                arrived.add(k)
+            rewind_to = min(newly_arrived)
+            belief.restore_log_belief(snapshots[rewind_to])
+            for s in range(rewind_to, step_idx + 1):
+                if s > rewind_to:
+                    belief.apply_motion(motion_deltas[s - 1], config.motion_noise_frac)
+                    snapshots[s] = belief.get_log_belief().clone()
+                apply_observations_at(s)
+        else:
+            apply_observations_at(step_idx)
+
+        record()
         if track_convergence:
+            # Same alignment as before: step i is scored against position i + 1
+            # (the last step against the final position).
+            truth = true_latlons[min(step_idx + 1, path_len - 1)]
             for radius in convergence_radii:
-                prob_mass = compute_probability_mass_within_radius(
-                    belief, true_latlons[step_idx + 1], float(radius)
-                )
-                prob_mass_by_radius[radius].append(prob_mass)
+                prob_mass_by_radius[radius].append(
+                    compute_probability_mass_within_radius(belief, truth, float(radius)))
 
-        # Motion prediction, applied identically to the belief and to the
-        # observations in flight (same delta, same reference point).
-        reference_latlon = belief.get_mean_latlon()
-        belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac, reference_latlon)
-        if pending_grids is not None:
-            pending_grids = propagate_log_grid(
-                pending_grids, belief.grid_spec, motion_deltas[step_idx],
-                config.motion_noise_frac, reference_latlon)
+        # Nothing captured before the oldest in-flight observation can be
+        # rewound to again: drop those snapshots and cached observations.
+        if slow_names:
+            keep_from = in_flight[0] if in_flight else step_idx + 1
+            for cache in (snapshots, fast_obs, slow_obs):
+                for k in [k for k in cache if k < keep_from]:
+                    del cache[k]
+            arrived.difference_update(k for k in list(arrived) if k < keep_from)
+        else:
+            fast_obs.clear()
 
-    # Final observation
-    observe(path_len - 1)
-    mean_history.append(belief.get_mean_latlon())
-    mode_history.append(belief.get_mode_latlon())
-    variance_history.append(belief.get_variance_deg_sq())
-
-    # Track convergence after final observation
-    if track_convergence:
-        for radius in convergence_radii:
-            prob_mass = compute_probability_mass_within_radius(
-                belief, true_latlons[-1], float(radius)
-            )
-            prob_mass_by_radius[radius].append(prob_mass)
+        if step_idx < path_len - 1:
+            belief.apply_motion(motion_deltas[step_idx], config.motion_noise_frac)
 
     # Convert lists to tensors
     prob_mass_tensors = {
@@ -401,6 +407,10 @@ def evaluate_histogram_on_paths(
             max_chunk_bytes=int(config.max_chunk_gib * 1024**3),
         )
         print(f"Built cell-to-patch mapping with {len(mapping.patch_indices)} overlaps")
+        setup_peak_gib = None
+        if torch.cuda.is_available():
+            setup_peak_gib = torch.cuda.max_memory_allocated() / 1024**3
+            torch.cuda.reset_peak_memory_stats()  # measure the filter loop on its own
 
         print("Starting iteration over paths")
         for i, path in enumerate(tqdm.tqdm(paths)):
@@ -515,6 +525,11 @@ def evaluate_histogram_on_paths(
             "grid_cols": grid_spec.num_cols,
             "cell_size_px": cell_size_px,
         }
+        if torch.cuda.is_available():
+            summary_stats["peak_gpu_memory_setup_gib"] = setup_peak_gib
+            summary_stats["peak_gpu_memory_filter_gib"] = torch.cuda.max_memory_allocated() / 1024**3
+            print(f"Peak GPU memory: setup {setup_peak_gib:.2f} GiB, "
+                  f"filter loop {summary_stats['peak_gpu_memory_filter_gib']:.2f} GiB")
 
         # Add convergence metrics to summary
         if convergence_radii:

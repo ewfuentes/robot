@@ -797,18 +797,6 @@ class TestPropagateLogGrid(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(out.exp(), belief.get_belief(), rtol=1e-3, atol=1e-9))
 
-    def test_batched_propagation_matches_per_grid(self):
-        belief = self._belief()
-        g = torch.Generator().manual_seed(1)
-        other = -2.0 * torch.rand_like(belief.get_log_belief(), generator=g) if False else \
-            -2.0 * torch.rand(belief.get_log_belief().shape, generator=g)
-        delta = torch.tensor([0.0003, 0.0005])
-        args = (belief.grid_spec, delta, 5.0, belief.get_mean_latlon())  # big noise: blur runs
-        stacked = propagate_log_grid(torch.stack([belief.get_log_belief(), other]), *args)
-        self.assertEqual(tuple(stacked.shape), (2, *belief.get_log_belief().shape))
-        self.assertTrue(torch.allclose(stacked[0], propagate_log_grid(belief.get_log_belief(), *args), atol=1e-5))
-        self.assertTrue(torch.allclose(stacked[1], propagate_log_grid(other, *args), atol=1e-5))
-
     def test_apply_observation_split_is_exact(self):
         grid_spec = GridSpec(
             zoom_level=20, cell_size_px=50.0, origin_row_px=0.0, origin_col_px=0.0,

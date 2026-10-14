@@ -194,16 +194,14 @@ def _shift_grid(
     """Shift belief grid by fractional cell amounts using bilinear interpolation.
 
     Args:
-        log_belief: Log probability tensor of shape (H, W), or a batch (N, H, W)
-            of grids that all move by the same amount
+        log_belief: Log probability tensor of shape (H, W)
         shift_rows: Shift amount in rows (positive = shift down)
         shift_cols: Shift amount in columns (positive = shift right)
 
     Returns:
-        Shifted log belief tensor, same shape as the input
+        Shifted log belief tensor
     """
-    batched = log_belief.dim() == 3
-    H, W = log_belief.shape[-2:]
+    H, W = log_belief.shape
     device = log_belief.device
     dtype = log_belief.dtype
 
@@ -222,16 +220,14 @@ def _shift_grid(
     grid_x = grid_x - (2 * float(shift_cols) / (W - 1))
 
     grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
-    belief_prob = belief_prob.reshape(-1, 1, H, W)  # (N, 1, H, W)
-    grid = grid.expand(belief_prob.shape[0], -1, -1, -1)
+    belief_prob = belief_prob.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
     # Sample with bilinear interpolation, zeros outside boundary
     shifted = F.grid_sample(
         belief_prob, grid, mode="bilinear", padding_mode="zeros", align_corners=True
     )
 
-    shifted = shifted.reshape(-1, H, W) if batched else shifted.reshape(H, W)
-    return torch.log(shifted + 1e-40)
+    return torch.log(shifted.squeeze() + 1e-40)
 
 
 # Below this the Gaussian kernel is a delta; the blur is skipped entirely.
@@ -258,13 +254,11 @@ def _blur_log_grid(log_grid: torch.Tensor, sigma_cells: float) -> torch.Tensor:
     if sigma_cells < MIN_BLUR_SIGMA_CELLS:
         return log_grid
 
-    batched = log_grid.dim() == 3
-    H, W = log_grid.shape[-2:]
     kernel = _make_gaussian_kernel_1d(sigma_cells, log_grid.device)
-    prob = torch.exp(log_grid).reshape(-1, 1, H, W)
+    prob = torch.exp(log_grid)
     pad_size = len(kernel) // 2
     prob = F.pad(
-        prob,
+        prob.unsqueeze(0).unsqueeze(0),
         (pad_size, pad_size, pad_size, pad_size),
         mode="constant",
         value=0,
@@ -272,8 +266,7 @@ def _blur_log_grid(log_grid: torch.Tensor, sigma_cells: float) -> torch.Tensor:
     # Separable convolution: rows (vertical kernel) then columns.
     prob = F.conv2d(prob, kernel.view(1, 1, -1, 1))
     prob = F.conv2d(prob, kernel.view(1, 1, 1, -1))
-    prob = prob.reshape(-1, H, W) if batched else prob.reshape(H, W)
-    return torch.log(prob + 1e-40)
+    return torch.log(prob.squeeze() + 1e-40)
 
 
 def propagate_log_grid(
@@ -285,12 +278,8 @@ def propagate_log_grid(
 ) -> torch.Tensor:
     """Apply one motion step (shift by delta, Wiener blur) to any log grid.
 
-    Used on the belief by ``HistogramBelief.apply_motion`` and, step by step
-    with the same deltas, on the log-likelihood grids of observations that
-    are still in flight (see evaluate_histogram_on_paths), so a lagged
-    observation joins the belief having been carried through exactly the
-    motion updates the belief went through since its capture. `log_grid`
-    may be a batch (N, H, W) of grids that all move by this step.
+    This is the operator ``HistogramBelief.apply_motion`` applies to the
+    belief, factored out so it can be applied to other grids too.
 
     Args:
         motion_delta_deg: (2,) [delta_lat, delta_lon] in degrees.
@@ -549,6 +538,11 @@ class HistogramBelief:
         """Normalize belief to sum to 1 (in probability space)."""
         log_sum = self._log_belief.logsumexp(dim=(0, 1))
         self._log_belief = self._log_belief - log_sum
+
+    def restore_log_belief(self, log_belief: torch.Tensor) -> None:
+        """Rewind to a saved (normalized) log-belief grid."""
+        assert log_belief.shape == self._log_belief.shape
+        self._log_belief = log_belief.clone()
 
     def get_log_belief(self) -> torch.Tensor:
         """Return log belief tensor (num_rows, num_cols)."""
