@@ -79,6 +79,7 @@ def _log_memory(label: str):
 class MatchingMethod(enum.Enum):
     HUNGARIAN = "hungarian"
     GREEDY = "greedy"
+    THRESHOLD = "threshold"  # every pair at or above the threshold; no one-to-one constraint
 
 
 class AggregationMode(enum.Enum):
@@ -163,6 +164,10 @@ def match_and_aggregate(
 
     `use_dustbin=False` reproduces the legacy post-hoc-threshold behavior,
     useful for reproducing older similarity artifacts.
+
+    `MatchingMethod.THRESHOLD` keeps every (pano, OSM) pair with
+    P(match) >= `prob_threshold`, so one pano landmark may match several OSM
+    landmarks and vice versa; the dustbin does not apply.
     """
     n_pano, n_osm = cost_matrix.shape
     if n_pano == 0 or n_osm == 0:
@@ -209,6 +214,10 @@ def match_and_aggregate(
             probs.append(float(p))
             if len(used_pano) == min(n_pano, n_osm):
                 break
+    elif method == MatchingMethod.THRESHOLD:
+        rows, cols = np.nonzero(cost_matrix >= prob_threshold)
+        pano_inds, osm_inds = rows.tolist(), cols.tolist()
+        probs = cost_matrix[rows, cols].astype(float).tolist()
     else:
         raise ValueError(f"Unknown method: {method}")
 

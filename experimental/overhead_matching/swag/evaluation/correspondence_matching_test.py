@@ -510,6 +510,28 @@ class TestDustbinHungarian(unittest.TestCase):
         self.assertEqual(result.similarity_score, 0.0)
 
 
+class TestThresholdMatching(unittest.TestCase):
+    """THRESHOLD keeps every pair at or above the threshold: a superset of the
+    one-to-one matchings, with the same per-row uniqueness weights."""
+
+    def test_keeps_every_pair_above_threshold(self):
+        cost = np.array([[0.9, 0.85, 0.1], [0.95, 0.2, 0.0], [0.3, 0.4, 0.5]], dtype=np.float32)
+        r = cm.match_and_aggregate(cost, cm.MatchingMethod.THRESHOLD, cm.AggregationMode.SUM, 0.8)
+        self.assertEqual(sorted(zip(r.pano_lm_indices, r.osm_lm_indices)), [(0, 0), (0, 1), (1, 0)])
+        self.assertAlmostEqual(r.similarity_score, 0.9 + 0.85 + 0.95, places=5)
+        h = cm.match_and_aggregate(cost, cm.MatchingMethod.HUNGARIAN, cm.AggregationMode.SUM, 0.8)
+        self.assertTrue(set(zip(h.pano_lm_indices, h.osm_lm_indices)) <= set(zip(r.pano_lm_indices, r.osm_lm_indices)))
+        self.assertGreaterEqual(r.similarity_score, h.similarity_score)
+
+    def test_weights_apply_per_pano_landmark(self):
+        cost = np.array([[0.9, 0.85], [0.0, 0.95]], dtype=np.float32)
+        w = cm.compute_uniqueness_weights(cost, 0.8)
+        r = cm.match_and_aggregate(cost, cm.MatchingMethod.THRESHOLD, cm.AggregationMode.SUM, 0.8, uniqueness_weights=w)
+        self.assertAlmostEqual(r.similarity_score, (0.9 + 0.85) * w[0] + 0.95 * w[1], places=5)
+        empty = cm.match_and_aggregate(np.zeros((2, 3), dtype=np.float32), cm.MatchingMethod.THRESHOLD, cm.AggregationMode.SUM, 0.8)
+        self.assertEqual(empty.similarity_score, 0.0)
+
+
 class TestPrunedCsrRawData(unittest.TestCase):
     """A pruned CSR cost matrix must give the same similarity matrix as the
     dense one for every matcher we run above the prune threshold."""

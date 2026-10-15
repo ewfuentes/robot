@@ -295,8 +295,9 @@ def main():
                         help="Additionally compute a similarity matrix from the "
                              "raw data and save it to <output_path>_similarity.pt.")
     parser.add_argument("--method", type=str, default="hungarian",
-                        choices=["hungarian", "greedy"],
-                        help="Matching method (used with --compute_similarity).")
+                        choices=["hungarian", "greedy", "threshold"],
+                        help="Matching method (used with --compute_similarity); 'threshold' keeps "
+                             "every pair at or above --prob_threshold with no one-to-one constraint.")
     parser.add_argument("--aggregation", type=str, default="sum",
                         choices=[mode.value for mode in cm.AggregationMode],
                         help="Aggregation mode (used with --compute_similarity).")
