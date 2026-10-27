@@ -216,8 +216,8 @@ def _shift_grid(
 
     # Apply shift (convert cell shift to [-1,1] range)
     # To shift content by +N cells, we sample from position -N
-    grid_y = grid_y - (2 * shift_rows / (H - 1))
-    grid_x = grid_x - (2 * shift_cols / (W - 1))
+    grid_y = grid_y - (2 * float(shift_rows) / (H - 1))
+    grid_x = grid_x - (2 * float(shift_cols) / (W - 1))
 
     grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
     belief_prob = belief_prob.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
@@ -228,6 +228,91 @@ def _shift_grid(
     )
 
     return torch.log(shifted.squeeze() + 1e-40)
+
+
+# Below this the Gaussian kernel is a delta; the blur is skipped entirely.
+MIN_BLUR_SIGMA_CELLS = 0.1
+
+
+def blur_sigma_cells(
+    grid_spec: "GridSpec", distance_m, motion_noise_frac: float, ref_lat_deg: float
+):
+    """Wiener blur std in cells for `distance_m` of travel: ``frac * sqrt(d)``
+    metres, converted through the grid's metres-per-pixel at `ref_lat_deg`."""
+    m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
+    sigma_m = motion_noise_frac * torch.sqrt(torch.as_tensor(distance_m))
+    sigma_cells = (sigma_m / m_per_px) / grid_spec.cell_size_px
+    return sigma_cells.item() if isinstance(sigma_cells, torch.Tensor) else sigma_cells
+
+
+def _blur_log_grid(log_grid: torch.Tensor, sigma_cells: float) -> torch.Tensor:
+    """Isotropic Gaussian blur of a log grid in probability space.
+
+    Zero padding = absorbing boundary. Returns the input unchanged below
+    MIN_BLUR_SIGMA_CELLS, where the kernel would be a delta anyway.
+    """
+    if sigma_cells < MIN_BLUR_SIGMA_CELLS:
+        return log_grid
+
+    kernel = _make_gaussian_kernel_1d(sigma_cells, log_grid.device)
+    prob = torch.exp(log_grid)
+    pad_size = len(kernel) // 2
+    prob = F.pad(
+        prob.unsqueeze(0).unsqueeze(0),
+        (pad_size, pad_size, pad_size, pad_size),
+        mode="constant",
+        value=0,
+    )
+    # Separable convolution: rows (vertical kernel) then columns.
+    prob = F.conv2d(prob, kernel.view(1, 1, -1, 1))
+    prob = F.conv2d(prob, kernel.view(1, 1, 1, -1))
+    return torch.log(prob.squeeze() + 1e-40)
+
+
+def propagate_log_grid(
+    log_grid: torch.Tensor,
+    grid_spec: "GridSpec",
+    motion_delta_deg: torch.Tensor,
+    motion_noise_frac: float,
+    reference_latlon: torch.Tensor,
+) -> torch.Tensor:
+    """Apply one motion step (shift by delta, Wiener blur) to any log grid.
+
+    This is the operator ``HistogramBelief.apply_motion`` applies to the
+    belief, factored out so it can be applied to other grids too.
+
+    Args:
+        motion_delta_deg: (2,) [delta_lat, delta_lon] in degrees.
+        motion_noise_frac: Wiener noise intensity in m/sqrt(m); blur std is
+            ``motion_noise_frac * sqrt(step distance)``.
+        reference_latlon: point used for the degrees -> pixels conversion.
+
+    Returns the propagated grid, not normalized.
+    """
+    # Degrees -> pixels in float64: at zoom 20 the map is 2^28 px wide, so a
+    # float32 conversion quantizes each coordinate to 16 px and a one-step
+    # delta picks up tens of pixels of rounding noise.
+    ref = torch.as_tensor(reference_latlon).to(torch.float64)
+    delta = torch.as_tensor(motion_delta_deg).to(torch.float64)
+    y0, x0 = web_mercator.latlon_to_pixel_coords(ref[0], ref[1], grid_spec.zoom_level)
+    y1, x1 = web_mercator.latlon_to_pixel_coords(
+        ref[0] + delta[0], ref[1] + delta[1], grid_spec.zoom_level,
+    )
+    delta_row_px = y1 - y0
+    delta_col_px = x1 - x0
+    shift_rows = float(delta_row_px / grid_spec.cell_size_px)
+    shift_cols = float(delta_col_px / grid_spec.cell_size_px)
+
+    # Noise sigma via Wiener scaling in meters, then back to cells, so that
+    # `motion_noise_frac` shares units with OdometryNoiseConfig.
+    ref_lat_deg = float(ref[0])
+    m_per_px = web_mercator.get_meters_per_pixel(ref_lat_deg, grid_spec.zoom_level)
+    delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
+    sigma_cells = blur_sigma_cells(
+        grid_spec, delta_magnitude_px * m_per_px, motion_noise_frac, ref_lat_deg)
+
+    shifted = _shift_grid(log_grid, shift_rows, shift_cols)
+    return _blur_log_grid(shifted, sigma_cells)
 
 
 def segment_logsumexp(
@@ -454,6 +539,11 @@ class HistogramBelief:
         log_sum = self._log_belief.logsumexp(dim=(0, 1))
         self._log_belief = self._log_belief - log_sum
 
+    def restore_log_belief(self, log_belief: torch.Tensor) -> None:
+        """Rewind to a saved (normalized) log-belief grid."""
+        assert log_belief.shape == self._log_belief.shape
+        self._log_belief = log_belief.clone()
+
     def get_log_belief(self) -> torch.Tensor:
         """Return log belief tensor (num_rows, num_cols)."""
         return self._log_belief
@@ -527,40 +617,12 @@ class HistogramBelief:
         return var
 
     def apply_motion_blur(self, sigma_cells: float) -> None:
-        """Apply isotropic Gaussian blur to the belief.
-
-        This represents the motion model uncertainty spreading.
+        """Apply isotropic Gaussian blur to the belief (motion uncertainty).
 
         Args:
             sigma_cells: Standard deviation of blur in cell units
         """
-        if sigma_cells < 0.1:
-            return  # No blur needed for tiny sigma
-
-        kernel = _make_gaussian_kernel_1d(sigma_cells, self.device)
-
-        # Convert to probability space for convolution
-        belief_prob = torch.exp(self._log_belief)
-
-        # Pad for convolution (zero padding = absorbing boundary)
-        pad_size = len(kernel) // 2
-        belief_prob = F.pad(
-            belief_prob.unsqueeze(0).unsqueeze(0),
-            (pad_size, pad_size, pad_size, pad_size),
-            mode="constant",
-            value=0,
-        )
-
-        # Apply separable convolution
-        # First blur along rows (vertical kernel)
-        kernel_v = kernel.view(1, 1, -1, 1)
-        belief_prob = F.conv2d(belief_prob, kernel_v)
-
-        # Then blur along columns (horizontal kernel)
-        kernel_h = kernel.view(1, 1, 1, -1)
-        belief_prob = F.conv2d(belief_prob, kernel_h)
-
-        self._log_belief = torch.log(belief_prob.squeeze() + 1e-40)
+        self._log_belief = _blur_log_grid(self._log_belief, sigma_cells)
 
     def apply_motion(
         self,
@@ -587,74 +649,33 @@ class HistogramBelief:
         """
         if reference_latlon is None:
             reference_latlon = self.get_mean_latlon()
-
-        # Convert motion delta to pixel shift
-        y0, x0 = web_mercator.latlon_to_pixel_coords(
-            reference_latlon[0], reference_latlon[1], self.grid_spec.zoom_level
+        self._log_belief = propagate_log_grid(
+            self._log_belief, self.grid_spec, motion_delta_deg,
+            motion_noise_frac, reference_latlon,
         )
-        y1, x1 = web_mercator.latlon_to_pixel_coords(
-            reference_latlon[0] + motion_delta_deg[0],
-            reference_latlon[1] + motion_delta_deg[1],
-            self.grid_spec.zoom_level,
-        )
-
-        delta_row_px = y1 - y0
-        delta_col_px = x1 - x0
-
-        # Convert to cell units
-        shift_rows = delta_row_px / self.grid_spec.cell_size_px
-        shift_cols = delta_col_px / self.grid_spec.cell_size_px
-
-        # Compute noise sigma via Wiener scaling in meters, then convert back
-        # to cells for the Gaussian blur. Doing the scaling in meters keeps
-        # `motion_noise_frac` in m/√m (matching OdometryNoiseConfig) so that
-        # input and process-model noise share units and can be set equal for
-        # a calibrated filter.
-        ref_lat_deg = float(reference_latlon[0]) if isinstance(
-            reference_latlon[0], torch.Tensor) else reference_latlon[0]
-        m_per_px = web_mercator.get_meters_per_pixel(
-            ref_lat_deg, self.grid_spec.zoom_level)
-        delta_magnitude_px = torch.sqrt(delta_row_px**2 + delta_col_px**2)
-        delta_magnitude_m = delta_magnitude_px * m_per_px
-        sigma_m = motion_noise_frac * torch.sqrt(delta_magnitude_m)
-        sigma_cells = (sigma_m / m_per_px) / self.grid_spec.cell_size_px
-
-        # Apply shift
-        self._log_belief = _shift_grid(self._log_belief, shift_rows, shift_cols)
-
-        # Apply blur
-        if isinstance(sigma_cells, torch.Tensor):
-            sigma_cells = sigma_cells.item()
-        self.apply_motion_blur(sigma_cells)
-
         # Renormalize (some probability lost at edges)
         self.normalize()
 
-    def apply_observation(
+    def cell_log_likelihood_grid(
         self,
         observation_log_likelihoods: torch.Tensor,
         mapping: CellToPatchMapping,
-    ) -> None:
-        """Apply observation update using pre-computed log-likelihoods.
-
-        For each cell, uses the maximum log-likelihood among all overlapping
-        patches. This is similar to how the particle filter works (each particle
-        uses its nearest/best patch) and avoids artifacts from varying overlap
-        counts at patch boundaries.
+    ) -> torch.Tensor:
+        """Per-cell observation log-likelihood: the max over the patches that
+        overlap each cell (like the particle filter's nearest/best patch; avoids
+        artifacts from varying overlap counts at patch boundaries).
 
         Args:
             observation_log_likelihoods: (num_patches,) log-likelihoods for each satellite patch
             mapping: Precomputed cell-to-patch mapping
-        """
-        # Gather log-likelihoods for all overlapping patches
-        all_log_ll = observation_log_likelihoods[mapping.patch_indices]  # (total_overlaps,)
 
-        # Take max log-likelihood over overlapping patches for each cell
+        Returns:
+            (num_rows, num_cols) grid
+        """
+        all_log_ll = observation_log_likelihoods[mapping.patch_indices]  # (total_overlaps,)
         cell_log_ll = segment_max(
             all_log_ll, mapping.cell_offsets, mapping.segment_ids
         )
-
-        # Reshape to grid and apply to belief
         cell_log_ll_grid = cell_log_ll.reshape(
             self.grid_spec.num_rows, self.grid_spec.num_cols
         )
@@ -663,5 +684,19 @@ class HistogramBelief:
                 "NaN values in observation log-likelihoods. "
                 "Check similarity matrix for NaN or missing data."
             )
+        return cell_log_ll_grid
+
+    def apply_cell_log_likelihood(self, cell_log_ll_grid: torch.Tensor) -> None:
+        """Multiply a per-cell likelihood grid into the belief and renormalize."""
         self._log_belief = self._log_belief + cell_log_ll_grid
         self.normalize()
+
+    def apply_observation(
+        self,
+        observation_log_likelihoods: torch.Tensor,
+        mapping: CellToPatchMapping,
+    ) -> None:
+        """Apply observation update using pre-computed per-patch log-likelihoods."""
+        self.apply_cell_log_likelihood(
+            self.cell_log_likelihood_grid(observation_log_likelihoods, mapping)
+        )
